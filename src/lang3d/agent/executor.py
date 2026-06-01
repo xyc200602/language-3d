@@ -88,7 +88,10 @@ class Executor:
             )
 
             if on_thinking and response.content:
-                on_thinking(response.content)
+                try:
+                    on_thinking(response.content)
+                except Exception:
+                    pass
 
             # If no tool calls, the agent is done
             if not response.tool_calls:
@@ -110,13 +113,28 @@ class Executor:
             # Execute each tool call
             for tc in response.tool_calls:
                 if on_tool_call:
-                    on_tool_call(tc.name, tc.arguments)
+                    try:
+                        on_tool_call(tc.name, tc.arguments)
+                    except Exception:
+                        pass
 
                 result = self.tools.execute(tc.name, **tc.arguments)
                 state.add_tool_call(tc.name, tc.arguments, result)
 
                 if on_tool_result:
-                    on_tool_result(tc.name, result)
+                    try:
+                        on_tool_result(tc.name, result)
+                    except UnicodeEncodeError:
+                        # VLM may return Unicode chars that can't encode in GBK
+                        try:
+                            on_tool_result(
+                                tc.name,
+                                result.encode("utf-8", errors="replace").decode("utf-8"),
+                            )
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
                 messages.append(
                     Message(

@@ -71,6 +71,8 @@ def _run_freecad_script(script: str, timeout: int = 120) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             raise RuntimeError(f"FreeCAD script error:\n{result.stderr}")

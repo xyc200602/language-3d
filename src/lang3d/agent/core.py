@@ -307,7 +307,10 @@ class Agent:
         """Run a task with full planning pipeline."""
         # Phase 1: Plan (already created in run_task if called from there)
         if self._on_thinking:
-            self._on_thinking("正在分析任务并制定计划...")
+            try:
+                self._on_thinking("正在分析任务并制定计划...")
+            except Exception:
+                pass
 
         if self.state.plan is None:
             self.state.plan = self.planner.create_plan(task)
@@ -349,7 +352,10 @@ class Agent:
                     self.state.plan, step, result, self.state.tool_history
                 )
                 if self._on_thinking:
-                    self._on_thinking(f"反思：{reflection}")
+                    try:
+                        self._on_thinking(f"反思：{reflection}")
+                    except Exception:
+                        pass
 
                 # Get replacement step from planner
                 new_step = self.planner.replan_from_failure(
@@ -419,13 +425,26 @@ class Agent:
             # Execute tool calls
             for tc in response.tool_calls:
                 if self._on_tool_call:
-                    self._on_tool_call(tc.name, tc.arguments)
+                    try:
+                        self._on_tool_call(tc.name, tc.arguments)
+                    except Exception:
+                        pass
 
                 result = self.tools.execute(tc.name, **tc.arguments)
                 self.state.add_tool_call(tc.name, tc.arguments, result)
 
                 if self._on_tool_result:
-                    self._on_tool_result(tc.name, result)
+                    try:
+                        self._on_tool_result(tc.name, result)
+                    except UnicodeEncodeError:
+                        # VLM may return Unicode chars (e.g. braille) that
+                        # can't be encoded in Windows GBK terminals
+                        try:
+                            self._on_tool_result(tc.name, result.encode("utf-8", errors="replace").decode("utf-8"))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
                 messages.append(
                     Message(role="tool", content=result, tool_call_id=tc.id)
@@ -441,9 +460,12 @@ class Agent:
                         )
                         messages.append(Message(role="user", content=fix_hint))
                         if self._on_thinking:
-                            self._on_thinking(
-                                f"自动修复：cad_verify 不匹配，注入修正提示（第 {verify_fail_count} 次）"
-                            )
+                            try:
+                                self._on_thinking(
+                                    f"自动修复：cad_verify 不匹配，注入修正提示（第 {verify_fail_count} 次）"
+                                )
+                            except Exception:
+                                pass
 
         return "达到最大对话轮数限制"
 

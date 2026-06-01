@@ -54,6 +54,8 @@ class BashTool(Tool):
                 text=True,
                 timeout=timeout,
                 cwd=cwd,
+                encoding="utf-8",
+                errors="replace",
             )
 
             output = ""

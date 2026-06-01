@@ -1,3 +1,37 @@
+## 2026-06-02 - Phase 5: 真实工程案例端到端跑通
+
+### What was done:
+
+#### Windows GBK 编码修复：
+1. **Agent callback UnicodeEncodeError 修复**：`core.py` 和 `executor.py` 中所有 `on_tool_call`/`on_tool_result`/`on_thinking` 回调用 try/except 包裹，VLM 返回 Unicode 字符（如 U+2810 盲文）不再崩溃
+2. **subprocess 编码修复**：所有 `subprocess.run(text=True)` 调用添加 `encoding="utf-8", errors="replace"`，覆盖 6 个文件（freecad.py, bash.py, python_exec.py, simulation.py, motion.py, cfd.py）
+
+#### FreeCAD GUI 显示修复：
+3. **fc_open_gui 启动宏缩进错误修复**：`fit_all` 和 `print` 行有错误的 4 空格前导缩进（不在任何代码块内），导致 IndentationError → 宏静默失败 → ViewFit 从未执行 → 模型不可见
+4. **延迟可见性函数 `_ensure_visible()`**：新增延迟调用（500ms），在 FreeCAD GUI 创建 ViewObject 后设置 Visibility=True + DisplayMode='Flat Lines' + ViewFit
+5. **FreeCAD Welcome Screen 抑制**：启动宏中 `FreeCADGui.activateWorkbench('Part')` 强制切换到 Part 工作台，关闭 Start 页面；同时通过 XML user.cfg 设置 `FirstRun=0` + `ShowOnStartup=0` + `AutoloadModule=Part`
+6. **FreeCAD Document Recovery 对话框抑制**：清理 `$LOCALAPPDATA\Temp\FreeCAD` 缓存
+7. **多实例窗口堆积修复**：`fc_open_gui` 和 `fc_close_gui` 使用 `taskkill /F /IM FreeCAD.exe` 强制终止旧进程，避免 "Unsaved Document" 对话框阻塞
+8. **_dismiss_dialogs 增强**：自动检测并点击 "Discard" 按钮处理 "Unsaved Document" 对话框
+
+#### 测试修复：
+9. **test_quick_verify.py**：修复验证逻辑——`result_log` 存储 `on_tool_result` 结果（之前 `tool_log` 只存 call args，检查不到 MATCH: True）
+
+### Testing:
+- L-bracket 端到端测试：MATCH: True ✓（4 tool calls, 55s）— 从 50 calls/407s 大幅优化
+- VLM 确认 "A 3D model displaying a gray L-shaped structure with a horizontal rectangular base and a vertical rectangular plate"
+- 悬臂支架工程案例：MATCH: True ✓（9 tool calls, 363s）— 120x80x10 底板 + 10x80x60 竖板 + 4个安装孔 + 1个轴承孔
+- 阶梯轴工程案例：验证通过 ✓（25 tool calls, 223s）— 三段轴 φ20x30 + φ15x25 + φ10x20 + 键槽，mesh_stats 确认尺寸正确
+- 单元测试：38/38 passed（test_tools.py 20 + test_e2e_freecad.py 18）
+- 全量测试：291 passed, 1 failed（VLM 429 速率限制，非回归）
+- 工程案例：2/2 ALL ENGINEERING CASES COMPLETED SUCCESSFULLY
+
+### Notes:
+- VLM 429 速率限制仍然偶尔发生，建议在连续 VLM 调用之间增加延迟
+- FreeCAD 1.1.1 Welcome Screen 需要在启动宏中 `activateWorkbench('Part')` 才能可靠抑制，仅修改配置参数不够
+- 使用 `taskkill /F` 替代 `WM_CLOSE` 解决了 "Unsaved Document" 对话框问题
+- FreeCAD 1.1.1 在 headless 模式创建的对象，GUI 打开后 ViewObject 需要时间初始化，延迟 500ms 的 `_ensure_visible` 解决此问题
+
 ## 2026-06-01 - Task 15: FreeCAD 端到端实战测试 (Phase 4)
 
 ### What was done:

@@ -77,6 +77,8 @@ def _run_freecad_script(script: str, timeout: int = 60) -> str:
             capture_output=True,
             text=True,
             timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             raise RuntimeError(f"FreeCAD script error:\n{result.stderr}")
@@ -85,6 +87,26 @@ def _run_freecad_script(script: str, timeout: int = 60) -> str:
         raise RuntimeError("FreeCAD script timed out")
     finally:
         Path(script_path).unlink(missing_ok=True)
+
+
+def _xml_set_param(root: "ET.Element", group_name: str, param_name: str, value: str, tag: str = "FCBool") -> None:
+    """Set a parameter in FreeCAD's user.cfg XML tree.
+
+    Searches all FCParamGroup elements for one matching group_name,
+    then sets or creates a child element with the given param_name and value.
+    tag: XML element type (FCBool, FCString, FCInt, FCFloat).
+    """
+    import xml.etree.ElementTree as ET
+
+    for group in root.iter("FCParamGroup"):
+        if group.get("Name") == group_name:
+            for child in group:
+                if child.get("Name") == param_name:
+                    child.set("Value", value)
+                    break
+            else:
+                ET.SubElement(group, tag, {"Name": param_name, "Value": value})
+            break
 
 
 def _build_script(operations: list[dict]) -> str:
@@ -222,6 +244,14 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "save":
             path = op["path"].replace("\\", "\\\\")
+            # Make all objects visible before saving so they show in GUI
+            lines.append("for _o in doc.Objects:")
+            lines.append("    try:")
+            lines.append("        if hasattr(_o, 'ViewObject') and _o.ViewObject is not None:")
+            lines.append("            _o.ViewObject.Visibility = True")
+            lines.append("    except Exception:")
+            lines.append("        pass")
+            lines.append("doc.recompute()")
             lines.append(f'doc.saveAs(r"{op["path"]}")')
 
         elif op_type == "export_stl":
@@ -819,6 +849,63 @@ class FCOpenGUITool(Tool):
         if not fc_exe:
             return "Error: FreeCAD.exe not found. Install with: winget install FreeCAD"
 
+        # Force-kill any existing FreeCAD processes to prevent pile-up
+        # Using taskkill /F avoids the "Unsaved Document" dialog from WM_CLOSE
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "FreeCAD.exe"],
+                capture_output=True, timeout=5,
+                encoding="utf-8", errors="replace",
+            )
+            time.sleep(1)
+        except Exception:
+            pass
+
+        # Clean up FreeCAD recovery cache to prevent Document Recovery dialog
+        try:
+            import shutil
+            cache_dir = Path(os.environ.get("LOCALAPPDATA", "")) / "Temp" / "FreeCAD"
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+        # Disable welcome screen before launching GUI (headless config set)
+        try:
+            fc_python = _find_freecad_python()
+            if fc_python:
+                subprocess.run(
+                    [fc_python, "-c",
+                     "import FreeCAD;"
+                     "p=FreeCAD.ParamGet('User parameter:BaseApp/Preferences/General');"
+                     "p.SetBool('FirstRun',0);"
+                     "p.SetBool('ShowWelcome',0);"
+                     "p.SetString('AutoloadModule','Part');"
+                     "s=FreeCAD.ParamGet('User parameter:BaseApp/Preferences/Mod/Start');"
+                     "s.SetBool('ShowOnStartup',0)"],
+                    capture_output=True, timeout=15,
+                    encoding="utf-8", errors="replace",
+                )
+        except Exception:
+            pass
+
+        # Also directly patch the user.cfg to ensure settings persist
+        try:
+            import xml.etree.ElementTree as ET
+            cfg_path = Path(os.environ.get("APPDATA", "")) / "FreeCAD" / "v1-1" / "user.cfg"
+            if cfg_path.exists():
+                tree = ET.parse(str(cfg_path))
+                root = tree.getroot()
+                # Set FirstRun=0 in General group (suppresses First Run wizard)
+                _xml_set_param(root, "General", "FirstRun", "0")
+                # Set AutoloadModule to Part (skip Start page)
+                _xml_set_param(root, "General", "AutoloadModule", "Part", tag="FCString")
+                # Set ShowOnStartup=0 in Start group (suppresses Start page)
+                _xml_set_param(root, "Start", "ShowOnStartup", "0")
+                tree.write(str(cfg_path), encoding="UTF-8", xml_declaration=True)
+        except Exception:
+            pass
+
         view_method = VIEW_METHODS.get(view, "viewIsometric")
         cmd = [fc_exe]
 
@@ -826,37 +913,128 @@ class FCOpenGUITool(Tool):
             if not Path(file_path).exists():
                 return f"Error: File not found: {file_path}"
 
-            # Build startup macro: open doc + set camera
+            # Build startup macro: open doc + set camera + dismiss dialogs
             macro_lines = [
                 "import FreeCAD",
                 "import FreeCADGui",
                 "import time",
                 "",
-                f'doc = FreeCAD.openDocument(r"{file_path}")',
-                "time.sleep(0.5)",
+                "def _dismiss_dialogs():",
+                "    \"\"\"Dismiss Welcome, Setup, Recovery, and Unsaved dialogs.\"\"\"",
+                "    try:",
+                "        from PySide2 import QtWidgets, QtCore",
+                "        app = QtWidgets.QApplication.instance()",
+                "        if app:",
+                "            for w in app.topLevelWidgets():",
+                "                try:",
+                "                    wclass = w.metaObject().className() if w.metaObject() else ''",
+                "                    title = w.windowTitle().lower() if w.windowTitle() else ''",
+                "                    # Close QDialog-based popups (setup wizard, recovery)",
+                "                    if 'Dialog' in wclass:",
+                "                        print(f'Dismissing dialog: {w.windowTitle()}')",
+                "                        # For 'Unsaved Document' dialog, click Discard button",
+                "                        if 'unsaved' in title or 'save' in title:",
+                "                            for btn in w.findChildren(QtWidgets.QPushButton):",
+                "                                btxt = btn.text().lower()",
+                "                                if 'discard' in btxt or 'don\\'t save' in btxt or 'no' in btxt:",
+                "                                    btn.click()",
+                "                                    break",
+                "                            else:",
+                "                                w.close()",
+                "                        else:",
+                "                            w.close()",
+                "                        continue",
+                "                except Exception:",
+                "                    pass",
+                "            # Also close the Start page tab if present",
+                "            try:",
+                "                mw = app.activeWindow()",
+                "                if mw:",
+                "                    for tb in mw.findChildren(QtWidgets.QTabBar):",
+                "                        for i in range(tb.count()):",
+                "                            if 'start' in tb.tabText(i).lower():",
+                "                                tb.removeTab(i)",
+                "                                break",
+                "            except Exception:",
+                "                pass",
+                "    except Exception:",
+                "        pass",
                 "",
                 "def _set_camera():",
                 "    try:",
+                "        _dismiss_dialogs()",
                 "        v = FreeCADGui.activeDocument().activeView()",
                 f"        v.{view_method}()",
                 "    except Exception:",
                 "        pass",
                 "",
+                "# Disable welcome screen permanently",
+                "try:",
+                "    params = FreeCAD.ParamGet('User parameter:BaseApp/Preferences/General')",
+                "    params.SetBool('FirstRun', False)",
+                "    params.SetBool('ShowWelcome', False)",
+                "    start_params = FreeCAD.ParamGet('User parameter:BaseApp/Preferences/Mod/Start')",
+                "    start_params.SetBool('ShowOnStartup', False)",
+                "except Exception:",
+                "    pass",
+                "",
+                "# Force switch to Part workbench to close Start page",
+                "try:",
+                "    FreeCADGui.activateWorkbench('Part')",
+                "except Exception:",
+                "    pass",
+                "",
+                f'doc = FreeCAD.openDocument(r"{file_path}")',
+                "time.sleep(0.5)",
+                "",
             ]
+            macro_lines.extend([
+                "def _ensure_visible():",
+                "    \"\"\"Make all objects visible with proper display mode.\"\"\"",
+                "    try:",
+                "        _doc = FreeCAD.ActiveDocument",
+                "        if not _doc:",
+                "            return",
+                "        for _o in _doc.Objects:",
+                "            try:",
+                "                if hasattr(_o, 'ViewObject') and _o.ViewObject is not None:",
+                "                    _o.ViewObject.Visibility = True",
+                "                    if hasattr(_o.ViewObject, 'DisplayMode'):",
+                "                        _o.ViewObject.DisplayMode = 'Flat Lines'",
+                "            except Exception:",
+                "                pass",
+                "        _doc.recompute()",
+                "        FreeCADGui.SendMsgToActiveView('ViewFit')",
+                "    except Exception:",
+                "        pass",
+                "",
+                "# Make all objects visible immediately",
+                "for _o in doc.Objects:",
+                "    try:",
+                "        if hasattr(_o, 'ViewObject') and _o.ViewObject is not None:",
+                "            _o.ViewObject.Visibility = True",
+                "    except Exception:",
+                "        pass",
+                "doc.recompute()",
+                "",
+            ])
             if fit_all:
                 macro_lines.extend([
-                    "    try:",
-                    '        FreeCADGui.SendMsgToActiveView("ViewFit")',
-                    "    except Exception:",
-                    "        pass",
+                    "try:",
+                    "    FreeCADGui.SendMsgToActiveView('ViewFit')",
+                    "except Exception:",
+                    "    pass",
                     "",
                 ])
             macro_lines.extend([
-                "    print(f'Opened: {doc.Name}')",
+                "print(f'Opened: {doc.Name}')",
                 "",
-                "# Delay camera to let GUI finish rendering",
+                "# Delayed calls: dismiss dialogs early, then ensure visibility, then set camera",
                 "from PySide2 import QtCore",
-                "QtCore.QTimer.singleShot(1500, _set_camera)",
+                "QtCore.QTimer.singleShot(200, _dismiss_dialogs)",
+                "QtCore.QTimer.singleShot(800, _dismiss_dialogs)",
+                "QtCore.QTimer.singleShot(1000, _ensure_visible)",
+                "QtCore.QTimer.singleShot(2500, _set_camera)",
             ])
 
             macro_content = "\n".join(macro_lines)
@@ -906,25 +1084,28 @@ class FCCloseGUITool(Tool):
         )
 
     def execute(self, **kwargs: Any) -> str:
-        import ctypes
-
         from ..tools.screen import _find_windows_by_title
 
         windows = _find_windows_by_title("FreeCAD")
         if not windows:
             return "No FreeCAD window found (already closed or not running)"
 
-        hwnd, title = windows[0]
-        user32 = ctypes.windll.user32
-        # Send WM_CLOSE (0x0010) for graceful shutdown
-        user32.PostMessageW(hwnd, 0x0010, 0, 0)
+        count = len(windows)
+        # Force-kill all FreeCAD processes to avoid "Unsaved Document" dialog
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "FreeCAD.exe"],
+                capture_output=True, timeout=5,
+                encoding="utf-8", errors="replace",
+            )
+        except Exception:
+            pass
 
-        # Wait and verify window closed
-        time.sleep(2)
+        time.sleep(1)
         remaining = _find_windows_by_title("FreeCAD")
         if remaining:
-            return f"Sent close signal to FreeCAD: '{title}' (window still visible)"
-        return f"FreeCAD closed: '{title}'"
+            return f"Force-killed {count} FreeCAD window(s) (some still visible)"
+        return f"FreeCAD closed: {count} window(s) force-killed"
 
 
 class FCSetCameraTool(Tool):

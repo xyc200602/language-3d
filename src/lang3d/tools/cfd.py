@@ -60,6 +60,8 @@ def _find_openfoam() -> tuple[str | None, str]:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                encoding="utf-8",
+                errors="replace",
             )
             if result.returncode == 0:
                 # Check if OpenFOAM is in WSL
@@ -68,6 +70,8 @@ def _find_openfoam() -> tuple[str | None, str]:
                     capture_output=True,
                     text=True,
                     timeout=15,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 if check.stdout.strip():
                     return "wsl", "wsl"
@@ -81,6 +85,8 @@ def _find_openfoam() -> tuple[str | None, str]:
                     capture_output=True,
                     text=True,
                     timeout=15,
+                    encoding="utf-8",
+                    errors="replace",
                 )
                 if check2.stdout.strip():
                     return "wsl", "wsl"
@@ -94,6 +100,8 @@ def _find_openfoam() -> tuple[str | None, str]:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                encoding="utf-8",
+                errors="replace",
             )
             if result.returncode == 0:
                 return "docker", "docker"
@@ -171,6 +179,8 @@ def _run_openfoam_command(
             capture_output=True,
             text=True,
             timeout=timeout,
+            encoding="utf-8",
+            errors="replace",
         )
         output = result.stdout
         if result.stderr:
