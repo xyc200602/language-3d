@@ -34,6 +34,11 @@
 - FEA 全流程验证通过：建模 → 网格生成 → CalculiX 求解 → 结果加载
 - rotate 操作有 FreeCAD Rotation API 兼容问题，单独标记为 Task 18
 
+#### Task 18: rotate 工具 FreeCAD 1.1 兼容修复
+- 修复 `fc_rotate`：`shape.rotate(Rotation)` → `shape.rotate(center, axis, angle_deg)`（FreeCAD 1.1 的 Shape.rotate 签名是 3 个参数）
+- 简化旋转脚本：移除冗余的 translate → rotate → translate 步骤，直接使用 `shape.rotate(center, axis, angle)`
+- e2e 测试验证：旋转 45° 后体积不变（1000mm3），bounding box 正确变化（21.21mm）
+
 ## 2026-05-31 - Task 13+14: CFD 流体分析 + 运动仿真
 
 ### What was done:

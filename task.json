@@ -164,6 +164,6 @@
       "验证旋转后体积不变"
     ],
     "priority": 18,
-    "passes": false
+    "passes": true
   }
 ]

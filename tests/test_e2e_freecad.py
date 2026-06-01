@@ -254,17 +254,19 @@ class TestFreeCADTransform:
         assert "Volume:" in result
 
     def test_rotate_object(self, freecad_tools):
-        """Rotate an object."""
+        """Rotate an object and verify dimensions change but volume preserved."""
         ops = [
             {"type": "new_doc", "name": "RotateTest"},
             {"type": "make_box", "length": 20, "width": 10, "height": 5, "name": "Plate"},
+            {"type": "rotate", "object": "Plate", "axis": "z", "angle": 45},
             {"type": "object_info", "object": "Plate"},
         ]
         script = freecad_tools["build"](ops)
         result = freecad_tools["run"](script)
 
         assert "Volume:" in result
-        assert "1000.00" in result  # 20*10*5
+        assert "1000.00" in result  # Volume preserved after rotation
+        assert "21.21" in result  # Bounding box changed after 45deg rotation
 
 
 class TestFreeCADBatchTool:
