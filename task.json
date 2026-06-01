@@ -1,0 +1,169 @@
+[
+  {
+    "id": 7,
+    "title": "VLM UI 元素定位",
+    "description": "新增 vlm_locate 工具：截取 CAD 窗口 → VLM 返回 UI 元素名称和坐标 → Agent 可自动点击菜单/按钮，无需手动指定坐标。",
+    "steps": [
+      "在 vlm.py 中新增 VLMLocateTool：截图 → VLM 识别 UI 元素 → 返回 [{name, x, y, w, h}] 列表",
+      "VLM prompt 要求返回 JSON 格式的元素列表（按钮、菜单、输入框等）",
+      "Agent 系统提示词中加入 vlm_locate 使用策略：先 locate 再 click",
+      "编写 test_vlm_locate.py：验证工具注册、JSON 解析、FreeCAD 实际元素定位"
+    ],
+    "priority": 7,
+    "passes": true
+  },
+  {
+    "id": 8,
+    "title": "FreeCAD 菜单自动化",
+    "description": "通过 vlm_locate + gui_click 实现 FreeCAD 菜单的完整自动化操作：打开零件 → 画草图 → 拉伸 → 倒角等。",
+    "steps": [
+      "编写 fc_menu_tool.py 封装常用 FreeCAD GUI 操作流程（新建草图、拉伸、设置参数等）",
+      "利用 vlm_locate 定位菜单项坐标，gui_click 点击，gui_type 输入参数",
+      "测试：Agent 自主通过 GUI 创建一个简单零件（非 fc_batch API 方式）",
+      "对比 GUI 方式 vs fc_batch API 方式的适用场景"
+    ],
+    "priority": 8,
+    "passes": true
+  },
+  {
+    "id": 9,
+    "title": "Agent 多轮规划优化",
+    "description": "让 Agent 在 cad_verify 反馈 match=false 后自动生成修正操作并重新执行，形成真正的闭环自修复能力。",
+    "steps": [
+      "在 executor.py 中增加 VLM 反馈解析：当 cad_verify 返回 match=false 时自动提取 FIX_COMMANDS",
+      "在 core.py 的 _run_direct 中实现自修复循环：verify → fail → fix → re-verify（最多 3 轮）",
+      "优化 reflector.py 的 VLM 反馈驱动逻辑：根据 differences 生成具体 fc_batch 修正操作",
+      "编写 test_auto_fix.py：故意创建错误模型 → Agent 自动检测差异 → 修正 → 验证通过"
+    ],
+    "priority": 9,
+    "passes": true
+  },
+  {
+    "id": 10,
+    "title": "机械臂装配验证",
+    "description": "用 VLM 逐个观察机械臂 8 个零件的 3D 模型，验证尺寸、特征、装配兼容性。",
+    "steps": [
+      "批量建模：fc_batch 创建全部 8 个零件，每个都用 cad_verify 验证",
+      "装配检查：用 fc_batch 将零件按装配关系移动到正确位置，截图验证",
+      "编写 test_assembly_verify.py：8 零件建模 + VLM 验证 + 装配检查",
+      "记录哪些零件的哪些特征 VLM 能/不能识别"
+    ],
+    "priority": 10,
+    "passes": true
+  },
+  {
+    "id": 11,
+    "title": "Web 监控面板增强",
+    "description": "增强 Web 面板：实时显示 Agent 思考过程、工具调用、VLM 分析结果、截图画廊。",
+    "steps": [
+      "增强 web/app.py：增加 VLM 分析结果推送、截图画廊 API",
+      "前端增加截图画廊组件：显示 cad_verify 结果、vlm_analyze 分析",
+      "前端增加工具调用时间线：可视化 Agent 的工具选择和执行过程",
+      "测试：启动 Web 面板，运行一个建模任务，验证实时更新"
+    ],
+    "priority": 11,
+    "passes": true
+  },
+  {
+    "id": 12,
+    "title": "FEA 结构分析与 VLM 解读",
+    "description": "新增 FEA 仿真工具：通过 FreeCAD FEM + CalculiX 运行结构分析，用 VLM 解读应力云图。",
+    "steps": [
+      "创建 knowledge/materials.py 材料属性库和 knowledge/simulation.py 仿真知识库",
+      "创建 tools/simulation.py：fea_run, fea_visualize, fea_vlm_analyze, interference_check, tolerance_analysis, motion_sim 工具",
+      "修改 config.py 添加 SimulationSettings，修改 core.py/executor.py 注册仿真工具并更新提示词",
+      "编写 test_simulation.py：工具注册、材料库、公差分析、干涉检查测试",
+      "集成测试：悬臂梁 FEA 分析 + VLM 应力解读"
+    ],
+    "priority": 12,
+    "passes": true
+  },
+  {
+    "id": 13,
+    "title": "CFD 流体分析（OpenFOAM）",
+    "description": "新增 CFD 流体分析工具：通过 OpenFOAM 运行 CFD 仿真，支持 WSL/原生/Docker 模式，用 VLM 解读流场。",
+    "steps": [
+      "扩展 knowledge/simulation.py 添加 CFD 知识库：FluidProperties, CFDPattern, CFD_MESH_SIZES, get_fluid()",
+      "扩展 config.py SimulationSettings 添加 openfoam_path, default_fluid, cfd_timeout, openfoam_mode",
+      "创建 tools/cfd.py：cfd_run, cfd_vlm_analyze 工具 + OpenFOAM 跨平台执行",
+      "修改 core.py/executor.py 注册 CFD 工具并更新提示词",
+      "编写 test_cfd.py：工具注册、CFD 知识库、案例构建器、配置测试",
+      "更新 .env.example 添加 OPENFOAM_PATH, OPENFOAM_MODE"
+    ],
+    "priority": 13,
+    "passes": true
+  },
+  {
+    "id": 14,
+    "title": "运动仿真（FreeCAD Assembly）",
+    "description": "替换 motion_sim STUB 为真实运动仿真实现：正向运动学、关节范围分析、轨迹规划，VLM 视觉分析。",
+    "steps": [
+      "扩展 knowledge/simulation.py 添加运动学知识库：JointType, JOINT_TYPES",
+      "创建 tools/motion.py：motion_range, motion_trajectory, motion_vlm_analyze 工具",
+      "替换 simulation.py 中 MotionSimTool STUB 为真实实现",
+      "修改 core.py/executor.py 注册运动工具并更新提示词",
+      "编写 test_motion.py：工具注册、定义、执行、知识库测试",
+      "更新 test_simulation.py 适配新 MotionSimTool"
+    ],
+    "priority": 14,
+    "passes": true
+  },
+  {
+    "id": 15,
+    "title": "FreeCAD 端到端实战测试",
+    "description": "修复 FEA FreeCAD 1.1 API 兼容性问题（References格式、Direction属性、Solver API），编写完整 e2e 测试套件验证建模+FEA全流程。",
+    "steps": [
+      "修复 FEA 脚本：Face References 使用 (obj, ('FaceN',)) 格式",
+      "修复 Force 约束：移除 Direction 属性，改用 face normal + Reversed",
+      "修复 Solver：使用 FemToolsCcx 替代不存在的 FemInputWriterCcx",
+      "修复 Mesh：使用 gmshtools.GmshTools 替代旧 API",
+      "创建 tests/test_e2e_freecad.py：18 个端到端测试（建模、布尔、导出、FEA）",
+      "验证全量测试无回归"
+    ],
+    "priority": 15,
+    "passes": true
+  },
+  {
+    "id": 16,
+    "title": "Agent 真实建模流程验证",
+    "description": "用真实 Agent.run_task() 执行一个完整的建模任务（如 L型支架），验证 Planner → Executor → Verifier 闭环。",
+    "steps": [
+      "编写 Agent 集成测试：构造完整建模任务",
+      "验证 Planner 能生成正确的建模步骤",
+      "验证 Executor 能调用 fc_batch 建模并保存",
+      "验证 VLM cad_verify 能识别模型特征",
+      "验证自修复闭环（模型错误 → 检测 → 修正 → 再验证）",
+      "修复发现的问题"
+    ],
+    "priority": 16,
+    "passes": false
+  },
+  {
+    "id": 17,
+    "title": "FEA 应力结果解析增强",
+    "description": "增强 FEA 结果解析：从 CalculiX .dat/.frd 文件提取最大应力、最大位移、安全系数，返回结构化 JSON。",
+    "steps": [
+      "解析 .frd 文件获取节点应力/位移数据",
+      "计算最大 von Mises 应力和最大位移",
+      "基于材料屈服强度计算安全系数",
+      "返回结构化 JSON 结果（max_stress, max_disp, safety_factor, safe）",
+      "更新 fea_run 工具返回格式",
+      "编写 e2e 测试验证真实结果解析"
+    ],
+    "priority": 17,
+    "passes": false
+  },
+  {
+    "id": 18,
+    "title": "rotate 工具 FreeCAD 1.1 兼容修复",
+    "description": "修复 fc_rotate 工具在 FreeCAD 1.1 下的 TypeError（Rotation 构造函数参数不匹配）。",
+    "steps": [
+      "调试 FreeCAD 1.1 Rotation 构造函数签名",
+      "修复 rotate 操作脚本生成",
+      "添加 e2e 测试覆盖 rotate 操作",
+      "验证旋转后体积不变"
+    ],
+    "priority": 18,
+    "passes": false
+  }
+]

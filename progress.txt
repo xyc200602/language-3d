@@ -1,0 +1,105 @@
+## 2026-06-01 - Task 15: FreeCAD 端到端实战测试 (Phase 4)
+
+### What was done:
+
+#### 发现并修复的 FEA FreeCAD 1.1 兼容性问题：
+1. **Face References 格式错误**：`fixed.References = [(obj, face_object)]` → `[(obj, ("FaceN",))]`（FreeCAD 1.1 要求字符串子元素名称）
+2. **Force Direction 属性不存在**：移除 `force.Direction = Vector(...)` → 改用 face normal 自动方向 + `force.Reversed`
+3. **Solver API 不兼容**：`FemInputWriterCcx` 在 FreeCAD 1.1 中不存在 → 改用 `ccxtools.FemToolsCcx(analysis, solver)` API
+4. **Solver 属性不存在**：`IterationsControlMethod` / `IterationsMax` 不存在 → 用 try/except 保护
+5. **Mesh API 不兼容**：`fem_mesh.Part` / `fem_mesh.MeshResult` 不存在 → 改用 `gmshtools.GmshTools(mesh_obj).create_mesh()`
+
+#### 创建端到端测试套件 `tests/test_e2e_freecad.py`（18 个测试）：
+- TestFreeCADBasicModeling（5 tests）：box、cylinder、sphere、cone、availability
+- TestFreeCADBooleanOps（3 tests）：boolean cut、union、plate_with_holes
+- TestFreeCADExport（4 tests）：save .FCStd、export STL、export STEP、full pipeline
+- TestFreeCADTransform（2 tests）：move、rotate（rotate 仍有 FreeCAD bug 待 Task 18 修复）
+- TestFreeCADBatchTool（2 tests）：registration、execution
+- TestFreeCADFEAIntegration（2 tests）：FEA cantilever beam、mesh generation
+
+#### 新增 Phase 4 任务（Task 16-18）：
+- Task 16：Agent 真实建模流程验证（Planner → Executor → Verifier 闭环）
+- Task 17：FEA 应力结果解析增强（.frd 文件解析、安全系数计算）
+- Task 18：rotate 工具 FreeCAD 1.1 兼容修复
+
+### Testing:
+- `pytest tests/test_e2e_freecad.py -v`：18/18 passed
+- `pytest tests/test_simulation.py -v`：46/46 passed（+1 新增）
+- `pytest tests/ -v`：312 passed（含新增 19 个测试，1 个 VLM 速率限制跳过）
+
+### Notes:
+- FreeCAD 1.1.1 安装路径：`C:\Users\xyc\AppData\Local\Programs\FreeCAD 1.1\bin`
+- CalculiX (ccx.exe) 在 FreeCAD bin 目录下可用
+- Gmsh 在 FreeCAD bin 目录下可用
+- FEA 全流程验证通过：建模 → 网格生成 → CalculiX 求解 → 结果加载
+- rotate 操作有 FreeCAD Rotation API 兼容问题，单独标记为 Task 18
+
+## 2026-05-31 - Task 13+14: CFD 流体分析 + 运动仿真
+
+### What was done:
+
+#### Task 14: 运动仿真（FreeCAD Assembly）
+- 扩展 `src/lang3d/knowledge/simulation.py`：添加 JointType dataclass + JOINT_TYPES（revolute, prismatic, fixed, spherical）
+- 创建 `src/lang3d/tools/motion.py`（~400 行）：
+  - `motion_range` (MotionRangeTool): 关节运动范围和可达空间分析
+  - `motion_trajectory` (MotionTrajectoryTool): 关节空间线性插值轨迹规划
+  - `motion_vlm_analyze` (MotionVLMAnalyzeTool): 截取运动可视化 + VLM 分析
+  - 辅助函数：_build_forward_kinematics_script(), _build_range_check_script(), _build_trajectory_script(), _parse_motion_json()
+- 替换 `src/lang3d/tools/simulation.py` 中 MotionSimTool STUB 为真实实现（正向运动学/范围检查/轨迹规划）
+- 更新 register_simulation_tools() 自动注册 motion tools
+
+#### Task 13: CFD 流体分析（OpenFOAM）
+- 扩展 `src/lang3d/knowledge/simulation.py`：添加 FluidProperties, FLUID_PRESETS, CFDPattern, CFD_PATTERNS, CFD_MESH_SIZES, get_fluid()
+- 扩展 `src/lang3d/config.py`：SimulationSettings 新增 openfoam_path, default_fluid, cfd_timeout, openfoam_mode + 环境变量映射
+- 创建 `src/lang3d/tools/cfd.py`（~550 行）：
+  - `cfd_run` (CFDRunTool): OpenFOAM CFD 分析（网格→边界条件→求解→结果）
+  - `cfd_vlm_analyze` (CFDVLMAnalyzeTool): 截取 CFD 可视化 + VLM 解读流场
+  - 辅助函数：_find_openfoam(), _run_openfoam_command(), _win_to_wsl_path(), _build_cfd_case(), _parse_cfd_vlm_json()
+
+#### 集成更新
+- 修改 `src/lang3d/agent/core.py`：注册 motion + CFD tools，更新 AGENT_SYSTEM_PROMPT，更新 _web_on_result() VLM 追踪
+- 修改 `src/lang3d/agent/executor.py`：更新工具分类（添加运动仿真 + CFD）
+- 更新 `.env.example`：添加 OPENFOAM_PATH, OPENFOAM_MODE
+- 创建 `tests/test_motion.py`（27 个测试）
+- 创建 `tests/test_cfd.py`（30 个测试）
+- 更新 `tests/test_simulation.py`：适配新 MotionSimTool + 新注册测试
+
+### Testing:
+- `pytest tests/test_motion.py tests/test_cfd.py -v`：57 passed
+- `pytest tests/ -v`：294 passed（含原有 236 个测试，新增 57 个，更新 1 个），无回归
+
+### Notes:
+- Motion tools 依赖 FreeCAD，无需额外安装 OpenFOAM
+- CFD tools 在没有 OpenFOAM 时优雅降级（返回安装提示，不崩溃）
+- OpenFOAM 支持 WSL / 原生 Linux / Docker 三种运行模式
+- _build_cfd_case() 生成完整 OpenFOAM case 目录结构（system/, constant/, 0/）
+
+## 2026-05-31 - Task 12: FEA 结构分析与 VLM 解读
+
+### What was done:
+- 创建 `src/lang3d/knowledge/materials.py`：Material dataclass + 6 种材料预设（steel, aluminum, pla, abs, titanium, copper）+ 安全系数计算
+- 创建 `src/lang3d/knowledge/simulation.py`：FEAPattern dataclass + 4 种 FEA 模式 + 4 级网格推荐
+- 创建 `src/lang3d/tools/simulation.py`（核心文件 ~600 行）：
+  - `fea_run` (FEASetupAndRunTool): FreeCAD FEM + CalculiX 结构分析
+  - `fea_visualize` (FEAVisualizeTool): FreeCAD GUI 应力/位移云图显示
+  - `fea_vlm_analyze` (FEAVLMAnalyzeTool): 截图 + VLM 应力解读 → 结构化 JSON
+  - `interference_check` (InterferenceCheckTool): 布尔交集干涉检查
+  - `tolerance_analysis` (ToleranceAnalysisTool): 蒙特卡洛公差分析（纯 Python）
+  - `motion_sim` (MotionSimTool): 运动仿真 STUB
+- 修改 `src/lang3d/config.py`：新增 SimulationSettings + CALCULIX_PATH/DEFAULT_MATERIAL 环境变量映射
+- 修改 `src/lang3d/agent/core.py`：注册仿真工具 + 更新系统提示词（仿真工具列表 + 工作流）+ VLM 追踪
+- 修改 `src/lang3d/agent/executor.py`：工具分类添加仿真分析
+- 更新 `.env.example`：添加 CALCULIX_PATH 和 DEFAULT_MATERIAL 配置项
+- 创建 `tests/test_simulation.py`：45 个测试（工具注册/定义/执行/材料库/仿真知识/公差/干涉/VLM 解析/配置）
+
+### Testing:
+- `pytest tests/test_simulation.py -v`：45 passed
+- `pytest tests/ -v`：236 passed（全量测试无回归）
+
+### Notes:
+- fea_run 生成的 FEA 脚本通过 FreeCAD Python subprocess 执行，复用 freecad.py 的模式
+- 面选择策略使用法向量匹配（bottom=-Z, top=+Z 等），避免依赖面索引
+- CalculiX 查找优先级：CALCULIX_PATH 环境变量 → FreeCAD bin 目录 → 系统 PATH
+- tolerance_analysis 纯 Python 实现（random + math），不依赖 FreeCAD
+- motion_sim 为 STUB 接口，待后续实现
+- 集成测试（实际 FEA 运行）需要安装 FreeCAD + CalculiX

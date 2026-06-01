@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Language-3D Agent Monitor</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; }
+        .header { background: #16213e; padding: 16px 24px; border-bottom: 2px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
+        .header h1 { color: #00d2ff; font-size: 20px; }
+        .header-info { display: flex; align-items: center; gap: 12px; }
+        .thinking-text { color: #888; font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        .status-idle { background: #333; color: #888; }
+        .status-running { background: #0f3460; color: #00d2ff; animation: pulse 2s infinite; }
+        .status-complete { background: #1a472a; color: #4caf50; }
+        .status-error { background: #4a1a1a; color: #f44336; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
+
+        /* Tab bar */
+        .tab-bar { display: flex; background: #16213e; border-bottom: 1px solid #0f3460; padding: 0 24px; }
+        .tab { padding: 10px 20px; cursor: pointer; font-size: 13px; color: #888; border-bottom: 2px solid transparent; transition: all 0.2s; }
+        .tab:hover { color: #aaa; }
+        .tab.active { color: #00d2ff; border-bottom-color: #00d2ff; }
+
+        .container { padding: 16px 24px; }
+
+        /* Tab panels */
+        .tab-panel { display: none; }
+        .tab-panel.active { display: block; }
+
+        /* Main layout - overview tab */
+        .overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .panel { background: #16213e; border-radius: 8px; border: 1px solid #0f3460; overflow: hidden; }
+        .panel-header { padding: 12px 16px; background: #0f3460; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+        .panel-header .count { font-size: 11px; color: #888; background: #1a1a2e; padding: 2px 8px; border-radius: 8px; }
+        .panel-body { padding: 12px 16px; max-height: 400px; overflow-y: auto; }
+
+        /* Plan steps */
+        .plan-step { padding: 8px; margin: 4px 0; border-radius: 4px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+        .step-pending { background: #1a1a2e; color: #666; }
+        .step-progress { background: #0f3460; color: #00d2ff; }
+        .step-complete { background: #1a472a; color: #4caf50; }
+        .step-failed { background: #4a1a1a; color: #f44336; }
+
+        /* Log entries */
+        .log-entry { padding: 4px 0; font-size: 12px; font-family: 'Consolas', monospace; border-bottom: 1px solid #1a1a2e; display: flex; gap: 8px; }
+        .log-time { color: #555; min-width: 60px; }
+        .log-info { color: #aaa; }
+        .log-tool { color: #00d2ff; }
+        .log-error { color: #f44336; }
+        .log-success { color: #4caf50; }
+        .log-thinking { color: #b39ddb; }
+
+        /* Tool call timeline */
+        .tool-timeline { display: flex; flex-direction: column; gap: 4px; }
+        .tool-item { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #1a1a2e; border-radius: 4px; font-size: 12px; font-family: 'Consolas', monospace; border-left: 3px solid #0f3460; }
+        .tool-item:hover { background: #222; }
+        .tool-item .tool-time { color: #555; min-width: 60px; }
+        .tool-item .tool-name { color: #00d2ff; min-width: 120px; font-weight: 600; }
+        .tool-item .tool-args { color: #aaa; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .tool-item.tool-cad_verify { border-left-color: #4caf50; }
+        .tool-item.tool-vlm_analyze { border-left-color: #b39ddb; }
+        .tool-item.tool-fc_batch { border-left-color: #ff9800; }
+        .tool-item.tool-gui_click { border-left-color: #00bcd4; }
+        .tool-item.tool-vlm_locate { border-left-color: #e91e63; }
+
+        /* Screenshot gallery */
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+        .gallery-card { background: #1a1a2e; border-radius: 8px; overflow: hidden; border: 1px solid #0f3460; }
+        .gallery-card img { width: 100%; height: 180px; object-fit: cover; cursor: pointer; }
+        .gallery-card img:hover { opacity: 0.8; }
+        .gallery-card .card-info { padding: 8px; font-size: 11px; color: #888; }
+        .gallery-card .card-info .card-name { color: #aaa; font-size: 12px; }
+
+        /* VLM results */
+        .vlm-result { background: #1a1a2e; border-radius: 8px; padding: 12px; margin: 8px 0; border-left: 3px solid #b39ddb; }
+        .vlm-result .vlm-tool { color: #b39ddb; font-weight: 600; font-size: 12px; }
+        .vlm-result .vlm-time { color: #555; font-size: 11px; float: right; }
+        .vlm-result .vlm-prompt { color: #888; font-size: 12px; margin: 6px 0 4px; font-style: italic; }
+        .vlm-result .vlm-output { color: #eee; font-size: 12px; font-family: 'Consolas', monospace; white-space: pre-wrap; max-height: 150px; overflow-y: auto; background: #111; padding: 8px; border-radius: 4px; }
+        .vlm-result .vlm-match { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+        .vlm-match-true { background: #1a472a; color: #4caf50; }
+        .vlm-match-false { background: #4a1a1a; color: #f44336; }
+
+        /* Full-width panels */
+        .full-width { grid-column: 1 / -1; }
+        .empty { color: #555; font-style: italic; text-align: center; padding: 24px; }
+
+        /* Agents tab */
+        .agents-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        .agent-card { background: #1a1a2e; border-radius: 4px; padding: 10px 12px; margin: 4px 0; display: flex; justify-content: space-between; align-items: center; border-left: 3px solid #0f3460; }
+        .agent-card .agent-id { color: #00d2ff; font-family: 'Consolas', monospace; font-size: 12px; }
+        .agent-card .agent-step { color: #aaa; font-size: 11px; margin-top: 2px; }
+        .agent-card .agent-status { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 8px; }
+        .agent-status-running { background: #0f3460; color: #00d2ff; }
+        .agent-status-completed { background: #1a472a; color: #4caf50; }
+        .agent-status-failed { background: #4a1a1a; color: #f44336; }
+
+        /* DAG visualization */
+        .dag-wave { margin: 8px 0; padding: 8px; background: #1a1a2e; border-radius: 4px; }
+        .dag-wave-label { color: #888; font-size: 11px; margin-bottom: 4px; }
+        .dag-node { display: inline-block; padding: 6px 10px; margin: 4px; border-radius: 4px; font-size: 11px; }
+        .dag-node-pending { background: #1a1a2e; border: 1px solid #333; color: #888; }
+        .dag-node-running { background: #0f3460; color: #00d2ff; border: 1px solid #00d2ff; }
+        .dag-node-completed { background: #1a472a; color: #4caf50; border: 1px solid #4caf50; }
+        .dag-node-failed { background: #4a1a1a; color: #f44336; border: 1px solid #f44336; }
+        .dag-node-skipped { background: #1a1a2e; border: 1px solid #333; color: #555; }
+        .dag-arrow { color: #555; text-align: center; font-size: 16px; padding: 2px 0; }
+
+        /* Screenshot image overlay */
+        .img-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; justify-content: center; align-items: center; z-index: 1000; cursor: pointer; }
+        .img-overlay.show { display: flex; }
+        .img-overlay img { max-width: 90%; max-height: 90%; border-radius: 8px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Language-3D Agent Monitor</h1>
+        <div class="header-info">
+            <span class="thinking-text" id="thinking-text"></span>
+            <span id="status-badge" class="status-badge status-idle">IDLE</span>
+        </div>
+    </div>
+
+    <div class="tab-bar">
+        <div class="tab active" data-tab="overview">Overview</div>
+        <div class="tab" data-tab="tools">Tool Calls</div>
+        <div class="tab" data-tab="gallery">Screenshots</div>
+        <div class="tab" data-tab="vlm">VLM Results</div>
+        <div class="tab" data-tab="agents">Agents</div>
+    </div>
+
+    <div class="container">
+        <!-- Overview Tab -->
+        <div class="tab-panel active" id="panel-overview">
+            <div class="overview-grid">
+                <div class="panel">
+                    <div class="panel-header">Task Plan</div>
+                    <div class="panel-body" id="plan-body">
+                        <div class="empty">No active plan</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Activity Log <span class="count" id="log-count">0</span></div>
+                    <div class="panel-body" id="log-body">
+                        <div class="empty">Waiting for agent activity...</div>
+                    </div>
+                </div>
+                <div class="panel full-width">
+                    <div class="panel-header">Latest Screenshot</div>
+                    <div class="panel-body" id="screenshot-body">
+                        <div class="empty">No screenshots</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tool Calls Tab -->
+        <div class="tab-panel" id="panel-tools">
+            <div class="panel">
+                <div class="panel-header">Tool Call Timeline <span class="count" id="tool-count">0</span></div>
+                <div class="panel-body" style="max-height: 600px;">
+                    <div class="tool-timeline" id="tool-timeline">
+                        <div class="empty">No tool calls yet</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Screenshot Gallery Tab -->
+        <div class="tab-panel" id="panel-gallery">
+            <div class="panel">
+                <div class="panel-header">Screenshot Gallery <span class="count" id="gallery-count">0</span></div>
+                <div class="panel-body" style="max-height: 600px;">
+                    <div class="gallery-grid" id="gallery-grid">
+                        <div class="empty">No screenshots captured</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- VLM Results Tab -->
+        <div class="tab-panel" id="panel-vlm">
+            <div class="panel">
+                <div class="panel-header">VLM Analysis Results <span class="count" id="vlm-count">0</span></div>
+                <div class="panel-body" style="max-height: 600px;">
+                    <div id="vlm-list">
+                        <div class="empty">No VLM results yet</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agents Tab -->
+        <div class="tab-panel" id="panel-agents">
+            <div class="agents-layout">
+                <div class="panel">
+                    <div class="panel-header">Sub-Agents <span class="count" id="agent-count">0</span></div>
+                    <div class="panel-body" id="agents-body">
+                        <div class="empty">No active sub-agents</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">Task DAG</div>
+                    <div class="panel-body" id="dag-body">
+                        <div class="empty">No task DAG</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image overlay for full-size viewing -->
+    <div class="img-overlay" id="img-overlay">
+        <img id="overlay-img" src="" alt="Full size screenshot">
+    </div>
+
+    <script>
+        const planBody = document.getElementById('plan-body');
+        const logBody = document.getElementById('log-body');
+        const screenshotBody = document.getElementById('screenshot-body');
+        const statusBadge = document.getElementById('status-badge');
+        const thinkingText = document.getElementById('thinking-text');
+        const toolTimeline = document.getElementById('tool-timeline');
+        const galleryGrid = document.getElementById('gallery-grid');
+        const vlmList = document.getElementById('vlm-list');
+        const imgOverlay = document.getElementById('img-overlay');
+        const overlayImg = document.getElementById('overlay-img');
+
+        const statusClasses = {
+            idle: 'status-idle', running: 'status-running',
+            complete: 'status-complete', error: 'status-error'
+        };
+        const stepClasses = {
+            pending: 'step-pending', in_progress: 'step-progress',
+            completed: 'step-complete', failed: 'step-failed'
+        };
+        const stepIcons = { pending: '\u25CB', in_progress: '\u25D0', completed: '\u25CF', failed: '\u2717' };
+
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', () => {
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+                tab.classList.add('active');
+                document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+            });
+        });
+
+        // Image overlay
+        imgOverlay.addEventListener('click', () => imgOverlay.classList.remove('show'));
+        function showImage(src) {
+            overlayImg.src = src;
+            imgOverlay.classList.add('show');
+        }
+
+        function updatePlan(plan) {
+            if (!plan || !plan.steps || plan.steps.length === 0) {
+                planBody.innerHTML = '<div class="empty">No active plan</div>';
+                return;
+            }
+            planBody.innerHTML = plan.steps.map((s, i) =>
+                `<div class="plan-step ${stepClasses[s.status] || 'step-pending'}">
+                    <span>${stepIcons[s.status] || '\u25CB'}</span>
+                    <span>${i + 1}. ${s.description}</span>
+                </div>`
+            ).join('');
+        }
+
+        function updateLogs(logs) {
+            document.getElementById('log-count').textContent = logs ? logs.length : 0;
+            if (!logs || logs.length === 0) {
+                logBody.innerHTML = '<div class="empty">Waiting for agent activity...</div>';
+                return;
+            }
+            logBody.innerHTML = logs.slice(-80).map(l =>
+                `<div class="log-entry log-${l.level}">
+                    <span class="log-time">${l.time || ''}</span>
+                    <span>${l.message}</span>
+                </div>`
+            ).join('');
+            logBody.scrollTop = logBody.scrollHeight;
+        }
+
+        function updateStatus(status) {
+            statusBadge.textContent = status.toUpperCase();
+            statusBadge.className = `status-badge ${statusClasses[status] || 'status-idle'}`;
+        }
+
+        function updateToolCalls(toolCalls) {
+            document.getElementById('tool-count').textContent = toolCalls ? toolCalls.length : 0;
+            if (!toolCalls || toolCalls.length === 0) {
+                toolTimeline.innerHTML = '<div class="empty">No tool calls yet</div>';
+                return;
+            }
+            toolTimeline.innerHTML = toolCalls.slice(-50).map(tc => {
+                const cssClass = `tool-${tc.name}`;
+                const argStr = typeof tc.args === 'object'
+                    ? Object.entries(tc.args).slice(0, 3).map(([k,v]) => `${k}=${JSON.stringify(v)}`).join(', ')
+                    : '';
+                return `<div class="tool-item ${cssClass}">
+                    <span class="tool-time">${tc.time || ''}</span>
+                    <span class="tool-name">${tc.name}</span>
+                    <span class="tool-args">${argStr}</span>
+                </div>`;
+            }).join('');
+            toolTimeline.scrollTop = toolTimeline.scrollHeight;
+        }
+
+        function updateGallery(screenshots) {
+            document.getElementById('gallery-count').textContent = screenshots ? screenshots.length : 0;
+            if (!screenshots || screenshots.length === 0) {
+                galleryGrid.innerHTML = '<div class="empty">No screenshots captured</div>';
+                return;
+            }
+            galleryGrid.innerHTML = screenshots.map(s => {
+                const path = typeof s === 'object' ? (s.path || '') : String(s);
+                const name = path.split(/[\\/]/).pop() || 'screenshot';
+                const time = typeof s === 'object' ? (s.time || '') : '';
+                // Use local file path for display
+                const imgSrc = path.startsWith('/') || path.includes(':') ? `/api/screenshot-file?path=${encodeURIComponent(path)}` : path;
+                return `<div class="gallery-card">
+                    <img src="${imgSrc}" alt="${name}" onerror="this.alt='Image not found: ${name}'" onclick="showImage('${imgSrc}')">
+                    <div class="card-info">
+                        <div class="card-name">${name}</div>
+                        ${time ? `<span>${time}</span>` : ''}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function updateVLMResults(vlmResults) {
+            document.getElementById('vlm-count').textContent = vlmResults ? vlmResults.length : 0;
+            if (!vlmResults || vlmResults.length === 0) {
+                vlmList.innerHTML = '<div class="empty">No VLM results yet</div>';
+                return;
+            }
+            vlmList.innerHTML = vlmResults.slice(-20).map(r => {
+                // Extract match status if cad_verify
+                let matchHtml = '';
+                if (r.tool === 'cad_verify') {
+                    const isMatch = r.result.includes('MATCH: True');
+                    const cls = isMatch ? 'vlm-match-true' : 'vlm-match-false';
+                    const text = isMatch ? 'MATCH' : 'MISMATCH';
+                    matchHtml = `<span class="vlm-match ${cls}">${text}</span>`;
+                }
+                return `<div class="vlm-result">
+                    <span class="vlm-tool">${r.tool}</span>
+                    <span class="vlm-time">${r.time || ''}</span>
+                    ${matchHtml}
+                    <div class="vlm-prompt">${(r.prompt || '').substring(0, 150)}</div>
+                    <div class="vlm-output">${(r.result || '').substring(0, 300)}</div>
+                </div>`;
+            }).join('');
+        }
+
+        function updateThinking(text) {
+            thinkingText.textContent = text || '';
+        }
+
+        function updateSubAgents(agents) {
+            document.getElementById('agent-count').textContent = agents ? agents.length : 0;
+            const body = document.getElementById('agents-body');
+            if (!agents || agents.length === 0) {
+                body.innerHTML = '<div class="empty">No active sub-agents</div>';
+                return;
+            }
+            body.innerHTML = agents.map(a => {
+                const statusClass = `agent-status-${a.status}`;
+                return `<div class="agent-card">
+                    <div>
+                        <div class="agent-id">${a.agent_id}</div>
+                        <div class="agent-step">${(a.step || '').substring(0, 60)}</div>
+                    </div>
+                    <span class="agent-status ${statusClass}">${a.status}</span>
+                </div>`;
+            }).join('');
+        }
+
+        function updateDAG(dag) {
+            const body = document.getElementById('dag-body');
+            if (!dag || !dag.waves || dag.waves.length === 0) {
+                body.innerHTML = '<div class="empty">No task DAG</div>';
+                return;
+            }
+            let html = '';
+            dag.waves.forEach((wave, i) => {
+                html += `<div class="dag-wave"><div class="dag-wave-label">Wave ${i} (${wave.length} tasks)</div>`;
+                wave.forEach(node => {
+                    const cls = `dag-node-${node.status || 'pending'}`;
+                    html += `<div class="dag-node ${cls}" title="${node.description}">${node.description.substring(0, 30)}</div>`;
+                });
+                html += '</div>';
+                if (i < dag.waves.length - 1) {
+                    html += '<div class="dag-arrow">↓</div>';
+                }
+            });
+            body.innerHTML = html;
+        }
+
+        // WebSocket
+        const ws = new WebSocket(`ws://${location.host}/ws`);
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.status) updateStatus(data.status);
+            if (data.plan) updatePlan(data.plan);
+            if (data.logs) updateLogs(data.logs);
+            if (data.tool_calls) updateToolCalls(data.tool_calls);
+            if (data.screenshots) updateGallery(data.screenshots);
+            if (data.vlm_results) updateVLMResults(data.vlm_results);
+            if (data.thinking !== undefined) updateThinking(data.thinking);
+            if (data.sub_agents) updateSubAgents(data.sub_agents);
+            if (data.dag) updateDAG(data.dag);
+        };
+        ws.onclose = () => {
+            statusBadge.textContent = 'DISCONNECTED';
+            statusBadge.className = 'status-badge status-error';
+        };
+
+        // Fallback: poll API
+        setInterval(async () => {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data.status) updateStatus(data.status);
+                if (data.plan) updatePlan(data.plan);
+                if (data.logs) updateLogs(data.logs);
+                if (data.tool_calls) updateToolCalls(data.tool_calls);
+                if (data.screenshots) updateGallery(data.screenshots);
+                if (data.vlm_results) updateVLMResults(data.vlm_results);
+                if (data.thinking !== undefined) updateThinking(data.thinking);
+                if (data.sub_agents) updateSubAgents(data.sub_agents);
+                if (data.dag) updateDAG(data.dag);
+            } catch (e) {}
+        }, 5000);
+    </script>
+</body>
+</html>

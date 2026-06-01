@@ -1,0 +1,65 @@
+"""Message bus for cross-agent communication."""
+
+from __future__ import annotations
+
+import time as _time
+from dataclasses import dataclass, field
+from typing import Any, Callable
+
+
+@dataclass
+class AgentMessage:
+    """A message published on the message bus."""
+
+    sender: str
+    type: str  # "tool_call", "tool_result", "thinking", "status", "artifact"
+    payload: Any = None
+    timestamp: float = field(default_factory=_time.time)
+
+
+class MessageBus:
+    """Simple publish-subscribe message bus for inter-agent communication."""
+
+    def __init__(self) -> None:
+        self._messages: list[AgentMessage] = []
+        self._subscribers: list[Callable[[AgentMessage], None]] = []
+
+    def subscribe(self, callback: Callable[[AgentMessage], None]) -> None:
+        """Register a message handler callback."""
+        self._subscribers.append(callback)
+
+    def publish(self, message: AgentMessage) -> None:
+        """Publish a message and notify all subscribers."""
+        self._messages.append(message)
+        for callback in self._subscribers:
+            try:
+                callback(message)
+            except Exception:
+                pass  # Don't let subscriber errors disrupt the bus
+
+    def get_messages(
+        self,
+        agent_id: str | None = None,
+        type: str | None = None,
+    ) -> list[AgentMessage]:
+        """Query messages by sender agent ID and/or message type."""
+        results = self._messages
+        if agent_id is not None:
+            results = [m for m in results if m.sender == agent_id]
+        if type is not None:
+            results = [m for m in results if m.type == type]
+        return results
+
+    def get_artifacts(self) -> list[str]:
+        """Get all file paths reported as artifacts."""
+        artifacts: list[str] = []
+        for msg in self._messages:
+            if msg.type == "artifact" and isinstance(msg.payload, str):
+                artifacts.append(msg.payload)
+            elif msg.type == "artifact" and isinstance(msg.payload, list):
+                artifacts.extend(str(p) for p in msg.payload)
+        return list(dict.fromkeys(artifacts))
+
+    def clear(self) -> None:
+        """Clear all messages."""
+        self._messages.clear()
