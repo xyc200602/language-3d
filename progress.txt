@@ -76,6 +76,21 @@
 - GLM-5.1 推理 tokens 不计入 visible content，只占 max_tokens 配额
 - Agent 创建文件默认在 AGENT_WORKSPACE 目录
 
+#### Task 17: FEA 应力结果解析增强
+- 新增 `parse_frd()` 函数：解析 CalculiX .frd 结果文件
+  - 提取每个节点的位移向量 (dx, dy, dz)
+  - 提取每个节点的应力张量 (sxx, syy, szz, sxy, syz, szx)
+  - 计算 von Mises 等效应力：sqrt(0.5*((sxx-syy)^2 + (syy-szz)^2 + (szz-sxx)^2 + 6*(sxy^2+syz^2+szx^2)))
+  - 处理 Fortran 科学计数法（负号紧跟前值无空格）
+- FEA 脚本增加 `WORKING_DIR` 输出，用于定位 .frd 文件
+- FEA 脚本修复文件名：`FEMMesh.frd`（非 `Mesh.frd`）
+- `FEASetupAndRunTool.execute()` 增强：
+  - 自动定位并解析 .frd 文件
+  - 基于材料屈服强度计算安全系数 (safety_factor = yield_strength / max_von_mises)
+  - 安全判定：safety_factor >= 1.5 → safe=true
+  - 返回结构化 JSON：max_von_mises_stress, max_displacement, node_count, safety_factor, safe
+- 实际验证：悬臂梁 100x20x5, steel, 1000N → max_stress=0.000449MPa, SF=780321, safe=true
+
 ## 2026-05-31 - Task 13+14: CFD 流体分析 + 运动仿真
 
 ### What was done:

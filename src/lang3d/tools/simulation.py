@@ -30,6 +30,170 @@ from .base import Tool
 
 
 # ---------------------------------------------------------------------------
+# CalculiX .frd result file parser
+# ---------------------------------------------------------------------------
+
+def parse_frd(frd_path: str) -> dict[str, Any]:
+    """Parse a CalculiX .frd result file and extract structured results.
+
+    Returns dict with:
+        max_displacement: float (mm)
+        max_von_mises_stress: float (MPa)
+        node_count: int
+        displacement_components: dict (max_dx, max_dy, max_dz)
+        stress_components: dict (max_sxx, max_syy, max_szz, max_sxy, max_syz, max_szx)
+    """
+    result: dict[str, Any] = {
+        "max_displacement": 0.0,
+        "max_von_mises_stress": 0.0,
+        "node_count": 0,
+        "displacement_components": {},
+        "stress_components": {},
+    }
+
+    if not Path(frd_path).exists():
+        return result
+
+    with open(frd_path) as f:
+        lines = f.readlines()
+
+    # State machine for parsing
+    section = None  # "disp" or "stress"
+    # Accumulate all displacement vectors and stress tensors per node
+    node_disps: dict[int, list[float]] = {}  # node_id -> [dx, dy, dz]
+    node_stresses: dict[int, list[float]] = {}  # node_id -> [sxx, syy, szz, sxy, syz, szx]
+
+    for line in lines:
+        s = line.rstrip()
+
+        # Result block header: "  100CL ..."
+        if s.lstrip().startswith("100CL"):
+            section = None
+            continue
+
+        # Block type header: "-4 DISP ..." or "-4 STRESS ..."
+        if s.lstrip().startswith("-4"):
+            parts = s.split()
+            if len(parts) >= 2:
+                if "DISP" in parts[1].upper():
+                    section = "disp"
+                elif "STRESS" in parts[1].upper():
+                    section = "stress"
+                else:
+                    section = None
+            continue
+
+        # Component descriptor: "-5 ..."
+        if s.lstrip().startswith("-5"):
+            continue
+
+        # Block end: "-3"
+        if s.lstrip() == "-3":
+            section = None
+            continue
+
+        # Data line: "-1  node_id  values..."
+        if s.lstrip().startswith("-1") and section:
+            # Parse the fixed-width format: node_id + values
+            # Format: " -1    <id> <v1> <v2> ..."
+            # Values may be negative and attached to previous value without space
+            # e.g. " -1    3 5.20E-09-5.12E-09 1.18E-08"
+            # Split on whitespace won't work for attached negatives.
+            # Use regex to split the data part.
+            data_part = s[5:]  # skip " -1  "
+            node_id_str = ""
+            rest = data_part.lstrip()
+            # Extract node_id (integer)
+            i = 0
+            while i < len(rest) and rest[i].isdigit():
+                i += 1
+            if i == 0:
+                continue
+            node_id = int(rest[:i])
+            rest = rest[i:]
+
+            # Parse scientific notation values (13-char fields with possible attached sign)
+            values = []
+            # Each value is in Fortran scientific notation: ±d.dddddE±dd
+            # They can be 13 chars wide. But sometimes the sign is attached.
+            # Use regex to extract all float values
+            val_pattern = re.compile(r'[+-]?\d+\.\d+E[+-]\d+')
+            values = [float(v) for v in val_pattern.findall(rest)]
+
+            if section == "disp" and len(values) >= 3:
+                node_disps[node_id] = values[:3]
+
+            elif section == "stress" and len(values) >= 6:
+                node_stresses[node_id] = values[:6]
+
+    # Compute results
+    if node_disps:
+        max_disp = 0.0
+        max_dx = max_dy = max_dz = 0.0
+        for nid, vals in node_disps.items():
+            dx, dy, dz = vals[0], vals[1], vals[2]
+            mag = (dx**2 + dy**2 + dz**2) ** 0.5
+            if mag > max_disp:
+                max_disp = mag
+            if abs(dx) > abs(max_dx):
+                max_dx = dx
+            if abs(dy) > abs(max_dy):
+                max_dy = dy
+            if abs(dz) > abs(max_dz):
+                max_dz = dz
+        result["max_displacement"] = max_disp
+        result["node_count"] = len(node_disps)
+        result["displacement_components"] = {
+            "max_dx": max_dx,
+            "max_dy": max_dy,
+            "max_dz": max_dz,
+        }
+
+    if node_stresses:
+        max_von_mises = 0.0
+        max_sxx = max_syy = max_szz = 0.0
+        max_sxy = max_syz = max_szx = 0.0
+        for nid, vals in node_stresses.items():
+            sxx, syy, szz, sxy, syz, szx = vals
+            # von Mises stress: sqrt(0.5*((sxx-syy)^2 + (syy-szz)^2 + (szz-sxx)^2 + 6*(sxy^2+syz^2+szx^2)))
+            vm = math.sqrt(
+                0.5 * (
+                    (sxx - syy)**2
+                    + (syy - szz)**2
+                    + (szz - sxx)**2
+                    + 6 * (sxy**2 + syz**2 + szx**2)
+                )
+            )
+            if vm > max_von_mises:
+                max_von_mises = vm
+            if abs(sxx) > abs(max_sxx):
+                max_sxx = sxx
+            if abs(syy) > abs(max_syy):
+                max_syy = syy
+            if abs(szz) > abs(max_szz):
+                max_szz = szz
+            if abs(sxy) > abs(max_sxy):
+                max_sxy = sxy
+            if abs(syz) > abs(max_syz):
+                max_syz = syz
+            if abs(szx) > abs(max_szx):
+                max_szx = szx
+        result["max_von_mises_stress"] = max_von_mises
+        result["stress_components"] = {
+            "max_sxx": max_sxx,
+            "max_syy": max_syy,
+            "max_szz": max_szz,
+            "max_sxy": max_sxy,
+            "max_syz": max_syz,
+            "max_szx": max_szx,
+        }
+        if not result["node_count"]:
+            result["node_count"] = len(node_stresses)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # CalculiX solver finder
 # ---------------------------------------------------------------------------
 
@@ -354,6 +518,7 @@ analysis_path = r"{document_path}".replace(".FCStd", "_fea.FCStd")
 doc.saveAs(analysis_path)
 print(f"FEA document saved: {{analysis_path}}")
 print(f"SOLID_OBJ: {{solid_obj.Name}}")
+print(f"WORKING_DIR: {{solver_working_dir}}")
 print("FEA_COMPLETE")
 '''
 
@@ -531,15 +696,83 @@ class FEASetupAndRunTool(Tool):
 
         try:
             output = _run_freecad_script(script, timeout=timeout)
-            return (
-                f"[FEA Analysis Results]\n"
-                f"Document: {document_path}\n"
-                f"Material: {material_name}\n"
-                f"Mesh: {mesh_size}\n"
-                f"Fixed: {fixed_face} | Force: {force_face} ({force_magnitude}N)\n"
-                f"Solver: {ccx_status}\n"
-                f"\n--- Solver Output ---\n{output}"
-            )
+
+            # Parse .frd results from working directory
+            frd_results = {}
+            wd_match = re.search(r"WORKING_DIR:\s*(\S+)", output)
+            if wd_match:
+                wd = wd_match.group(1)
+                wd_path = Path(wd)
+                # CalculiX output file may be named Mesh.frd or FEMMesh.frd
+                frd_file = wd_path / "FEMMesh.frd" if (wd_path / "FEMMesh.frd").exists() else wd_path / "Mesh.frd"
+                if frd_file.exists():
+                    frd_results = parse_frd(str(frd_file))
+
+            # Compute safety factor from material yield strength
+            max_stress = frd_results.get("max_von_mises_stress", 0.0)
+            max_disp = frd_results.get("max_displacement", 0.0)
+            safety_factor = 0.0
+            safe = False
+            if mat and max_stress > 0:
+                safety_factor = mat.yield_strength / max_stress
+                safe = safety_factor >= 1.5
+
+            # Build structured result
+            result_lines = [
+                "[FEA Analysis Results]",
+                f"Document: {document_path}",
+                f"Material: {material_name}",
+                f"Mesh: {mesh_size}",
+                f"Fixed: {fixed_face} | Force: {force_face} ({force_magnitude}N)",
+                f"Solver: {ccx_status}",
+                "",
+            ]
+
+            if frd_results:
+                result_lines += [
+                    "--- Structured Results ---",
+                    f"Max von Mises Stress: {max_stress:.4f} MPa",
+                    f"Max Displacement: {max_disp:.6f} mm",
+                    f"Node Count: {frd_results.get('node_count', 0)}",
+                ]
+                if mat:
+                    result_lines += [
+                        f"Material Yield Strength: {mat.yield_strength} MPa",
+                        f"Safety Factor: {safety_factor:.2f}",
+                        f"Safe (SF >= 1.5): {safe}",
+                    ]
+                if frd_results.get("displacement_components"):
+                    dc = frd_results["displacement_components"]
+                    result_lines.append(
+                        f"Max Disp Components: dx={dc['max_dx']:.6f}, "
+                        f"dy={dc['max_dy']:.6f}, dz={dc['max_dz']:.6f} mm"
+                    )
+                if frd_results.get("stress_components"):
+                    sc = frd_results["stress_components"]
+                    result_lines.append(
+                        f"Max Stress Components: Sxx={sc['max_sxx']:.4f}, "
+                        f"Syy={sc['max_syy']:.4f}, Szz={sc['max_szz']:.4f} MPa"
+                    )
+
+                # Structured JSON output
+                json_result = {
+                    "max_von_mises_stress_mpa": round(max_stress, 6),
+                    "max_displacement_mm": round(max_disp, 8),
+                    "node_count": frd_results.get("node_count", 0),
+                    "material": material_name,
+                    "safety_factor": round(safety_factor, 4) if safety_factor > 0 else None,
+                    "safe": safe if safety_factor > 0 else None,
+                }
+                result_lines += [
+                    "",
+                    "--- JSON ---",
+                    json.dumps(json_result, indent=2),
+                ]
+            else:
+                result_lines.append("--- Solver Output (no .frd parsed) ---")
+
+            result_lines += ["", "--- Solver Output ---", output]
+            return "\n".join(result_lines)
         except RuntimeError as e:
             return f"Error running FEA: {e}"
 
