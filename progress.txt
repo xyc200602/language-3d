@@ -39,6 +39,43 @@
 - 简化旋转脚本：移除冗余的 translate → rotate → translate 步骤，直接使用 `shape.rotate(center, axis, angle)`
 - e2e 测试验证：旋转 45° 后体积不变（1000mm3），bounding box 正确变化（21.21mm）
 
+## 2026-06-01 - Task 16: Agent 真实建模流程验证 + Task 18 rotate 修复
+
+### What was done:
+
+#### GLM-5.1 推理模型 max_tokens 修复：
+- GLM-5.1 是推理模型（类似 o1），大量 token 用于 reasoning_tokens，需要 max_tokens>=4096 才能正常输出
+- 将所有模型层（base.py, glm.py, ollama.py, openai.py, router.py）的默认 max_tokens 从 4096 改为 100000
+- 验证 LLM 正常工作（reasoning_tokens + content_tokens 分开计算）
+
+#### Agent 直接建模流程验证（_run_direct）：
+- **简单任务**：fc_batch 创建 30x30x30 正方体 → 保存 FCStd → cad_verify MATCH:True ✓
+- **复杂任务**：L型支架（底板 80x60x8 + 竖板 8x60x40 + 4个φ6通孔）
+  - fc_batch 创建基础 L 型 → cad_verify 检测到缺少孔（MATCH:False）✓
+  - 自动修复循环触发 → fc_script 添加 4 个孔 → volume 53760→52842 ✓
+  - mesh_stats 验证：80x60x40, watertight ✓
+  - VLM 最终确认："The 3D model visible is an L-shaped bracket" ✓
+
+#### 发现的问题：
+1. VLM 对小孔（6mm）的视觉识别能力有限（从等角视图难以观察到）
+2. 429 速率限制偶尔发生（VLM 调用过于频繁）
+3. Unicode 编码错误：LLM 返回 emoji 导致 GBK 编码错误
+
+#### 新增测试 tests/test_agent_real_flow.py：
+- TestAgentToolRegistration: 工具注册验证（3 tests）
+- TestAgentDirectModeling: 直接建模流程（3 tests, 需要 API key）
+- TestAgentPlanning: 规划模式建模（1 test, 需要 API key）
+
+### Testing:
+- 291 unit tests passed（排除 VLM 速率限制测试和 e2e API 测试）
+- Agent 直接建模 2 个场景验证通过
+- Agent 自动修复闭环验证通过（cad_verify mismatch → fix → verify）
+
+### Notes:
+- VLM 对小特征的识别建议用 detail="detailed" + 底部/正面视图
+- GLM-5.1 推理 tokens 不计入 visible content，只占 max_tokens 配额
+- Agent 创建文件默认在 AGENT_WORKSPACE 目录
+
 ## 2026-05-31 - Task 13+14: CFD 流体分析 + 运动仿真
 
 ### What was done:

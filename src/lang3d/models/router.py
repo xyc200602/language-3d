@@ -112,7 +112,7 @@ class ModelRouter:
         tools: list[ToolDefinition] | None = None,
         *,
         task_type: TaskType = TaskType.CHAT,
-        max_tokens: int = 4096,
+        max_tokens: int = 100000,
         temperature: float = 0.7,
         system: str | None = None,
     ) -> ModelResponse:
@@ -131,7 +131,7 @@ class ModelRouter:
         image_path: str,
         prompt: str,
         *,
-        max_tokens: int = 4096,
+        max_tokens: int = 100000,
         detail: VisionDetail | None = None,
     ) -> str:
         """Analyze an image using the best vision backend.

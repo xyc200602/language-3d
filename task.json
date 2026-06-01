@@ -136,7 +136,7 @@
       "修复发现的问题"
     ],
     "priority": 16,
-    "passes": false
+    "passes": true
   },
   {
     "id": 17,

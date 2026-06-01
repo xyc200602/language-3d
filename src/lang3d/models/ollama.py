@@ -27,7 +27,7 @@ class OllamaBackend(ModelBackend):
         messages: list[Message],
         tools: list[ToolDefinition] | None = None,
         *,
-        max_tokens: int = 4096,
+        max_tokens: int = 100000,
         temperature: float = 0.7,
         system: str | None = None,
     ) -> ModelResponse:
