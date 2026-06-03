@@ -182,5 +182,42 @@
     ],
     "priority": 19,
     "passes": true
+  },
+  {
+    "id": 20,
+    "title": "Phase 4: Web 监控面板增强",
+    "description": "升级 Web 监控面板为生产级监控中心：修复缺失的 screenshot-file 端点、新增任务提交、3D 模型预览（Three.js + STL）、文件浏览器、会话历史、WebSocket delta 更新、UI/UX 增强。",
+    "steps": [
+      "Step 1: 修复 /api/screenshot-file 缺失端点（路径安全验证）+ 新增通用 /api/file 端点；core.py _run_with_planning 增加 status 广播 + _broadcast_plan 辅助方法",
+      "Step 2: 后台线程任务执行器 + set_agent_instance + POST /api/run-task、/api/stop-task、/api/is-running、/api/task-history；cli.py 注册 Agent；前端 Task Tab",
+      "Step 3: 进度条、session 计时器、可展开步骤详情、思考流光标动画 + 思考历史面板",
+      "Step 4: GET /api/models + Three.js (STLLoader + OrbitControls) STL/OBJ 浏览器内渲染",
+      "Step 5: GET /api/browse + 安全目录导航 + 文件类型图标 + 图片预览",
+      "Step 6: GET /api/sessions + /api/session/{id} + 会话列表与详情",
+      "Step 7: 响应式布局、日志/工具搜索过滤、工具统计栏、截图分页、SVG DAG",
+      "Step 8: WebSocket 增量更新（初次完整快照 + 后续 diff）",
+      "Step 9: 新增 14 个测试覆盖所有新端点，全量回归通过"
+    ],
+    "priority": 20,
+    "passes": true
+  },
+  {
+    "id": 21,
+    "title": "零件库管理 — 标准件目录与参数化生成",
+    "description": "新增零件库管理系统：15 个标准件模板（螺钉/轴承/舵机/齿轮等）、6 个 Agent 工具（搜索/获取/生成/列表/导入/保存）、Web 面板零件浏览、Planner/Executor 集成。",
+    "steps": [
+      "创建 src/lang3d/knowledge/parts_catalog.py：ParamDef/PartTemplate/GeneratedPart 数据类、15 个零件模板、CATEGORY_TREE、search_parts/get_template/resolve_parameters/format_fc_script 辅助函数",
+      "创建 src/lang3d/tools/part_library.py：6 个 Agent 工具（part_search/part_get/part_generate/part_list/part_import/part_save）+ register_part_library_tools 注册函数",
+      "修改 src/lang3d/tools/base.py：TOOL_CATEGORIES 新增 part_library 类别、STEP_TOOL_CATEGORIES 的 modeling 加入 part_library",
+      "修改 src/lang3d/agent/core.py：AGENT_SYSTEM_PROMPT 添加 part_* 说明和零件库工作流、Agent.__init__ 注册零件库工具",
+      "修改 src/lang3d/agent/planner.py：PLANNER_EXAMPLES 新增 part_usage 示例、_detect_task_type 新增零件库关键词检测",
+      "修改 src/lang3d/agent/executor.py：_infer_step_type 新增 part_ 工具检测归入 modeling",
+      "修改 src/lang3d/web/app.py：新增 /api/parts/catalog、/api/parts/template/{part_id}、/api/parts/generate 端点",
+      "修改 src/lang3d/web/static/index.html：Tab 栏新增 Part Library、零件搜索/详情/3D预览面板",
+      "编写 tests/test_part_library.py（~20 个测试）",
+      "更新 task.json + progress.txt"
+    ],
+    "priority": 21,
+    "passes": true
   }
 ]

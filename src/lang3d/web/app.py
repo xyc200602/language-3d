@@ -3,17 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
+import mimetypes
+import threading
 import time as _time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Language-3D Agent Monitor")
+
+# Project root (…/language-3d) — used to build a safe data-root for file serving.
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_DATA_ROOT_CANDIDATES = [
+    _PROJECT_ROOT / "data",
+    Path.home() / "Desktop" / "language-3d" / "data",
+]
+DATA_ROOT = next((p for p in _DATA_ROOT_CANDIDATES if p.exists()), _PROJECT_ROOT / "data")
 
 # In-memory state (updated by the agent)
 _agent_state: dict[str, Any] = {
@@ -24,95 +34,157 @@ _agent_state: dict[str, Any] = {
     "tool_calls": [],
     "vlm_results": [],
     "thinking": "",
+    "thinking_history": [],
     "sub_agents": [],
     "dag": None,
+    "session_start": _time.time(),
+    "session_id": "",
 }
 _websockets: list[WebSocket] = []
 
+# Task runner state
+_agent_instance: Any = None  # Registered Agent instance
+_task_thread: threading.Thread | None = None
+_task_stop_flag = threading.Event()
+_task_history: list[dict[str, Any]] = []
+_current_task: dict[str, Any] | None = None
+
+# Lock for state mutations that involve compound read-modify-write
+_state_lock = threading.Lock()
+
+# Previous snapshot used for delta WebSocket updates.
+_last_snapshot: dict[str, Any] | None = None
+
+
+# ---------------------------------------------------------------------------
+# Path safety helpers
+# ---------------------------------------------------------------------------
+
+def _resolve_safe(rel_or_abs: str, root: Path) -> Path | None:
+    """Resolve a path inside `root`. Return None if it escapes the root."""
+    if not rel_or_abs:
+        return None
+    p = Path(rel_or_abs)
+    if not p.is_absolute():
+        candidate = (root / p).resolve()
+    else:
+        candidate = p.resolve()
+    try:
+        candidate.relative_to(root.resolve())
+    except ValueError:
+        return None
+    return candidate
+
+
+def _workspace_root() -> Path:
+    """Return the effective workspace root for the registered agent, or DATA_ROOT."""
+    if _agent_instance is not None:
+        try:
+            ws = getattr(_agent_instance.state, "workspace", None)
+            if ws is not None:
+                ws_path = Path(ws)
+                if ws_path.exists():
+                    return ws_path
+        except Exception:
+            pass
+    return DATA_ROOT
+
+
+# ---------------------------------------------------------------------------
+# State update API (used by the agent)
+# ---------------------------------------------------------------------------
 
 def update_agent_state(**kwargs: Any) -> None:
     """Update the shared agent state and broadcast to WebSocket clients."""
-    _agent_state.update(kwargs)
-    _agent_state["timestamp"] = _time.strftime("%H:%M:%S")
+    with _state_lock:
+        _agent_state.update(kwargs)
+        _agent_state["timestamp"] = _time.strftime("%H:%M:%S")
     broadcast_state()
 
 
 def add_log(message: str, level: str = "info") -> None:
     """Add a log entry."""
-    _agent_state["logs"] = _agent_state.get("logs", [])
-    _agent_state["logs"].append({
-        "message": message,
-        "level": level,
-        "time": _time.strftime("%H:%M:%S"),
-    })
-    # Keep last 200 entries
-    _agent_state["logs"] = _agent_state["logs"][-200:]
+    with _state_lock:
+        _agent_state["logs"] = _agent_state.get("logs", [])
+        _agent_state["logs"].append({
+            "message": message,
+            "level": level,
+            "time": _time.strftime("%H:%M:%S"),
+        })
+        _agent_state["logs"] = _agent_state["logs"][-200:]
     broadcast_state()
 
 
 def add_tool_call(name: str, args: dict, result: str = "") -> None:
     """Record a tool call for the timeline."""
-    _agent_state["tool_calls"] = _agent_state.get("tool_calls", [])
-    entry = {
-        "name": name,
-        "args": args,
-        "result_preview": result[:200] if result else "",
-        "time": _time.strftime("%H:%M:%S"),
-        "timestamp": _time.time(),
-    }
-    _agent_state["tool_calls"].append(entry)
-    # Keep last 100 tool calls
-    _agent_state["tool_calls"] = _agent_state["tool_calls"][-100:]
+    with _state_lock:
+        _agent_state["tool_calls"] = _agent_state.get("tool_calls", [])
+        entry = {
+            "name": name,
+            "args": args,
+            "result_preview": result[:200] if result else "",
+            "time": _time.strftime("%H:%M:%S"),
+            "timestamp": _time.time(),
+        }
+        _agent_state["tool_calls"].append(entry)
+        _agent_state["tool_calls"] = _agent_state["tool_calls"][-100:]
 
-    # Add to logs as well
     arg_preview = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:3])
     add_log(f"Tool: {name}({arg_preview})", level="tool")
-    broadcast_state()
 
 
 def add_vlm_result(tool: str, prompt: str, result: str, image_path: str = "") -> None:
     """Record a VLM analysis result."""
-    _agent_state["vlm_results"] = _agent_state.get("vlm_results", [])
-    entry = {
-        "tool": tool,
-        "prompt": prompt[:200],
-        "result": result[:500],
-        "image_path": image_path,
-        "time": _time.strftime("%H:%M:%S"),
-    }
-    _agent_state["vlm_results"].append(entry)
-    # Keep last 50 VLM results
-    _agent_state["vlm_results"] = _agent_state["vlm_results"][-50:]
+    with _state_lock:
+        _agent_state["vlm_results"] = _agent_state.get("vlm_results", [])
+        entry = {
+            "tool": tool,
+            "prompt": prompt[:200],
+            "result": result[:500],
+            "image_path": image_path,
+            "time": _time.strftime("%H:%M:%S"),
+        }
+        _agent_state["vlm_results"].append(entry)
+        _agent_state["vlm_results"] = _agent_state["vlm_results"][-50:]
     broadcast_state()
 
 
 def set_thinking(text: str) -> None:
-    """Update the current agent thinking text."""
-    _agent_state["thinking"] = text
+    """Update the current agent thinking text and append to history."""
+    with _state_lock:
+        _agent_state["thinking"] = text
+        history = _agent_state.setdefault("thinking_history", [])
+        if text and (not history or history[-1].get("text") != text):
+            history.append({
+                "text": text,
+                "time": _time.strftime("%H:%M:%S"),
+            })
+            # Keep last 100 entries
+            _agent_state["thinking_history"] = history[-100:]
     broadcast_state()
 
 
 def update_sub_agent(agent_id: str, status: str, step: str = "") -> None:
     """Update or add a sub-agent status entry."""
-    agents = _agent_state.get("sub_agents", [])
-    # Find existing or create new
-    found = False
-    for entry in agents:
-        if entry.get("agent_id") == agent_id:
-            entry["status"] = status
-            if step:
-                entry["step"] = step
-            entry["time"] = _time.strftime("%H:%M:%S")
-            found = True
-            break
-    if not found:
-        agents.append({
-            "agent_id": agent_id,
-            "status": status,
-            "step": step,
-            "time": _time.strftime("%H:%M:%S"),
-        })
-    _agent_state["sub_agents"] = agents
+    with _state_lock:
+        agents = _agent_state.get("sub_agents", [])
+        found = False
+        for entry in agents:
+            if entry.get("agent_id") == agent_id:
+                entry["status"] = status
+                if step:
+                    entry["step"] = step
+                entry["time"] = _time.strftime("%H:%M:%S")
+                found = True
+                break
+        if not found:
+            agents.append({
+                "agent_id": agent_id,
+                "status": status,
+                "step": step,
+                "time": _time.strftime("%H:%M:%S"),
+            })
+        _agent_state["sub_agents"] = agents
     broadcast_state()
 
 
@@ -122,14 +194,104 @@ def update_dag(dag_data: dict[str, Any]) -> None:
     broadcast_state()
 
 
+# ---------------------------------------------------------------------------
+# Agent registration & task execution (Step 2)
+# ---------------------------------------------------------------------------
+
+def set_agent_instance(agent: Any) -> None:
+    """Register an Agent instance so the web panel can submit tasks."""
+    global _agent_instance
+    _agent_instance = agent
+    try:
+        _agent_state["session_id"] = getattr(agent.state, "session_id", "")
+    except Exception:
+        pass
+    try:
+        ws = getattr(agent.state, "workspace", None)
+        if ws:
+            add_log(f"Agent registered (workspace={Path(ws)})", level="info")
+    except Exception:
+        pass
+
+
+def _run_task_background(task: str, mode: str = "run") -> None:
+    """Background-thread task executor."""
+    global _current_task
+    _task_stop_flag.clear()
+    _current_task = {
+        "task": task,
+        "mode": mode,
+        "started_at": datetime.now().isoformat(),
+        "status": "running",
+    }
+    update_agent_state(status="running")
+    add_log(f"Task started ({mode}): {task[:120]}", level="info")
+    try:
+        if _agent_instance is None:
+            raise RuntimeError("No agent registered")
+        if mode == "direct":
+            result = _agent_instance.run_task(task, use_planning=False)
+        else:
+            result = _agent_instance.run_task(task, use_planning=True)
+        _current_task["status"] = "complete"
+        _current_task["result"] = result[:500] if isinstance(result, str) else str(result)[:500]
+        update_agent_state(status="complete")
+        add_log(f"Task completed: {_current_task['result'][:120]}", level="success")
+    except Exception as e:
+        _current_task["status"] = "error"
+        _current_task["error"] = str(e)
+        update_agent_state(status="error")
+        add_log(f"Task error: {e}", level="error")
+    finally:
+        _current_task["finished_at"] = datetime.now().isoformat()
+        _task_history.append(dict(_current_task))
+        # Keep last 50 entries
+        del _task_history[:-50]
+        _current_task = None
+
+
+# ---------------------------------------------------------------------------
+# WebSocket broadcast (delta updates — Step 8)
+# ---------------------------------------------------------------------------
+
+def _snapshot_state() -> dict[str, Any]:
+    """Return a JSON-serializable snapshot of the current state."""
+    with _state_lock:
+        return json.loads(json.dumps(_agent_state, ensure_ascii=False, default=str))
+
+
+def _diff(prev: dict[str, Any], curr: dict[str, Any]) -> dict[str, Any]:
+    """Compute a shallow diff. Returns empty dict if nothing changed."""
+    out: dict[str, Any] = {}
+    for k, v in curr.items():
+        if k not in prev or prev[k] != v:
+            out[k] = v
+    # Always include a fresh timestamp so clients know we're alive
+    if "timestamp" not in out:
+        out["timestamp"] = curr.get("timestamp", _time.strftime("%H:%M:%S"))
+    return out
+
+
+async def _send_json(ws: WebSocket, payload: dict[str, Any]) -> None:
+    try:
+        await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+
+
 async def broadcast_state_async() -> None:
-    """Broadcast current state to all connected WebSocket clients."""
-    data = json.dumps(_agent_state, ensure_ascii=False)
+    """Broadcast current state (delta) to all connected WebSocket clients."""
+    global _last_snapshot
+    snapshot = _snapshot_state()
+    if _last_snapshot is None:
+        payload = snapshot
+    else:
+        payload = _diff(_last_snapshot, snapshot)
+        if len(payload) <= 1:  # only timestamp changed
+            return
+    _last_snapshot = snapshot
     for ws in _websockets[:]:
-        try:
-            await ws.send_text(data)
-        except Exception:
-            _websockets.remove(ws)
+        await _send_json(ws, payload)
 
 
 def broadcast_state() -> None:
@@ -139,8 +301,13 @@ def broadcast_state() -> None:
         if loop.is_running():
             asyncio.ensure_future(broadcast_state_async())
     except RuntimeError:
+        # No event loop — fall back to a new one (rare, e.g. tests)
         pass
 
+
+# ---------------------------------------------------------------------------
+# Routes: HTML & static
+# ---------------------------------------------------------------------------
 
 @app.get("/")
 async def index() -> HTMLResponse:
@@ -150,6 +317,10 @@ async def index() -> HTMLResponse:
     return HTMLResponse("<h1>Language-3D Agent Monitor</h1><p>Static files not found</p>")
 
 
+# ---------------------------------------------------------------------------
+# Routes: read-only inspection
+# ---------------------------------------------------------------------------
+
 @app.get("/api/status")
 async def get_status() -> JSONResponse:
     return JSONResponse(_agent_state)
@@ -157,8 +328,7 @@ async def get_status() -> JSONResponse:
 
 @app.get("/api/screenshots")
 async def get_screenshots() -> JSONResponse:
-    screenshots = _agent_state.get("screenshots", [])
-    return JSONResponse({"screenshots": screenshots})
+    return JSONResponse({"screenshots": _agent_state.get("screenshots", [])})
 
 
 @app.get("/api/tool-calls")
@@ -191,28 +361,714 @@ async def get_screenshot_gallery() -> JSONResponse:
 
 @app.get("/api/agents")
 async def get_agents() -> JSONResponse:
-    """Return active sub-agents and their status."""
     return JSONResponse({"agents": _agent_state.get("sub_agents", [])})
 
 
 @app.get("/api/dag")
 async def get_dag() -> JSONResponse:
-    """Return DAG visualization data."""
     return JSONResponse({"dag": _agent_state.get("dag")})
 
 
+# ---------------------------------------------------------------------------
+# Routes: file serving (Step 1 — fixes the missing endpoint bug)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/screenshot-file")
+async def get_screenshot_file(path: str = Query(..., description="Absolute path of the screenshot")) -> FileResponse:
+    """Serve a screenshot file from the data directory."""
+    # Accept either absolute (must be under data/) or relative to data/.
+    p = Path(path)
+    if p.is_absolute():
+        try:
+            p.resolve().relative_to(DATA_ROOT.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Path outside data directory")
+    else:
+        p = (DATA_ROOT / p).resolve()
+        try:
+            p.relative_to(DATA_ROOT.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Path outside data directory")
+
+    if not p.exists() or not p.is_file():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    mime, _ = mimetypes.guess_type(str(p))
+    return FileResponse(str(p), media_type=mime or "application/octet-stream")
+
+
+@app.get("/api/file")
+async def get_file(path: str = Query(..., description="Path relative to workspace or absolute under data/")) -> FileResponse:
+    """Serve any file from the workspace/data directory."""
+    ws = _workspace_root()
+    resolved = _resolve_safe(path, ws)
+    if resolved is None:
+        # Try the global DATA_ROOT
+        resolved = _resolve_safe(path, DATA_ROOT)
+    if resolved is None or not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="File not found or access denied")
+    mime, _ = mimetypes.guess_type(str(resolved))
+    return FileResponse(str(resolved), media_type=mime or "application/octet-stream")
+
+
+# ---------------------------------------------------------------------------
+# Routes: task submission (Step 2)
+# ---------------------------------------------------------------------------
+
+@app.post("/api/run-task")
+async def api_run_task(payload: dict[str, Any]) -> JSONResponse:
+    """Submit a task to the registered agent (background execution)."""
+    global _task_thread
+    if _agent_instance is None:
+        raise HTTPException(status_code=503, detail="No agent registered. Start the CLI first.")
+    if _task_thread is not None and _task_thread.is_alive():
+        raise HTTPException(status_code=409, detail="A task is already running")
+    task = (payload.get("task") or "").strip()
+    mode = payload.get("mode", "run")
+    if mode not in ("run", "direct"):
+        mode = "run"
+    if not task:
+        raise HTTPException(status_code=400, detail="Missing 'task'")
+    thread = threading.Thread(
+        target=_run_task_background, args=(task, mode), daemon=True, name="lang3d-task"
+    )
+    _task_thread = thread
+    thread.start()
+    return JSONResponse({"status": "started", "task": task, "mode": mode})
+
+
+@app.post("/api/stop-task")
+async def api_stop_task() -> JSONResponse:
+    """Request the current task to stop (cooperative)."""
+    if _task_thread is None or not _task_thread.is_alive():
+        return JSONResponse({"status": "idle", "message": "No running task"})
+    _task_stop_flag.set()
+    add_log("Stop requested by user", level="info")
+    return JSONResponse({"status": "stop_requested"})
+
+
+@app.get("/api/is-running")
+async def api_is_running() -> JSONResponse:
+    running = _task_thread is not None and _task_thread.is_alive()
+    return JSONResponse({"running": running, "current": _current_task})
+
+
+@app.get("/api/task-history")
+async def api_task_history() -> JSONResponse:
+    return JSONResponse({"history": _task_history, "total": len(_task_history)})
+
+
+# ---------------------------------------------------------------------------
+# Routes: 3D model listing (Step 4)
+# ---------------------------------------------------------------------------
+
+_MODEL_EXTS = {".stl", ".step", ".stp", ".obj", ".fcstd"}
+_PREVIEWABLE_EXTS = {".stl", ".obj"}
+
+
+def _find_freecad() -> str | None:
+    """Locate FreeCADCmd executable for server-side conversions (STEP → STL)."""
+    candidates = [
+        "C:/Users/xyc/AppData/Local/Programs/FreeCAD 1.1/bin/freecadcmd.exe",
+        "C:/Program Files/FreeCAD 1.1/bin/freecadcmd.exe",
+        "C:/Program Files/FreeCAD 1.0/bin/freecadcmd.exe",
+        "C:/Program Files/FreeCAD/bin/freecadcmd.exe",
+        "/usr/bin/freecadcmd",
+        "/usr/local/bin/freecadcmd",
+    ]
+    for c in candidates:
+        if Path(c).exists():
+            return c
+    # Try PATH
+    import shutil
+    return shutil.which("freecadcmd") or shutil.which("FreeCADCmd")
+
+
+@app.get("/api/models")
+async def api_models() -> JSONResponse:
+    """List 3D model files in the workspace. Marks each as `previewable` if
+    the browser can render it directly (STL/OBJ) or via server-side conversion
+    (STEP → STL when FreeCAD is available)."""
+    ws = _workspace_root()
+    freecad = _find_freecad()
+    models: list[dict[str, Any]] = []
+    if ws.exists():
+        for p in ws.rglob("*"):
+            if p.suffix.lower() not in _MODEL_EXTS or not p.is_file():
+                continue
+            try:
+                stat = p.stat()
+            except OSError:
+                continue
+            ext = p.suffix.lower()
+            size = stat.st_size
+            previewable = ext in _PREVIEWABLE_EXTS and size > 0
+            convertible = ext in {".step", ".stp", ".fcstd"} and freecad is not None
+            models.append({
+                "name": p.name,
+                "path": str(p),
+                "rel_path": str(p.relative_to(ws)).replace("\\", "/"),
+                "size_kb": size // 1024,
+                "size_bytes": size,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                "ext": ext.lstrip("."),
+                "previewable": previewable,
+                "convertible": convertible,
+                "empty": size == 0,
+            })
+    # Sort: previewable first, then convertible, then others;
+    # within each bucket, newest first.
+    def _sort_key(m: dict[str, Any]) -> tuple:
+        rank = 0 if m["previewable"] else 1 if m["convertible"] else 2
+        try:
+            mtime = datetime.fromisoformat(m["modified"]).timestamp()
+        except Exception:
+            mtime = 0.0
+        return (rank, -mtime)
+
+    models.sort(key=_sort_key)
+    return JSONResponse({
+        "models": models,
+        "total": len(models),
+        "root": str(ws),
+        "freecad_available": freecad is not None,
+    })
+
+
+@app.get("/api/convert-step")
+async def api_convert_step(path: str = Query(...)) -> JSONResponse:
+    """Convert a STEP file to STL using FreeCAD (server-side). Returns the
+    relative path of the generated STL within the workspace, so the client
+    can load it via /api/file."""
+    freecad = _find_freecad()
+    if freecad is None:
+        raise HTTPException(status_code=503, detail="FreeCAD not available on server")
+    ws = _workspace_root()
+    src = _resolve_safe(path, ws)
+    if src is None or not src.exists() or src.suffix.lower() not in {".step", ".stp"}:
+        raise HTTPException(status_code=404, detail="STEP file not found or access denied")
+
+    # Cache converted STL next to the source (with .stl extension)
+    cache = src.with_suffix(".preview.stl")
+    # Reuse if fresh (newer than source)
+    if cache.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
+        try:
+            rel = str(cache.relative_to(ws)).replace("\\", "/")
+            return JSONResponse({"stl_path": rel, "cached": True})
+        except ValueError:
+            pass
+
+    # Run FreeCAD conversion
+    script = (
+        "import sys, FreeCAD, Part, Mesh, MeshPart\n"
+        f"shape = Part.Shape()\n"
+        f"shape.read(r'{src}')\n"
+        # Use MeshPart.meshFromShape (more reliable than shape.tessellate)
+        f"mesh = MeshPart.meshFromShape(shape, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
+        # Write STL using Mesh.write (auto-detects extension)
+        f"mesh.write(r'{cache}')\n"
+        f"print('OK', mesh.CountPoints, mesh.CountFacets)\n"
+    )
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tf:
+        tf.write(script)
+        script_path = tf.name
+    try:
+        proc = subprocess.run(
+            [freecad, script_path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=60,
+        )
+        if proc.returncode != 0 or not cache.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=f"Conversion failed: {(proc.stderr or proc.stdout)[:500]}"
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Conversion timed out")
+    finally:
+        try:
+            Path(script_path).unlink()
+        except OSError:
+            pass
+
+    try:
+        rel = str(cache.relative_to(ws)).replace("\\", "/")
+    except ValueError:
+        rel = str(cache)
+    return JSONResponse({"stl_path": rel, "cached": False})
+
+
+@app.get("/api/convert-fcstd")
+async def api_convert_fcstd(path: str = Query(...)) -> JSONResponse:
+    """Convert a FreeCAD .FCStd document to STL using FreeCADCmd (server-side).
+    Merges all visible solid objects (Part::Feature, PartDesign::Body, etc.)
+    into a single mesh. Returns the relative path of the generated STL."""
+    freecad = _find_freecad()
+    if freecad is None:
+        raise HTTPException(status_code=503, detail="FreeCAD not available on server")
+    ws = _workspace_root()
+    src = _resolve_safe(path, ws)
+    if src is None or not src.exists() or src.suffix.lower() != ".fcstd":
+        raise HTTPException(status_code=404, detail="FCStd file not found or access denied")
+
+    cache = src.with_suffix(".preview.stl")
+    if cache.exists() and cache.stat().st_mtime >= src.stat().st_mtime:
+        try:
+            rel = str(cache.relative_to(ws)).replace("\\", "/")
+            return JSONResponse({"stl_path": rel, "cached": True})
+        except ValueError:
+            pass
+
+    # FreeCAD script: open document, collect all visible shapes, merge, tessellate, write STL.
+    # Use a temp log file to capture output for diagnostics.
+    import tempfile
+    script = (
+        "import sys, FreeCAD, FreeCADGui, Part, Mesh, MeshPart\n"
+        f"doc = FreeCAD.openDocument(r'{src}')\n"
+        "shapes = []\n"
+        "for obj in doc.Objects:\n"
+        "    # Skip hidden / helper objects\n"
+        "    if hasattr(obj, 'Visibility') and not obj.Visibility:\n"
+        "        continue\n"
+        "    shape = None\n"
+        "    if hasattr(obj, 'Shape') and obj.Shape is not None:\n"
+        "        try:\n"
+        "            shape = obj.Shape\n"
+        "        except Exception:\n"
+        "            shape = None\n"
+        "    if shape is not None and not shape.isNull():\n"
+        "        shapes.append(shape)\n"
+        "if not shapes:\n"
+        "    print('ERR no shapes')\n"
+        "    sys.exit(1)\n"
+        "compound = Part.makeCompound(shapes) if len(shapes) > 1 else shapes[0]\n"
+        f"mesh = MeshPart.meshFromShape(compound, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
+        f"mesh.write(r'{cache}')\n"
+        f"print('OK', mesh.CountPoints, mesh.CountFacets, 'shapes', len(shapes))\n"
+    )
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tf:
+        tf.write(script)
+        script_path = tf.name
+    import subprocess
+    try:
+        proc = subprocess.run(
+            [freecad, script_path],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120,
+        )
+        if proc.returncode != 0 or not cache.exists():
+            raise HTTPException(
+                status_code=500,
+                detail=f"Conversion failed: {(proc.stderr or proc.stdout)[:500]}"
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Conversion timed out")
+    finally:
+        try:
+            Path(script_path).unlink()
+        except OSError:
+            pass
+
+    try:
+        rel = str(cache.relative_to(ws)).replace("\\", "/")
+    except ValueError:
+        rel = str(cache)
+    return JSONResponse({"stl_path": rel, "cached": False})
+
+
+# ---------------------------------------------------------------------------
+# Routes: file browsing (Step 5)
+# ---------------------------------------------------------------------------
+
+_FILE_TYPE_MAP = {
+    ".fcstd": "freecad", ".fcmacro": "freecad",
+    ".stl": "model3d", ".step": "model3d", ".stp": "model3d", ".obj": "model3d",
+    ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image", ".bmp": "image",
+    ".py": "code", ".js": "code", ".html": "code", ".css": "code", ".json": "code",
+    ".csv": "data", ".xml": "data", ".yaml": "data", ".yml": "data", ".toml": "data",
+    ".txt": "text", ".md": "text", ".log": "text",
+}
+
+
+def _classify_file(p: Path) -> str:
+    return _FILE_TYPE_MAP.get(p.suffix.lower(), "other")
+
+
+@app.get("/api/browse")
+async def api_browse(
+    path: str = Query("", description="Directory relative to workspace"),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(100, ge=1, le=500),
+) -> JSONResponse:
+    """Browse files in a workspace subdirectory."""
+    ws = _workspace_root()
+    if path:
+        target = _resolve_safe(path, ws)
+        if target is None or not target.exists():
+            raise HTTPException(status_code=404, detail="Directory not found")
+    else:
+        target = ws
+
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Not a directory")
+
+    try:
+        rel = str(target.relative_to(ws)).replace("\\", "/")
+    except ValueError:
+        rel = str(target)
+
+    entries: list[dict[str, Any]] = []
+    parent_rel = ""
+    if target != ws:
+        try:
+            parent = target.parent
+            if parent == ws or ws in parent.resolve().parents or parent.resolve() == ws.resolve():
+                parent_rel = str(parent.relative_to(ws)).replace("\\", "/")
+                if parent_rel == ".":
+                    parent_rel = ""
+        except Exception:
+            parent_rel = ""
+
+    try:
+        children = sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    for child in children:
+        try:
+            stat = child.stat()
+        except OSError:
+            continue
+        if child.is_dir():
+            entries.append({
+                "name": child.name,
+                "path": str(child),
+                "rel_path": str(child.relative_to(ws)).replace("\\", "/"),
+                "type": "folder",
+                "size_kb": 0,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+        else:
+            entries.append({
+                "name": child.name,
+                "path": str(child),
+                "rel_path": str(child.relative_to(ws)).replace("\\", "/"),
+                "type": _classify_file(child),
+                "size_kb": stat.st_size // 1024,
+                "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            })
+
+    total = len(entries)
+    start = (page - 1) * page_size
+    end = start + page_size
+    paged = entries[start:end]
+    return JSONResponse({
+        "path": rel or ".",
+        "abs_path": str(target),
+        "parent": parent_rel,
+        "entries": paged,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })
+
+
+# ---------------------------------------------------------------------------
+# Routes: session history (Step 6)
+# ---------------------------------------------------------------------------
+
+@app.get("/api/sessions")
+async def api_sessions() -> JSONResponse:
+    """List all persisted agent sessions (.lang3d_state.json files)."""
+    ws = _workspace_root()
+    sessions: list[dict[str, Any]] = []
+    if ws.exists():
+        for p in ws.rglob(".lang3d_state.json"):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            plan = data.get("plan") or {}
+            steps = plan.get("steps") or []
+            completed = sum(1 for s in steps if s.get("status") == "completed")
+            sessions.append({
+                "session_id": data.get("session_id", ""),
+                "created_at": data.get("created_at", ""),
+                "workspace": data.get("workspace", ""),
+                "goal": plan.get("goal", ""),
+                "step_count": len(steps),
+                "completed": completed,
+                "tool_calls": len(data.get("tool_history") or []),
+                "file": str(p),
+            })
+    sessions.sort(key=lambda s: s.get("created_at", ""), reverse=True)
+    return JSONResponse({"sessions": sessions, "total": len(sessions)})
+
+
+@app.get("/api/session/{session_id}")
+async def api_session_detail(session_id: str) -> JSONResponse:
+    """Load a full session by id."""
+    ws = _workspace_root()
+    if ws.exists():
+        for p in ws.rglob(".lang3d_state.json"):
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if data.get("session_id") == session_id:
+                return JSONResponse(data)
+    raise HTTPException(status_code=404, detail="Session not found")
+
+
+# ---------------------------------------------------------------------------
+# Routes: part library
+# ---------------------------------------------------------------------------
+
+@app.get("/api/parts/catalog")
+async def api_parts_catalog(
+    query: str = Query("", description="Search keyword"),
+    category: str = Query("", description="Filter by category"),
+) -> JSONResponse:
+    """List/search part templates in the catalog."""
+    try:
+        from ..knowledge.parts_catalog import (
+            CATEGORY_TREE,
+            get_all_templates,
+            search_parts,
+        )
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Part library not available")
+
+    if query or category:
+        results = search_parts(
+            query=query,
+            category=category if category else None,
+        )
+    else:
+        results = get_all_templates()
+
+    templates = []
+    for t in results:
+        templates.append({
+            "id": t.id,
+            "name_en": t.name_en,
+            "name_cn": t.name_cn,
+            "category": t.category,
+            "subcategory": t.subcategory,
+            "description": t.description,
+            "tags": t.tags,
+            "material_default": t.material_default,
+            "parameters": [
+                {
+                    "name": p.name,
+                    "display_name_cn": p.display_name_cn,
+                    "unit": p.unit,
+                    "default": p.default,
+                    "min_value": p.min_value,
+                    "max_value": p.max_value,
+                    "step": p.step,
+                    "fixed": p.fixed,
+                }
+                for p in t.parameters
+            ],
+            "standard_sizes": t.standard_sizes,
+            "notes": t.notes,
+        })
+
+    return JSONResponse({
+        "templates": templates,
+        "total": len(templates),
+        "categories": CATEGORY_TREE,
+    })
+
+
+@app.get("/api/parts/template/{part_id}")
+async def api_parts_template(part_id: str) -> JSONResponse:
+    """Get detailed info for a single part template."""
+    try:
+        from ..knowledge.parts_catalog import get_template
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Part library not available")
+
+    template = get_template(part_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail=f"Part template '{part_id}' not found")
+
+    return JSONResponse({
+        "id": template.id,
+        "name_en": template.name_en,
+        "name_cn": template.name_cn,
+        "category": template.category,
+        "subcategory": template.subcategory,
+        "description": template.description,
+        "tags": template.tags,
+        "material_default": template.material_default,
+        "parameters": [
+            {
+                "name": p.name,
+                "display_name_cn": p.display_name_cn,
+                "unit": p.unit,
+                "default": p.default,
+                "min_value": p.min_value,
+                "max_value": p.max_value,
+                "step": p.step,
+                "fixed": p.fixed,
+            }
+            for p in template.parameters
+        ],
+        "standard_sizes": template.standard_sizes,
+        "notes": template.notes,
+    })
+
+
+@app.post("/api/parts/generate")
+async def api_parts_generate(payload: dict[str, Any]) -> JSONResponse:
+    """Generate a parametric part on the server."""
+    part_id = payload.get("part_id", "")
+    parameters = payload.get("parameters")
+    variant_index = payload.get("variant_index")
+
+    if not part_id:
+        raise HTTPException(status_code=400, detail="Missing 'part_id'")
+
+    try:
+        from ..knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Part library not available")
+
+    template = get_template(part_id)
+    if template is None:
+        raise HTTPException(status_code=404, detail=f"Part template '{part_id}' not found")
+
+    # Resolve parameters
+    try:
+        if variant_index is not None:
+            idx = int(variant_index)
+            if idx < 0 or idx >= len(template.standard_sizes):
+                raise HTTPException(status_code=400, detail="variant_index out of range")
+            parameters = template.standard_sizes[idx]
+        resolved = resolve_parameters(template, parameters)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Generate script
+    try:
+        model_script = format_fc_script(template, resolved)
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=500, detail=f"Script template error: {e}")
+
+    # Build output paths
+    ws = _workspace_root()
+    parts_dir = ws / "parts_library"
+    parts_dir.mkdir(parents=True, exist_ok=True)
+    param_desc = "_".join(f"{k}{int(v) if v == int(v) else v}" for k, v in resolved.items())
+    safe_name = f"{part_id}_{param_desc}"
+    fcstd_path = parts_dir / f"{safe_name}.FCStd"
+    stl_path = parts_dir / f"{safe_name}.stl"
+
+    full_script = model_script + f"""
+import os
+os.makedirs(r'{parts_dir}', exist_ok=True)
+doc.saveAs(r'{fcstd_path}')
+print(f"Saved: {fcstd_path}")
+import Mesh
+_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]
+if _export_list:
+    Mesh.export(_export_list, r'{stl_path}')
+    print(f"STL: {stl_path} ({os.path.getsize(r'{stl_path}'):,} bytes)")
+"""
+
+    # Try to run FreeCAD
+    freecad = _find_freecad()
+    fc_python = None
+    if freecad:
+        # Find FreeCAD Python from same directory
+        fc_python = str(Path(freecad).parent / "python.exe")
+        if not Path(fc_python).exists():
+            fc_python = None
+
+    # Also try the FreeCAD tool's finder
+    if not fc_python:
+        try:
+            from ..tools.freecad import _find_freecad_python
+            fc_python = _find_freecad_python()
+        except Exception:
+            pass
+
+    if not fc_python:
+        raise HTTPException(status_code=503, detail="FreeCAD not available for part generation")
+
+    import subprocess
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tf:
+        tf.write(full_script)
+        script_path = tf.name
+
+    try:
+        proc = subprocess.run(
+            [fc_python, "-c", f"exec(open(r'{script_path}').read())"],
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120,
+        )
+        if proc.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"FreeCAD error: {(proc.stderr or proc.stdout)[:500]}"
+            )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="FreeCAD generation timed out")
+    finally:
+        try:
+            Path(script_path).unlink()
+        except OSError:
+            pass
+
+    result: dict[str, Any] = {
+        "part_id": part_id,
+        "name": template.name_cn,
+        "parameters": resolved,
+        "fcstd_path": str(fcstd_path),
+    }
+    if stl_path.exists():
+        result["stl_path"] = str(stl_path)
+        result["stl_size_kb"] = stl_path.stat().st_size // 1024
+        # Make relative to workspace for web serving
+        try:
+            result["stl_rel"] = str(stl_path.relative_to(ws)).replace("\\", "/")
+        except ValueError:
+            pass
+
+    return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket
+# ---------------------------------------------------------------------------
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    global _last_snapshot
     await websocket.accept()
     _websockets.append(websocket)
     try:
-        # Send current state on connect
-        await websocket.send_text(json.dumps(_agent_state, ensure_ascii=False))
-        # Keep connection alive
+        # Send a full snapshot on connect; reset delta baseline for this client.
+        snapshot = _snapshot_state()
+        await _send_json(websocket, snapshot)
+        # Keep connection alive, ignore inbound text
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        _websockets.remove(websocket)
+        pass
+    except Exception:
+        pass
+    finally:
+        if websocket in _websockets:
+            _websockets.remove(websocket)
+        # If this was the last client, reset the delta baseline
+        if not _websockets:
+            _last_snapshot = None
 
 
 # Mount static files

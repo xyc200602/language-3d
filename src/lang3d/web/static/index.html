@@ -7,45 +7,69 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; }
-        .header { background: #16213e; padding: 16px 24px; border-bottom: 2px solid #0f3460; display: flex; justify-content: space-between; align-items: center; }
-        .header h1 { color: #00d2ff; font-size: 20px; }
-        .header-info { display: flex; align-items: center; gap: 12px; }
-        .thinking-text { color: #888; font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 600; }
+        body { min-height: 100vh; }
+
+        .header { background: #16213e; padding: 12px 24px; border-bottom: 2px solid #0f3460; display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .header-left { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+        .header h1 { color: #00d2ff; font-size: 18px; }
+        .header-info { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+        .header-meta { font-size: 11px; color: #888; display: flex; gap: 10px; }
+        .header-meta span strong { color: #aaa; }
+        .thinking-text { color: #b39ddb; font-size: 12px; max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: italic; }
+        .thinking-text::after { content: '|'; color: #00d2ff; animation: blink 1s steps(1) infinite; }
+        @keyframes blink { 50% { opacity: 0; } }
+        .status-badge { padding: 4px 12px; border-radius: 12px; font-size: 11px; font-weight: 600; }
         .status-idle { background: #333; color: #888; }
         .status-running { background: #0f3460; color: #00d2ff; animation: pulse 2s infinite; }
         .status-complete { background: #1a472a; color: #4caf50; }
         .status-error { background: #4a1a1a; color: #f44336; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.6; } }
 
-        /* Tab bar */
-        .tab-bar { display: flex; background: #16213e; border-bottom: 1px solid #0f3460; padding: 0 24px; }
-        .tab { padding: 10px 20px; cursor: pointer; font-size: 13px; color: #888; border-bottom: 2px solid transparent; transition: all 0.2s; }
+        .progress-bar-wrap { width: 100%; height: 4px; background: #0f3460; overflow: hidden; }
+        .progress-bar-fill { height: 100%; background: linear-gradient(90deg, #00d2ff, #4caf50); transition: width 0.4s ease; }
+
+        .tab-bar { display: flex; background: #16213e; border-bottom: 1px solid #0f3460; padding: 0 16px; overflow-x: auto; }
+        .tab { padding: 10px 16px; cursor: pointer; font-size: 12px; color: #888; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
         .tab:hover { color: #aaa; }
         .tab.active { color: #00d2ff; border-bottom-color: #00d2ff; }
 
         .container { padding: 16px 24px; }
 
-        /* Tab panels */
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
 
-        /* Main layout - overview tab */
         .overview-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+        @media (max-width: 800px) { .overview-grid { grid-template-columns: 1fr; } .agents-layout { grid-template-columns: 1fr !important; } }
         .panel { background: #16213e; border-radius: 8px; border: 1px solid #0f3460; overflow: hidden; }
-        .panel-header { padding: 12px 16px; background: #0f3460; font-weight: 600; font-size: 14px; display: flex; justify-content: space-between; align-items: center; }
+        .panel-header { padding: 10px 14px; background: #0f3460; font-weight: 600; font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
         .panel-header .count { font-size: 11px; color: #888; background: #1a1a2e; padding: 2px 8px; border-radius: 8px; }
-        .panel-body { padding: 12px 16px; max-height: 400px; overflow-y: auto; }
+        .panel-header .panel-actions { display: flex; gap: 6px; align-items: center; }
+        .panel-body { padding: 12px 16px; max-height: 420px; overflow-y: auto; }
+        .panel-body.scroll-y { max-height: 600px; }
 
-        /* Plan steps */
-        .plan-step { padding: 8px; margin: 4px 0; border-radius: 4px; font-size: 13px; display: flex; align-items: center; gap: 8px; }
+        input[type="text"], input[type="search"], textarea, select {
+            background: #1a1a2e; color: #eee; border: 1px solid #0f3460; border-radius: 4px;
+            padding: 8px 10px; font-size: 13px; font-family: inherit; outline: none;
+        }
+        input[type="text"]:focus, input[type="search"]:focus, textarea:focus, select:focus { border-color: #00d2ff; }
+        textarea { resize: vertical; min-height: 70px; width: 100%; }
+        button { background: #0f3460; color: #00d2ff; border: 1px solid #0f3460; border-radius: 4px; padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600; transition: all 0.15s; }
+        button:hover:not(:disabled) { background: #1a4a80; }
+        button:disabled { opacity: 0.5; cursor: not-allowed; }
+        button.danger { background: #4a1a1a; color: #f44336; border-color: #f44336; }
+        button.danger:hover:not(:disabled) { background: #5a2a2a; }
+        button.success { background: #1a472a; color: #4caf50; border-color: #4caf50; }
+
+        .plan-step { padding: 8px 10px; margin: 4px 0; border-radius: 4px; font-size: 13px; display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+        .plan-step:hover { filter: brightness(1.15); }
         .step-pending { background: #1a1a2e; color: #666; }
-        .step-progress { background: #0f3460; color: #00d2ff; }
+        .step-progress { background: #0f3460; color: #00d2ff; animation: pulse 2s infinite; }
         .step-complete { background: #1a472a; color: #4caf50; }
         .step-failed { background: #4a1a1a; color: #f44336; }
+        .step-detail { font-size: 11px; color: #888; margin-top: 6px; padding-left: 22px; }
+        .step-detail span { color: #aaa; }
 
-        /* Log entries */
-        .log-entry { padding: 4px 0; font-size: 12px; font-family: 'Consolas', monospace; border-bottom: 1px solid #1a1a2e; display: flex; gap: 8px; }
+        .log-entry { padding: 3px 0; font-size: 12px; font-family: 'Consolas', monospace; border-bottom: 1px solid #1a1a2e; display: flex; gap: 8px; }
         .log-time { color: #555; min-width: 60px; }
         .log-info { color: #aaa; }
         .log-tool { color: #00d2ff; }
@@ -53,7 +77,6 @@
         .log-success { color: #4caf50; }
         .log-thinking { color: #b39ddb; }
 
-        /* Tool call timeline */
         .tool-timeline { display: flex; flex-direction: column; gap: 4px; }
         .tool-item { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: #1a1a2e; border-radius: 4px; font-size: 12px; font-family: 'Consolas', monospace; border-left: 3px solid #0f3460; }
         .tool-item:hover { background: #222; }
@@ -66,15 +89,22 @@
         .tool-item.tool-gui_click { border-left-color: #00bcd4; }
         .tool-item.tool-vlm_locate { border-left-color: #e91e63; }
 
-        /* Screenshot gallery */
-        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+        .stats-bar { display: flex; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
+        .stat-chip { background: #1a1a2e; padding: 4px 10px; border-radius: 12px; font-size: 11px; color: #aaa; border: 1px solid #0f3460; }
+        .stat-chip strong { color: #00d2ff; }
+
+        .search-bar { width: 100%; margin-bottom: 8px; padding: 6px 10px; }
+
+        .gallery-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
         .gallery-card { background: #1a1a2e; border-radius: 8px; overflow: hidden; border: 1px solid #0f3460; }
-        .gallery-card img { width: 100%; height: 180px; object-fit: cover; cursor: pointer; }
+        .gallery-card img { width: 100%; height: 160px; object-fit: cover; cursor: pointer; background: #000; }
         .gallery-card img:hover { opacity: 0.8; }
-        .gallery-card .card-info { padding: 8px; font-size: 11px; color: #888; }
+        .gallery-card .card-info { padding: 6px 8px; font-size: 11px; color: #888; }
         .gallery-card .card-info .card-name { color: #aaa; font-size: 12px; }
 
-        /* VLM results */
+        .pagination { display: flex; gap: 6px; justify-content: center; padding: 12px 0; align-items: center; }
+        .pagination button { padding: 4px 12px; font-size: 12px; }
+
         .vlm-result { background: #1a1a2e; border-radius: 8px; padding: 12px; margin: 8px 0; border-left: 3px solid #b39ddb; }
         .vlm-result .vlm-tool { color: #b39ddb; font-weight: 600; font-size: 12px; }
         .vlm-result .vlm-time { color: #555; font-size: 11px; float: right; }
@@ -84,11 +114,9 @@
         .vlm-match-true { background: #1a472a; color: #4caf50; }
         .vlm-match-false { background: #4a1a1a; color: #f44336; }
 
-        /* Full-width panels */
         .full-width { grid-column: 1 / -1; }
         .empty { color: #555; font-style: italic; text-align: center; padding: 24px; }
 
-        /* Agents tab */
         .agents-layout { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
         .agent-card { background: #1a1a2e; border-radius: 4px; padding: 10px 12px; margin: 4px 0; display: flex; justify-content: space-between; align-items: center; border-left: 3px solid #0f3460; }
         .agent-card .agent-id { color: #00d2ff; font-family: 'Consolas', monospace; font-size: 12px; }
@@ -98,70 +126,202 @@
         .agent-status-completed { background: #1a472a; color: #4caf50; }
         .agent-status-failed { background: #4a1a1a; color: #f44336; }
 
-        /* DAG visualization */
-        .dag-wave { margin: 8px 0; padding: 8px; background: #1a1a2e; border-radius: 4px; }
-        .dag-wave-label { color: #888; font-size: 11px; margin-bottom: 4px; }
-        .dag-node { display: inline-block; padding: 6px 10px; margin: 4px; border-radius: 4px; font-size: 11px; }
-        .dag-node-pending { background: #1a1a2e; border: 1px solid #333; color: #888; }
-        .dag-node-running { background: #0f3460; color: #00d2ff; border: 1px solid #00d2ff; }
-        .dag-node-completed { background: #1a472a; color: #4caf50; border: 1px solid #4caf50; }
-        .dag-node-failed { background: #4a1a1a; color: #f44336; border: 1px solid #f44336; }
-        .dag-node-skipped { background: #1a1a2e; border: 1px solid #333; color: #555; }
-        .dag-arrow { color: #555; text-align: center; font-size: 16px; padding: 2px 0; }
+        /* DAG SVG */
+        .dag-svg { width: 100%; height: auto; }
+        .dag-svg text { fill: #eee; font-size: 11px; }
+        .dag-svg .dag-node-rect { stroke-width: 1.5; rx: 6; ry: 6; }
+        .dag-svg .dag-edge { stroke: #555; stroke-width: 1.5; fill: none; }
+        .dag-svg .dag-status-pending rect { fill: #1a1a2e; stroke: #333; }
+        .dag-svg .dag-status-pending text { fill: #888; }
+        .dag-svg .dag-status-running rect { fill: #0f3460; stroke: #00d2ff; }
+        .dag-svg .dag-status-running text { fill: #00d2ff; }
+        .dag-svg .dag-status-completed rect { fill: #1a472a; stroke: #4caf50; }
+        .dag-svg .dag-status-completed text { fill: #4caf50; }
+        .dag-svg .dag-status-failed rect { fill: #4a1a1a; stroke: #f44336; }
+        .dag-svg .dag-status-failed text { fill: #f44336; }
 
-        /* Screenshot image overlay */
         .img-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: none; justify-content: center; align-items: center; z-index: 1000; cursor: pointer; }
         .img-overlay.show { display: flex; }
         .img-overlay img { max-width: 90%; max-height: 90%; border-radius: 8px; }
+
+        /* Task tab */
+        .task-input-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+        .task-input-row textarea { flex: 1; min-height: 60px; }
+        .task-history-item { padding: 8px 12px; background: #1a1a2e; border-radius: 4px; margin: 4px 0; font-size: 12px; border-left: 3px solid #0f3460; }
+        .task-history-item.task-complete { border-left-color: #4caf50; }
+        .task-history-item.task-error { border-left-color: #f44336; }
+        .task-history-item.task-running { border-left-color: #00d2ff; }
+        .task-history-item .task-meta { color: #888; font-size: 11px; margin-top: 4px; }
+
+        /* 3D model tab */
+        .models-layout { display: grid; grid-template-columns: 280px 1fr; gap: 12px; min-height: 500px; }
+        @media (max-width: 800px) { .models-layout { grid-template-columns: 1fr; } }
+        .model-list { background: #16213e; border-radius: 8px; overflow-y: auto; max-height: 600px; }
+        .model-item { padding: 8px 12px; border-bottom: 1px solid #0f3460; cursor: pointer; font-size: 12px; display: flex; align-items: center; gap: 8px; }
+        .model-item:hover { background: #1a1a2e; }
+        .model-item.active { background: #0f3460; color: #00d2ff; }
+        .model-item.disabled { opacity: 0.4; cursor: not-allowed; }
+        .model-item.disabled:hover { background: transparent; }
+        .model-item .model-icon { font-size: 16px; }
+        .model-item .model-text { flex: 1; min-width: 0; }
+        .model-item .model-name { color: #eee; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .model-item .model-meta { color: #888; font-size: 10px; margin-top: 2px; }
+        .model-item .model-badge { font-size: 9px; padding: 1px 6px; border-radius: 6px; flex-shrink: 0; }
+        .badge-previewable { background: #1a472a; color: #4caf50; }
+        .badge-convertible { background: #4a3a1a; color: #ff9800; }
+        .badge-blocked { background: #333; color: #666; }
+        .badge-empty { background: #4a1a1a; color: #f44336; }
+        .model-viewer { background: #0a0a1a; border-radius: 8px; min-height: 500px; display: flex; flex-direction: column; }
+        .model-viewer canvas { flex: 1; border-radius: 8px; }
+        .viewer-toolbar { padding: 8px 12px; background: #16213e; border-radius: 8px 8px 0 0; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+        .viewer-info { padding: 6px 12px; font-size: 11px; color: #888; }
+
+        /* Files tab */
+        .file-list { display: flex; flex-direction: column; gap: 2px; }
+        .file-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; background: #1a1a2e; border-radius: 4px; font-size: 12px; }
+        .file-item:hover { background: #222; }
+        .file-icon { width: 20px; text-align: center; font-size: 16px; }
+        .file-name { flex: 1; }
+        .file-name a { color: #eee; text-decoration: none; }
+        .file-name a:hover { color: #00d2ff; text-decoration: underline; }
+        .file-meta { color: #888; font-size: 11px; }
+        .breadcrumb { padding: 6px 0; font-size: 12px; color: #aaa; }
+        .breadcrumb a { color: #00d2ff; text-decoration: none; }
+        .breadcrumb a:hover { text-decoration: underline; }
+        .breadcrumb .sep { color: #555; margin: 0 4px; }
+
+        /* History tab */
+        .session-item { padding: 10px 14px; background: #1a1a2e; border-radius: 4px; margin: 6px 0; cursor: pointer; border-left: 3px solid #0f3460; }
+        .session-item:hover { background: #222; }
+        .session-goal { font-weight: 600; font-size: 13px; color: #eee; }
+        .session-meta { font-size: 11px; color: #888; margin-top: 4px; display: flex; gap: 12px; flex-wrap: wrap; }
+        .session-progress { display: inline-block; padding: 1px 8px; border-radius: 8px; background: #0f3460; color: #00d2ff; font-size: 10px; }
+        .session-detail-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: none; justify-content: center; align-items: center; z-index: 1001; }
+        .session-detail-overlay.show { display: flex; }
+        .session-detail { background: #16213e; border-radius: 8px; padding: 24px; max-width: 800px; width: 95%; max-height: 90vh; overflow-y: auto; border: 1px solid #0f3460; }
+        .session-detail h2 { color: #00d2ff; margin-bottom: 12px; }
+        .session-detail pre { background: #1a1a2e; padding: 12px; border-radius: 4px; overflow: auto; font-size: 12px; max-height: 400px; }
+
+        .scroll-y { overflow-y: auto; }
+
+        /* Part Library */
+        .part-item { padding: 8px 12px; border-bottom: 1px solid #0f3460; cursor: pointer; font-size: 12px; }
+        .part-item:hover { background: #1a1a2e; }
+        .part-item.active { background: #0f3460; color: #00d2ff; }
+        .part-item .part-name { color: #eee; font-weight: 600; }
+        .part-item .part-cat { color: #888; font-size: 10px; }
+        .part-param { margin: 4px 0; font-size: 12px; }
+        .part-param label { color: #aaa; display: inline-block; min-width: 80px; }
+        .part-param input { width: 80px; padding: 2px 6px; font-size: 12px; }
+        .part-param .param-range { color: #555; font-size: 10px; margin-left: 4px; }
+        .variant-btn { display: inline-block; padding: 2px 8px; margin: 2px; font-size: 11px; border-radius: 4px; background: #0f3460; color: #00d2ff; border: 1px solid #0f3460; cursor: pointer; }
+        .variant-btn:hover { background: #1a4a80; }
+        .variant-btn.active { background: #00d2ff; color: #1a1a2e; }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>Language-3D Agent Monitor</h1>
+        <div class="header-left">
+            <h1>Language-3D Agent Monitor</h1>
+            <span class="header-meta">
+                <span>⏱ <strong id="session-timer">00:00</strong></span>
+                <span>📋 <strong id="progress-text">—</strong></span>
+                <span>🔧 <strong id="header-tool-count">0</strong></span>
+            </span>
+        </div>
         <div class="header-info">
             <span class="thinking-text" id="thinking-text"></span>
             <span id="status-badge" class="status-badge status-idle">IDLE</span>
         </div>
     </div>
+    <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="progress-bar-fill" style="width: 0%"></div>
+    </div>
 
     <div class="tab-bar">
         <div class="tab active" data-tab="overview">Overview</div>
-        <div class="tab" data-tab="tools">Tool Calls</div>
+        <div class="tab" data-tab="task">Task</div>
+        <div class="tab" data-tab="tools">Tools</div>
         <div class="tab" data-tab="gallery">Screenshots</div>
-        <div class="tab" data-tab="vlm">VLM Results</div>
+        <div class="tab" data-tab="vlm">VLM</div>
+        <div class="tab" data-tab="models">3D Models</div>
+        <div class="tab" data-tab="files">Files</div>
+        <div class="tab" data-tab="history">History</div>
         <div class="tab" data-tab="agents">Agents</div>
+        <div class="tab" data-tab="parts">Part Library</div>
     </div>
 
     <div class="container">
-        <!-- Overview Tab -->
+        <!-- Overview -->
         <div class="tab-panel active" id="panel-overview">
             <div class="overview-grid">
                 <div class="panel">
-                    <div class="panel-header">Task Plan</div>
+                    <div class="panel-header">Task Plan <span class="count" id="plan-count">0</span></div>
                     <div class="panel-body" id="plan-body">
                         <div class="empty">No active plan</div>
                     </div>
                 </div>
                 <div class="panel">
-                    <div class="panel-header">Activity Log <span class="count" id="log-count">0</span></div>
+                    <div class="panel-header">
+                        Activity Log <span class="count" id="log-count">0</span>
+                        <div class="panel-actions">
+                            <input type="search" class="search-bar" id="log-search" placeholder="filter logs…" style="margin: 0; width: 140px;">
+                        </div>
+                    </div>
                     <div class="panel-body" id="log-body">
                         <div class="empty">Waiting for agent activity...</div>
                     </div>
                 </div>
                 <div class="panel full-width">
-                    <div class="panel-header">Latest Screenshot</div>
-                    <div class="panel-body" id="screenshot-body">
-                        <div class="empty">No screenshots</div>
+                    <div class="panel-header">Latest Screenshot &amp; Thinking</div>
+                    <div class="panel-body">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+                            <div id="screenshot-body"><div class="empty">No screenshots</div></div>
+                            <div>
+                                <div style="font-size: 12px; color: #888; margin-bottom: 6px;">Thinking history</div>
+                                <div id="thinking-history-body" class="scroll-y" style="max-height: 280px;">
+                                    <div class="empty">No thoughts yet</div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Tool Calls Tab -->
+        <!-- Task -->
+        <div class="tab-panel" id="panel-task">
+            <div class="panel">
+                <div class="panel-header">Submit Task</div>
+                <div class="panel-body">
+                    <div class="task-input-row">
+                        <textarea id="task-input" placeholder="Describe the task, e.g. Create a 20mm aluminum cube with a 5mm hole through the center."></textarea>
+                    </div>
+                    <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                        <button id="btn-run-task">Run (planning)</button>
+                        <button id="btn-direct-task" class="success">Direct (no plan)</button>
+                        <button id="btn-stop-task" class="danger" disabled>Stop</button>
+                        <span id="task-status" style="font-size: 12px; color: #888; align-self: center; margin-left: 8px;"></span>
+                    </div>
+                    <div style="margin-top: 20px;">
+                        <div style="font-size: 13px; color: #888; margin-bottom: 8px;">Task History</div>
+                        <div id="task-history-list"><div class="empty">No tasks yet</div></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tools -->
         <div class="tab-panel" id="panel-tools">
             <div class="panel">
-                <div class="panel-header">Tool Call Timeline <span class="count" id="tool-count">0</span></div>
-                <div class="panel-body" style="max-height: 600px;">
+                <div class="panel-header">
+                    Tool Call Timeline <span class="count" id="tool-count">0</span>
+                    <div class="panel-actions">
+                        <input type="search" class="search-bar" id="tool-search" placeholder="filter…" style="margin: 0; width: 140px;">
+                    </div>
+                </div>
+                <div class="panel-body scroll-y">
+                    <div class="stats-bar" id="tool-stats-bar"></div>
                     <div class="tool-timeline" id="tool-timeline">
                         <div class="empty">No tool calls yet</div>
                     </div>
@@ -169,31 +329,81 @@
             </div>
         </div>
 
-        <!-- Screenshot Gallery Tab -->
+        <!-- Gallery -->
         <div class="tab-panel" id="panel-gallery">
             <div class="panel">
                 <div class="panel-header">Screenshot Gallery <span class="count" id="gallery-count">0</span></div>
-                <div class="panel-body" style="max-height: 600px;">
+                <div class="panel-body scroll-y">
                     <div class="gallery-grid" id="gallery-grid">
                         <div class="empty">No screenshots captured</div>
                     </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- VLM Results Tab -->
-        <div class="tab-panel" id="panel-vlm">
-            <div class="panel">
-                <div class="panel-header">VLM Analysis Results <span class="count" id="vlm-count">0</span></div>
-                <div class="panel-body" style="max-height: 600px;">
-                    <div id="vlm-list">
-                        <div class="empty">No VLM results yet</div>
+                    <div class="pagination" id="gallery-pagination" style="display: none;">
+                        <button id="gallery-prev">Prev</button>
+                        <span id="gallery-page-info">1 / 1</span>
+                        <button id="gallery-next">Next</button>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Agents Tab -->
+        <!-- VLM -->
+        <div class="tab-panel" id="panel-vlm">
+            <div class="panel">
+                <div class="panel-header">VLM Analysis Results <span class="count" id="vlm-count">0</span></div>
+                <div class="panel-body scroll-y">
+                    <div id="vlm-list"><div class="empty">No VLM results yet</div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3D Models -->
+        <div class="tab-panel" id="panel-models">
+            <div class="models-layout">
+                <div class="model-list" id="model-list">
+                    <div class="empty">No models found</div>
+                </div>
+                <div class="model-viewer" id="model-viewer">
+                    <div class="viewer-toolbar">
+                        <button id="viewer-wireframe">Toggle Wireframe</button>
+                        <button id="viewer-reset">Reset View</button>
+                        <span class="viewer-info" id="viewer-info">Select a model to preview</span>
+                    </div>
+                    <div id="viewer-canvas-container" style="flex: 1; position: relative;"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Files -->
+        <div class="tab-panel" id="panel-files">
+            <div class="panel">
+                <div class="panel-header">
+                    Files
+                    <div class="panel-actions">
+                        <button id="files-refresh">Refresh</button>
+                        <button id="files-home">Home</button>
+                    </div>
+                </div>
+                <div class="panel-body scroll-y">
+                    <div class="breadcrumb" id="files-breadcrumb"></div>
+                    <div class="file-list" id="files-list"><div class="empty">Loading…</div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- History -->
+        <div class="tab-panel" id="panel-history">
+            <div class="panel">
+                <div class="panel-header">
+                    Sessions <span class="count" id="session-count">0</span>
+                    <div class="panel-actions"><button id="sessions-refresh">Refresh</button></div>
+                </div>
+                <div class="panel-body scroll-y">
+                    <div id="session-list"><div class="empty">No sessions yet</div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agents -->
         <div class="tab-panel" id="panel-agents">
             <div class="agents-layout">
                 <div class="panel">
@@ -204,237 +414,1088 @@
                 </div>
                 <div class="panel">
                     <div class="panel-header">Task DAG</div>
-                    <div class="panel-body" id="dag-body">
+                    <div class="panel-body scroll-y" id="dag-body">
                         <div class="empty">No task DAG</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Part Library -->
+        <div class="tab-panel" id="panel-parts">
+            <div style="display: grid; grid-template-columns: 280px 1fr; gap: 12px; min-height: 500px;">
+                <div>
+                    <div class="panel" style="margin-bottom: 12px;">
+                        <div class="panel-header">Search Parts</div>
+                        <div class="panel-body" style="padding: 8px;">
+                            <input type="search" id="parts-search-input" class="search-bar" placeholder="Search (e.g. bearing, 螺钉)..." style="margin-bottom: 6px;">
+                            <select id="parts-category-filter" style="width: 100%; margin-bottom: 6px;">
+                                <option value="">All Categories</option>
+                                <option value="fastener">Fastener</option>
+                                <option value="bearing">Bearing</option>
+                                <option value="actuator">Actuator</option>
+                                <option value="shaft">Shaft</option>
+                                <option value="gear">Gear</option>
+                                <option value="structural">Structural</option>
+                            </select>
+                            <button id="parts-search-btn" style="width: 100%;">Search</button>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-header">Parts <span class="count" id="parts-count">0</span></div>
+                        <div class="panel-body scroll-y" id="parts-list" style="max-height: 400px;">
+                            <div class="empty">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div class="panel" style="margin-bottom: 12px;">
+                        <div class="panel-header">Part Details</div>
+                        <div class="panel-body" id="parts-detail">
+                            <div class="empty">Select a part to view details</div>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-header">
+                            3D Preview
+                            <div class="panel-actions">
+                                <button id="parts-generate-btn" disabled>Generate Part</button>
+                            </div>
+                        </div>
+                        <div class="panel-body" style="padding: 0; min-height: 300px;">
+                            <div id="parts-viewer-container" style="min-height: 300px; background: #0a0a1a; border-radius: 0 0 8px 8px;"></div>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Image overlay for full-size viewing -->
     <div class="img-overlay" id="img-overlay">
-        <img id="overlay-img" src="" alt="Full size screenshot">
+        <img id="overlay-img" src="" alt="Full size">
     </div>
 
+    <div class="session-detail-overlay" id="session-detail-overlay">
+        <div class="session-detail" id="session-detail-content"></div>
+    </div>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.158.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.158.0/examples/jsm/"
+        }
+    }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+        import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+        import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+        // Make available globally for the rest of the (non-module) script.
+        window.THREE = THREE;
+        window.OrbitControls = OrbitControls;
+        window.STLLoader = STLLoader;
+        window.OBJLoader = OBJLoader;
+        window.dispatchEvent(new Event('three-ready'));
+    </script>
+
     <script>
-        const planBody = document.getElementById('plan-body');
-        const logBody = document.getElementById('log-body');
-        const screenshotBody = document.getElementById('screenshot-body');
-        const statusBadge = document.getElementById('status-badge');
-        const thinkingText = document.getElementById('thinking-text');
-        const toolTimeline = document.getElementById('tool-timeline');
-        const galleryGrid = document.getElementById('gallery-grid');
-        const vlmList = document.getElementById('vlm-list');
-        const imgOverlay = document.getElementById('img-overlay');
-        const overlayImg = document.getElementById('overlay-img');
+    // =====================================================================
+    // State
+    // =====================================================================
+    const planBody = document.getElementById('plan-body');
+    const logBody = document.getElementById('log-body');
+    const screenshotBody = document.getElementById('screenshot-body');
+    const statusBadge = document.getElementById('status-badge');
+    const thinkingText = document.getElementById('thinking-text');
+    const thinkingHistoryBody = document.getElementById('thinking-history-body');
+    const toolTimeline = document.getElementById('tool-timeline');
+    const galleryGrid = document.getElementById('gallery-grid');
+    const vlmList = document.getElementById('vlm-list');
+    const imgOverlay = document.getElementById('img-overlay');
+    const overlayImg = document.getElementById('overlay-img');
+    const progressBarFill = document.getElementById('progress-bar-fill');
+    const progressText = document.getElementById('progress-text');
+    const sessionTimer = document.getElementById('session-timer');
+    const headerToolCount = document.getElementById('header-tool-count');
 
-        const statusClasses = {
-            idle: 'status-idle', running: 'status-running',
-            complete: 'status-complete', error: 'status-error'
-        };
-        const stepClasses = {
-            pending: 'step-pending', in_progress: 'step-progress',
-            completed: 'step-complete', failed: 'step-failed'
-        };
-        const stepIcons = { pending: '\u25CB', in_progress: '\u25D0', completed: '\u25CF', failed: '\u2717' };
+    let sessionStart = Date.now() / 1000;
+    let planState = null;
+    let galleryState = [];
+    let galleryPage = 1;
+    const GALLERY_PAGE_SIZE = 20;
 
-        // Tab switching
-        document.querySelectorAll('.tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-                document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-                tab.classList.add('active');
-                document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    const statusClasses = {
+        idle: 'status-idle', running: 'status-running',
+        complete: 'status-complete', completed: 'status-complete',
+        error: 'status-error'
+    };
+    const stepClasses = {
+        pending: 'step-pending', in_progress: 'step-progress',
+        completed: 'step-complete', failed: 'step-failed', skipped: 'step-pending'
+    };
+    const stepIcons = { pending: '\u25CB', in_progress: '\u25D0', completed: '\u25CF', failed: '\u2717', skipped: '\u25CB' };
+
+    // =====================================================================
+    // Tab switching
+    // =====================================================================
+    document.querySelectorAll('.tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+            tab.classList.add('active');
+            document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+            // Lazy-load tab data
+            if (tab.dataset.tab === 'models') loadModels();
+            if (tab.dataset.tab === 'files') loadFiles('');
+            if (tab.dataset.tab === 'history') loadSessions();
+            if (tab.dataset.tab === 'parts' && partsTemplates.length === 0) loadPartsCatalog('', '');
+        });
+    });
+
+    imgOverlay.addEventListener('click', () => imgOverlay.classList.remove('show'));
+    document.getElementById('session-detail-overlay').addEventListener('click', (e) => {
+        if (e.target.id === 'session-detail-overlay') {
+            document.getElementById('session-detail-overlay').classList.remove('show');
+        }
+    });
+    function showImage(src) {
+        overlayImg.src = src;
+        imgOverlay.classList.add('show');
+    }
+    window.showImage = showImage;
+
+    // =====================================================================
+    // Rendering
+    // =====================================================================
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    }
+
+    function updatePlan(plan) {
+        planState = plan;
+        const planCount = document.getElementById('plan-count');
+        if (!plan || !plan.steps || plan.steps.length === 0) {
+            planBody.innerHTML = '<div class="empty">No active plan</div>';
+            planCount.textContent = '0';
+            progressBarFill.style.width = '0%';
+            progressText.textContent = '—';
+            return;
+        }
+        planCount.textContent = plan.steps.length;
+        planBody.innerHTML = plan.steps.map((s, i) => {
+            const status = s.status || 'pending';
+            const cls = stepClasses[status] || 'step-pending';
+            const icon = stepIcons[status] || '\u25CB';
+            const detail = (s.expected_tools && s.expected_tools.length) || s.verification || s.assigned_agent
+                ? `<div class="step-detail">
+                    ${s.expected_tools && s.expected_tools.length ? `<div><span>Tools:</span> ${escapeHtml(s.expected_tools.join(', '))}</div>` : ''}
+                    ${s.verification ? `<div><span>Verify:</span> ${escapeHtml(s.verification)}</div>` : ''}
+                    ${s.assigned_agent ? `<div><span>Agent:</span> ${escapeHtml(s.assigned_agent)}</div>` : ''}
+                    ${s.result ? `<div><span>Result:</span> ${escapeHtml(String(s.result).substring(0, 200))}</div>` : ''}
+                  </div>` : '';
+            return `<div class="plan-step ${cls}" onclick="this.nextElementSibling && this.nextElementSibling.classList.toggle('show')">
+                <span>${icon}</span>
+                <span>${i + 1}. ${escapeHtml(s.description)}</span>
+            </div>${detail}`;
+        }).join('');
+
+        // Progress
+        const completed = plan.steps.filter(s => s.status === 'completed').length;
+        const failed = plan.steps.filter(s => s.status === 'failed').length;
+        const total = plan.steps.length;
+        const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
+        progressBarFill.style.width = pct + '%';
+        progressText.textContent = `${completed}/${total} (${pct}%)${failed ? ' [' + failed + ' failed]' : ''}`;
+    }
+
+    function updateLogs(logs) {
+        document.getElementById('log-count').textContent = logs ? logs.length : 0;
+        if (!logs || logs.length === 0) {
+            logBody.innerHTML = '<div class="empty">Waiting for agent activity...</div>';
+            return;
+        }
+        const q = (document.getElementById('log-search').value || '').toLowerCase();
+        const filtered = q ? logs.filter(l => (l.message || '').toLowerCase().includes(q) || (l.level || '').toLowerCase().includes(q)) : logs;
+        logBody.innerHTML = filtered.slice(-150).map(l =>
+            `<div class="log-entry log-${l.level}">
+                <span class="log-time">${l.time || ''}</span>
+                <span>${escapeHtml(l.message)}</span>
+            </div>`
+        ).join('');
+        logBody.scrollTop = logBody.scrollHeight;
+    }
+
+    function updateStatus(status) {
+        statusBadge.textContent = status.toUpperCase();
+        statusBadge.className = `status-badge ${statusClasses[status] || 'status-idle'}`;
+    }
+
+    function updateToolCalls(toolCalls) {
+        const count = toolCalls ? toolCalls.length : 0;
+        document.getElementById('tool-count').textContent = count;
+        headerToolCount.textContent = count;
+        if (!toolCalls || count === 0) {
+            toolTimeline.innerHTML = '<div class="empty">No tool calls yet</div>';
+            document.getElementById('tool-stats-bar').innerHTML = '';
+            return;
+        }
+        // Stats bar
+        const stats = {};
+        toolCalls.forEach(tc => { stats[tc.name] = (stats[tc.name] || 0) + 1; });
+        const statsBar = document.getElementById('tool-stats-bar');
+        statsBar.innerHTML = Object.entries(stats).sort((a,b) => b[1]-a[1]).map(([n,c]) =>
+            `<span class="stat-chip">${escapeHtml(n)}: <strong>${c}</strong></span>`
+        ).join('');
+
+        const q = (document.getElementById('tool-search').value || '').toLowerCase();
+        const filtered = q ? toolCalls.filter(tc => (tc.name || '').toLowerCase().includes(q) || JSON.stringify(tc.args || {}).toLowerCase().includes(q)) : toolCalls;
+        toolTimeline.innerHTML = filtered.slice(-100).reverse().map(tc => {
+            const cssClass = `tool-${tc.name}`;
+            const argStr = typeof tc.args === 'object'
+                ? Object.entries(tc.args).slice(0, 3).map(([k,v]) => `${k}=${JSON.stringify(v)}`).join(', ')
+                : '';
+            return `<div class="tool-item ${cssClass}">
+                <span class="tool-time">${tc.time || ''}</span>
+                <span class="tool-name">${escapeHtml(tc.name)}</span>
+                <span class="tool-args" title="${escapeHtml(argStr)}">${escapeHtml(argStr)}</span>
+            </div>`;
+        }).join('');
+    }
+
+    function updateGallery(screenshots) {
+        document.getElementById('gallery-count').textContent = screenshots ? screenshots.length : 0;
+        if (!screenshots || screenshots.length === 0) {
+            galleryGrid.innerHTML = '<div class="empty">No screenshots captured</div>';
+            document.getElementById('gallery-pagination').style.display = 'none';
+            return;
+        }
+        galleryState = screenshots;
+        renderGalleryPage();
+    }
+
+    function renderGalleryPage() {
+        const total = galleryState.length;
+        const pages = Math.max(1, Math.ceil(total / GALLERY_PAGE_SIZE));
+        if (galleryPage > pages) galleryPage = 1;
+        const start = (galleryPage - 1) * GALLERY_PAGE_SIZE;
+        const slice = galleryState.slice(start, start + GALLERY_PAGE_SIZE);
+        galleryGrid.innerHTML = slice.map(s => {
+            const path = typeof s === 'object' ? (s.path || '') : String(s);
+            const name = path.split(/[\\/]/).pop() || 'screenshot';
+            const time = typeof s === 'object' ? (s.time || '') : '';
+            const imgSrc = path.startsWith('/') || path.includes(':')
+                ? `/api/screenshot-file?path=${encodeURIComponent(path)}`
+                : path;
+            return `<div class="gallery-card">
+                <img src="${imgSrc}" alt="${escapeHtml(name)}" onerror="this.alt='Image not found: ${escapeHtml(name)}'" onclick="showImage('${imgSrc}')">
+                <div class="card-info">
+                    <div class="card-name">${escapeHtml(name)}</div>
+                    ${time ? `<span>${escapeHtml(time)}</span>` : ''}
+                </div>
+            </div>`;
+        }).join('');
+        const pager = document.getElementById('gallery-pagination');
+        if (pages > 1) {
+            pager.style.display = 'flex';
+            document.getElementById('gallery-page-info').textContent = `${galleryPage} / ${pages}`;
+        } else {
+            pager.style.display = 'none';
+        }
+    }
+    document.getElementById('gallery-prev').addEventListener('click', () => { if (galleryPage > 1) { galleryPage--; renderGalleryPage(); } });
+    document.getElementById('gallery-next').addEventListener('click', () => {
+        const pages = Math.max(1, Math.ceil(galleryState.length / GALLERY_PAGE_SIZE));
+        if (galleryPage < pages) { galleryPage++; renderGalleryPage(); }
+    });
+
+    function updateVLMResults(vlmResults) {
+        document.getElementById('vlm-count').textContent = vlmResults ? vlmResults.length : 0;
+        if (!vlmResults || vlmResults.length === 0) {
+            vlmList.innerHTML = '<div class="empty">No VLM results yet</div>';
+            return;
+        }
+        vlmList.innerHTML = vlmResults.slice(-30).reverse().map(r => {
+            let matchHtml = '';
+            if (r.tool === 'cad_verify') {
+                const isMatch = (r.result || '').includes('MATCH: True');
+                const cls = isMatch ? 'vlm-match-true' : 'vlm-match-false';
+                const text = isMatch ? 'MATCH' : 'MISMATCH';
+                matchHtml = `<span class="vlm-match ${cls}">${text}</span>`;
+            }
+            return `<div class="vlm-result">
+                <span class="vlm-tool">${escapeHtml(r.tool)}</span>
+                <span class="vlm-time">${escapeHtml(r.time || '')}</span>
+                ${matchHtml}
+                <div class="vlm-prompt">${escapeHtml((r.prompt || '').substring(0, 200))}</div>
+                <div class="vlm-output">${escapeHtml((r.result || '').substring(0, 600))}</div>
+            </div>`;
+        }).join('');
+    }
+
+    function updateThinking(text) {
+        thinkingText.textContent = text || '';
+        if (!text) return;
+    }
+
+    function updateThinkingHistory(history) {
+        if (!history || history.length === 0) {
+            thinkingHistoryBody.innerHTML = '<div class="empty">No thoughts yet</div>';
+            return;
+        }
+        thinkingHistoryBody.innerHTML = history.slice(-50).reverse().map(h =>
+            `<div class="log-entry log-thinking">
+                <span class="log-time">${escapeHtml(h.time || '')}</span>
+                <span>${escapeHtml(h.text || '')}</span>
+            </div>`
+        ).join('');
+    }
+
+    function updateSubAgents(agents) {
+        document.getElementById('agent-count').textContent = agents ? agents.length : 0;
+        const body = document.getElementById('agents-body');
+        if (!agents || agents.length === 0) {
+            body.innerHTML = '<div class="empty">No active sub-agents</div>';
+            return;
+        }
+        body.innerHTML = agents.map(a => {
+            const statusClass = `agent-status-${a.status}`;
+            return `<div class="agent-card">
+                <div>
+                    <div class="agent-id">${escapeHtml(a.agent_id)}</div>
+                    <div class="agent-step">${escapeHtml((a.step || '').substring(0, 80))}</div>
+                </div>
+                <span class="agent-status ${statusClass}">${escapeHtml(a.status)}</span>
+            </div>`;
+        }).join('');
+    }
+
+    function updateDAG(dag) {
+        const body = document.getElementById('dag-body');
+        if (!dag || !dag.waves || dag.waves.length === 0) {
+            body.innerHTML = '<div class="empty">No task DAG</div>';
+            return;
+        }
+        // SVG-based DAG
+        const nodeW = 140, nodeH = 36, gapX = 16, gapY = 60;
+        // Compute layout
+        let maxRow = 0;
+        dag.waves.forEach(w => { if (w.length > maxRow) maxRow = w.length; });
+        const svgW = Math.max(600, dag.waves.length * (nodeW + gapX));
+        const positions = []; // [{wave, idx, x, y, node}]
+        dag.waves.forEach((wave, wi) => {
+            const rowW = wave.length * (nodeW + gapX) - gapX;
+            const xOff = (svgW - rowW) / 2;
+            wave.forEach((node, ni) => {
+                positions.push({
+                    wave: wi, idx: ni,
+                    x: xOff + ni * (nodeW + gapX),
+                    y: 20 + wi * (nodeH + gapY),
+                    node
+                });
             });
         });
-
-        // Image overlay
-        imgOverlay.addEventListener('click', () => imgOverlay.classList.remove('show'));
-        function showImage(src) {
-            overlayImg.src = src;
-            imgOverlay.classList.add('show');
+        const svgH = 40 + dag.waves.length * (nodeH + gapY);
+        let edges = '';
+        // Edges: every node in wave i connects to every node in wave i+1
+        for (let wi = 0; wi < dag.waves.length - 1; wi++) {
+            const cur = positions.filter(p => p.wave === wi);
+            const nxt = positions.filter(p => p.wave === wi + 1);
+            cur.forEach(a => nxt.forEach(b => {
+                const x1 = a.x + nodeW / 2, y1 = a.y + nodeH;
+                const x2 = b.x + nodeW / 2, y2 = b.y;
+                const midY = (y1 + y2) / 2;
+                edges += `<path class="dag-edge" d="M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}" />`;
+            }));
         }
+        const nodes = positions.map(p => {
+            const status = (p.node.status || 'pending').toLowerCase();
+            const label = (p.node.description || '').substring(0, 22);
+            return `<g class="dag-status-${status}" transform="translate(${p.x}, ${p.y})">
+                <rect class="dag-node-rect" width="${nodeW}" height="${nodeH}"></rect>
+                <text x="${nodeW/2}" y="${nodeH/2 + 4}" text-anchor="middle">${escapeHtml(label)}</text>
+            </g>`;
+        }).join('');
+        body.innerHTML = `<svg class="dag-svg" viewBox="0 0 ${svgW} ${svgH}" width="${svgW}" height="${svgH}">
+            ${edges}${nodes}
+        </svg>`;
+    }
 
-        function updatePlan(plan) {
-            if (!plan || !plan.steps || plan.steps.length === 0) {
-                planBody.innerHTML = '<div class="empty">No active plan</div>';
-                return;
-            }
-            planBody.innerHTML = plan.steps.map((s, i) =>
-                `<div class="plan-step ${stepClasses[s.status] || 'step-pending'}">
-                    <span>${stepIcons[s.status] || '\u25CB'}</span>
-                    <span>${i + 1}. ${s.description}</span>
-                </div>`
-            ).join('');
-        }
+    // =====================================================================
+    // Timer
+    // =====================================================================
+    setInterval(() => {
+        const now = Date.now() / 1000;
+        const delta = Math.max(0, Math.floor(now - sessionStart));
+        const mm = String(Math.floor(delta / 60)).padStart(2, '0');
+        const ss = String(delta % 60).padStart(2, '0');
+        sessionTimer.textContent = `${mm}:${ss}`;
+    }, 1000);
 
-        function updateLogs(logs) {
-            document.getElementById('log-count').textContent = logs ? logs.length : 0;
-            if (!logs || logs.length === 0) {
-                logBody.innerHTML = '<div class="empty">Waiting for agent activity...</div>';
-                return;
-            }
-            logBody.innerHTML = logs.slice(-80).map(l =>
-                `<div class="log-entry log-${l.level}">
-                    <span class="log-time">${l.time || ''}</span>
-                    <span>${l.message}</span>
-                </div>`
-            ).join('');
-            logBody.scrollTop = logBody.scrollHeight;
-        }
+    // =====================================================================
+    // Task submission
+    // =====================================================================
+    const taskInput = document.getElementById('task-input');
+    const btnRun = document.getElementById('btn-run-task');
+    const btnDirect = document.getElementById('btn-direct-task');
+    const btnStop = document.getElementById('btn-stop-task');
+    const taskStatus = document.getElementById('task-status');
+    const taskHistoryList = document.getElementById('task-history-list');
 
-        function updateStatus(status) {
-            statusBadge.textContent = status.toUpperCase();
-            statusBadge.className = `status-badge ${statusClasses[status] || 'status-idle'}`;
-        }
-
-        function updateToolCalls(toolCalls) {
-            document.getElementById('tool-count').textContent = toolCalls ? toolCalls.length : 0;
-            if (!toolCalls || toolCalls.length === 0) {
-                toolTimeline.innerHTML = '<div class="empty">No tool calls yet</div>';
-                return;
-            }
-            toolTimeline.innerHTML = toolCalls.slice(-50).map(tc => {
-                const cssClass = `tool-${tc.name}`;
-                const argStr = typeof tc.args === 'object'
-                    ? Object.entries(tc.args).slice(0, 3).map(([k,v]) => `${k}=${JSON.stringify(v)}`).join(', ')
-                    : '';
-                return `<div class="tool-item ${cssClass}">
-                    <span class="tool-time">${tc.time || ''}</span>
-                    <span class="tool-name">${tc.name}</span>
-                    <span class="tool-args">${argStr}</span>
-                </div>`;
-            }).join('');
-            toolTimeline.scrollTop = toolTimeline.scrollHeight;
-        }
-
-        function updateGallery(screenshots) {
-            document.getElementById('gallery-count').textContent = screenshots ? screenshots.length : 0;
-            if (!screenshots || screenshots.length === 0) {
-                galleryGrid.innerHTML = '<div class="empty">No screenshots captured</div>';
-                return;
-            }
-            galleryGrid.innerHTML = screenshots.map(s => {
-                const path = typeof s === 'object' ? (s.path || '') : String(s);
-                const name = path.split(/[\\/]/).pop() || 'screenshot';
-                const time = typeof s === 'object' ? (s.time || '') : '';
-                // Use local file path for display
-                const imgSrc = path.startsWith('/') || path.includes(':') ? `/api/screenshot-file?path=${encodeURIComponent(path)}` : path;
-                return `<div class="gallery-card">
-                    <img src="${imgSrc}" alt="${name}" onerror="this.alt='Image not found: ${name}'" onclick="showImage('${imgSrc}')">
-                    <div class="card-info">
-                        <div class="card-name">${name}</div>
-                        ${time ? `<span>${time}</span>` : ''}
-                    </div>
-                </div>`;
-            }).join('');
-        }
-
-        function updateVLMResults(vlmResults) {
-            document.getElementById('vlm-count').textContent = vlmResults ? vlmResults.length : 0;
-            if (!vlmResults || vlmResults.length === 0) {
-                vlmList.innerHTML = '<div class="empty">No VLM results yet</div>';
-                return;
-            }
-            vlmList.innerHTML = vlmResults.slice(-20).map(r => {
-                // Extract match status if cad_verify
-                let matchHtml = '';
-                if (r.tool === 'cad_verify') {
-                    const isMatch = r.result.includes('MATCH: True');
-                    const cls = isMatch ? 'vlm-match-true' : 'vlm-match-false';
-                    const text = isMatch ? 'MATCH' : 'MISMATCH';
-                    matchHtml = `<span class="vlm-match ${cls}">${text}</span>`;
-                }
-                return `<div class="vlm-result">
-                    <span class="vlm-tool">${r.tool}</span>
-                    <span class="vlm-time">${r.time || ''}</span>
-                    ${matchHtml}
-                    <div class="vlm-prompt">${(r.prompt || '').substring(0, 150)}</div>
-                    <div class="vlm-output">${(r.result || '').substring(0, 300)}</div>
-                </div>`;
-            }).join('');
-        }
-
-        function updateThinking(text) {
-            thinkingText.textContent = text || '';
-        }
-
-        function updateSubAgents(agents) {
-            document.getElementById('agent-count').textContent = agents ? agents.length : 0;
-            const body = document.getElementById('agents-body');
-            if (!agents || agents.length === 0) {
-                body.innerHTML = '<div class="empty">No active sub-agents</div>';
-                return;
-            }
-            body.innerHTML = agents.map(a => {
-                const statusClass = `agent-status-${a.status}`;
-                return `<div class="agent-card">
-                    <div>
-                        <div class="agent-id">${a.agent_id}</div>
-                        <div class="agent-step">${(a.step || '').substring(0, 60)}</div>
-                    </div>
-                    <span class="agent-status ${statusClass}">${a.status}</span>
-                </div>`;
-            }).join('');
-        }
-
-        function updateDAG(dag) {
-            const body = document.getElementById('dag-body');
-            if (!dag || !dag.waves || dag.waves.length === 0) {
-                body.innerHTML = '<div class="empty">No task DAG</div>';
-                return;
-            }
-            let html = '';
-            dag.waves.forEach((wave, i) => {
-                html += `<div class="dag-wave"><div class="dag-wave-label">Wave ${i} (${wave.length} tasks)</div>`;
-                wave.forEach(node => {
-                    const cls = `dag-node-${node.status || 'pending'}`;
-                    html += `<div class="dag-node ${cls}" title="${node.description}">${node.description.substring(0, 30)}</div>`;
-                });
-                html += '</div>';
-                if (i < dag.waves.length - 1) {
-                    html += '<div class="dag-arrow">↓</div>';
-                }
+    async function submitTask(mode) {
+        const task = (taskInput.value || '').trim();
+        if (!task) { taskStatus.textContent = 'Please enter a task'; return; }
+        taskStatus.textContent = 'Submitting…';
+        try {
+            const res = await fetch('/api/run-task', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ task, mode })
             });
-            body.innerHTML = html;
+            const data = await res.json();
+            if (!res.ok) {
+                taskStatus.textContent = 'Error: ' + (data.detail || res.statusText);
+                return;
+            }
+            taskStatus.textContent = 'Started';
+            taskInput.value = '';
+            refreshRunningState();
+            setTimeout(loadTaskHistory, 500);
+        } catch (e) {
+            taskStatus.textContent = 'Error: ' + e.message;
+        }
+    }
+    btnRun.addEventListener('click', () => submitTask('run'));
+    btnDirect.addEventListener('click', () => submitTask('direct'));
+    btnStop.addEventListener('click', async () => {
+        const res = await fetch('/api/stop-task', { method: 'POST' });
+        const data = await res.json();
+        taskStatus.textContent = data.status || 'requested';
+    });
+
+    async function refreshRunningState() {
+        try {
+            const res = await fetch('/api/is-running');
+            const data = await res.json();
+            const running = !!data.running;
+            btnRun.disabled = running;
+            btnDirect.disabled = running;
+            btnStop.disabled = !running;
+            if (running && data.current) {
+                taskStatus.textContent = `Running: ${(data.current.task || '').substring(0, 60)}`;
+            }
+        } catch (e) {}
+    }
+    setInterval(refreshRunningState, 3000);
+    refreshRunningState();
+
+    async function loadTaskHistory() {
+        try {
+            const res = await fetch('/api/task-history');
+            const data = await res.json();
+            if (!data.history || data.history.length === 0) {
+                taskHistoryList.innerHTML = '<div class="empty">No tasks yet</div>';
+                return;
+            }
+            taskHistoryList.innerHTML = data.history.slice().reverse().map(t => {
+                const status = t.status || 'unknown';
+                return `<div class="task-history-item task-${status}">
+                    <div><strong>${escapeHtml((t.task || '').substring(0, 120))}</strong></div>
+                    <div class="task-meta">
+                        ${escapeHtml(t.mode || '?')} · ${escapeHtml(t.started_at || '')} ·
+                        <span style="color: ${status === 'complete' ? '#4caf50' : status === 'error' ? '#f44336' : '#00d2ff'}">${escapeHtml(status)}</span>
+                    </div>
+                    ${t.error ? `<div class="task-meta" style="color:#f44336;">${escapeHtml(t.error)}</div>` : ''}
+                    ${t.result ? `<div class="task-meta">${escapeHtml(t.result.substring(0, 200))}</div>` : ''}
+                </div>`;
+            }).join('');
+        } catch (e) {}
+    }
+    loadTaskHistory();
+
+    // =====================================================================
+    // Models tab (Three.js)
+    // =====================================================================
+    let viewerRenderer, viewerScene, viewerCamera, viewerControls, viewerMesh, viewerAnimId, viewerWireframe = false;
+
+    function initViewer() {
+        if (viewerRenderer) return;
+        if (!window.THREE) return;
+        const container = document.getElementById('viewer-canvas-container');
+        const w = container.clientWidth || 600;
+        const h = Math.max(400, container.clientHeight);
+        viewerScene = new THREE.Scene();
+        viewerScene.background = new THREE.Color(0x0a0a1a);
+        viewerCamera = new THREE.PerspectiveCamera(50, w / h, 0.1, 10000);
+        viewerCamera.position.set(100, 100, 200);
+        viewerRenderer = new THREE.WebGLRenderer({ antialias: true });
+        viewerRenderer.setSize(w, h);
+        viewerRenderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(viewerRenderer.domElement);
+        viewerControls = new window.OrbitControls(viewerCamera, viewerRenderer.domElement);
+        viewerControls.enableDamping = true;
+        // Lights
+        viewerScene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+        dir.position.set(1, 1, 1);
+        viewerScene.add(dir);
+        const grid = new THREE.GridHelper(500, 20, 0x303060, 0x202040);
+        viewerScene.add(grid);
+        animateViewer();
+        window.addEventListener('resize', () => {
+            if (!viewerRenderer) return;
+            const w = container.clientWidth, h = Math.max(400, container.clientHeight);
+            viewerCamera.aspect = w / h;
+            viewerCamera.updateProjectionMatrix();
+            viewerRenderer.setSize(w, h);
+        });
+    }
+    function animateViewer() {
+        viewerAnimId = requestAnimationFrame(animateViewer);
+        if (viewerControls) viewerControls.update();
+        if (viewerRenderer) viewerRenderer.render(viewerScene, viewerCamera);
+    }
+
+    function fitCameraToObject(mesh) {
+        const box = new THREE.Box3().setFromObject(mesh);
+        const size = box.getSize(new THREE.Vector3());
+        const center = box.getCenter(new THREE.Vector3());
+        const maxDim = Math.max(size.x, size.y, size.z);
+        const fitDist = maxDim / (2 * Math.tan(Math.PI * viewerCamera.fov / 360)) * 1.5;
+        viewerCamera.position.set(center.x + fitDist * 0.7, center.y + fitDist * 0.5, center.z + fitDist);
+        viewerControls.target.copy(center);
+        viewerControls.update();
+    }
+
+    async function loadModels() {
+        const list = document.getElementById('model-list');
+        list.innerHTML = '<div class="empty">Loading…</div>';
+        try {
+            const res = await fetch('/api/models');
+            const data = await res.json();
+            if (!data.models || data.models.length === 0) {
+                list.innerHTML = '<div class="empty">No models found</div>';
+                return;
+            }
+            const icons = { stl: '🧊', obj: '🧊', step: '🔩', stp: '🔩', fcstd: '🔩' };
+            list.innerHTML = data.models.map((m, i) => {
+                let badge = '';
+                let disabled = false;
+                if (m.empty) {
+                    badge = '<span class="model-badge badge-empty">EMPTY</span>';
+                    disabled = true;
+                } else if (m.previewable) {
+                    badge = '<span class="model-badge badge-previewable">STL</span>';
+                } else if (m.convertible) {
+                    const lbl = (m.ext === 'fcstd') ? 'FCStd→STL' : 'STEP→STL';
+                    badge = `<span class="model-badge badge-convertible">${lbl}</span>`;
+                } else {
+                    badge = `<span class="model-badge badge-blocked">${(m.ext || '?').toUpperCase()}</span>`;
+                    disabled = true;
+                }
+                return `<div class="model-item${disabled ? ' disabled' : ''}" data-i="${i}" title="${escapeHtml(m.rel_path)}">
+                    <span class="model-icon">${icons[m.ext] || '📄'}</span>
+                    <span class="model-text">
+                        <div class="model-name">${escapeHtml(m.name)}</div>
+                        <div class="model-meta">${escapeHtml(m.ext)} · ${m.size_kb} KB</div>
+                    </span>
+                    ${badge}
+                </div>`;
+            }).join('');
+            // Stats summary
+            const previewable = data.models.filter(m => m.previewable).length;
+            const stepCount = data.models.filter(m => m.convertible && (m.ext === 'step' || m.ext === 'stp')).length;
+            const fcstdCount = data.models.filter(m => m.convertible && m.ext === 'fcstd').length;
+            const blocked = data.models.length - previewable - stepCount - fcstdCount;
+            const stats = document.createElement('div');
+            stats.style.cssText = 'padding: 8px 12px; background: #0f3460; font-size: 11px; color: #aaa; border-bottom: 1px solid #1a1a2e;';
+            stats.innerHTML = `${previewable} direct · ${stepCount} STEP (convert) · ${fcstdCount} FCStd (convert) · ${blocked} blocked`;
+            list.insertBefore(stats, list.firstChild);
+            list.querySelectorAll('.model-item').forEach(el => {
+                el.addEventListener('click', () => {
+                    if (el.classList.contains('disabled')) return;
+                    list.querySelectorAll('.model-item').forEach(x => x.classList.remove('active'));
+                    el.classList.add('active');
+                    openModel(data.models[parseInt(el.dataset.i)]);
+                });
+            });
+        } catch (e) {
+            list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    async function openModel(model) {
+        const infoEl = document.getElementById('viewer-info');
+        infoEl.textContent = `${model.name} (${model.ext})`;
+        if (!window.THREE) {
+            infoEl.textContent = 'Three.js not loaded yet';
+            return;
+        }
+        initViewer();
+        if (!viewerRenderer) {
+            infoEl.textContent = 'WebGL init failed';
+            return;
+        }
+        // Remove old mesh
+        if (viewerMesh) {
+            viewerScene.remove(viewerMesh);
+            if (viewerMesh.geometry) viewerMesh.geometry.dispose();
+            viewerMesh = null;
+        }
+        try {
+            let loadPath = model.rel_path;
+            let loadedExt = model.ext;
+
+            if (model.previewable) {
+                // Direct load STL/OBJ
+                loadPath = model.rel_path;
+                loadedExt = model.ext;
+            } else if (model.convertible) {
+                // Convert STEP/FCStd → STL via server
+                const ep = (model.ext === 'fcstd') ? 'convert-fcstd' : 'convert-step';
+                const label = (model.ext === 'fcstd') ? 'FCStd → STL' : 'STEP → STL';
+                infoEl.textContent = `Converting ${model.name} (${label})...`;
+                const r = await fetch(`/api/${ep}?path=${encodeURIComponent(model.rel_path)}`);
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    throw new Error(err.detail || `Conversion failed (${r.status_code})`);
+                }
+                const d = await r.json();
+                loadPath = d.stl_path;
+                loadedExt = 'stl';
+                infoEl.textContent = `${model.name} (converted${d.cached ? ', cached' : ''})`;
+            } else {
+                infoEl.textContent = `${model.ext.toUpperCase()} preview not supported`;
+                return;
+            }
+
+            const fileUrl = `/api/file?path=${encodeURIComponent(loadPath)}`;
+            if (loadedExt === 'stl') {
+                const loader = new window.STLLoader();
+                const geo = await loader.loadAsync(fileUrl);
+                const mat = new THREE.MeshPhongMaterial({ color: 0x00d2ff, wireframe: viewerWireframe, flatShading: true });
+                viewerMesh = new THREE.Mesh(geo, mat);
+                viewerScene.add(viewerMesh);
+                fitCameraToObject(viewerMesh);
+            } else if (loadedExt === 'obj') {
+                const loader = new window.OBJLoader();
+                const obj = await loader.loadAsync(fileUrl);
+                obj.traverse(c => { if (c.isMesh) { c.material = new THREE.MeshPhongMaterial({ color: 0x00d2ff, wireframe: viewerWireframe }); } });
+                viewerMesh = obj;
+                viewerScene.add(viewerMesh);
+                fitCameraToObject(viewerMesh);
+            }
+            const vertCount = viewerMesh ? (viewerMesh.geometry?.attributes?.position?.count || (viewerMesh.children?.length || 0) + ' meshes') : '?';
+            infoEl.textContent = `${model.name} · ${infoEl.textContent.split(' · ')[1] || ''} ${vertCount} verts`.trim();
+        } catch (e) {
+            infoEl.textContent = 'Load error: ' + e.message;
+            console.error(e);
+        }
+    }
+
+    document.getElementById('viewer-wireframe').addEventListener('click', () => {
+        viewerWireframe = !viewerWireframe;
+        if (viewerMesh) {
+            viewerMesh.traverse(c => { if (c.isMesh && c.material) c.material.wireframe = viewerWireframe; });
+        }
+    });
+    document.getElementById('viewer-reset').addEventListener('click', () => {
+        if (viewerMesh) fitCameraToObject(viewerMesh);
+    });
+
+    // Try to init viewer when tab first shown
+    window.addEventListener('three-ready', () => {
+        if (document.getElementById('panel-models').classList.contains('active')) {
+            initViewer();
+        }
+    });
+
+    // =====================================================================
+    // Files tab
+    // =====================================================================
+    let currentFilesPath = '';
+    async function loadFiles(path) {
+        currentFilesPath = path || '';
+        const list = document.getElementById('files-list');
+        const bc = document.getElementById('files-breadcrumb');
+        list.innerHTML = '<div class="empty">Loading…</div>';
+        try {
+            const res = await fetch(`/api/browse?path=${encodeURIComponent(path)}&page_size=200`);
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                list.innerHTML = `<div class="empty">Error: ${escapeHtml(err.detail || res.statusText)}</div>`;
+                return;
+            }
+            const data = await res.json();
+            // Breadcrumb
+            const parts = (data.path === '.' ? '' : data.path).split('/').filter(Boolean);
+            let bcHtml = `<a href="#" data-p="">root</a>`;
+            let acc = '';
+            parts.forEach((p, i) => {
+                acc = acc ? `${acc}/${p}` : p;
+                bcHtml += `<span class="sep">/</span><a href="#" data-p="${escapeHtml(acc)}">${escapeHtml(p)}</a>`;
+            });
+            bc.innerHTML = bcHtml;
+            bc.querySelectorAll('a').forEach(a => a.addEventListener('click', e => { e.preventDefault(); loadFiles(a.dataset.p); }));
+
+            if (!data.entries || data.entries.length === 0) {
+                list.innerHTML = '<div class="empty">Empty directory</div>';
+                return;
+            }
+            const icons = { folder: '📁', freecad: '🔩', model3d: '🧊', image: '🖼', code: '📝', data: '📊', text: '📄', other: '📄' };
+            list.innerHTML = data.entries.map(e => {
+                if (e.type === 'folder') {
+                    return `<div class="file-item" data-p="${escapeHtml(e.rel_path)}" data-folder="1">
+                        <span class="file-icon">${icons.folder}</span>
+                        <span class="file-name"><a href="#">${escapeHtml(e.name)}</a></span>
+                        <span class="file-meta">${e.modified ? new Date(e.modified).toLocaleString() : ''}</span>
+                    </div>`;
+                } else {
+                    const fileUrl = `/api/file?path=${encodeURIComponent(e.rel_path)}`;
+                    const preview = e.type === 'image'
+                        ? ` onclick="showImage('${fileUrl}')"`
+                        : '';
+                    return `<div class="file-item">
+                        <span class="file-icon">${icons[e.type] || icons.other}</span>
+                        <span class="file-name"><a href="${fileUrl}" target="_blank" ${preview ? '' : ''}>${escapeHtml(e.name)}</a> ${e.type === 'image' ? `<a href="${fileUrl}" target="_blank" onclick="event.preventDefault(); showImage('${fileUrl}')">👁</a>` : ''}</span>
+                        <span class="file-meta">${e.size_kb} KB · ${e.modified ? new Date(e.modified).toLocaleString() : ''}</span>
+                    </div>`;
+                }
+            }).join('');
+            list.querySelectorAll('[data-folder="1"]').forEach(el => {
+                el.addEventListener('click', () => loadFiles(el.dataset.p));
+            });
+        } catch (e) {
+            list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+    document.getElementById('files-refresh').addEventListener('click', () => loadFiles(currentFilesPath));
+    document.getElementById('files-home').addEventListener('click', () => loadFiles(''));
+
+    // =====================================================================
+    // Sessions tab
+    // =====================================================================
+    async function loadSessions() {
+        const list = document.getElementById('session-list');
+        list.innerHTML = '<div class="empty">Loading…</div>';
+        try {
+            const res = await fetch('/api/sessions');
+            const data = await res.json();
+            document.getElementById('session-count').textContent = data.total;
+            if (!data.sessions || data.sessions.length === 0) {
+                list.innerHTML = '<div class="empty">No sessions yet</div>';
+                return;
+            }
+            list.innerHTML = data.sessions.map(s => {
+                const pct = s.step_count ? Math.round((s.completed / s.step_count) * 100) : 0;
+                return `<div class="session-item" data-id="${escapeHtml(s.session_id)}">
+                    <div class="session-goal">${escapeHtml(s.goal || '(no goal)')}</div>
+                    <div class="session-meta">
+                        <span>${escapeHtml(s.created_at ? new Date(s.created_at).toLocaleString() : '')}</span>
+                        <span>${escapeHtml(s.session_id)}</span>
+                        <span class="session-progress">${s.completed}/${s.step_count} (${pct}%)</span>
+                        <span>🔧 ${s.tool_calls}</span>
+                    </div>
+                </div>`;
+            }).join('');
+            list.querySelectorAll('.session-item').forEach(el => {
+                el.addEventListener('click', async () => {
+                    const id = el.dataset.id;
+                    try {
+                        const r = await fetch(`/api/session/${encodeURIComponent(id)}`);
+                        const d = await r.json();
+                        const overlay = document.getElementById('session-detail-overlay');
+                        const content = document.getElementById('session-detail-content');
+                        content.innerHTML = `<h2>${escapeHtml(d.plan?.goal || id)}</h2>
+                            <div style="margin-bottom: 12px; font-size: 12px; color: #888;">
+                                Session: ${escapeHtml(d.session_id)} · Created: ${escapeHtml(d.created_at)}
+                            </div>
+                            <pre>${escapeHtml(JSON.stringify(d, null, 2))}</pre>
+                            <button onclick="document.getElementById('session-detail-overlay').classList.remove('show')" style="margin-top: 12px;">Close</button>`;
+                        overlay.classList.add('show');
+                    } catch (e) {}
+                });
+            });
+        } catch (e) {
+            list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+    document.getElementById('sessions-refresh').addEventListener('click', loadSessions);
+
+    // =====================================================================
+    // Part Library tab
+    // =====================================================================
+    let partsTemplates = [];
+    let partsSelectedTemplate = null;
+    let partsViewerRenderer, partsViewerScene, partsViewerCamera, partsViewerControls, partsViewerMesh;
+
+    function initPartsViewer() {
+        if (partsViewerRenderer) return;
+        if (!window.THREE) return;
+        const container = document.getElementById('parts-viewer-container');
+        const w = container.clientWidth || 500;
+        const h = 300;
+        partsViewerScene = new THREE.Scene();
+        partsViewerScene.background = new THREE.Color(0x0a0a1a);
+        partsViewerCamera = new THREE.PerspectiveCamera(50, w / h, 0.1, 10000);
+        partsViewerCamera.position.set(50, 50, 100);
+        partsViewerRenderer = new THREE.WebGLRenderer({ antialias: true });
+        partsViewerRenderer.setSize(w, h);
+        partsViewerRenderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(partsViewerRenderer.domElement);
+        partsViewerControls = new window.OrbitControls(partsViewerCamera, partsViewerRenderer.domElement);
+        partsViewerControls.enableDamping = true;
+        partsViewerScene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+        dir.position.set(1, 1, 1);
+        partsViewerScene.add(dir);
+        partsViewerScene.add(new THREE.GridHelper(500, 20, 0x303060, 0x202040));
+        (function animParts() {
+            requestAnimationFrame(animParts);
+            if (partsViewerControls) partsViewerControls.update();
+            if (partsViewerRenderer) partsViewerRenderer.render(partsViewerScene, partsViewerCamera);
+        })();
+    }
+
+    async function loadPartsCatalog(query, category) {
+        const list = document.getElementById('parts-list');
+        list.innerHTML = '<div class="empty">Loading...</div>';
+        try {
+            let url = '/api/parts/catalog?';
+            if (query) url += `query=${encodeURIComponent(query)}&`;
+            if (category) url += `category=${encodeURIComponent(category)}&`;
+            const res = await fetch(url);
+            const data = await res.json();
+            partsTemplates = data.templates || [];
+            document.getElementById('parts-count').textContent = partsTemplates.length;
+            if (partsTemplates.length === 0) {
+                list.innerHTML = '<div class="empty">No parts found</div>';
+                return;
+            }
+            list.innerHTML = partsTemplates.map((t, i) => `
+                <div class="part-item" data-i="${i}">
+                    <div class="part-name">${escapeHtml(t.name_cn)}</div>
+                    <div style="color: #888; font-size: 11px;">${escapeHtml(t.name_en)}</div>
+                    <div class="part-cat">${escapeHtml(t.category)} / ${escapeHtml(t.subcategory)}</div>
+                    ${t.standard_sizes && t.standard_sizes.length > 0 ? `<div style="color: #4caf50; font-size: 10px;">${t.standard_sizes.length} standard sizes</div>` : ''}
+                </div>
+            `).join('');
+            list.querySelectorAll('.part-item').forEach(el => {
+                el.addEventListener('click', () => {
+                    list.querySelectorAll('.part-item').forEach(x => x.classList.remove('active'));
+                    el.classList.add('active');
+                    showPartDetail(partsTemplates[parseInt(el.dataset.i)]);
+                });
+            });
+        } catch (e) {
+            list.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    }
+
+    function showPartDetail(template) {
+        partsSelectedTemplate = template;
+        const detail = document.getElementById('parts-detail');
+        const genBtn = document.getElementById('parts-generate-btn');
+        genBtn.disabled = false;
+
+        let html = `
+            <div style="font-size: 16px; font-weight: 600; color: #00d2ff; margin-bottom: 4px;">${escapeHtml(template.name_cn)}</div>
+            <div style="font-size: 12px; color: #888; margin-bottom: 8px;">${escapeHtml(template.name_en)} · ${escapeHtml(template.category)}/${escapeHtml(template.subcategory)}</div>
+            <div style="font-size: 12px; color: #aaa; margin-bottom: 12px;">${escapeHtml(template.description)}</div>
+            <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Tags: ${template.tags.map(t => escapeHtml(t)).join(', ')}</div>
+            <div style="font-size: 13px; font-weight: 600; margin: 8px 0 4px;">Parameters:</div>
+        `;
+
+        template.parameters.forEach(p => {
+            html += `
+                <div class="part-param">
+                    <label>${escapeHtml(p.display_name_cn)} (${p.unit})</label>
+                    <input type="number" id="pp-${p.name}" value="${p.default}" step="${p.step}" min="${p.min_value}" max="${p.max_value}" ${p.fixed ? 'disabled' : ''}>
+                    <span class="param-range">[${p.min_value} - ${p.max_value}]</span>
+                </div>
+            `;
+        });
+
+        if (template.standard_sizes && template.standard_sizes.length > 0) {
+            html += `<div style="font-size: 13px; font-weight: 600; margin: 12px 0 4px;">Standard Sizes:</div>`;
+            template.standard_sizes.forEach((sz, i) => {
+                const dims = Object.entries(sz).map(([k,v]) => `${k}=${v}`).join(', ');
+                html += `<span class="variant-btn" data-variant="${i}">${escapeHtml(dims)}</span>`;
+            });
         }
 
-        // WebSocket
-        const ws = new WebSocket(`ws://${location.host}/ws`);
+        if (template.notes) {
+            html += `<div style="font-size: 11px; color: #666; margin-top: 8px; font-style: italic;">${escapeHtml(template.notes)}</div>`;
+        }
+
+        detail.innerHTML = html;
+
+        // Wire variant buttons
+        detail.querySelectorAll('.variant-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const vi = parseInt(btn.dataset.variant);
+                const sz = template.standard_sizes[vi];
+                detail.querySelectorAll('.variant-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                Object.entries(sz).forEach(([k, v]) => {
+                    const inp = document.getElementById(`pp-${k}`);
+                    if (inp) inp.value = v;
+                });
+            });
+        });
+    }
+
+    document.getElementById('parts-generate-btn').addEventListener('click', async () => {
+        if (!partsSelectedTemplate) return;
+        const genBtn = document.getElementById('parts-generate-btn');
+        genBtn.disabled = true;
+        genBtn.textContent = 'Generating...';
+
+        const params = {};
+        partsSelectedTemplate.parameters.forEach(p => {
+            const inp = document.getElementById(`pp-${p.name}`);
+            if (inp) params[p.name] = parseFloat(inp.value) || p.default;
+        });
+
+        try {
+            const res = await fetch('/api/parts/generate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ part_id: partsSelectedTemplate.id, parameters: params })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                alert('Generation failed: ' + (data.detail || 'Unknown error'));
+                return;
+            }
+            // Show generated part in 3D viewer
+            if (data.stl_rel) {
+                initPartsViewer();
+                if (partsViewerMesh) {
+                    partsViewerScene.remove(partsViewerMesh);
+                    if (partsViewerMesh.geometry) partsViewerMesh.geometry.dispose();
+                    partsViewerMesh = null;
+                }
+                const fileUrl = `/api/file?path=${encodeURIComponent(data.stl_rel)}`;
+                const loader = new window.STLLoader();
+                const geo = await loader.loadAsync(fileUrl);
+                const mat = new THREE.MeshPhongMaterial({ color: 0x00d2ff, flatShading: true });
+                partsViewerMesh = new THREE.Mesh(geo, mat);
+                partsViewerScene.add(partsViewerMesh);
+                // Fit camera
+                const box = new THREE.Box3().setFromObject(partsViewerMesh);
+                const size = box.getSize(new THREE.Vector3());
+                const center = box.getCenter(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const fitDist = maxDim / (2 * Math.tan(Math.PI * partsViewerCamera.fov / 360)) * 1.5;
+                partsViewerCamera.position.set(center.x + fitDist * 0.7, center.y + fitDist * 0.5, center.z + fitDist);
+                partsViewerControls.target.copy(center);
+                partsViewerControls.update();
+            }
+            alert(`Part generated: ${data.name}\nSTL: ${data.stl_size_kb || '?'} KB`);
+        } catch (e) {
+            alert('Error: ' + e.message);
+        } finally {
+            genBtn.disabled = false;
+            genBtn.textContent = 'Generate Part';
+        }
+    });
+
+    document.getElementById('parts-search-btn').addEventListener('click', () => {
+        const q = document.getElementById('parts-search-input').value;
+        const cat = document.getElementById('parts-category-filter').value;
+        loadPartsCatalog(q, cat);
+    });
+    document.getElementById('parts-search-input').addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') document.getElementById('parts-search-btn').click();
+    });
+
+    // Load parts when tab is shown
+    const origTabHandler = document.querySelectorAll('.tab');
+    origTabHandler.forEach(tab => {
+        tab.addEventListener('click', () => {
+            if (tab.dataset.tab === 'parts' && partsTemplates.length === 0) {
+                loadPartsCatalog('', '');
+            }
+        });
+    });
+
+    // =====================================================================
+    // Search filters
+    // =====================================================================
+    document.getElementById('log-search').addEventListener('input', () => {
+        updateLogs(_lastState && _lastState.logs);
+    });
+    document.getElementById('tool-search').addEventListener('input', () => {
+        updateToolCalls(_lastState && _lastState.tool_calls);
+    });
+
+    // =====================================================================
+    // WebSocket
+    // =====================================================================
+    let _lastState = null;
+    function applyState(data) {
+        if (!data) return;
+        // Merge into last state (delta support)
+        if (_lastState) {
+            Object.assign(_lastState, data);
+        } else {
+            _lastState = Object.assign({}, data);
+        }
+        if (data.status) updateStatus(data.status);
+        if (data.plan) updatePlan(data.plan);
+        if (data.logs) updateLogs(data.logs);
+        if (data.tool_calls) updateToolCalls(data.tool_calls);
+        if (data.screenshots) updateGallery(data.screenshots);
+        if (data.vlm_results) updateVLMResults(data.vlm_results);
+        if (data.thinking !== undefined) updateThinking(data.thinking);
+        if (data.thinking_history) updateThinkingHistory(data.thinking_history);
+        if (data.sub_agents) updateSubAgents(data.sub_agents);
+        if (data.dag) updateDAG(data.dag);
+        if (data.session_start) {
+            // Use server-provided session_start if available
+            const t = typeof data.session_start === 'number' ? data.session_start : Date.parse(data.session_start) / 1000;
+            if (!isNaN(t)) sessionStart = t;
+        }
+        if (data.progress) {
+            // progress is {completed, total} (from _broadcast_plan)
+            const p = data.progress;
+            // Only update if no plan was rendered yet
+            if (!data.plan && p && p.total) {
+                progressText.textContent = `${p.completed}/${p.total}`;
+                progressBarFill.style.width = Math.round((p.completed / p.total) * 100) + '%';
+            }
+        }
+    }
+
+    function connectWS() {
+        const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+        const ws = new WebSocket(`${proto}://${location.host}/ws`);
         ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.status) updateStatus(data.status);
-            if (data.plan) updatePlan(data.plan);
-            if (data.logs) updateLogs(data.logs);
-            if (data.tool_calls) updateToolCalls(data.tool_calls);
-            if (data.screenshots) updateGallery(data.screenshots);
-            if (data.vlm_results) updateVLMResults(data.vlm_results);
-            if (data.thinking !== undefined) updateThinking(data.thinking);
-            if (data.sub_agents) updateSubAgents(data.sub_agents);
-            if (data.dag) updateDAG(data.dag);
+            try {
+                const data = JSON.parse(event.data);
+                applyState(data);
+            } catch (e) {}
         };
         ws.onclose = () => {
             statusBadge.textContent = 'DISCONNECTED';
             statusBadge.className = 'status-badge status-error';
+            setTimeout(connectWS, 3000);
         };
+        ws.onerror = () => ws.close();
+    }
+    connectWS();
 
-        // Fallback: poll API
-        setInterval(async () => {
-            try {
-                const res = await fetch('/api/status');
-                const data = await res.json();
-                if (data.status) updateStatus(data.status);
-                if (data.plan) updatePlan(data.plan);
-                if (data.logs) updateLogs(data.logs);
-                if (data.tool_calls) updateToolCalls(data.tool_calls);
-                if (data.screenshots) updateGallery(data.screenshots);
-                if (data.vlm_results) updateVLMResults(data.vlm_results);
-                if (data.thinking !== undefined) updateThinking(data.thinking);
-                if (data.sub_agents) updateSubAgents(data.sub_agents);
-                if (data.dag) updateDAG(data.dag);
-            } catch (e) {}
-        }, 5000);
+    // Fallback polling
+    setInterval(async () => {
+        try {
+            const res = await fetch('/api/status');
+            const data = await res.json();
+            applyState(data);
+        } catch (e) {}
+    }, 8000);
     </script>
 </body>
 </html>

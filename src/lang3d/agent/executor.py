@@ -7,20 +7,11 @@ from typing import Any, Callable
 from ..models.base import Message, ModelResponse, ToolCall
 from ..models.router import ModelRouter, TaskType
 from ..tools.base import ToolRegistry
+from .context import truncate_messages, truncate_tool_result
 from .state import AgentState, PlanStep, StepStatus
 
 
 EXECUTOR_SYSTEM_PROMPT = """你是一个执行助手。你需要完成指定的步骤任务。
-
-工具分类：
-- 文件操作：file_read, file_write, file_edit, file_search, file_glob, list_dir
-- 命令执行：bash, python_exec
-- 屏幕截取：screen_capture, window_capture, list_windows
-- VLM 视觉分析：vlm_analyze, screen_analyze, window_analyze, cad_verify
-- FreeCAD 建模：fc_batch (多步建模), fc_open_gui, fc_close_gui, fc_set_camera, fc_*
-- GUI 自动化：gui_click, gui_type, gui_hotkey, gui_press_key, gui_screenshot, gui_drag, gui_scroll, gui_mouse_pos
-- 仿真分析：fea_run, fea_visualize, fea_vlm_analyze, interference_check, tolerance_analysis, motion_sim, motion_range, motion_trajectory, motion_vlm_analyze
-- CFD 流体分析：cfd_run, cfd_vlm_analyze
 
 视觉感知策略：
 - 建模后使用 fc_open_gui + cad_verify 验证模型
@@ -48,6 +39,37 @@ class Executor:
         self.router = router
         self.tools = tool_registry
         self.max_turns = max_turns_per_step
+
+    @staticmethod
+    def _infer_step_type(step: PlanStep) -> str:
+        """Infer step type from step's expected_tools and description."""
+        desc_lower = step.description.lower()
+        tools_lower = [t.lower() for t in step.expected_tools]
+
+        # Check for simulation keywords
+        if any(k in desc_lower for k in ("fea", "应力", "有限元", "结构分析")):
+            return "simulation"
+        if any(k in desc_lower for k in ("cfd", "流体", "流场")):
+            return "cfd"
+        if any(k in desc_lower for k in ("运动", "motion", "轨迹", "关节")):
+            return "motion"
+
+        # Check by tools
+        if any("fc_" in t or "cad" in t or "part_" in t for t in tools_lower):
+            return "modeling"
+        if any(t in ("cad_verify", "vlm_analyze") for t in tools_lower):
+            return "verification"
+        if any(t in ("file_read", "file_write", "file_edit", "bash") for t in tools_lower):
+            if not any("fc_" in t for t in tools_lower):
+                return "file_ops"
+
+        # Check description for modeling keywords
+        if any(k in desc_lower for k in ("建模", "创建", "模型", "model")):
+            return "modeling"
+        if any(k in desc_lower for k in ("验证", "verify", "检查")):
+            return "verification"
+
+        return "general"
 
     def execute_step(
         self,
@@ -77,8 +99,10 @@ class Executor:
         if step.attempts > 1:
             messages[0].content += f"\n\n（这是第 {step.attempts} 次尝试，之前的尝试失败了）"
 
+        step_type = self._infer_step_type(step)
+
         for turn in range(self.max_turns):
-            tools = self.tools.get_all_definitions()
+            tools = self.tools.get_relevant_definitions(step_type, extra_tools=step.expected_tools)
             response = self.router.chat(
                 messages=messages,
                 tools=tools,
@@ -121,6 +145,9 @@ class Executor:
                 result = self.tools.execute(tc.name, **tc.arguments)
                 state.add_tool_call(tc.name, tc.arguments, result)
 
+                # Truncate large tool results
+                result = truncate_tool_result(result)
+
                 if on_tool_result:
                     try:
                         on_tool_result(tc.name, result)
@@ -143,6 +170,10 @@ class Executor:
                         tool_call_id=tc.id,
                     )
                 )
+
+            # Apply sliding window when messages grow too large
+            if len(messages) > 12:
+                messages = truncate_messages(messages, keep_first=1, keep_last=2)
 
         # Max turns reached
         step.status = StepStatus.FAILED

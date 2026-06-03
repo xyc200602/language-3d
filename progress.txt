@@ -1,49 +1,321 @@
-## 2026-06-02 - Phase 5: 真实工程案例端到端跑通
+# Language-3D 开发进度
+
+按日期倒序组织（最新在最前）。所有历史开发记录在此文件中统一维护。
+
+---
+
+## 2026-06-03 - Task 21: 零件库管理 — 标准件目录与参数化生成
 
 ### What was done:
-
-#### Windows GBK 编码修复：
-1. **Agent callback UnicodeEncodeError 修复**：`core.py` 和 `executor.py` 中所有 `on_tool_call`/`on_tool_result`/`on_thinking` 回调用 try/except 包裹，VLM 返回 Unicode 字符（如 U+2810 盲文）不再崩溃
-2. **subprocess 编码修复**：所有 `subprocess.run(text=True)` 调用添加 `encoding="utf-8", errors="replace"`，覆盖 6 个文件（freecad.py, bash.py, python_exec.py, simulation.py, motion.py, cfd.py）
-
-#### FreeCAD GUI 显示修复：
-3. **fc_open_gui 启动宏缩进错误修复**：`fit_all` 和 `print` 行有错误的 4 空格前导缩进（不在任何代码块内），导致 IndentationError → 宏静默失败 → ViewFit 从未执行 → 模型不可见
-4. **延迟可见性函数 `_ensure_visible()`**：新增延迟调用（500ms），在 FreeCAD GUI 创建 ViewObject 后设置 Visibility=True + DisplayMode='Flat Lines' + ViewFit
-5. **FreeCAD Welcome Screen 抑制**：启动宏中 `FreeCADGui.activateWorkbench('Part')` 强制切换到 Part 工作台，关闭 Start 页面；同时通过 XML user.cfg 设置 `FirstRun=0` + `ShowOnStartup=0` + `AutoloadModule=Part`
-6. **FreeCAD Document Recovery 对话框抑制**：清理 `$LOCALAPPDATA\Temp\FreeCAD` 缓存
-7. **多实例窗口堆积修复**：`fc_open_gui` 和 `fc_close_gui` 使用 `taskkill /F /IM FreeCAD.exe` 强制终止旧进程，避免 "Unsaved Document" 对话框阻塞
-8. **_dismiss_dialogs 增强**：自动检测并点击 "Discard" 按钮处理 "Unsaved Document" 对话框
-
-#### 测试修复：
-9. **test_quick_verify.py**：修复验证逻辑——`result_log` 存储 `on_tool_result` 结果（之前 `tool_log` 只存 call args，检查不到 MATCH: True）
+- 创建 `src/lang3d/knowledge/parts_catalog.py`：
+  - `ParamDef`, `PartTemplate`, `GeneratedPart` 数据类
+  - 15 个标准件模板（螺钉/轴承/舵机/齿轮等），每个含 FreeCAD Python 脚本模板
+  - `CATEGORY_TREE` 类别层级（6 大类 12 子类）
+  - `search_parts`, `get_template`, `get_all_templates`, `resolve_parameters`, `format_fc_script` 辅助函数
+- 创建 `src/lang3d/tools/part_library.py`：
+  - 6 个 Agent 工具：`part_search`, `part_get`, `part_generate`, `part_list`, `part_import`, `part_save`
+  - `part_generate` 通过 FreeCAD 子进程执行参数化脚本生成 .FCStd + .STL 文件
+  - `register_part_library_tools` 注册函数
+- 修改 `src/lang3d/tools/base.py`：`TOOL_CATEGORIES` 新增 `part_library` 类别，`STEP_TOOL_CATEGORIES["modeling"]` 加入 `part_library`
+- 修改 `src/lang3d/agent/core.py`：`AGENT_SYSTEM_PROMPT` 添加 `part_*` 前缀说明和零件库工作流，`Agent.__init__` 注册零件库工具
+- 修改 `src/lang3d/agent/planner.py`：`PLANNER_EXAMPLES` 新增 `part_usage` few-shot 示例，`_detect_task_type` 新增零件库关键词检测（20+ 中英文关键词）
+- 修改 `src/lang3d/agent/executor.py`：`_infer_step_type` 新增 `part_` 工具检测归入 `modeling` 类型
+- 修改 `src/lang3d/web/app.py`：新增 3 个 API 端点（`/api/parts/catalog`, `/api/parts/template/{part_id}`, `/api/parts/generate`）
+- 修改 `src/lang3d/web/static/index.html`：Tab 栏新增 "Part Library" 标签，面板含搜索/类别筛选/零件卡片列表/参数详情/标准尺寸快速选择/3D 预览/一键生成
+- 创建 `tests/test_part_library.py`：43 个测试（数据完整性 5 + 搜索 11 + 参数解析 7 + 脚本生成 4 + 工具注册 2 + 工具执行 7 + 类别树 3 + 回归 4）
 
 ### Testing:
+- 43/43 part library tests pass
+- 440/443 full suite tests pass (3 pre-existing failures unrelated to this change)
+
+### Notes:
+- 零件脚本使用简化几何体（圆柱代替螺纹等），适合装配定位和干涉检查
+- `part_generate` 依赖 FreeCAD，未安装时会返回错误信息
+- Web 面板零件 3D 预览复用 Three.js STLLoader
+- 标准件覆盖：紧固件 4 种、轴承 3 种、执行器 3 种、轴类 2 种、齿轮 1 种、结构件 2 种
+
+---
+
+## 2026-06-02
+
+### Language-3D Agent 智能化提升（4 阶段优化）
+
+**目标**：降低 token 消耗、提升 VLM 验证准确率、增强自修复能力、统一配置管理。
+
+#### Phase 1: Token 优化与上下文管理
+
+**新建 `src/lang3d/agent/context.py`**：
+- `estimate_tokens(text)` — 中英文混合 token 估算（中文 2 字/token，英文 4 字/token）
+- `estimate_messages_tokens(messages)` — 消息列表 token 估算
+- `truncate_messages(messages, max_tokens=8000, keep_first=1, keep_last=2)` — 滑动窗口截断
+- `truncate_tool_result(result, max_chars=3000)` — 截断大型工具结果（保留 VLM 结构化输出头部）
+
+**修改 `src/lang3d/tools/base.py`**：
+- 新增 `TOOL_CATEGORIES` 常量：将工具按功能分为 10 组（file_ops/shell/screen/vlm/freecad/gui/simulation/motion/cfd/solidworks）
+- 新增 `STEP_TOOL_CATEGORIES` 常量：映射 7 种步骤类型到所需工具类别
+- 新增 `ToolRegistry.get_relevant_definitions(step_type, extra_tools)` — 建模步骤只发送 ~25 个相关工具定义（而非全部 69 个），未知类型回退全量
+
+**修改 `src/lang3d/agent/executor.py`**：
+- 新增 `_infer_step_type(step)` 静态方法：根据 expected_tools 和 description 推断步骤类型
+- `execute_step()` 中使用 `get_relevant_definitions()` 过滤工具
+- 对大于 3000 字符的 tool result 调用 `truncate_tool_result()`
+- messages 超过 12 条时调用 `truncate_messages()` 滑动窗口
+
+**修改 `src/lang3d/agent/core.py`**：
+- `AGENT_SYSTEM_PROMPT` 从 ~2000 tokens 压缩到 ~500 tokens（646 字符）
+  - 移除工具使用策略中的冗余分类列表（工具定义已通过 API 发送）
+  - 移除 fc_menu vs fc_batch 详细比较（保留"优先 fc_batch"）
+  - 移除仿真工作流详细步骤（保留工具名称列表）
+  - 保留所有 test_prompt.py 关键词：fc_batch, cad_verify, fc_open_gui, fc_*, sw_*, gui_*, MATCH, match=false, DIFFERENCES, SUGGESTION, standard, detailed, detail=, mm/毫米, {workspace}, 规划/Plan, 建模/Model, 验证/Verify, 修正/Fix
+- `EXECUTOR_SYSTEM_PROMPT` 从 ~600 压缩到 260 字符（移除冗余工具分类列表）
+- `_run_direct()` 中应用工具结果截断和消息滑动窗口
+
+**测试**：`tests/test_context.py` 14 tests + `tests/test_tools_filter.py` 7 tests = 21 新测试通过
+
+---
+
+#### Phase 2: VLM 验证准确率提升
+
+**修改 `src/lang3d/tools/vlm.py`**：
+
+验证提示词重设计（chain-of-thought）：
+- 先描述看到的内容 → 再逐项对比 → 最后给出结论
+- 允许 markdown code block 包裹 JSON（VLM 自然倾向）
+- 移除冗长示例（节省 ~200 tokens）
+- 新增 `confidence` 字段（high/medium/low）
+- 添加"宽容匹配"指令：仅形状/结构明显不同才报 MISMATCH
+
+JSON 解析三阶段策略（重写 `_parse_verification_json`）：
+1. **策略 1**：从 ` ```json ... ``` ` markdown code block 提取
+2. **策略 2**：括号深度追踪提取裸 JSON 对象（支持多行、嵌套）
+3. **策略 3**：逐字段正则提取回退
+
+新增 `_normalize_verification(data)` 辅助函数：
+- 统一布尔值解析（true/True/yes/1）
+- null/"null"/"None"/"" 统一为 "None"
+
+**测试**：`tests/test_vlm_parsing.py` 15 tests 通过（原始 JSON、markdown 包裹、多行、纯文本回退、中文、混合大小写）
+
+---
+
+#### Phase 3: 智能自修复循环
+
+**新建 `src/lang3d/agent/fix_strategy.py`**：
+- `FailureType` 枚举：MISSING_FEATURE / WRONG_DIMENSION / WRONG_POSITION / WRONG_SHAPE / EXTRA_FEATURE / ASSEMBLY_ERROR / UNKNOWN
+- `FixContext` 数据类：失败类型、描述、目标特征、期望/实际值、修复历史
+- `classify_failure(cad_verify_result, expected)` → `FixContext`：关键词启发式分类
+- `generate_fix_hint(ctx)` → `str`：根据失败类型生成中文定向修复提示
+- `check_convergence(previous_fixes, current_result, threshold=0.8)` → `bool`：difflib 文本相似度检测修复循环
+
+**修改 `src/lang3d/agent/core.py`**：
+- 替换 `_run_direct()` 中朴素 auto-fix 逻辑：
+  - 用 `classify_failure()` 分类失败类型
+  - 用 `generate_fix_hint()` 生成定向提示
+  - 用 `check_convergence()` 检测循环 → 提示"尝试完全不同的建模方法"
+
+**修改 `src/lang3d/agent/reflector.py`**：
+- 工具历史窗口 5 → 10
+- 单条结果截断 200 → 300 字符
+- `max_tokens` 1024 → 2048
+
+**测试**：`tests/test_fix_strategy.py` 14 tests 通过（分类、hint 生成、收敛检测）
+
+---
+
+#### Phase 4: Planner 质量与配置统一
+
+**修改 `src/lang3d/config.py`** — `AgentConfig` 新增字段：
+| 字段 | 默认值 | 用途 |
+|------|--------|------|
+| `max_turns_per_step` | 10 | 替代 executor.py 硬编码 |
+| `max_verify_retries` | 3 | 替代 core.py 硬编码 |
+| `max_plan_retries` | 3 | 替代 core.py 硬编码 |
+| `conversation_max_tokens` | 8000 | 滑动窗口用 |
+| `tool_result_max_chars` | 3000 | 结果截断用 |
+
+新增环境变量映射：`AGENT_MAX_TURNS_PER_STEP`、`AGENT_MAX_VERIFY_RETRIES`、`AGENT_MAX_PLAN_RETRIES`、`AGENT_CONVERSATION_MAX_TOKENS`、`AGENT_TOOL_RESULT_MAX_CHARS`
+
+**修改 `src/lang3d/agent/planner.py`**：
+- 新增 `PLANNER_EXAMPLES` 字典：按任务类型（assembly/single_part）提供 few-shot 示例
+- 新增 `_detect_task_type(task)` 静态方法：识别 assembly vs single_part
+- 修改 `create_plan()`：注入对应 few-shot 示例到系统提示词
+- 新增 `_validate_plan(plan)` 静态方法：
+  - 为使用 fc_batch 的步骤自动补充 cad_verify 到 expected_tools
+  - 为缺少 verification 的建模步骤自动添加验证条件
+- 在 `create_plan()` 末尾调用 `_validate_plan()`
+
+**修改 `src/lang3d/agent/core.py`**：
+- `_run_with_planning()` 中 `max_retries = 3` → `getattr(self.config.agent, "max_plan_retries", 3)`
+- `_run_direct()` 中 `max_verify_retries = 3` → `getattr(self.config.agent, "max_verify_retries", 3)`
+
+**测试**：`tests/test_planner_validation.py` 11 tests + `tests/test_config_extended.py` 6 tests = 17 新测试通过
+
+---
+
+#### 测试结果
+
+| 指标 | 数值 |
+|------|------|
+| 新增测试 | 67 tests（全部通过） |
+| 全量回归 | **397 passed, 3 failed** |
+| 失败原因 | 全部为预先存在的问题（VLM 429 速率限制、LLM 超时、Web panel 状态泄漏） |
+| test_prompt.py | 10/10 全部通过（所有关键词保留） |
+
+#### 文件变更总览
+
+| 文件 | 变更类型 |
+|------|----------|
+| `src/lang3d/agent/context.py` | **新建** — token 估算 + 消息截断 |
+| `src/lang3d/agent/fix_strategy.py` | **新建** — 失败分类 + 修复策略 |
+| `src/lang3d/tools/base.py` | 修改 — 工具类别 + get_relevant_definitions |
+| `src/lang3d/agent/executor.py` | 修改 — 步骤推断 + 工具过滤 + 截断 |
+| `src/lang3d/agent/core.py` | 修改 — 压缩提示词 + 智能修复 + 上下文管理 |
+| `src/lang3d/tools/vlm.py` | 修改 — 验证提示词 + JSON 解析增强 |
+| `src/lang3d/agent/reflector.py` | 修改 — 扩大上下文窗口 |
+| `src/lang3d/config.py` | 修改 — 新增 5 个配置字段 |
+| `src/lang3d/agent/planner.py` | 修改 — few-shot + 计划验证 |
+| `tests/test_context.py` | **新建** — 14 tests |
+| `tests/test_tools_filter.py` | **新建** — 7 tests |
+| `tests/test_vlm_parsing.py` | **新建** — 15 tests |
+| `tests/test_fix_strategy.py` | **新建** — 14 tests |
+| `tests/test_planner_validation.py` | **新建** — 11 tests |
+| `tests/test_config_extended.py` | **新建** — 6 tests |
+
+**Notes**:
+- 压缩后的 AGENT_SYSTEM_PROMPT（646 字符）保留了所有 test_prompt.py 检查的关键词
+- 工具过滤对未知步骤类型回退到全量定义，保证向后兼容
+- VLM 验证提示词的"宽容匹配"指令旨在降低 MISMATCH 误报率
+- `_validate_plan()` 自动补充 cad_verify 确保建模步骤不会遗漏验证
+
+---
+
+**问题背景**：工作区 60 个模型文件中 34 个是 .FCStd，2 个是 .STEP，浏览器无法直接渲染（用户反馈"3d 渲染大部分都渲染不出来"）。
+
+**STEP → STL 后端转换** (`src/lang3d/web/app.py` 新增 `/api/convert-step`):
+- FreeCADCmd (headless) 执行转换脚本：`Part.Shape().read(step)` → `MeshPart.meshFromShape(shape, LinearDeflection=0.5, AngularDeflection=0.523599)` → `mesh.write(stl)`
+- 缓存为 `<name>.preview.stl`，如缓存比源文件新则复用
+- 60秒超时，路径安全验证
+
+**FCStd → STL 后端转换** (`src/lang3d/web/app.py` 新增 `/api/convert-fcstd`):
+- `FreeCAD.openDocument(fcstd)` 打开文档
+- 遍历 `doc.Objects`，跳过 `Visibility=False` 的对象
+- 收集所有非空 `obj.Shape` → `Part.makeCompound(shapes)` 合并
+- `MeshPart.meshFromShape(compound)` 网格化 → `mesh.write(stl)` 输出
+- 120秒超时（FCStd 可能包含复杂多体模型）
+
+**`/api/models` 排序与元数据增强**：
+- 新增字段：`previewable`（STL/OBJ 且非空）、`convertible`（STEP/FCStd 且 FreeCAD 可用）、`empty`（0 字节）
+- 排序逻辑：`(rank, -mtime)` — previewable(rank=0) → convertible(rank=1) → blocked(rank=2)
+- 返回 `freecad_available` 标志
+
+**前端 badge 与交互** (`src/lang3d/web/static/index.html`)：
+- 绿色 `STL` badge：浏览器直接渲染
+- 橙色 `STEP→STL` / `FCStd→STL` badge：点击后调用转换端点
+- 灰色 `EMPTY` / `FCSTD` 等 badge + disabled 状态：不可点击
+- `openModel()` 根据 `model.ext` 路由到 `/api/convert-step` 或 `/api/convert-fcstd`
+
+**Testing**:
+- `pytest tests/test_web_panel.py -v`：32 passed（无回归）
+- 手动验证：base_plate.step → 9KB STL ✓；agent_cube_test.FCStd → 684B STL ✓；shoulder_link.FCStd → 78KB STL（多 shape 合并）✓；test_box.FCStd 缓存命中 ✓
+- 浏览器手动测试：用户确认 "stl 都可以"
+
+**Notes**:
+- LinearDeflection=0.5 / AngularDeflection=0.523599（约30°）为预览级精度
+- FCStd 中被隐藏的对象（`Visibility=False`）会被跳过
+- `Part.makeCompound(shapes)` 合并多个 shape 后再 tessellate
+- `with_suffix(".preview.stl")` 会替换原后缀，`foo.FCStd` 和 `foo.step` 都生成 `foo.preview.stl`（同名时后者覆盖前者，不影响功能）
+- FreeCAD 转换是同步阻塞的（subprocess.run），高并发场景可能需要改为异步队列
+
+---
+
+### Phase 5: 真实工程案例端到端跑通
+
+**Windows GBK 编码修复**：
+1. Agent callback UnicodeEncodeError 修复：`core.py` 和 `executor.py` 中所有 `on_tool_call`/`on_tool_result`/`on_thinking` 回调用 try/except 包裹，VLM 返回 Unicode 字符（如 U+2810 盲文）不再崩溃
+2. subprocess 编码修复：所有 `subprocess.run(text=True)` 调用添加 `encoding="utf-8", errors="replace"`，覆盖 6 个文件（freecad.py, bash.py, python_exec.py, simulation.py, motion.py, cfd.py）
+
+**FreeCAD GUI 显示修复**：
+3. fc_open_gui 启动宏缩进错误修复：`fit_all` 和 `print` 行有错误的 4 空格前导缩进（不在任何代码块内），导致 IndentationError → 宏静默失败 → ViewFit 从未执行 → 模型不可见
+4. 延迟可见性函数 `_ensure_visible()`：新增延迟调用（500ms），在 FreeCAD GUI 创建 ViewObject 后设置 Visibility=True + DisplayMode='Flat Lines' + ViewFit
+5. FreeCAD Welcome Screen 抑制：启动宏中 `FreeCADGui.activateWorkbench('Part')` 强制切换到 Part 工作台，关闭 Start 页面；同时通过 XML user.cfg 设置 `FirstRun=0` + `ShowOnStartup=0` + `AutoloadModule=Part`
+6. FreeCAD Document Recovery 对话框抑制：清理 `$LOCALAPPDATA\Temp\FreeCAD` 缓存
+7. 多实例窗口堆积修复：`fc_open_gui` 和 `fc_close_gui` 使用 `taskkill /F /IM FreeCAD.exe` 强制终止旧进程
+8. `_dismiss_dialogs` 增强：自动检测并点击 "Discard" 按钮处理 "Unsaved Document" 对话框
+
+**测试修复**：
+9. `test_quick_verify.py`：修复验证逻辑——`result_log` 存储 `on_tool_result` 结果（之前 `tool_log` 只存 call args，检查不到 MATCH: True）
+
+**Testing**:
 - L-bracket 端到端测试：MATCH: True ✓（4 tool calls, 55s）— 从 50 calls/407s 大幅优化
-- VLM 确认 "A 3D model displaying a gray L-shaped structure with a horizontal rectangular base and a vertical rectangular plate"
 - 悬臂支架工程案例：MATCH: True ✓（9 tool calls, 363s）— 120x80x10 底板 + 10x80x60 竖板 + 4个安装孔 + 1个轴承孔
-- 阶梯轴工程案例：验证通过 ✓（25 tool calls, 223s）— 三段轴 φ20x30 + φ15x25 + φ10x20 + 键槽，mesh_stats 确认尺寸正确
+- 阶梯轴工程案例：验证通过 ✓（25 tool calls, 223s）— 三段轴 φ20x30 + φ15x25 + φ10x20 + 键槽
 - 单元测试：38/38 passed（test_tools.py 20 + test_e2e_freecad.py 18）
 - 全量测试：291 passed, 1 failed（VLM 429 速率限制，非回归）
 - 工程案例：2/2 ALL ENGINEERING CASES COMPLETED SUCCESSFULLY
 
-### Notes:
+**Notes**:
 - VLM 429 速率限制仍然偶尔发生，建议在连续 VLM 调用之间增加延迟
-- FreeCAD 1.1.1 Welcome Screen 需要在启动宏中 `activateWorkbench('Part')` 才能可靠抑制，仅修改配置参数不够
+- FreeCAD 1.1.1 Welcome Screen 需要在启动宏中 `activateWorkbench('Part')` 才能可靠抑制
 - 使用 `taskkill /F` 替代 `WM_CLOSE` 解决了 "Unsaved Document" 对话框问题
 - FreeCAD 1.1.1 在 headless 模式创建的对象，GUI 打开后 ViewObject 需要时间初始化，延迟 500ms 的 `_ensure_visible` 解决此问题
 
-## 2026-06-01 - Task 15: FreeCAD 端到端实战测试 (Phase 4)
+---
 
-### What was done:
+### Phase 4: Web 监控面板增强
 
-#### 发现并修复的 FEA FreeCAD 1.1 兼容性问题：
-1. **Face References 格式错误**：`fixed.References = [(obj, face_object)]` → `[(obj, ("FaceN",))]`（FreeCAD 1.1 要求字符串子元素名称）
-2. **Force Direction 属性不存在**：移除 `force.Direction = Vector(...)` → 改用 face normal 自动方向 + `force.Reversed`
-3. **Solver API 不兼容**：`FemInputWriterCcx` 在 FreeCAD 1.1 中不存在 → 改用 `ccxtools.FemToolsCcx(analysis, solver)` API
-4. **Solver 属性不存在**：`IterationsControlMethod` / `IterationsMax` 不存在 → 用 try/except 保护
-5. **Mesh API 不兼容**：`fem_mesh.Part` / `fem_mesh.MeshResult` 不存在 → 改用 `gmshtools.GmshTools(mesh_obj).create_mesh()`
+**src/lang3d/web/app.py** 从 229 行扩展到 ~675 行，新增以下功能：
+- `GET /api/screenshot-file`：修复前端 JS 引用但后端缺失的截图文件端点（带路径安全验证：仅允许 `data/` 子目录）
+- `GET /api/file`：通用工作区文件下载端点
+- `POST /api/run-task`、`POST /api/stop-task`、`GET /api/is-running`、`GET /api/task-history`：任务提交与控制（后台线程执行，不阻塞 Web 服务）
+- `GET /api/models`：扫描工作区 STL/STEP/OBJ/FCStd 文件，返回带大小/修改时间的列表
+- `GET /api/browse`：目录浏览（分页 + 父目录导航 + 类型分类）
+- `GET /api/sessions`、`GET /api/session/{id}`：会话历史（扫描 `.lang3d_state.json`）
+- WebSocket delta 更新：初次连接发送完整快照，后续只发送变化字段
+- `set_agent_instance()`：注册 Agent 实例供 Web 端调用
+- 状态更新加锁（threading.Lock），保证并发安全
 
-#### 创建端到端测试套件 `tests/test_e2e_freecad.py`（18 个测试）：
+**src/lang3d/web/static/index.html** 从 441 行扩展到 ~1170 行：
+- 新增 Tab：Task、3D Models、Files、History
+- Three.js (CDN) STL/OBJ 浏览器内渲染（STLLoader + OrbitControls + 自动 fit camera）
+- 进度条（步骤完成百分比）+ session 计时器（MM:SS）
+- 思考流光标动画 + 思考历史面板
+- 日志/工具调用搜索过滤 + 工具调用统计栏
+- 截图画廊分页（每页 20 张）
+- SVG 渲染的 DAG 可视化（替代 HTML）
+- 响应式布局（移动端适配）
+
+**src/lang3d/agent/core.py**：
+- 新增 `_broadcast_plan()` 辅助方法：把当前 plan 序列化为 JSON 推送到 Web 面板
+- `_run_with_planning()` 入口处增加 `update_agent_state(status="running")` 与日志
+- 每步执行后调用 `_broadcast_plan()`，任务结束时广播 `status="complete"`
+
+**src/lang3d/cli.py**：Agent 初始化后调用 `set_agent_instance(agent)` 注册实例
+
+**Testing**:
+- `pytest tests/test_web_panel.py -v`：32 passed (18 原有 + 14 新增)
+- `pytest tests/ --ignore=...`：270 passed（除外部 API 限流的 test_vlm_perception）
+- 手动 smoke test：screenshot-file、file、browse、models、run-task、is-running、stop-task 全部返回预期状态码
+
+**Notes**:
+- Three.js 通过 CDN 加载（importmap 方式），离线环境需要修改 index.html
+- `_task_stop_flag` 是协作式停止信号，目前 Agent 主循环不检查此标志（如需硬中断需要进一步在 executor 中加 hook）
+- 文件浏览只允许 `data/` 目录下的文件，路径遍历（`..`）会返回 403
+- WebSocket 在没有客户端时自动重置 delta 基线
+
+---
+
+## 2026-06-01
+
+### Task 15: FreeCAD 端到端实战测试 (Phase 4)
+
+**发现并修复的 FEA FreeCAD 1.1 兼容性问题**：
+1. Face References 格式错误：`fixed.References = [(obj, face_object)]` → `[(obj, ("FaceN",))]`（FreeCAD 1.1 要求字符串子元素名称）
+2. Force Direction 属性不存在：移除 `force.Direction = Vector(...)` → 改用 face normal 自动方向 + `force.Reversed`
+3. Solver API 不兼容：`FemInputWriterCcx` 在 FreeCAD 1.1 中不存在 → 改用 `ccxtools.FemToolsCcx(analysis, solver)` API
+4. Solver 属性不存在：`IterationsControlMethod` / `IterationsMax` 不存在 → 用 try/except 保护
+5. Mesh API 不兼容：`fem_mesh.Part` / `fem_mesh.MeshResult` 不存在 → 改用 `gmshtools.GmshTools(mesh_obj).create_mesh()`
+
+**创建端到端测试套件 `tests/test_e2e_freecad.py`（18 个测试）**：
 - TestFreeCADBasicModeling（5 tests）：box、cylinder、sphere、cone、availability
 - TestFreeCADBooleanOps（3 tests）：boolean cut、union、plate_with_holes
 - TestFreeCADExport（4 tests）：save .FCStd、export STL、export STEP、full pipeline
@@ -51,38 +323,23 @@
 - TestFreeCADBatchTool（2 tests）：registration、execution
 - TestFreeCADFEAIntegration（2 tests）：FEA cantilever beam、mesh generation
 
-#### 新增 Phase 4 任务（Task 16-18）：
-- Task 16：Agent 真实建模流程验证（Planner → Executor → Verifier 闭环）
-- Task 17：FEA 应力结果解析增强（.frd 文件解析、安全系数计算）
-- Task 18：rotate 工具 FreeCAD 1.1 兼容修复
+**Testing**: `pytest tests/test_e2e_freecad.py -v`：18/18 passed
 
-### Testing:
-- `pytest tests/test_e2e_freecad.py -v`：18/18 passed
-- `pytest tests/test_simulation.py -v`：46/46 passed（+1 新增）
-- `pytest tests/ -v`：312 passed（含新增 19 个测试，1 个 VLM 速率限制跳过）
-
-### Notes:
+**Notes**:
 - FreeCAD 1.1.1 安装路径：`C:\Users\xyc\AppData\Local\Programs\FreeCAD 1.1\bin`
-- CalculiX (ccx.exe) 在 FreeCAD bin 目录下可用
-- Gmsh 在 FreeCAD bin 目录下可用
+- CalculiX (ccx.exe) 和 Gmsh 在 FreeCAD bin 目录下可用
 - FEA 全流程验证通过：建模 → 网格生成 → CalculiX 求解 → 结果加载
-- rotate 操作有 FreeCAD Rotation API 兼容问题，单独标记为 Task 18
 
-#### Task 18: rotate 工具 FreeCAD 1.1 兼容修复
-- 修复 `fc_rotate`：`shape.rotate(Rotation)` → `shape.rotate(center, axis, angle_deg)`（FreeCAD 1.1 的 Shape.rotate 签名是 3 个参数）
-- 简化旋转脚本：移除冗余的 translate → rotate → translate 步骤，直接使用 `shape.rotate(center, axis, angle)`
-- e2e 测试验证：旋转 45° 后体积不变（1000mm3），bounding box 正确变化（21.21mm）
+---
 
-## 2026-06-01 - Task 16: Agent 真实建模流程验证 + Task 18 rotate 修复
+### Task 16: Agent 真实建模流程验证 + Task 18 rotate 修复
 
-### What was done:
-
-#### GLM-5.1 推理模型 max_tokens 修复：
+**GLM-5.1 推理模型 max_tokens 修复**：
 - GLM-5.1 是推理模型（类似 o1），大量 token 用于 reasoning_tokens，需要 max_tokens>=4096 才能正常输出
 - 将所有模型层（base.py, glm.py, ollama.py, openai.py, router.py）的默认 max_tokens 从 4096 改为 100000
 - 验证 LLM 正常工作（reasoning_tokens + content_tokens 分开计算）
 
-#### Agent 直接建模流程验证（_run_direct）：
+**Agent 直接建模流程验证（_run_direct）**：
 - **简单任务**：fc_batch 创建 30x30x30 正方体 → 保存 FCStd → cad_verify MATCH:True ✓
 - **复杂任务**：L型支架（底板 80x60x8 + 竖板 8x60x40 + 4个φ6通孔）
   - fc_batch 创建基础 L 型 → cad_verify 检测到缺少孔（MATCH:False）✓
@@ -90,31 +347,31 @@
   - mesh_stats 验证：80x60x40, watertight ✓
   - VLM 最终确认："The 3D model visible is an L-shaped bracket" ✓
 
-#### 发现的问题：
+**发现的问题**：
 1. VLM 对小孔（6mm）的视觉识别能力有限（从等角视图难以观察到）
 2. 429 速率限制偶尔发生（VLM 调用过于频繁）
 3. Unicode 编码错误：LLM 返回 emoji 导致 GBK 编码错误
 
-#### 新增测试 tests/test_agent_real_flow.py：
+**Task 18: rotate 工具 FreeCAD 1.1 兼容修复**：
+- 修复 `fc_rotate`：`shape.rotate(Rotation)` → `shape.rotate(center, axis, angle_deg)`（FreeCAD 1.1 的 Shape.rotate 签名是 3 个参数）
+- 简化旋转脚本：移除冗余的 translate → rotate → translate 步骤
+- e2e 测试验证：旋转 45° 后体积不变（1000mm3），bounding box 正确变化（21.21mm）
+
+**新增测试 tests/test_agent_real_flow.py**：
 - TestAgentToolRegistration: 工具注册验证（3 tests）
 - TestAgentDirectModeling: 直接建模流程（3 tests, 需要 API key）
 - TestAgentPlanning: 规划模式建模（1 test, 需要 API key）
 
-### Testing:
-- 291 unit tests passed（排除 VLM 速率限制测试和 e2e API 测试）
-- Agent 直接建模 2 个场景验证通过
-- Agent 自动修复闭环验证通过（cad_verify mismatch → fix → verify）
+**Testing**: 291 unit tests passed（排除 VLM 速率限制测试和 e2e API 测试）
 
-### Notes:
-- VLM 对小特征的识别建议用 detail="detailed" + 底部/正面视图
-- GLM-5.1 推理 tokens 不计入 visible content，只占 max_tokens 配额
-- Agent 创建文件默认在 AGENT_WORKSPACE 目录
+---
 
-#### Task 17: FEA 应力结果解析增强
+### Task 17: FEA 应力结果解析增强
+
 - 新增 `parse_frd()` 函数：解析 CalculiX .frd 结果文件
   - 提取每个节点的位移向量 (dx, dy, dz)
   - 提取每个节点的应力张量 (sxx, syy, szz, sxy, syz, szx)
-  - 计算 von Mises 等效应力：sqrt(0.5*((sxx-syy)^2 + (syy-szz)^2 + (szz-sxx)^2 + 6*(sxy^2+syz^2+szx^2)))
+  - 计算 von Mises 等效应力
   - 处理 Fortran 科学计数法（负号紧跟前值无空格）
 - FEA 脚本增加 `WORKING_DIR` 输出，用于定位 .frd 文件
 - FEA 脚本修复文件名：`FEMMesh.frd`（非 `Mesh.frd`）
@@ -125,72 +382,516 @@
   - 返回结构化 JSON：max_von_mises_stress, max_displacement, node_count, safety_factor, safe
 - 实际验证：悬臂梁 100x20x5, steel, 1000N → max_stress=0.000449MPa, SF=780321, safe=true
 
-## 2026-05-31 - Task 13+14: CFD 流体分析 + 运动仿真
+---
 
-### What was done:
+## 2026-05-31
 
-#### Task 14: 运动仿真（FreeCAD Assembly）
-- 扩展 `src/lang3d/knowledge/simulation.py`：添加 JointType dataclass + JOINT_TYPES（revolute, prismatic, fixed, spherical）
-- 创建 `src/lang3d/tools/motion.py`（~400 行）：
-  - `motion_range` (MotionRangeTool): 关节运动范围和可达空间分析
-  - `motion_trajectory` (MotionTrajectoryTool): 关节空间线性插值轨迹规划
-  - `motion_vlm_analyze` (MotionVLMAnalyzeTool): 截取运动可视化 + VLM 分析
-  - 辅助函数：_build_forward_kinematics_script(), _build_range_check_script(), _build_trajectory_script(), _parse_motion_json()
-- 替换 `src/lang3d/tools/simulation.py` 中 MotionSimTool STUB 为真实实现（正向运动学/范围检查/轨迹规划）
-- 更新 register_simulation_tools() 自动注册 motion tools
+### Task 12: FEA 结构分析与 VLM 解读
 
-#### Task 13: CFD 流体分析（OpenFOAM）
-- 扩展 `src/lang3d/knowledge/simulation.py`：添加 FluidProperties, FLUID_PRESETS, CFDPattern, CFD_PATTERNS, CFD_MESH_SIZES, get_fluid()
-- 扩展 `src/lang3d/config.py`：SimulationSettings 新增 openfoam_path, default_fluid, cfd_timeout, openfoam_mode + 环境变量映射
-- 创建 `src/lang3d/tools/cfd.py`（~550 行）：
-  - `cfd_run` (CFDRunTool): OpenFOAM CFD 分析（网格→边界条件→求解→结果）
-  - `cfd_vlm_analyze` (CFDVLMAnalyzeTool): 截取 CFD 可视化 + VLM 解读流场
-  - 辅助函数：_find_openfoam(), _run_openfoam_command(), _win_to_wsl_path(), _build_cfd_case(), _parse_cfd_vlm_json()
+**新建文件**：
+- `src/lang3d/knowledge/materials.py` — Material dataclass + 6 种材料预设（steel, aluminum, pla, abs, titanium, copper）+ 安全系数计算
+- `src/lang3d/knowledge/simulation.py` — FEAPattern + 4 种 FEA 模式 + 4 级网格推荐
+- `src/lang3d/tools/simulation.py`（~600 行核心文件）
 
-#### 集成更新
-- 修改 `src/lang3d/agent/core.py`：注册 motion + CFD tools，更新 AGENT_SYSTEM_PROMPT，更新 _web_on_result() VLM 追踪
-- 修改 `src/lang3d/agent/executor.py`：更新工具分类（添加运动仿真 + CFD）
-- 更新 `.env.example`：添加 OPENFOAM_PATH, OPENFOAM_MODE
-- 创建 `tests/test_motion.py`（27 个测试）
-- 创建 `tests/test_cfd.py`（30 个测试）
-- 更新 `tests/test_simulation.py`：适配新 MotionSimTool + 新注册测试
+**simulation.py 工具**：
 
-### Testing:
-- `pytest tests/test_motion.py tests/test_cfd.py -v`：57 passed
-- `pytest tests/ -v`：294 passed（含原有 236 个测试，新增 57 个，更新 1 个），无回归
+| 工具名 | 类名 | 说明 |
+|--------|------|------|
+| `fea_run` | FEASetupAndRunTool | FreeCAD FEM + CalculiX 结构分析 |
+| `fea_visualize` | FEAVisualizeTool | FreeCAD GUI 应力/位移云图显示 |
+| `fea_vlm_analyze` | FEAVLMAnalyzeTool | 截图 + VLM 应力解读 → 结构化 JSON |
+| `interference_check` | InterferenceCheckTool | 布尔交集干涉检查 |
+| `tolerance_analysis` | ToleranceAnalysisTool | 蒙特卡洛公差分析（纯 Python） |
+| `motion_sim` | MotionSimTool | 运动仿真（初始为 STUB，Task 14 替换为真实实现） |
 
-### Notes:
+**集成**：config.py 新增 SimulationSettings + CALCULIX_PATH/DEFAULT_MATERIAL 环境变量映射；agent/core.py 注册仿真工具 + 更新系统提示词
+
+**Testing**: `pytest tests/test_simulation.py -v`：45 passed；`pytest tests/ -v`：236 passed
+
+---
+
+### Task 13: CFD 流体分析（OpenFOAM）
+
+**Step 1: CFD 知识库** `knowledge/simulation.py` (+80 行)：FluidProperties, FLUID_PRESETS (air/water), CFDPattern, CFD_PATTERNS (pipe_flow, external_flow, heat_exchanger), CFD_MESH_SIZES (coarse/medium/fine), get_fluid()
+
+**Step 2: Config 扩展** `config.py`：SimulationSettings 新增 openfoam_path, default_fluid, cfd_timeout, openfoam_mode + 环境变量映射
+
+**Step 3: 新建** `tools/cfd.py`（~550 行）：
+
+| 工具名 | 说明 |
+|--------|------|
+| `cfd_run` | OpenFOAM CFD 分析（网格→边界条件→求解→结果） |
+| `cfd_vlm_analyze` | 截取 CFD 可视化 + VLM 解读流场 |
+
+辅助函数：`_find_openfoam()` (WSL/原生/Docker), `_run_openfoam_command()`, `_win_to_wsl_path()`, `_build_cfd_case()` (生成完整 OpenFOAM case 目录：system/, constant/, 0/)
+
+**OpenFOAM 发现优先级**：环境变量 → WSL (`wsl which simpleFoam`) → Docker → 原生 Linux
+
+**Testing**: `tests/test_cfd.py` — 30/30 通过
+
+---
+
+### Task 14: 运动仿真（FreeCAD Assembly）
+
+**Step 1: 扩展知识库** `knowledge/simulation.py`：JointType dataclass + JOINT_TYPES (revolute, prismatic, fixed, spherical)
+
+**Step 2: 新建** `tools/motion.py`（~400 行）：
+
+| 工具名 | 说明 |
+|--------|------|
+| `motion_range` | 关节运动范围和可达空间分析 |
+| `motion_trajectory` | 关节空间线性插值轨迹规划 |
+| `motion_vlm_analyze` | 截取运动可视化 + VLM 分析 |
+
+**Step 3: 替换 MotionSimTool STUB**：支持 forward_kinematics / range_check / trajectory 三种分析模式
+
+**Step 4-5: Agent 集成**：register_simulation_tools() 自动注册 motion tools；AGENT_SYSTEM_PROMPT 更新
+
+**Testing**: `pytest tests/test_motion.py`：27/27 通过；全量 `pytest tests/ -v`：294 passed
+
+**Notes**：
 - Motion tools 依赖 FreeCAD，无需额外安装 OpenFOAM
 - CFD tools 在没有 OpenFOAM 时优雅降级（返回安装提示，不崩溃）
 - OpenFOAM 支持 WSL / 原生 Linux / Docker 三种运行模式
-- _build_cfd_case() 生成完整 OpenFOAM case 目录结构（system/, constant/, 0/）
 
-## 2026-05-31 - Task 12: FEA 结构分析与 VLM 解读
+---
 
-### What was done:
-- 创建 `src/lang3d/knowledge/materials.py`：Material dataclass + 6 种材料预设（steel, aluminum, pla, abs, titanium, copper）+ 安全系数计算
-- 创建 `src/lang3d/knowledge/simulation.py`：FEAPattern dataclass + 4 种 FEA 模式 + 4 级网格推荐
-- 创建 `src/lang3d/tools/simulation.py`（核心文件 ~600 行）：
-  - `fea_run` (FEASetupAndRunTool): FreeCAD FEM + CalculiX 结构分析
-  - `fea_visualize` (FEAVisualizeTool): FreeCAD GUI 应力/位移云图显示
-  - `fea_vlm_analyze` (FEAVLMAnalyzeTool): 截图 + VLM 应力解读 → 结构化 JSON
-  - `interference_check` (InterferenceCheckTool): 布尔交集干涉检查
-  - `tolerance_analysis` (ToleranceAnalysisTool): 蒙特卡洛公差分析（纯 Python）
-  - `motion_sim` (MotionSimTool): 运动仿真 STUB
-- 修改 `src/lang3d/config.py`：新增 SimulationSettings + CALCULIX_PATH/DEFAULT_MATERIAL 环境变量映射
-- 修改 `src/lang3d/agent/core.py`：注册仿真工具 + 更新系统提示词（仿真工具列表 + 工作流）+ VLM 追踪
-- 修改 `src/lang3d/agent/executor.py`：工具分类添加仿真分析
-- 更新 `.env.example`：添加 CALCULIX_PATH 和 DEFAULT_MATERIAL 配置项
-- 创建 `tests/test_simulation.py`：45 个测试（工具注册/定义/执行/材料库/仿真知识/公差/干涉/VLM 解析/配置）
+## 2026-05-30
 
-### Testing:
-- `pytest tests/test_simulation.py -v`：45 passed
-- `pytest tests/ -v`：236 passed（全量测试无回归）
+### Phase 2: 多 Agent 编排 — DAG 并行调度 + 装配验证
 
-### Notes:
-- fea_run 生成的 FEA 脚本通过 FreeCAD Python subprocess 执行，复用 freecad.py 的模式
-- 面选择策略使用法向量匹配（bottom=-Z, top=+Z 等），避免依赖面索引
-- CalculiX 查找优先级：CALCULIX_PATH 环境变量 → FreeCAD bin 目录 → 系统 PATH
-- tolerance_analysis 纯 Python 实现（random + math），不依赖 FreeCAD
-- motion_sim 为 STUB 接口，待后续实现
-- 集成测试（实际 FEA 运行）需要安装 FreeCAD + CalculiX
+完成了 Phase 2 全部任务，实现了多 Agent 编排能力：将复杂任务分解为 DAG 依赖图，用多个轻量 SubAgent 并行执行独立步骤，最后进行装配验证。同时修复了 5 个 e2e 测试脚本的 pytest 收集问题。总测试数从 115 增长到 191，全部通过。
+
+#### TaskDAG 依赖图 (`agent/dag.py` 新建)
+
+```
+TaskDAG
+  ├─ add_step(step, dependencies, agent_role) → DAGNode
+  ├─ get_ready_steps() → list[DAGNode]          # 所有依赖已完成的步骤
+  ├─ mark_completed(step_id) → list[str]         # 返回新解锁的 step IDs
+  ├─ mark_failed(step_id) → list[str]            # 级联标记依赖者为 SKIPPED
+  ├─ parallel_groups() → list[list[DAGNode]]     # Kahn 算法拓扑排序 → 波次分组
+  ├─ _detect_cycles()                             # DFS 检测环 → ValueError
+  ├─ to_dict() → dict                            # 序列化给 Web 面板
+  └─ from_plan(plan, assembly) → TaskDAG          # 从 Plan + Assembly 构建
+```
+
+- `parallel_groups()` 使用 Kahn 算法进行拓扑排序，将节点分为并行波次
+- `from_plan()` 可从 `Assembly.joints` 推断依赖关系（child 依赖 parent）
+- `agent_role` 根据步骤的 `expected_tools` 自动推断（modeling/vision/gui/general）
+
+`state.py` 变更：PlanStep 新增 `dependencies` 和 `assigned_agent` 字段（默认空值，向后兼容）
+
+**测试**：21/21 通过
+
+#### SubAgent + MessageBus + SharedToolRegistry (新建)
+
+| 文件 | 内容 |
+|------|------|
+| `agent/sub_agent.py` | SubAgent 轻量执行器，5 种 Role (MODELING/VISION/GUI/VERIFICATION/GENERAL)；复用现有 Executor；支持 execute_async |
+| `agent/message_bus.py` | 发布订阅模式，跨 Agent 通信；支持按 sender 和 type 过滤；get_artifacts() 自动收集文件路径 |
+| `agent/shared_registry.py` | 用 threading.Lock 包装 execute() 方法，确保多线程并行时工具调用串行化 |
+
+**测试**：21/21 通过（SubAgent 8 + MessageBus 10 + SharedRegistry 3）
+
+#### Assembly Verifier 装配验证 (`agent/assembly_verifier.py` 新建)
+
+```python
+@dataclass
+class FitCheck:
+    joint: Joint; parent_part: Part; child_part: Part
+    clearance: float; required_clearance: float; fits: bool; notes: str
+
+class AssemblyVerifier:
+    def verify_assembly(assembly, workspace, parts_results) → AssemblyVerificationResult
+    def check_part_completeness(assembly, workspace) → list[PartCheck]
+    def check_joint_fits(assembly) → list[FitCheck]
+    def check_screw_holes(assembly) → list[str]
+    def generate_assembly_report(result) → str
+```
+
+- 复用 `knowledge/mechanics.py` 中的 PRINT_TOLERANCES、STANDARD_SCREWS
+- revolute 关节要求 sliding_fit (0.3mm)；fixed 关节要求 tight_fit (0.15mm)
+- 螺钉孔规格检查
+
+**测试**：9/9 通过
+
+#### OrchestratorAgent 编排器 (`agent/orchestrator.py` 新建)
+
+**执行流程**：
+
+```
+run_task("设计一个3自由度机械臂")
+  ├─ create_plan() → TaskDAG.from_plan() → parallel_groups()
+  ├─ Wave 0: asyncio.gather([SubAgent(base_plate), SubAgent(servo_holder)])
+  ├─ Wave 1: asyncio.gather([SubAgent(base_joint_housing)])  ← context from wave 0
+  ├─ Wave 2: asyncio.gather([SubAgent(shoulder_link)])
+  └─ Final: AssemblyVerifier → 装配报告
+```
+
+- `asyncio.Semaphore(max_parallel=3)` 限制并发数
+- 失败时调用 `Reflector.reflect()` + 重新执行（最多 3 次）
+- `_collect_context()` 收集所有已完成依赖的结果
+
+**测试**：11/11 通过
+
+#### 集成 — Agent + Config + Planner
+
+- `core.py`: `run_task` 增加 `use_orchestration` 参数，默认 True；`_should_orchestrate()` 启发式判断
+- `config.py`: 新增 `OrchestratorSettings` (max_parallel_agents=3, max_retries_per_step=3, enable_parallel=True)
+- `planner.py`: 新增 `DAG_PLANNER_SYSTEM_PROMPT`、`create_dag_plan(task, assembly)` 方法
+
+#### Web 面板 + CLI 增强
+
+| 新增内容 | 说明 |
+|----------|------|
+| `update_sub_agent(agent_id, status, step)` | 更新子 Agent 状态 |
+| `update_dag(dag_data)` | 更新 DAG 可视化数据 |
+| `GET /api/agents` | 返回活跃子 Agent 列表和状态 |
+| `GET /api/dag` | 返回 DAG 可视化数据 |
+| Agents Tab | DAG 波次图 + 子 Agent 状态卡片 |
+
+CLI 新增：`/agents` 命令（Rich 表格显示活跃子 Agent）、`/dag` 命令（按波次显示任务依赖图）
+
+#### e2e 测试脚本修复
+
+5 个 e2e 测试文件中的 `test_step()` 函数被 pytest 误收集为测试用例（把 `name` 参数当成 fixture），导致 ERROR。修复：将 `test_step` 重命名为 `run_step`。
+
+#### Testing
+
+| 测试类型 | 数量 | 通过 |
+|----------|------|------|
+| 全部 pytest 测试 | **191** | **191** |
+| 其中新增测试 | 76 | 76 |
+| 其中原有测试 | 115 | 115 |
+
+#### 技术发现
+
+1. **SubAgent 复用 Executor 而非重新实现**：Executor 已有完整的工具调用循环
+2. **asyncio.to_thread 是同步→异步的正确桥接方式**
+3. **Kahn 算法天然支持并行分组**
+4. **上下文传递方式**：将前置 Agent 结果注入到步骤描述中
+5. **e2e 脚本与 pytest 的冲突**：以 `test_` 开头的函数名会被 pytest 自动收集
+
+---
+
+## 2026-05-28
+
+### Tasks 7-11: VLM 定位 + 菜单自动化 + 自修复 + 装配验证 + Web 面板
+
+完成了 Tasks 7-11（共 5 个任务），所有任务均通过。总单元测试数从 70 增长到 115。
+
+#### Task 7: VLM UI 元素定位 (passes: true)
+
+新增 `VLMLocateTool` (`tools/vlm.py`)：
+- 截取窗口截图 → VLM 识别 UI 元素 → 返回 [{name, x, y, w, h, type}] 列表
+- `_parse_elements_json()` 支持 JSON 数组解析 + 正则逐行回退
+- Agent 可通过 `vlm_locate` → `gui_click` 实现智能点击
+
+**Testing**: 单元测试 8/8 通过；集成测试 8/8 通过（成功定位 21 个 FreeCAD UI 元素）
+
+#### Task 8: FreeCAD 菜单自动化 (passes: true)
+
+新增 `fc_menu.py` 模块：
+
+| 工具 | 说明 |
+|------|------|
+| `fc_menu` | 通过 VLM 视觉定位点击 FreeCAD GUI 元素（菜单、按钮等） |
+| `fc_menu_workflow` | 执行预定义 GUI 操作流程（new_part, add_box, save_file 等 7 个工作流） |
+
+**Testing**: 单元测试 19/19 通过；集成测试 10/10 通过
+
+#### Task 9: Agent 多轮规划优化 (passes: true)
+
+在 `core.py` 的 `_run_direct()` 中实现自动修复循环：
+- 当 `cad_verify` 返回 `MATCH: False` 时自动注入修复提示
+- 最多 3 轮修复尝试（`verify_fail_count` 跟踪计数）
+- Agent 分析 DIFFERENCES 和 SUGGESTION → 使用 fc_batch 修正 → 重新验证
+
+**Testing**: 集成测试 5/5 通过
+
+#### Task 10: 机械臂装配验证 (passes: true)
+
+新增 `test_assembly_verify.py` 集成测试，4 阶段流水线：
+
+**Phase 1: 批量建模** — 8/8 零件成功建模并导出 STL
+| 零件 | STL 大小 |
+|------|----------|
+| base_plate (底座板) | 402 KB |
+| base_joint_housing (底座关节) | 631 KB |
+| shoulder_link (肩部连杆) | 1,432 KB |
+| elbow_joint (肘关节) | 151 KB |
+| forearm_link (前臂连杆) | 946 KB |
+| wrist_joint (腕关节) | 151 KB |
+| end_effector_mount (末端安装座) | 201 KB |
+| servo_holder (舵机座) | 5 KB |
+
+**Phase 2: VLM 验证** — 0/8 匹配（VLM 模型过于保守，倾向于返回 MISMATCH）
+**Phase 3: 装配创建** — 成功创建 assembly.FCStd + assembly.stl
+**Phase 4: 装配验证** — 装配文件正确生成
+
+**VLM 验证分析**：GLM-4V 系列在验证 3D 零件时都倾向于返回 MISMATCH，即使模型描述准确。改进方向：使用更简短的描述、多角度验证、使用更强大的 VLM 模型
+
+#### Task 11: Web 监控面板增强（初版）
+
+**后端增强 (`web/app.py`)**:
+- 新增 `add_tool_call()`: 记录工具调用到时间线（最多 100 条）
+- 新增 `add_vlm_result()`: 记录 VLM 分析结果（最多 50 条）
+- 新增 `set_thinking()`: 更新 Agent 当前思考文本
+- 新增 API 端点: `GET /api/tool-calls`、`GET /api/vlm-results`、`GET /api/screenshot-gallery`
+- 日志增加时间戳字段
+
+**前端增强 (`web/static/index.html`)**:
+- 新增 4 个 Tab 页：Overview、Tool Calls、Screenshots、VLM Results
+- Header 显示 Agent 当前思考文本
+- 日志条目增加时间戳列
+
+**Agent 集成 (`agent/core.py`)**:
+- 新增 `connect_web_panel()`: 一键连接 Agent 回调到 Web 面板
+- `_web_on_result()`: 自动检测 VLM 工具结果并推送到 Web 面板
+
+**Testing**: 单元测试 18/18 通过
+
+#### 测试结果汇总
+
+| 测试类型 | 测试数 | 通过 |
+|----------|--------|------|
+| 单元测试 (pytest) | 115 | 115 |
+| 集成: Auto-Fix | 5 | 5 |
+| 集成: VLM Locate E2E | 8 | 8 |
+| 集成: FC Menu E2E | 10 | 10 |
+| 集成: Assembly Verify | 4 阶段 | 建模 8/8, 装配 OK |
+
+#### 工具清单（总计 59 个）
+
+| 类别 | 数量 |
+|------|------|
+| 文件操作 (file_read, file_write, file_edit, file_search, file_glob, list_dir) | 6 |
+| 命令执行 (bash, python_exec) | 2 |
+| 屏幕截取 (screen_capture, window_capture, list_windows) | 3 |
+| VLM 分析 (vlm_analyze, screen_analyze, window_analyze, cad_verify, vlm_locate) | 5 |
+| FreeCAD (fc_new_doc, ..., fc_batch, fc_open_gui, fc_close_gui, fc_set_camera) | 23 |
+| FreeCAD 菜单 (fc_menu, fc_menu_workflow) | 2 |
+| GUI 自动化 (gui_click, gui_type, gui_hotkey, etc.) | 8 |
+| CAD 工具 (cad_check, mesh_stats) | 2 |
+| Python 执行 (python_script) | 1 |
+| SolidWorks (sw_*) | 7 |
+
+---
+
+## 2026-05-27 (Day 1)
+
+从零开始搭建 Language-3D Agent 项目，一天内完成了基础框架、FreeCAD 集成、Agent 端到端验证、VLM 屏幕感知、视觉模型评估与多模型路由。
+
+### 框架搭建 + API 对接
+
+**项目初始化**：
+- 创建完整项目目录结构 (`src/lang3d/`、`tests/`、`examples/`、`data/`)
+- 编写 `pyproject.toml`，声明所有依赖（openai, anthropic, pydantic, rich, prompt_toolkit, mss, Pillow, pyautogui, fastapi, uvicorn, pywin32 等）
+- `pip install -e .` 安装成功，CLI 入口 `lang3d` 可用
+
+**配置管理 (`src/lang3d/config.py`)**：
+- Pydantic 模型：`Config` > `ModelConfig` + `AgentConfig`
+- 三层配置加载：`.env` 文件 → 环境变量 → `~/.lang3d/config.json` 持久化
+- 支持 GLM / OpenAI / Ollama 三个后端的独立配置
+
+**模型后端层 (`src/lang3d/models/`)**：
+
+| 文件 | 说明 |
+|------|------|
+| `base.py` | `ModelBackend` 抽象基类，`Message`/`ToolCall`/`ModelResponse`/`ToolDefinition` 数据类 |
+| `glm.py` | **GLM Coding Plan 后端**（OpenAI SDK 兼容，base_url=`https://open.bigmodel.cn/api/coding/paas/v4`） |
+| `openai.py` | OpenAI API 后端 |
+| `ollama.py` | Ollama 本地模型后端（httpx 直连） |
+| `router.py` | 模型路由器，按任务类型自动选择后端 |
+
+**工具系统 (`src/lang3d/tools/`)**：
+
+| 文件 | 工具 |
+|------|------|
+| `base.py` | `Tool` 基类 + `ToolRegistry` 注册表 |
+| `file_ops.py` | `FileReadTool`, `FileWriteTool`, `FileEditTool`, `FileSearchTool`, `FileGlobTool`, `ListDirTool` |
+| `bash.py` | `BashTool`（shell 执行）, `PythonExecTool`（`python -c`） |
+| `screen.py` | `ScreenCaptureTool`（mss 截屏）, `WindowCaptureTool`（指定窗口） |
+| `vlm.py` | `VLMAnalyzeTool`, `ScreenAnalyzeTool` |
+| `solidworks.py` | SolidWorks COM API 工具集 |
+| `cad_utils.py` | CAD 辅助工具：网格检查、STL 统计 |
+| `python_exec.py` | `PythonScriptTool` |
+
+**Agent 核心引擎 (`src/lang3d/agent/`)**：
+
+| 文件 | 说明 |
+|------|------|
+| `core.py` | Agent 主循环：Observe-Think-Act |
+| `planner.py` | 任务分解：高层任务 → JSON 格式的分步骤计划 |
+| `executor.py` | 步骤执行：驱动 agent 循环完成单个计划步骤 |
+| `verifier.py` | 结果验证：启发式 + LLM 双重验证 |
+| `reflector.py` | 自我反思：分析失败原因，生成改进建议 |
+| `state.py` | 状态管理：`Plan`/`PlanStep`/`StepStatus`，JSON 持久化 |
+
+**CLI 界面 (`src/lang3d/cli.py`)**：基于 `rich` + `prompt_toolkit`，命令：`/run`、`/plan`、`/direct`、`/chat`、`/tools`、`/status`、`/help`、`/quit`
+
+**Web 监控面板 (`src/lang3d/web/`)**：FastAPI + WebSocket 实时状态推送
+
+**知识库 (`src/lang3d/knowledge/`)**：`mechanics.py`（3-DOF 机械臂部件库）、`cad_patterns.py`（可复用 CAD 建模模式）
+
+**GLM Coding Plan API 对接**：
+- 初始版本错误地使用了 Anthropic SDK + Anthropic 兼容端点
+- 重写为 OpenAI SDK + Coding Plan 端点
+- 文本模型: `GLM-5.1`（推理模型）、视觉模型: `GLM-5V-Turbo`
+- 实测验证通过：文本对话 + 工具调用均正常
+
+**Testing**: 29/29 测试全部通过（test_agent.py 6 + test_models.py 11 + test_tools.py 12）
+
+**关键技术发现**：
+1. GLM-5.1 是推理模型：API 返回 `reasoning_tokens` 字段，`max_tokens` 需要留足余量（建议 >= 1024）
+2. Coding Plan 端点完全兼容 OpenAI SDK
+3. 工具调用格式：`finish_reason: "tool_calls"`，参数在 `choices[0].message.tool_calls[].function.arguments`
+
+---
+
+### FreeCAD 集成 + 真实 3D 建模测试
+
+**CAD 方案选型**：评估了 FreeCAD、Fusion 360、OpenSCAD、AutoCAD 四种替代方案，选定 **FreeCAD**（免费开源、原生 Python API、支持无头模式、支持 STL/STEP 导出）
+
+**FreeCAD 安装**：
+- 通过 `winget install FreeCAD` 安装 FreeCAD 1.1.1
+- 安装路径：`C:\Users\xyc\AppData\Local\Programs\FreeCAD 1.1\`
+- FreeCAD 内置 Python 3.11（系统 Python 为 3.12，存在版本冲突）
+
+**FreeCAD 工具模块 (`src/lang3d/tools/freecad.py`)**：采用 **子进程桥接** 架构（因 Python 版本不兼容）：
+
+| 工具 | 说明 |
+|------|------|
+| `fc_new_doc`, `fc_make_box`, `fc_make_cylinder`, `fc_make_sphere`, `fc_make_cone` | 基础形状 |
+| `fc_boolean` | 布尔运算（并集/差集/交集） |
+| `fc_move`, `fc_rotate` | 变换 |
+| `fc_cylinder_with_hole`, `fc_plate_with_holes` | 高级模式 |
+| `fc_fillet`, `fc_chamfer` | 圆角/倒角 |
+| `fc_save`, `fc_export_stl`, `fc_export_step` | 文件操作 |
+| `fc_status`, `fc_object_info`, `fc_delete_object` | 查询 |
+| `fc_script` | 执行任意 FreeCAD Python 脚本 |
+
+**Testing**: 32/32 单元测试通过；真实 3D 建模端到端测试通过（50x50x10mm 底板 + 圆柱凸台 + 通孔，导出 STL + FCStd）
+
+**关键技术发现**：
+1. **子进程桥接是可靠的 FreeCAD 集成方式**：避免了 Python 版本冲突，每次操作独立、无状态泄漏
+2. **Mesh.export() 比 Mesh.Mesh(shape.tessellate()) 更稳定**
+3. **FreeCAD 无头模式完全可行**：不需要 GUI，纯命令行操作即可完成 3D 建模和导出
+
+---
+
+### Agent 端到端验证 + 机械臂完整建模
+
+**机械臂零件建模测试 (`tests/test_robotic_arm.py`)**：
+
+| 零件 | 描述 | 尺寸 (mm) | STL |
+|------|------|-----------|-----|
+| `base_plate` | 底座板（圆盘 + 4x M6 孔 + 中心轴承孔） | 120x120x8 | 402 KB |
+| `base_joint_housing` | 底座关节外壳 | 90x90x40 | 631 KB |
+| `shoulder_link` | 肩部连杆 | 150x40x30 | 1.6 MB |
+| `elbow_joint` | 肘关节 | 60x60x35 | 151 KB |
+| `forearm_link` | 前臂连杆 | 120x35x25 | 1.3 MB |
+| `wrist_joint` | 腕关节 | 40x40x25 | 151 KB |
+| `end_effector_mount` | 末端安装座 | 35x35x19 | 604 KB |
+| `servo_holder` | SG90 舵机座 | 30x24x12 | 213 KB |
+
+- **8/8 零件建模成功**
+- STL 总计 4.9 MB，所有文件可直接用于 3D 打印切片
+
+**`ToolRegistry` 参数名冲突修复**：`ToolRegistry.execute()` 的第一个参数 `name` 与 FreeCAD 工具的 `name` 参数冲突 → 改名为 `tool_name`
+
+**`fc_batch` 工具**：解决 FreeCAD 子进程无状态问题 — 接受一个操作列表，在同一个 FreeCAD 进程中按顺序执行所有操作
+
+**Agent 端到端测试 (`tests/test_agent_e2e.py`)**：
+- Task 1 — 立方体+贯穿孔（25.3s）：Agent 自主选择 `fc_batch` 一次性组织 6 步操作
+- Task 2 — 套筒零件（16.2s）：Agent 选择 `cylinder_with_hole` + `export_stl` 一步到位
+- 建模完成后自动调用 `mesh_stats` 验证网格质量
+
+**关键技术发现**：
+1. **GLM-5.1 具备工具编排能力**：能自主理解建模任务，选择正确的工具组合
+2. **`fc_batch` 是 Agent 使用 FreeCAD 的正确方式**
+3. **Agent 自我修复能力**：发现工具失败后自主改用 `fc_script` 写完整脚本绕过问题
+4. **布尔运算+圆角是 OCC 的常见失败点**
+
+---
+
+### VLM 屏幕感知实现
+
+**GLM 视觉 API 调研与对接**：
+- 发现 GLM-5V-Turbo 在当前套餐不可用（429 限权）
+- 确认可用模型：**GLM-4V-Flash**（免费）、GLM-4V-Plus、GLM-4V
+- GLM-4V-Flash 的 `max_tokens` 上限为 1024
+
+**屏幕截取工具增强 (`tools/screen.py`)**：
+- `_find_windows_by_title()`：使用 `EnumWindows` API 实现可靠的窗口标题部分匹配
+- `ScreenCaptureTool`：修复 `mss.mss()` 弃用警告
+- `ListWindowsTool`（新增）：列出所有可见窗口
+
+**VLM 分析工具增强 (`tools/vlm.py`)** — 4 个工具：
+
+| 工具 | 功能 |
+|------|------|
+| `vlm_analyze` | 分析指定图片文件 |
+| `screen_analyze` | 一键截屏+VLM分析 |
+| `window_analyze` | 截取指定窗口+VLM分析 |
+| `cad_verify` | 截取 CAD 窗口，验证 3D 模型是否符合预期 |
+
+**Testing**:
+- VLM 连通性测试 3/3 通过
+- VLM 感知 e2e 测试 8/8 通过
+- Agent+VLM 集成测试 PASS（建模后 VLM 自动验证）
+- 单元测试 38/38 通过
+
+**技术发现**：
+1. GLM-4V-Flash 对简单形状识别准确率 100%；对 3D 线框图有较强理解能力
+2. GLM-5.1 能自主决定何时使用 VLM 工具
+3. VLM 屏幕分析可用于 CAD 验证闭环
+
+---
+
+### 视觉模型评估 + 多模型路由
+
+**GLM 视觉模型全面评估**：
+
+| 模型 | Coding Plan API | 标准 API | 备注 |
+|------|----------------|----------|------|
+| GLM-4V-Flash | 可用 | 可用 | 免费 |
+| GLM-4V | 可用 | 可用 | 收费 |
+| GLM-4V-Plus | 可用 | 可用 | 收费，质量最好 |
+| GLM-4.6V | 返回空内容 | 可用 | 需标准 API |
+| GLM-4.6V-Flash | 返回空内容 | 可用 | 需标准 API |
+| GLM-5V-Turbo | 429 限权 | **可用** | 需标准 API |
+
+**GLM-4.6V "返回空内容" 排查**：不是模型不能用，而是之前 `max_tokens=500` 不够。GLM-4.6V 输出以 `\n` 开头 + `finish_reason=length` 截断 = 看起来像空内容。实际上需要 `max_tokens >= 2048` 才能得到完整回答。
+
+**max_tokens 上限测试**：
+
+| 模型 | 实际 API 上限 | 最佳设置 |
+|------|-------------|---------|
+| GLM-4V-Flash | 1024 | 1024 |
+| GLM-4V-Plus | 2048 | 2048 |
+| GLM-4.6V-Flash | 16384+ | 16384 |
+| GLM-4.6V | 16384+ | 16384 |
+
+**视觉模型路由实现** — 4 级路由配置：
+
+| Level | 模型 | max_tokens | 速度 | 适用场景 |
+|-------|------|-----------|------|---------|
+| `fast` | GLM-4V-Flash | 1024 | ~1s | 快速识别（颜色、形状） |
+| `standard` | GLM-4V-Plus | 2048 | ~3s | 精准分析（UI 识别） |
+| `detailed` | GLM-4.6V-Flash | **16384** | ~20s | CAD 验证（详细描述） |
+| `maximum` | GLM-4.6V | **16384** | ~40s | 复杂检测（最全面） |
+
+**改动的文件**：
+- `models/base.py`：vision() 默认 max_tokens 2048→4096
+- `models/glm.py`：默认 max_tokens 1024→4096；新增 `alt_client`（标准 API）；`VISION_MODEL_CAPS`
+- `models/router.py`：新增 `VisionDetail` 枚举（4 级）；`VISION_DETAIL_MODELS` 路由表
+- `tools/vlm.py`：4 个工具全部新增 `detail` 参数，默认 `detailed`
+
+**Testing**: 38/38 单元测试通过；8/8 VLM 感知 e2e 测试通过；4/4 视觉路由级别验证通过
+
+**关键技术发现**：
+1. **双 API 端点策略**：Coding Plan API (`/coding/paas/v4`) 不支持 GLM-4.6V 系列和 GLM-5V-Turbo，需要 Standard API (`/api/paas/v4`)。GLMBackend 自动根据模型名选择端点
+2. **max_tokens 是视觉模型可用性的关键**
+3. **多模型路由的经济性**：简单任务用免费的 Flash，CAD 验证用详细的 4.6V-Flash

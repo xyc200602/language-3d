@@ -76,11 +76,94 @@ DAG_PLANNER_SYSTEM_PROMPT = """你是一个任务规划专家，专门用于创�
 """
 
 
+# Few-shot examples keyed by task type
+PLANNER_EXAMPLES: dict[str, str] = {
+    "assembly": """
+示例（装配任务 - 3自由度机械臂）：
+[
+  {
+    "description": "创建底座板（base_plate），100x80x10mm，四角有M4安装孔",
+    "expected_tools": ["fc_batch", "cad_verify"],
+    "verification": "base_plate.FCStd 文件存在且 cad_verify 通过"
+  },
+  {
+    "description": "创建舵机安装座（servo_holder），适配 SG90 舵机",
+    "expected_tools": ["fc_batch", "cad_verify"],
+    "verification": "servo_holder.FCStd 文件存在且 cad_verify 通过"
+  },
+  {
+    "description": "装配所有零件并验证配合关系",
+    "expected_tools": ["fc_batch", "cad_verify"],
+    "verification": "装配模型完整且无干涉"
+  }
+]
+""",
+    "single_part": """
+示例（单个零件 - 带中心孔的方块）：
+[
+  {
+    "description": "使用 fc_batch 创建 30x30x30mm 方块，中心打 10mm 通孔",
+    "expected_tools": ["fc_batch", "cad_verify"],
+    "verification": "方块模型文件存在且 cad_verify 验证通过"
+  }
+]
+""",
+    "part_usage": """
+示例（使用零件库 - 含标准件的装配）：
+[
+  {
+    "description": "搜索零件库中适合的螺钉类型（M4/M5）",
+    "expected_tools": ["part_search"],
+    "verification": "找到匹配的螺钉模板"
+  },
+  {
+    "description": "生成 M4x20 内六角螺钉和匹配的六角螺母",
+    "expected_tools": ["part_generate", "cad_verify"],
+    "verification": "螺钉和螺母文件生成成功"
+  },
+  {
+    "description": "使用 fc_batch 创建安装板（80x60x5mm，四角 M4 孔）",
+    "expected_tools": ["fc_batch", "cad_verify"],
+    "verification": "安装板文件存在且尺寸正确"
+  },
+  {
+    "description": "装配螺钉、螺母和安装板，验证配合关系",
+    "expected_tools": ["fc_batch", "cad_verify"],
+    "verification": "装配模型完整且无干涉"
+  }
+]
+""",
+}
+
+
 class Planner:
     """Breaks down tasks into executable plans."""
 
     def __init__(self, router: ModelRouter) -> None:
         self.router = router
+
+    @staticmethod
+    def _detect_task_type(task: str) -> str:
+        """Detect the task type from the task description."""
+        task_lower = task.lower()
+        assembly_keywords = [
+            "装配", "组装", "assembly", "多个零件", "机械臂",
+            "机器人", "关节", "连接", "底座",
+        ]
+        for kw in assembly_keywords:
+            if kw in task_lower:
+                return "assembly"
+        # Part library keywords
+        part_keywords = [
+            "零件库", "标准件", "螺钉", "螺栓", "螺母", "垫圈", "轴承",
+            "舵机", "步进电机", "齿轮", "联轴器", "光轴",
+            "part library", "standard part", "screw", "bolt", "nut",
+            "bearing", "servo", "stepper", "gear", "shaft",
+        ]
+        for kw in part_keywords:
+            if kw in task_lower:
+                return "part_usage"
+        return "single_part"
 
     def create_plan(self, task: str, context: str = "") -> Plan:
         """Create an execution plan for a task."""
@@ -88,15 +171,24 @@ class Planner:
         if context:
             user_message += f"\n\n上下文信息：\n{context}"
 
+        # Inject few-shot examples based on task type
+        task_type = self._detect_task_type(task)
+        system_prompt = PLANNER_SYSTEM_PROMPT
+        example = PLANNER_EXAMPLES.get(task_type)
+        if example:
+            system_prompt = system_prompt + "\n" + example
+
         response = self.router.chat(
             messages=[Message(role="user", content=user_message)],
-            system=PLANNER_SYSTEM_PROMPT,
+            system=system_prompt,
             task_type=TaskType.PLANNING,
             temperature=0.5,
         )
 
         steps = self._parse_plan_response(response.content)
-        return Plan(goal=task, steps=steps)
+        plan = Plan(goal=task, steps=steps)
+        self._validate_plan(plan)
+        return plan
 
     def replan_from_failure(
         self,
@@ -163,6 +255,29 @@ class Planner:
                 )
 
         return steps
+
+    @staticmethod
+    def _validate_plan(plan: Plan) -> None:
+        """Validate and auto-fix plan steps.
+
+        - For modeling steps using fc_batch, add cad_verify to expected_tools.
+        - For modeling steps missing verification, add a cad_verify-based check.
+        """
+        for step in plan.steps:
+            tools_lower = [t.lower() for t in step.expected_tools]
+
+            # Add cad_verify to modeling steps that use fc_batch but lack verification tool
+            if any("fc_batch" in t or "fc_menu" in t for t in tools_lower):
+                if "cad_verify" not in tools_lower:
+                    step.expected_tools.append("cad_verify")
+
+            # Add verification text for modeling steps that lack it
+            has_modeling = any(
+                "fc_" in t or "建模" in step.description or "创建" in step.description
+                for t in tools_lower
+            )
+            if has_modeling and not step.verification:
+                step.verification = "模型文件存在且 cad_verify 通过"
 
     def create_dag_plan(
         self,

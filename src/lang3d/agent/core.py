@@ -10,7 +10,9 @@ from ..models.router import ModelRouter, TaskType
 from ..tools.base import ToolRegistry
 from ..tools.bash import register_bash_tools
 from ..tools.file_ops import register_file_tools
+from .context import truncate_messages, truncate_tool_result
 from .executor import Executor
+from .fix_strategy import classify_failure, check_convergence, generate_fix_hint
 from .planner import Planner
 from .reflector import Reflector
 from .state import AgentState, Plan, PlanStep, StepStatus
@@ -19,77 +21,30 @@ from .verifier import Verifier
 
 AGENT_SYSTEM_PROMPT = """你是 Language-3D Agent，一个自主编程和 3D 建模助手。
 
-你的能力：
-1. 读写文件、执行命令
-2. 通过截屏和视觉模型观察屏幕
-3. 控制 CAD 软件进行 3D 建模（FreeCAD 或 SolidWorks）
-4. 将复杂任务分解为步骤并逐步执行
-5. 自我验证和纠错
+CAD 工具前缀：fc_*（FreeCAD）, sw_*（SolidWorks）, gui_*（GUI 自动化）
+零件库工具前缀：part_*（搜索/获取/生成/导入/保存标准零件）
 
-CAD 工具前缀：
-- fc_* : FreeCAD 工具（免费开源，推荐优先使用）
-- sw_* : SolidWorks 工具（需要安装 SolidWorks）
-- gui_* : GUI 自动化操作（点击、输入、快捷键、拖拽、滚动）
-
-3D 建模工作流（必须遵循）：
-1. 规划：分析任务，确定需要的建模步骤
-2. 建模：使用 fc_batch 一次性完成多步建模操作
-3. 验证：建模完成后必须调用 cad_verify 验证结果
-4. 修正：如果 cad_verify 返回 match=false，根据 DIFFERENCES 和 SUGGESTION 修正模型
-5. 再验证：修正后再次调用 cad_verify 确认
+3D 建模工作流：规划 → 建模 → 验证 → 修正
+1. 规划（Plan）：分析任务，确定建模步骤
+2. 建模（Model）：优先用 fc_batch 一次性完成多步建模
+3. 验证（Verify）：建模后用 fc_open_gui + cad_verify 验证
+4. 修正（Fix）：若 cad_verify 返回 match=false，根据 DIFFERENCES 和 SUGGESTION 修正
 
 cad_verify 验证策略：
-- 建模后使用 fc_open_gui 打开 FreeCAD GUI 查看模型
-- 调用 cad_verify 并传入预期模型描述
-- 检查返回的 MATCH 字段：true=通过，false=需要修正
-- 如果不匹配，根据 FIX_COMMANDS 字段修正
-- 使用 detail="standard" 进行常规验证（快速准确）
-- 使用 detail="detailed" 进行需要详细描述的复杂验证
+- 检查返回 MATCH 字段：true=通过，false=需修正
+- 不匹配时根据 FIX_COMMANDS 修正模型
+- detail="standard" 常规验证，detail="detailed" 复杂验证
 
-仿真分析工具：
-- fea_run：对 .FCStd 文档运行 FEA 结构分析（网格→边界条件→CalculiX求解）
-- fea_visualize：在 FreeCAD GUI 中显示应力/位移云图
-- fea_vlm_analyze：截取云图 + VLM 解读应力分布，返回安全评估
-- interference_check：检查零件干涉（布尔交集检测重叠体积）
-- tolerance_analysis：蒙特卡洛公差分析（纯 Python，不需要 FreeCAD）
-- motion_sim：运动仿真（正向运动学、范围检查、轨迹规划）
-- motion_range：关节运动范围和可达空间分析
-- motion_trajectory：关节空间线性插值轨迹规划
-- motion_vlm_analyze：截取运动可视化 + VLM 分析
+零件库工作流：
+- part_search(query)：搜索标准件（螺钉/轴承/舵机/齿轮等）
+- part_get(part_id)：查看零件参数和标准尺寸
+- part_generate(part_id, parameters)：生成参数化零件文件（.FCStd + .STL）
+- part_list(category)：按类别浏览零件
+- 需要标准件时优先用零件库，避免从零建模
 
-CFD 流体分析工具：
-- cfd_run：运行 OpenFOAM CFD 分析（网格→边界条件→求解→结果）
-- cfd_vlm_analyze：截取 CFD 可视化 + VLM 解读流场
-
-仿真工作流：
-1. 建模 → 保存 .FCStd
-2. fea_run 运行结构分析
-3. fea_vlm_analyze 用 VLM 解读应力云图
-4. 如果 unsafe，根据 SUGGESTION/FIX_COMMANDS 修改模型
-5. 重新 fea_run → fea_vlm_analyze 验证改进效果
-
-工具使用策略：
-- fc_batch：优先用于多步建模，一次调用完成整个建模流程
-- cad_verify：建模完成后必须调用，传入详细的预期描述
-- fc_open_gui / fc_close_gui：用于查看模型和验证
-- fc_menu：通过 VLM 视觉定位点击 FreeCAD 菜单/按钮（用于 GUI 自动化）
-- fc_menu_workflow：执行预定义 GUI 操作流程（new_part, add_box, save_file 等）
-- vlm_locate：先定位 UI 元素坐标，再用 gui_click 点击（自动化的前置步骤）
-- gui_* 工具：用于操作 FreeCAD GUI（旋转视图、点击菜单等）
-- detail 级别：fast(快速), standard(准确), detailed(详细), maximum(最全面)
-
-fc_menu vs fc_batch 选择策略：
-- fc_batch（API 方式）：精确、快速、无需 GUI。适合参数化建模。
-- fc_menu（GUI 方式）：视觉驱动、交互式。适合工作台特定功能、复杂对话框、API 未暴露的操作。
-- 优先使用 fc_batch，仅在 API 无法实现时使用 fc_menu。
-
-工作原则：
-- 每次只做一步，确认结果后再继续
-- 遇到错误时分析原因，尝试修复
-- 使用工具前确认操作是安全的
-- 保持简洁，不过度解释
-- 3D 建模时使用毫米(mm)作为单位
-- 建模完成后必须验证（cad_verify 或 vlm_analyze）
+工具优先级：fc_batch > fc_menu > gui_*。仿真用 fea_run/fea_vlm_analyze，CFD 用 cfd_run/cfd_vlm_analyze，运动用 motion_sim 等。
+detail 级别：fast, standard, detailed, maximum
+单位：mm（毫米）。建模后必须验证（cad_verify 或 vlm_analyze）。
 
 当前工作目录：{workspace}"""
 
@@ -186,6 +141,13 @@ class Agent:
                 router=self.router,
                 screenshot_dir=self.config.agent.screenshot_dir,
             )
+        except Exception:
+            pass
+
+        # Register part library tools (standard parts catalog)
+        try:
+            from ..tools.part_library import register_part_library_tools
+            register_part_library_tools(self.tools)
         except Exception:
             pass
 
@@ -303,9 +265,51 @@ class Agent:
         # (the plan we already have was used for the should_orchestrate check)
         return orchestrator.run_task(task)
 
+    def _broadcast_plan(self) -> None:
+        """Push the current plan (if any) to the web panel as JSON."""
+        try:
+            from ..web.app import update_agent_state
+        except ImportError:
+            return
+        if self.state.plan is None:
+            return
+        plan = self.state.plan
+        payload = {
+            "goal": plan.goal,
+            "steps": [
+                {
+                    "id": s.id,
+                    "description": s.description,
+                    "expected_tools": list(s.expected_tools),
+                    "verification": s.verification,
+                    "status": s.status.value if hasattr(s.status, "value") else str(s.status),
+                    "result": s.result,
+                    "attempts": s.attempts,
+                    "dependencies": list(s.dependencies),
+                    "assigned_agent": s.assigned_agent,
+                }
+                for s in plan.steps
+            ],
+        }
+        try:
+            completed, total = plan.progress()
+            update_agent_state(plan=payload, progress={"completed": completed, "total": total})
+        except Exception:
+            try:
+                update_agent_state(plan=payload)
+            except Exception:
+                pass
+
     def _run_with_planning(self, task: str) -> str:
         """Run a task with full planning pipeline."""
         # Phase 1: Plan (already created in run_task if called from there)
+        try:
+            from ..web.app import add_log, update_agent_state
+            update_agent_state(status="running")
+            add_log(f"Task started (planning): {task[:120]}", level="info")
+        except ImportError:
+            pass
+
         if self._on_thinking:
             try:
                 self._on_thinking("正在分析任务并制定计划...")
@@ -316,9 +320,10 @@ class Agent:
             self.state.plan = self.planner.create_plan(task)
         if self._on_plan_update:
             self._on_plan_update(self.state.plan)
+        self._broadcast_plan()
 
         # Phase 2: Execute each step
-        max_retries = 3
+        max_retries = getattr(self.config.agent, "max_plan_retries", 3)
         while True:
             step = self.state.plan.current_step()
             if step is None:
@@ -345,6 +350,9 @@ class Agent:
                 else:
                     step.status = StepStatus.FAILED
                     step.result = f"验证失败: {msg}"
+
+            # Broadcast progress after every step
+            self._broadcast_plan()
 
             # Phase 4: Reflect and retry if failed
             if step.status == StepStatus.FAILED and step.attempts < max_retries:
@@ -375,13 +383,20 @@ class Agent:
         self.state.save()
 
         completed, total = self.state.plan.progress()
+        try:
+            from ..web.app import add_log, update_agent_state
+            update_agent_state(status="complete")
+            add_log(f"Task completed: {completed}/{total} steps succeeded", level="success")
+        except ImportError:
+            pass
         return f"任务完成：{completed}/{total} 步骤成功"
 
     def _run_direct(self, task: str) -> str:
         """Run a task directly without planning (simple chat mode)."""
         messages: list[Message] = [Message(role="user", content=task)]
         verify_fail_count = 0
-        max_verify_retries = 3
+        max_verify_retries = getattr(self.config.agent, "max_verify_retries", 3)
+        fix_history: list[str] = []
 
         # Update web panel status
         try:
@@ -433,6 +448,9 @@ class Agent:
                 result = self.tools.execute(tc.name, **tc.arguments)
                 self.state.add_tool_call(tc.name, tc.arguments, result)
 
+                # Truncate large tool results
+                result = truncate_tool_result(result)
+
                 if self._on_tool_result:
                     try:
                         self._on_tool_result(tc.name, result)
@@ -450,22 +468,36 @@ class Agent:
                     Message(role="tool", content=result, tool_call_id=tc.id)
                 )
 
-                # Auto-fix: detect cad_verify mismatch and inject fix prompt
+                # Smart auto-fix: classify failure and generate targeted hint
                 if tc.name == "cad_verify" and "MATCH: False" in result:
                     verify_fail_count += 1
                     if verify_fail_count <= max_verify_retries:
-                        fix_hint = (
-                            f"[系统提示] cad_verify 检测到模型不匹配（第 {verify_fail_count} 次）。"
-                            f"请分析 DIFFERENCES 和 SUGGESTION，使用 fc_batch 修正模型，然后重新验证。"
-                        )
+                        expected = tc.arguments.get("expected", "")
+                        fix_ctx = classify_failure(result, expected)
+
+                        # Check for convergence (stuck in loop)
+                        if check_convergence(fix_history, result):
+                            fix_hint = (
+                                "[系统提示] 检测到修复陷入循环（连续多次失败原因相似）。"
+                                "请尝试完全不同的建模方法，或删除当前模型从头开始重建。"
+                            )
+                        else:
+                            fix_ctx.fix_history = fix_history
+                            fix_hint = generate_fix_hint(fix_ctx)
+
+                        fix_history.append(result)
                         messages.append(Message(role="user", content=fix_hint))
                         if self._on_thinking:
                             try:
                                 self._on_thinking(
-                                    f"自动修复：cad_verify 不匹配，注入修正提示（第 {verify_fail_count} 次）"
+                                    f"智能修复：{fix_ctx.failure_type.value}，注入定向提示（第 {verify_fail_count} 次）"
                                 )
                             except Exception:
                                 pass
+
+            # Apply sliding window when messages grow too large
+            if len(messages) > 12:
+                messages = truncate_messages(messages, keep_first=1, keep_last=2)
 
         return "达到最大对话轮数限制"
 
