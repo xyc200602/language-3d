@@ -485,7 +485,7 @@
   {
     "id": 39,
     "title": "端到端设计测试",
-    "description": "输入“设计一个 3 自由度桌面机械臂”，输出完整工程包（零件+装配+固件+文档+G-code）",
+    "description": "输入\"设计一个 3 自由度桌面机械臂\"，输出完整工程包（零件+装配+固件+文档+G-code）",
     "steps": [
       "完整端到端测试：需求解析→零件建模→装配→IK→选型→固件→BOM→文档→切片",
       "输出 data/projects/custom_robot/ 完整目录",
@@ -535,6 +535,6 @@
       "新建 tools/production_check.py"
     ],
     "priority": 42,
-    "passes": false
+    "passes": true
   }
 ]

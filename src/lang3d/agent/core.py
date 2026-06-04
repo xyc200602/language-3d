@@ -255,6 +255,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register production readiness check tools
+        try:
+            from ..tools.production_check import register_production_tools
+            register_production_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None

@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-06-04 - Task 42: 生产准备就绪检查
+
+### What was done:
+- 创建 `src/lang3d/tools/production_check.py` — 生产准备就绪检查工具
+- 5 大检查类别：
+  - **装配体验证** — 零件数量、关节数量、引用完整性、零件尺寸、旋转关节限位
+  - **固件代码** — 文件完整性、主程序结构、串口通信、括号平衡、代码行数、IK求解器、舵机驱动、传感器驱动
+  - **物料清单** — 零件清单匹配、标准件、电子件匹配、成本估算、成本明细
+  - **公差检查** — 尺寸合理性（零/负/过大/过小）、轴孔配合检查
+  - **文件检查** — 接线图、接地连接、GPIO引脚
+- `CheckItem` / `ProductionReport` 数据结构
+- `run_production_check()` — 完整流水线（生成固件+BOM+接线图→检查）
+- `format_production_report()` — Markdown 格式报告
+- `ProductionCheckTool` — Agent 工具注册
+- 修改 `src/lang3d/agent/core.py` — 注册 production_check 工具
+- 修改 `src/lang3d/tools/base.py` — TOOL_CATEGORIES 新增 production
+
+### Testing:
+- 创建 `tests/test_production_check.py` — 41 个测试全部通过
+- 测试覆盖：装配完整性、固件检查、BOM检查、公差检查、接线检查、报告生成、工具注册执行
+
+### Notes:
+- 所有 16 个路线图任务 (Task 27-42) 已全部完成
+- 阶段 A (机械完整性): Task 27-30 ✓
+- 阶段 B (电子与控制): Task 31-34 ✓
+- 阶段 C (生产工程化): Task 35-38 ✓
+- 阶段 D (集成验证): Task 39-42 ✓
+
+---
+
 ## 2026-06-04 - Task 41: 多机器人方案对比
 
 ### What was done:

@@ -68,6 +68,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "scheme_compare": [
         "scheme_compare",
     ],
+    "production": [
+        "production_check",
+    ],
 }
 
 # Map step types to the tool categories they need
