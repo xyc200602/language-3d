@@ -8,6 +8,7 @@ from typing import Any
 from openai import OpenAI
 
 from .base import Message, ModelBackend, ModelResponse, ToolCall, ToolDefinition
+from .retry import RetryConfig, call_with_retry
 
 
 class GLMBackend(ModelBackend):
@@ -25,8 +26,9 @@ class GLMBackend(ModelBackend):
         vision_model: str = "GLM-4V-Flash",
         # Alternative endpoint for models not on Coding Plan
         alt_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
+        retry_config: RetryConfig | None = None,
     ) -> None:
-        super().__init__(api_key=api_key, base_url=base_url, model=model)
+        super().__init__(api_key=api_key, base_url=base_url, model=model, retry_config=retry_config)
         self.vision_model = vision_model
         self.alt_base_url = alt_base_url
         self._client: OpenAI | None = None
@@ -82,7 +84,11 @@ class GLMBackend(ModelBackend):
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
-        response = self.client.chat.completions.create(**kwargs)
+        response = call_with_retry(
+            self.client.chat.completions.create,
+            **kwargs,
+            retry_config=self.retry_config,
+        )
 
         choice = response.choices[0]
         content = choice.message.content or ""
@@ -149,7 +155,8 @@ class GLMBackend(ModelBackend):
         )
         api_client = self.alt_client if use_alt else self.client
 
-        response = api_client.chat.completions.create(
+        response = call_with_retry(
+            api_client.chat.completions.create,
             model=vision_model,
             max_tokens=effective_max_tokens,
             messages=[
@@ -166,6 +173,7 @@ class GLMBackend(ModelBackend):
                     ],
                 }
             ],
+            retry_config=self.retry_config,
         )
 
         return response.choices[0].message.content or ""

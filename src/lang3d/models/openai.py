@@ -7,6 +7,7 @@ from typing import Any
 from openai import OpenAI
 
 from .base import Message, ModelBackend, ModelResponse, ToolCall, ToolDefinition
+from .retry import RetryConfig, call_with_retry
 
 
 class OpenAIBackend(ModelBackend):
@@ -18,8 +19,9 @@ class OpenAIBackend(ModelBackend):
         base_url: str = "https://api.openai.com/v1",
         model: str = "gpt-4o",
         vision_model: str = "gpt-4o",
+        retry_config: RetryConfig | None = None,
     ) -> None:
-        super().__init__(api_key=api_key, base_url=base_url, model=model)
+        super().__init__(api_key=api_key, base_url=base_url, model=model, retry_config=retry_config)
         self.vision_model = vision_model
         self._client: OpenAI | None = None
 
@@ -50,7 +52,11 @@ class OpenAIBackend(ModelBackend):
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
-        response = self.client.chat.completions.create(**kwargs)
+        response = call_with_retry(
+            self.client.chat.completions.create,
+            **kwargs,
+            retry_config=self.retry_config,
+        )
 
         choice = response.choices[0]
         content = choice.message.content or ""
@@ -87,7 +93,8 @@ class OpenAIBackend(ModelBackend):
         image_data = self._encode_image(image_path)
         media_type = self._get_media_type(image_path)
 
-        response = self.client.chat.completions.create(
+        response = call_with_retry(
+            self.client.chat.completions.create,
             model=self.vision_model,
             max_tokens=max_tokens,
             messages=[
@@ -104,6 +111,7 @@ class OpenAIBackend(ModelBackend):
                     ],
                 }
             ],
+            retry_config=self.retry_config,
         )
 
         return response.choices[0].message.content or ""

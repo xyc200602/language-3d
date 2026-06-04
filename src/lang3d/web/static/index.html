@@ -59,6 +59,8 @@
         button.danger { background: #4a1a1a; color: #f44336; border-color: #f44336; }
         button.danger:hover:not(:disabled) { background: #5a2a2a; }
         button.success { background: #1a472a; color: #4caf50; border-color: #4caf50; }
+        button.warning { background: #4a3a1a; color: #ff9800; border-color: #ff9800; }
+        button.warning:hover:not(:disabled) { background: #5a4a2a; }
 
         .plan-step { padding: 8px 10px; margin: 4px 0; border-radius: 4px; font-size: 13px; display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
         .plan-step:hover { filter: brightness(1.15); }
@@ -217,6 +219,13 @@
         .variant-btn { display: inline-block; padding: 2px 8px; margin: 2px; font-size: 11px; border-radius: 4px; background: #0f3460; color: #00d2ff; border: 1px solid #0f3460; cursor: pointer; }
         .variant-btn:hover { background: #1a4a80; }
         .variant-btn.active { background: #00d2ff; color: #1a1a2e; }
+        .print-analysis { margin-top: 12px; padding: 10px; background: #1a1a2e; border-radius: 4px; border: 1px solid #0f3460; }
+        .print-analysis h4 { color: #00d2ff; margin-bottom: 8px; font-size: 13px; }
+        .print-analysis .analysis-row { display: flex; justify-content: space-between; padding: 2px 0; font-size: 12px; }
+        .print-analysis .analysis-label { color: #888; }
+        .print-analysis .analysis-value { color: #eee; font-weight: 600; }
+        .print-analysis .issue-item { color: #ff9800; font-size: 11px; padding: 2px 0; }
+        .print-analysis .pass-item { color: #4caf50; font-size: 11px; }
     </style>
 </head>
 <body>
@@ -249,6 +258,7 @@
         <div class="tab" data-tab="history">History</div>
         <div class="tab" data-tab="agents">Agents</div>
         <div class="tab" data-tab="parts">Part Library</div>
+        <div class="tab" data-tab="slicing">Slicing</div>
     </div>
 
     <div class="container">
@@ -460,10 +470,114 @@
                             3D Preview
                             <div class="panel-actions">
                                 <button id="parts-generate-btn" disabled>Generate Part</button>
+                                <button id="parts-analyze-btn" disabled class="success" style="display: none;">Analyze Print</button>
+                                <button id="parts-assemble-btn" class="warning">Assemble</button>
                             </div>
                         </div>
                         <div class="panel-body" style="padding: 0; min-height: 300px;">
                             <div id="parts-viewer-container" style="min-height: 300px; background: #0a0a1a; border-radius: 0 0 8px 8px;"></div>
+                        </div>
+                        <div id="print-analysis-container" style="display: none; padding: 12px;">
+                            <div class="print-analysis">
+                                <h4>Print Analysis</h4>
+                                <div id="print-analysis-content"><div class="empty">No analysis yet</div></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Slicing Tab -->
+        <div class="tab-panel" id="panel-slicing">
+            <div style="display: grid; grid-template-columns: 320px 1fr; gap: 12px; min-height: 500px;">
+                <div>
+                    <div class="panel" style="margin-bottom: 12px;">
+                        <div class="panel-header">Slice Settings</div>
+                        <div class="panel-body" style="padding: 10px;">
+                            <div style="margin-bottom: 8px;">
+                                <label style="color: #888; font-size: 12px;">STL File</label>
+                                <select id="slice-stl-select" style="width: 100%; margin-top: 4px;">
+                                    <option value="">Loading STL files...</option>
+                                </select>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                                <div>
+                                    <label style="color: #888; font-size: 12px;">Printer</label>
+                                    <select id="slice-printer" style="width: 100%; margin-top: 4px;">
+                                        <option value="generic">Generic</option>
+                                        <option value="prusa_mk3s">Prusa MK3S</option>
+                                        <option value="ender_3">Ender 3</option>
+                                        <option value="bambu_p1s">Bambu P1S</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="color: #888; font-size: 12px;">Material</label>
+                                    <select id="slice-material" style="width: 100%; margin-top: 4px;">
+                                        <option value="pla">PLA</option>
+                                        <option value="abs">ABS</option>
+                                        <option value="petg">PETG</option>
+                                        <option value="tpu">TPU</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div style="margin-bottom: 8px;">
+                                <label style="color: #888; font-size: 12px;">Quality</label>
+                                <select id="slice-quality" style="width: 100%; margin-top: 4px;">
+                                    <option value="draft">Draft (0.3mm)</option>
+                                    <option value="standard" selected>Standard (0.2mm)</option>
+                                    <option value="high">High (0.12mm)</option>
+                                </select>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                                <div>
+                                    <label style="color: #888; font-size: 12px;">Layer Height</label>
+                                    <input id="slice-layer-height" type="text" placeholder="auto" style="width: 100%; margin-top: 4px;">
+                                </div>
+                                <div>
+                                    <label style="color: #888; font-size: 12px;">Infill %</label>
+                                    <input id="slice-infill" type="text" placeholder="auto" style="width: 100%; margin-top: 4px;">
+                                </div>
+                            </div>
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                                <div>
+                                    <label style="color: #888; font-size: 12px;">Supports</label>
+                                    <select id="slice-supports" style="width: 100%; margin-top: 4px;">
+                                        <option value="auto">Auto</option>
+                                        <option value="yes">Yes</option>
+                                        <option value="no">No</option>
+                                        <option value="buildplate_only">Build Plate Only</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label style="color: #888; font-size: 12px;">Brim</label>
+                                    <select id="slice-brim" style="width: 100%; margin-top: 4px;">
+                                        <option value="false">No</option>
+                                        <option value="true">Yes</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <button id="slice-run-btn" class="success" style="width: 100%; margin-top: 8px;">Slice Model</button>
+                        </div>
+                    </div>
+                </div>
+                <div>
+                    <div class="panel" style="margin-bottom: 12px;">
+                        <div class="panel-header">
+                            Slice Result
+                            <div class="panel-actions">
+                                <button id="slice-analyze-btn" disabled>Analyze G-code</button>
+                                <button id="slice-layers-btn" disabled>View Layers</button>
+                            </div>
+                        </div>
+                        <div class="panel-body" id="slice-result">
+                            <div class="empty">Slice an STL file to see results</div>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-header">Layer Data</div>
+                        <div class="panel-body scroll-y" id="slice-layers" style="max-height: 350px;">
+                            <div class="empty">No layer data</div>
                         </div>
                     </div>
                 </div>
@@ -477,6 +591,32 @@
 
     <div class="session-detail-overlay" id="session-detail-overlay">
         <div class="session-detail" id="session-detail-content"></div>
+    </div>
+
+    <div class="session-detail-overlay" id="assemble-overlay" style="display: none;">
+        <div class="session-detail" style="max-width: 600px; max-height: 80vh; overflow-y: auto;">
+            <h3 style="color: #00d2ff; margin-bottom: 12px;">Assemble Parts</h3>
+            <div style="margin-bottom: 12px;">
+                <label style="color: #888; font-size: 12px;">Assembly Name</label>
+                <input id="assemble-name" type="text" value="assembly" style="width: 100%; padding: 6px; margin-top: 4px; background: #1a1a2e; color: #eee; border: 1px solid #0f3460; border-radius: 4px;">
+            </div>
+            <div id="assemble-parts-list" style="margin-bottom: 12px;"></div>
+            <div style="margin-bottom: 12px;">
+                <button id="assemble-add-part-btn" style="padding: 4px 12px; font-size: 12px;">+ Add Part</button>
+            </div>
+            <div style="margin-bottom: 12px;">
+                <label style="color: #888; font-size: 12px;">Output Format</label>
+                <select id="assemble-format" style="width: 100%; padding: 6px; margin-top: 4px; background: #1a1a2e; color: #eee; border: 1px solid #0f3460; border-radius: 4px;">
+                    <option value="fcstd">FCStd</option>
+                    <option value="stl">STL</option>
+                </select>
+            </div>
+            <div style="display: flex; gap: 8px; justify-content: flex-end;">
+                <button id="assemble-cancel-btn">Cancel</button>
+                <button id="assemble-run-btn" class="success">Assemble</button>
+            </div>
+            <div id="assemble-result" style="margin-top: 12px; display: none;"></div>
+        </div>
     </div>
 
     <script type="importmap">
@@ -552,6 +692,7 @@
             if (tab.dataset.tab === 'files') loadFiles('');
             if (tab.dataset.tab === 'history') loadSessions();
             if (tab.dataset.tab === 'parts' && partsTemplates.length === 0) loadPartsCatalog('', '');
+            if (tab.dataset.tab === 'slicing') loadSlicingStlList();
         });
     });
 
@@ -1053,19 +1194,55 @@
                 loadPath = model.rel_path;
                 loadedExt = model.ext;
             } else if (model.convertible) {
-                // Convert STEP/FCStd → STL via server
-                const ep = (model.ext === 'fcstd') ? 'convert-fcstd' : 'convert-step';
                 const label = (model.ext === 'fcstd') ? 'FCStd → STL' : 'STEP → STL';
-                infoEl.textContent = `Converting ${model.name} (${label})...`;
-                const r = await fetch(`/api/${ep}?path=${encodeURIComponent(model.rel_path)}`);
-                if (!r.ok) {
-                    const err = await r.json().catch(() => ({}));
-                    throw new Error(err.detail || `Conversion failed (${r.status_code})`);
+                // Use async conversion for large files (>5MB)
+                if (model.size_bytes > 5 * 1024 * 1024) {
+                    infoEl.textContent = `Converting ${model.name} (${label}) [async]...`;
+                    const r = await fetch(`/api/convert-async?path=${encodeURIComponent(model.rel_path)}`);
+                    if (!r.ok) {
+                        const err = await r.json().catch(() => ({}));
+                        throw new Error(err.detail || 'Async conversion failed');
+                    }
+                    const d = await r.json();
+                    if (d.status === 'done') {
+                        loadPath = d.stl_path;
+                        loadedExt = 'stl';
+                        infoEl.textContent = `${model.name} (converted${d.cached ? ', cached' : ''})`;
+                    } else {
+                        // Poll for completion
+                        const jobId = d.job_id;
+                        let attempts = 0;
+                        while (attempts < 120) {
+                            await new Promise(res => setTimeout(res, 1000));
+                            const sr = await fetch(`/api/convert-status?job_id=${jobId}`);
+                            const sd = await sr.json();
+                            if (sd.status === 'done') {
+                                loadPath = sd.result.stl_path;
+                                loadedExt = 'stl';
+                                infoEl.textContent = `${model.name} (converted)`;
+                                break;
+                            } else if (sd.status === 'failed') {
+                                throw new Error(sd.error || 'Conversion failed');
+                            }
+                            infoEl.textContent = `Converting ${model.name} (${label}) [async ${attempts + 1}s]...`;
+                            attempts++;
+                        }
+                        if (loadedExt !== 'stl') throw new Error('Conversion timed out');
+                    }
+                } else {
+                    // Sync conversion for small files
+                    const ep = (model.ext === 'fcstd') ? 'convert-fcstd' : 'convert-step';
+                    infoEl.textContent = `Converting ${model.name} (${label})...`;
+                    const r = await fetch(`/api/${ep}?path=${encodeURIComponent(model.rel_path)}`);
+                    if (!r.ok) {
+                        const err = await r.json().catch(() => ({}));
+                        throw new Error(err.detail || `Conversion failed (${r.status_code})`);
+                    }
+                    const d = await r.json();
+                    loadPath = d.stl_path;
+                    loadedExt = 'stl';
+                    infoEl.textContent = `${model.name} (converted${d.cached ? ', cached' : ''})`;
                 }
-                const d = await r.json();
-                loadPath = d.stl_path;
-                loadedExt = 'stl';
-                infoEl.textContent = `${model.name} (converted${d.cached ? ', cached' : ''})`;
             } else {
                 infoEl.textContent = `${model.ext.toUpperCase()} preview not supported`;
                 return;
@@ -1298,24 +1475,52 @@
         partsSelectedTemplate = template;
         const detail = document.getElementById('parts-detail');
         const genBtn = document.getElementById('parts-generate-btn');
+        const analyzeBtn = document.getElementById('parts-analyze-btn');
         genBtn.disabled = false;
+
+        // Hide analysis when switching parts
+        document.getElementById('print-analysis-container').style.display = 'none';
+        analyzeBtn.style.display = 'none';
 
         let html = `
             <div style="font-size: 16px; font-weight: 600; color: #00d2ff; margin-bottom: 4px;">${escapeHtml(template.name_cn)}</div>
             <div style="font-size: 12px; color: #888; margin-bottom: 8px;">${escapeHtml(template.name_en)} · ${escapeHtml(template.category)}/${escapeHtml(template.subcategory)}</div>
             <div style="font-size: 12px; color: #aaa; margin-bottom: 12px;">${escapeHtml(template.description)}</div>
             <div style="font-size: 12px; color: #888; margin-bottom: 8px;">Tags: ${template.tags.map(t => escapeHtml(t)).join(', ')}</div>
-            <div style="font-size: 13px; font-weight: 600; margin: 8px 0 4px;">Parameters:</div>
         `;
 
+        // Quality levels selector
+        if (template.quality_levels && template.quality_levels.length > 1) {
+            html += `<div style="font-size: 13px; font-weight: 600; margin: 8px 0 4px;">Quality Level:</div>`;
+            template.quality_levels.forEach((ql, i) => {
+                const isActive = i === 0 ? ' active' : '';
+                html += `<span class="variant-btn quality-btn${isActive}" data-quality="${escapeHtml(ql)}">${escapeHtml(ql)}</span>`;
+            });
+            html += `<div style="clear: both; margin-bottom: 8px;"></div>`;
+        }
+
+        html += `<div style="font-size: 13px; font-weight: 600; margin: 8px 0 4px;">Parameters:</div>`;
+
         template.parameters.forEach(p => {
-            html += `
-                <div class="part-param">
-                    <label>${escapeHtml(p.display_name_cn)} (${p.unit})</label>
-                    <input type="number" id="pp-${p.name}" value="${p.default}" step="${p.step}" min="${p.min_value}" max="${p.max_value}" ${p.fixed ? 'disabled' : ''}>
-                    <span class="param-range">[${p.min_value} - ${p.max_value}]</span>
-                </div>
-            `;
+            if (p.param_type === 'string' && p.choices && p.choices.length > 0) {
+                // String parameter with choices - render as select dropdown
+                html += `
+                    <div class="part-param">
+                        <label>${escapeHtml(p.display_name_cn)}</label>
+                        <select id="pp-${p.name}" style="width: 120px; padding: 2px 6px; font-size: 12px;">
+                            ${p.choices.map(c => `<option value="${escapeHtml(c)}" ${c === String(p.default) ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+                        </select>
+                    </div>
+                `;
+            } else {
+                html += `
+                    <div class="part-param">
+                        <label>${escapeHtml(p.display_name_cn)} (${p.unit})</label>
+                        <input type="number" id="pp-${p.name}" value="${p.default}" step="${p.step}" min="${p.min_value}" max="${p.max_value}" ${p.fixed ? 'disabled' : ''}>
+                        <span class="param-range">[${p.min_value} - ${p.max_value}]</span>
+                    </div>
+                `;
+            }
         });
 
         if (template.standard_sizes && template.standard_sizes.length > 0) {
@@ -1331,6 +1536,21 @@
         }
 
         detail.innerHTML = html;
+
+        // Wire quality level buttons
+        detail.querySelectorAll('.quality-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                detail.querySelectorAll('.quality-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                // Set thread_detail or tooth_detail based on quality
+                const quality = btn.dataset.quality;
+                const detailParam = template.parameters.find(p => p.param_type === 'string');
+                if (detailParam) {
+                    const sel = document.getElementById(`pp-${detailParam.name}`);
+                    if (sel) sel.value = quality;
+                }
+            });
+        });
 
         // Wire variant buttons
         detail.querySelectorAll('.variant-btn').forEach(btn => {
@@ -1356,9 +1576,16 @@
         const params = {};
         partsSelectedTemplate.parameters.forEach(p => {
             const inp = document.getElementById(`pp-${p.name}`);
-            if (inp) params[p.name] = parseFloat(inp.value) || p.default;
+            if (inp) {
+                if (p.param_type === 'string') {
+                    params[p.name] = inp.value;
+                } else {
+                    params[p.name] = parseFloat(inp.value) || p.default;
+                }
+            }
         });
 
+        let lastStlPath = null;
         try {
             const res = await fetch('/api/parts/generate', {
                 method: 'POST',
@@ -1372,6 +1599,7 @@
             }
             // Show generated part in 3D viewer
             if (data.stl_rel) {
+                lastStlPath = data.stl_rel;
                 initPartsViewer();
                 if (partsViewerMesh) {
                     partsViewerScene.remove(partsViewerMesh);
@@ -1395,11 +1623,91 @@
                 partsViewerControls.update();
             }
             alert(`Part generated: ${data.name}\nSTL: ${data.stl_size_kb || '?'} KB`);
+
+            // Show analyze button after successful generation
+            if (lastStlPath) {
+                const analyzeBtn = document.getElementById('parts-analyze-btn');
+                analyzeBtn.style.display = 'inline-block';
+                analyzeBtn.disabled = false;
+            }
         } catch (e) {
             alert('Error: ' + e.message);
         } finally {
             genBtn.disabled = false;
             genBtn.textContent = 'Generate Part';
+        }
+    });
+
+    // Print analysis button
+    document.getElementById('parts-analyze-btn').addEventListener('click', async () => {
+        if (!partsSelectedTemplate) return;
+        const analyzeBtn = document.getElementById('parts-analyze-btn');
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = 'Analyzing...';
+
+        // Find the last generated STL for this part
+        let stlPath = null;
+        try {
+            const res = await fetch('/api/parts/generated');
+            const data = await res.json();
+            const parts = data.parts || [];
+            // Find most recent generated part matching this template
+            const matching = parts.filter(p => p.template_id === partsSelectedTemplate.id);
+            if (matching.length > 0) {
+                const last = matching[matching.length - 1];
+                stlPath = last.stl_path;
+            }
+        } catch (e) {}
+
+        if (!stlPath) {
+            alert('No generated STL found for this part. Generate it first.');
+            analyzeBtn.disabled = false;
+            analyzeBtn.textContent = 'Analyze Print';
+            return;
+        }
+
+        const container = document.getElementById('print-analysis-container');
+        const content = document.getElementById('print-analysis-content');
+        container.style.display = 'block';
+        content.innerHTML = '<div class="empty">Analyzing...</div>';
+
+        try {
+            const res = await fetch('/api/parts/analyze', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ stl_path: stlPath })
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                content.innerHTML = `<div style="color: #f44336;">Analysis failed: ${escapeHtml(data.detail || 'Unknown error')}</div>`;
+                return;
+            }
+            const a = data.analysis || {};
+            const bbox = a.bounding_box || {};
+            let html = `
+                <div class="analysis-row"><span class="analysis-label">Bounding Box:</span><span class="analysis-value">${(bbox.x||0).toFixed(1)} x ${(bbox.y||0).toFixed(1)} x ${(bbox.z||0).toFixed(1)} mm</span></div>
+                <div class="analysis-row"><span class="analysis-label">Volume:</span><span class="analysis-value">${(a.volume_mm3||0).toFixed(1)} mm&sup3;</span></div>
+                <div class="analysis-row"><span class="analysis-label">Surface Area:</span><span class="analysis-value">${(a.surface_area_mm2||0).toFixed(1)} mm&sup2;</span></div>
+                <div class="analysis-row"><span class="analysis-label">Overhang Ratio:</span><span class="analysis-value" style="color: ${(a.overhang_ratio||0) > 0.3 ? '#f44336' : '#4caf50'};">${((a.overhang_ratio||0)*100).toFixed(1)}%</span></div>
+                <div class="analysis-row"><span class="analysis-label">Min Wall Thickness:</span><span class="analysis-value">${(a.min_wall_thickness_mm||0).toFixed(1)} mm</span></div>
+                <div class="analysis-row"><span class="analysis-label">Bottom Contact Area:</span><span class="analysis-value">${(a.bottom_area_mm2||0).toFixed(1)} mm&sup2;</span></div>
+                <div class="analysis-row"><span class="analysis-label">Recommended Orientation:</span><span class="analysis-value">${escapeHtml(a.recommended_orientation || 'auto')}</span></div>
+                <div class="analysis-row"><span class="analysis-label">Material (PLA 20%):</span><span class="analysis-value">${(a.material_estimate_grams||0).toFixed(1)} g</span></div>
+            `;
+            if (a.issues && a.issues.length > 0) {
+                html += `<div style="margin-top: 8px; font-weight: 600; color: #ff9800;">Issues:</div>`;
+                a.issues.forEach(issue => {
+                    html += `<div class="issue-item">⚠ ${escapeHtml(issue)}</div>`;
+                });
+            } else {
+                html += `<div class="pass-item" style="margin-top: 8px;">✓ No issues detected - part is printable</div>`;
+            }
+            content.innerHTML = html;
+        } catch (e) {
+            content.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(e.message)}</div>`;
+        } finally {
+            analyzeBtn.disabled = false;
+            analyzeBtn.textContent = 'Analyze Print';
         }
     });
 
@@ -1420,6 +1728,128 @@
                 loadPartsCatalog('', '');
             }
         });
+    });
+
+    // ------------------------------------------------------------------
+    // Assembly UI
+    // ------------------------------------------------------------------
+    let assemblyParts = [];
+
+    function renderAssemblyPartsList() {
+        const container = document.getElementById('assemble-parts-list');
+        if (assemblyParts.length === 0) {
+            container.innerHTML = '<div style="color: #888; font-size: 12px;">No parts added yet. Click "+ Add Part" below.</div>';
+            return;
+        }
+        let html = '';
+        assemblyParts.forEach((p, i) => {
+            html += `<div style="padding: 8px; margin: 4px 0; background: #1a1a2e; border: 1px solid #0f3460; border-radius: 4px;">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span style="color: #00d2ff; font-size: 12px;">Part ${i + 1}</span>
+                    <button onclick="window._removeAssemblyPart(${i})" style="font-size: 10px; padding: 2px 6px; color: #f44336;">Remove</button>
+                </div>
+                <div style="margin-top: 4px;">
+                    <input type="text" placeholder="File path (.stl/.fcstd/.step)" value="${escapeHtml(p.file)}" onchange="window._updateAssemblyPart(${i}, 'file', this.value)" style="width: 100%; padding: 4px; font-size: 11px; background: #0a0a1a; color: #eee; border: 1px solid #333; border-radius: 3px;">
+                </div>
+                <div style="display: flex; gap: 4px; margin-top: 4px;">
+                    <input type="text" placeholder="Name" value="${escapeHtml(p.name)}" onchange="window._updateAssemblyPart(${i}, 'name', this.value)" style="flex: 1; padding: 4px; font-size: 11px; background: #0a0a1a; color: #eee; border: 1px solid #333; border-radius: 3px;">
+                    <input type="text" placeholder="x,y,z" value="${p.position.join(',')}" onchange="window._updateAssemblyPart(${i}, 'position', this.value)" style="width: 100px; padding: 4px; font-size: 11px; background: #0a0a1a; color: #eee; border: 1px solid #333; border-radius: 3px;">
+                </div>
+            </div>`;
+        });
+        container.innerHTML = html;
+    }
+
+    window._removeAssemblyPart = function(idx) {
+        assemblyParts.splice(idx, 1);
+        renderAssemblyPartsList();
+    };
+
+    window._updateAssemblyPart = function(idx, field, value) {
+        if (field === 'position') {
+            assemblyParts[idx].position = value.split(',').map(v => parseFloat(v.trim()) || 0);
+        } else {
+            assemblyParts[idx][field] = value;
+        }
+    };
+
+    document.getElementById('parts-assemble-btn').addEventListener('click', async () => {
+        assemblyParts = [];
+        // Pre-fill with generated parts
+        try {
+            const res = await fetch('/api/parts/generated');
+            const data = await res.json();
+            const parts = data.parts || [];
+            parts.forEach(p => {
+                const file = p.stl_path || p.fcstd_path;
+                if (file) {
+                    assemblyParts.push({
+                        file: file,
+                        name: p.name || 'part',
+                        position: [0, 0, 0],
+                    });
+                }
+            });
+        } catch (e) {}
+        renderAssemblyPartsList();
+        document.getElementById('assemble-overlay').style.display = 'flex';
+        document.getElementById('assemble-result').style.display = 'none';
+    });
+
+    document.getElementById('assemble-add-part-btn').addEventListener('click', () => {
+        assemblyParts.push({ file: '', name: `Part${assemblyParts.length + 1}`, position: [0, 0, 0] });
+        renderAssemblyPartsList();
+    });
+
+    document.getElementById('assemble-cancel-btn').addEventListener('click', () => {
+        document.getElementById('assemble-overlay').style.display = 'none';
+    });
+
+    document.getElementById('assemble-run-btn').addEventListener('click', async () => {
+        const name = document.getElementById('assemble-name').value.trim();
+        const fmt = document.getElementById('assemble-format').value;
+        const resultDiv = document.getElementById('assemble-result');
+
+        if (!name) { alert('Enter an assembly name'); return; }
+        const validParts = assemblyParts.filter(p => p.file);
+        if (validParts.length < 2) { alert('Add at least 2 parts with file paths'); return; }
+
+        const runBtn = document.getElementById('assemble-run-btn');
+        runBtn.disabled = true;
+        runBtn.textContent = 'Assembling...';
+        resultDiv.style.display = 'block';
+        resultDiv.innerHTML = '<div style="color: #888;">Assembling parts...</div>';
+
+        try {
+            const res = await fetch('/api/parts/assemble', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    assembly_name: name,
+                    parts: validParts.map(p => ({
+                        file: p.file,
+                        name: p.name,
+                        position: p.position,
+                    })),
+                    output_format: fmt,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                resultDiv.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(data.detail || JSON.stringify(data))}</div>`;
+            } else {
+                let html = `<div style="color: #4caf50; margin-bottom: 8px;">Assembly created: ${escapeHtml(data.assembly_name)}</div>`;
+                html += `<div style="font-size: 12px; color: #aaa;">Parts: ${data.part_count}</div>`;
+                if (data.fcstd_path) html += `<div style="font-size: 12px; color: #aaa;">FCStd: ${escapeHtml(data.fcstd_path)}</div>`;
+                if (data.stl_path) html += `<div style="font-size: 12px; color: #aaa;">STL: ${escapeHtml(data.stl_path)} (${data.stl_size_kb || '?'} KB)</div>`;
+                resultDiv.innerHTML = html;
+            }
+        } catch (e) {
+            resultDiv.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(e.message)}</div>`;
+        } finally {
+            runBtn.disabled = false;
+            runBtn.textContent = 'Assemble';
+        }
     });
 
     // =====================================================================
@@ -1496,6 +1926,166 @@
             applyState(data);
         } catch (e) {}
     }, 8000);
+
+    // =====================================================================
+    // Slicing Tab
+    // =====================================================================
+    let slicingLastGcode = '';
+
+    async function loadSlicingStlList() {
+        const sel = document.getElementById('slice-stl-select');
+        try {
+            const res = await fetch('/api/models');
+            const data = await res.json();
+            const stls = (data.models || []).filter(m => m.ext === 'stl' && !m.empty);
+            if (stls.length === 0) {
+                sel.innerHTML = '<option value="">No STL files found</option>';
+                return;
+            }
+            sel.innerHTML = stls.map(m =>
+                `<option value="${escapeHtml(m.path)}">${escapeHtml(m.name)} (${m.size_kb}KB)</option>`
+            ).join('');
+        } catch (e) {
+            sel.innerHTML = '<option value="">Error loading files</option>';
+        }
+    }
+
+    document.getElementById('slice-run-btn').addEventListener('click', async () => {
+        const stlPath = document.getElementById('slice-stl-select').value;
+        if (!stlPath) { alert('Select an STL file'); return; }
+
+        const btn = document.getElementById('slice-run-btn');
+        const resultDiv = document.getElementById('slice-result');
+        btn.disabled = true;
+        btn.textContent = 'Slicing...';
+        resultDiv.innerHTML = '<div class="empty">Slicing in progress...</div>';
+
+        const payload = {
+            stl_path: stlPath,
+            printer: document.getElementById('slice-printer').value,
+            material: document.getElementById('slice-material').value,
+            quality: document.getElementById('slice-quality').value,
+            supports: document.getElementById('slice-supports').value,
+            brim: document.getElementById('slice-brim').value === 'true',
+        };
+        const lh = document.getElementById('slice-layer-height').value;
+        const inf = document.getElementById('slice-infill').value;
+        if (lh) payload.layer_height = parseFloat(lh);
+        if (inf) payload.infill = parseInt(inf);
+
+        try {
+            const res = await fetch('/api/slice', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                resultDiv.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(data.detail || JSON.stringify(data))}</div>`;
+            } else {
+                slicingLastGcode = data.gcode_path || '';
+                const stats = data.stats || {};
+                resultDiv.innerHTML = `
+                    <div style="color: #4caf50; font-weight: 600; margin-bottom: 8px;">Slice Successful</div>
+                    <table style="width: 100%; font-size: 12px; border-collapse: collapse;">
+                        <tr><td style="color: #888; padding: 4px 8px;">G-code</td><td>${escapeHtml(data.gcode_path || '')}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Size</td><td>${data.gcode_size_kb || 0} KB</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Slicer</td><td>${escapeHtml(data.slicer || '')}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Layers</td><td>${stats.total_layers || 0}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Print Time</td><td>${stats.print_time_h || 0}h ${stats.print_time_m || 0}m</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Filament</td><td>${(stats.filament_mm || 0).toFixed(1)} mm / ${(stats.filament_g || 0).toFixed(1)} g</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Supports</td><td>${stats.has_supports ? 'Yes' : 'No'}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Brim</td><td>${stats.has_brim ? 'Yes' : 'No'}</td></tr>
+                    </table>
+                `;
+                document.getElementById('slice-analyze-btn').disabled = !slicingLastGcode;
+                document.getElementById('slice-layers-btn').disabled = !slicingLastGcode;
+            }
+        } catch (e) {
+            resultDiv.innerHTML = `<div style="color: #f44336;">Request failed: ${escapeHtml(e.message)}</div>`;
+        }
+        btn.disabled = false;
+        btn.textContent = 'Slice Model';
+    });
+
+    document.getElementById('slice-analyze-btn').addEventListener('click', async () => {
+        if (!slicingLastGcode) return;
+        const resultDiv = document.getElementById('slice-result');
+        resultDiv.innerHTML = '<div class="empty">Analyzing...</div>';
+        try {
+            const res = await fetch('/api/slice/analyze', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({gcode_path: slicingLastGcode}),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                resultDiv.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(data.detail || JSON.stringify(data))}</div>`;
+            } else {
+                const pt = data.print_time || {};
+                const fi = data.filament || {};
+                const b = data.print_bounds || {};
+                resultDiv.innerHTML = `
+                    <div style="color: #4caf50; font-weight: 600; margin-bottom: 8px;">G-code Analysis</div>
+                    <table style="width: 100%; font-size: 12px; border-collapse: collapse;">
+                        <tr><td style="color: #888; padding: 4px 8px;">Print Time</td><td>${escapeHtml(pt.formatted || '')}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Filament Length</td><td>${fi.length_mm || 0} mm</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Filament Weight</td><td>${fi.weight_g || 0} g</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Volume</td><td>${fi.volume_cm3 || 0} cm&sup3;</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Est. Cost</td><td>$${data.estimated_cost || 0}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Layers</td><td>${data.layers || 0}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Supports</td><td>${data.has_supports ? 'Yes' : 'No'}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Brim</td><td>${data.has_brim ? 'Yes' : 'No'}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Bounds X</td><td>${(b.min_x||0).toFixed(1)} ~ ${(b.max_x||0).toFixed(1)}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Bounds Y</td><td>${(b.min_y||0).toFixed(1)} ~ ${(b.max_y||0).toFixed(1)}</td></tr>
+                        <tr><td style="color: #888; padding: 4px 8px;">Bounds Z</td><td>${(b.min_z||0).toFixed(1)} ~ ${(b.max_z||0).toFixed(1)}</td></tr>
+                    </table>
+                `;
+            }
+        } catch (e) {
+            resultDiv.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    });
+
+    document.getElementById('slice-layers-btn').addEventListener('click', async () => {
+        if (!slicingLastGcode) return;
+        const layersDiv = document.getElementById('slice-layers');
+        layersDiv.innerHTML = '<div class="empty">Loading layers...</div>';
+        try {
+            const res = await fetch('/api/slice/layers', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({gcode_path: slicingLastGcode, layer_range: 'all'}),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                layersDiv.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(data.detail || JSON.stringify(data))}</div>`;
+            } else {
+                const layers = data.layers || [];
+                layersDiv.innerHTML = `
+                    <div style="margin-bottom: 8px; font-size: 12px; color: #888;">
+                        ${data.total_layers || 0} total layers (${data.returned_layers || 0} shown)
+                    </div>
+                    <table style="width: 100%; font-size: 11px; border-collapse: collapse;">
+                        <thead><tr style="color: #888; border-bottom: 1px solid #0f3460;">
+                            <th style="padding: 4px;">#</th><th style="padding: 4px;">Z</th>
+                            <th style="padding: 4px;">Lines</th>
+                        </tr></thead>
+                        <tbody>${layers.slice(0, 50).map(l => `
+                            <tr style="border-bottom: 1px solid #1a1a2e;">
+                                <td style="padding: 3px 4px; color: #00d2ff;">${l.layer_number}</td>
+                                <td style="padding: 3px 4px;">${(l.z_height||0).toFixed(2)}</td>
+                                <td style="padding: 3px 4px; color: #aaa;">${l.line_count||0}</td>
+                            </tr>
+                        `).join('')}</tbody>
+                    </table>
+                    ${layers.length > 50 ? '<div style="color: #888; font-size: 11px; margin-top: 6px;">Showing first 50 layers</div>' : ''}
+                `;
+            }
+        } catch (e) {
+            layersDiv.innerHTML = `<div style="color: #f44336;">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    });
     </script>
 </body>
 </html>

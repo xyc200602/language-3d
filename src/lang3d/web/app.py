@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+import subprocess
+import tempfile
 import threading
 import time as _time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -679,6 +682,167 @@ async def api_convert_fcstd(path: str = Query(...)) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Routes: async conversion (Step 4 — engineering reliability)
+# ---------------------------------------------------------------------------
+
+_convert_lock = threading.Lock()
+_convert_queue: dict[str, dict[str, Any]] = {}
+
+
+def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str) -> None:
+    """Execute FreeCAD conversion in a background thread."""
+    freecad = _find_freecad()
+    if freecad is None:
+        with _convert_lock:
+            _convert_queue[job_id]["status"] = "failed"
+            _convert_queue[job_id]["error"] = "FreeCAD not available"
+        return
+
+    with _convert_lock:
+        _convert_queue[job_id]["status"] = "running"
+
+    try:
+        if src_ext == ".step" or src_ext == ".stp":
+            script = (
+                "import sys, FreeCAD, Part, Mesh, MeshPart\n"
+                f"shape = Part.Shape()\n"
+                f"shape.read(r'{src_path}')\n"
+                f"mesh = MeshPart.meshFromShape(shape, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
+                f"mesh.write(r'{output_path}')\n"
+                f"print('OK', mesh.CountPoints, mesh.CountFacets)\n"
+            )
+        elif src_ext == ".fcstd":
+            script = (
+                "import sys, FreeCAD, Part, Mesh, MeshPart\n"
+                f"doc = FreeCAD.openDocument(r'{src_path}')\n"
+                "shapes = []\n"
+                "for obj in doc.Objects:\n"
+                "    if hasattr(obj, 'Visibility') and not obj.Visibility:\n"
+                "        continue\n"
+                "    if hasattr(obj, 'Shape') and obj.Shape is not None:\n"
+                "        try:\n"
+                "            shapes.append(obj.Shape)\n"
+                "        except Exception:\n"
+                "            pass\n"
+                "if not shapes:\n"
+                "    print('ERR no shapes')\n"
+                "    sys.exit(1)\n"
+                "compound = Part.makeCompound(shapes) if len(shapes) > 1 else shapes[0]\n"
+                f"mesh = MeshPart.meshFromShape(compound, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
+                f"mesh.write(r'{output_path}')\n"
+                f"print('OK', mesh.CountPoints, mesh.CountFacets)\n"
+            )
+        else:
+            raise ValueError(f"Unsupported format: {src_ext}")
+
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tf:
+            tf.write(script)
+            script_path = tf.name
+
+        try:
+            proc = subprocess.run(
+                [freecad, script_path],
+                capture_output=True, text=True, encoding="utf-8", errors="replace",
+                timeout=120,
+            )
+            if proc.returncode != 0 or not output_path.exists():
+                err_msg = (proc.stderr or proc.stdout)[:500]
+                with _convert_lock:
+                    _convert_queue[job_id]["status"] = "failed"
+                    _convert_queue[job_id]["error"] = f"Conversion failed: {err_msg}"
+                return
+        except subprocess.TimeoutExpired:
+            with _convert_lock:
+                _convert_queue[job_id]["status"] = "failed"
+                _convert_queue[job_id]["error"] = "Conversion timed out"
+            return
+        finally:
+            try:
+                Path(script_path).unlink()
+            except OSError:
+                pass
+
+        ws = _workspace_root()
+        try:
+            rel = str(output_path.relative_to(ws)).replace("\\", "/")
+        except ValueError:
+            rel = str(output_path)
+
+        with _convert_lock:
+            _convert_queue[job_id]["status"] = "done"
+            _convert_queue[job_id]["result"] = {"stl_path": rel, "cached": False}
+
+    except Exception as e:
+        with _convert_lock:
+            _convert_queue[job_id]["status"] = "failed"
+            _convert_queue[job_id]["error"] = str(e)
+
+
+@app.post("/api/convert-async")
+async def api_convert_async(path: str = Query(...), format: str = Query("stl")) -> JSONResponse:
+    """Submit an asynchronous conversion task. Returns a job_id for polling."""
+    ws = _workspace_root()
+    src = _resolve_safe(path, ws)
+    if src is None or not src.exists():
+        raise HTTPException(status_code=404, detail="File not found or access denied")
+
+    ext = src.suffix.lower()
+    if ext not in {".step", ".stp", ".fcstd"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported source format: {ext}")
+
+    freecad = _find_freecad()
+    if freecad is None:
+        raise HTTPException(status_code=503, detail="FreeCAD not available on server")
+
+    output_path = src.with_suffix(".preview.stl")
+
+    # If already cached, return immediately
+    if output_path.exists() and output_path.stat().st_mtime >= src.stat().st_mtime:
+        try:
+            rel = str(output_path.relative_to(ws)).replace("\\", "/")
+        except ValueError:
+            rel = str(output_path)
+        job_id = str(uuid.uuid4())[:8]
+        with _convert_lock:
+            _convert_queue[job_id] = {
+                "status": "done",
+                "result": {"stl_path": rel, "cached": True},
+            }
+        return JSONResponse({"job_id": job_id, "status": "done", "stl_path": rel, "cached": True})
+
+    job_id = str(uuid.uuid4())[:8]
+    with _convert_lock:
+        _convert_queue[job_id] = {"status": "pending", "created_at": _time.time()}
+
+    thread = threading.Thread(
+        target=_run_conversion,
+        args=(job_id, src, output_path, ext),
+        daemon=True,
+        name=f"convert-{job_id}",
+    )
+    thread.start()
+
+    return JSONResponse({"job_id": job_id, "status": "pending"})
+
+
+@app.get("/api/convert-status")
+async def api_convert_status(job_id: str = Query(...)) -> JSONResponse:
+    """Query the status of an asynchronous conversion task."""
+    with _convert_lock:
+        entry = _convert_queue.get(job_id)
+
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    resp: dict[str, Any] = {"status": entry["status"]}
+    if "result" in entry:
+        resp["result"] = entry["result"]
+    if "error" in entry:
+        resp["error"] = entry["error"]
+    return JSONResponse(resp)
+
+
+# ---------------------------------------------------------------------------
 # Routes: file browsing (Step 5)
 # ---------------------------------------------------------------------------
 
@@ -870,11 +1034,14 @@ async def api_parts_catalog(
                     "max_value": p.max_value,
                     "step": p.step,
                     "fixed": p.fixed,
+                    "param_type": p.param_type,
+                    "choices": p.choices,
                 }
                 for p in t.parameters
             ],
             "standard_sizes": t.standard_sizes,
             "notes": t.notes,
+            "quality_levels": t.quality_levels,
         })
 
     return JSONResponse({
@@ -915,11 +1082,14 @@ async def api_parts_template(part_id: str) -> JSONResponse:
                 "max_value": p.max_value,
                 "step": p.step,
                 "fixed": p.fixed,
+                "param_type": p.param_type,
+                "choices": p.choices,
             }
             for p in template.parameters
         ],
         "standard_sizes": template.standard_sizes,
         "notes": template.notes,
+        "quality_levels": template.quality_levels,
     })
 
 
@@ -1041,6 +1211,255 @@ if _export_list:
             pass
 
     return JSONResponse(result)
+
+
+@app.get("/api/parts/generated")
+async def api_parts_generated() -> JSONResponse:
+    """List all generated/imported parts with file existence checks."""
+    try:
+        from ..tools.part_library import _get_parts_store
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Part library not available")
+
+    store = _get_parts_store()
+    parts = []
+    for p in store.list_all():
+        entry = p.to_dict()
+        entry["fcstd_exists"] = Path(p.fcstd_path).exists() if p.fcstd_path else False
+        entry["stl_exists"] = Path(p.stl_path).exists() if p.stl_path else False
+        parts.append(entry)
+
+    return JSONResponse({"parts": parts, "total": len(parts)})
+
+
+@app.delete("/api/parts/generated/{name}")
+async def api_parts_generated_delete(name: str) -> JSONResponse:
+    """Delete a generated part record by name."""
+    try:
+        from ..tools.part_library import _get_parts_store
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Part library not available")
+
+    store = _get_parts_store()
+    removed = store.remove(name)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Part '{name}' not found in store")
+    return JSONResponse({"status": "deleted", "name": name})
+
+
+@app.post("/api/parts/analyze")
+async def api_parts_analyze(payload: dict[str, Any]) -> JSONResponse:
+    """Run 3D print feasibility analysis on an STL/FCStd file."""
+    stl_path = payload.get("stl_path", "")
+    orientation = payload.get("orientation", "auto")
+
+    if not stl_path:
+        raise HTTPException(status_code=400, detail="Missing 'stl_path'")
+
+    # Validate file exists and is in workspace
+    ws = _workspace_root()
+    resolved = _resolve_safe(stl_path, ws)
+    if resolved is None or not resolved.exists():
+        raise HTTPException(status_code=404, detail="File not found or access denied")
+
+    try:
+        from ..tools.part_library import _run_print_analysis
+        result_str = _run_print_analysis(str(resolved), orientation)
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Part library not available")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Try to extract JSON from the result
+    analysis_data = {"raw": result_str}
+    for line in result_str.splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                analysis_data = json.loads(line)
+            except json.JSONDecodeError:
+                pass
+            break
+
+    return JSONResponse({"analysis": analysis_data, "stl_path": str(resolved)})
+
+
+@app.post("/api/parts/assemble")
+async def api_parts_assemble(payload: dict[str, Any]) -> JSONResponse:
+    """Assemble multiple parts into a single FreeCAD document."""
+    assembly_name = payload.get("assembly_name", "")
+    parts = payload.get("parts", [])
+    output_format = payload.get("output_format", "fcstd")
+
+    if not assembly_name:
+        raise HTTPException(status_code=400, detail="Missing 'assembly_name'")
+    if not parts:
+        raise HTTPException(status_code=400, detail="Missing 'parts' list")
+
+    # Validate all part files exist
+    ws = _workspace_root()
+    validated_parts = []
+    for p in parts:
+        fpath = p.get("file", "")
+        if not fpath:
+            raise HTTPException(status_code=400, detail="Each part must have a 'file' field")
+        resolved = _resolve_safe(fpath, ws)
+        if resolved is None:
+            resolved = _resolve_safe(fpath, DATA_ROOT)
+        if resolved is None or not resolved.exists():
+            raise HTTPException(status_code=404, detail=f"File not found: {fpath}")
+        validated_parts.append({
+            "file": str(resolved),
+            "name": p.get("name", Path(fpath).stem),
+            "position": p.get("position", [0, 0, 0]),
+            "rotation": p.get("rotation", [0, 0, 1, 0]),
+        })
+
+    try:
+        from ..tools.part_library import PartAssembleTool
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Part library not available")
+
+    tool = PartAssembleTool()
+    result_str = tool.execute(
+        assembly_name=assembly_name,
+        parts=validated_parts,
+        output_format=output_format,
+    )
+
+    if result_str.startswith("错误"):
+        raise HTTPException(status_code=500, detail=result_str)
+
+    # Find generated files
+    parts_dir = ws / "parts_library"
+    fcstd_file = parts_dir / f"{assembly_name}.FCStd"
+    stl_file = parts_dir / f"{assembly_name}.stl"
+
+    result: dict[str, Any] = {
+        "assembly_name": assembly_name,
+        "part_count": len(validated_parts),
+        "output_format": output_format,
+        "result": result_str,
+    }
+    if fcstd_file.exists():
+        result["fcstd_path"] = str(fcstd_file)
+        try:
+            result["fcstd_rel"] = str(fcstd_file.relative_to(ws)).replace("\\", "/")
+        except ValueError:
+            pass
+    if stl_file.exists():
+        result["stl_path"] = str(stl_file)
+        result["stl_size_kb"] = stl_file.stat().st_size // 1024
+
+    return JSONResponse(result)
+
+
+# ---------------------------------------------------------------------------
+# Routes: slicing
+# ---------------------------------------------------------------------------
+
+@app.post("/api/slice")
+async def api_slice(payload: dict[str, Any]) -> JSONResponse:
+    """Submit a slicing task: STL → G-code."""
+    stl_path = payload.get("stl_path", "")
+    if not stl_path:
+        raise HTTPException(status_code=400, detail="Missing 'stl_path'")
+
+    ws = _workspace_root()
+    resolved = _resolve_safe(stl_path, ws)
+    if resolved is None:
+        resolved = _resolve_safe(stl_path, DATA_ROOT)
+    if resolved is None or not resolved.exists():
+        raise HTTPException(status_code=404, detail="STL file not found or access denied")
+
+    try:
+        from ..tools.slicing import SliceModelTool
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Slicing tools not available")
+
+    tool = SliceModelTool()
+    result_str = tool.execute(
+        stl_path=str(resolved),
+        printer=payload.get("printer", "generic"),
+        material=payload.get("material", "pla"),
+        quality=payload.get("quality", "standard"),
+        layer_height=payload.get("layer_height"),
+        infill=payload.get("infill"),
+        supports=payload.get("supports", "auto"),
+        brim=payload.get("brim", False),
+        output_path=payload.get("output_path"),
+    )
+
+    # Try to parse JSON result
+    try:
+        result_data = json.loads(result_str)
+    except json.JSONDecodeError:
+        result_data = {"raw": result_str}
+
+    return JSONResponse(result_data)
+
+
+@app.post("/api/slice/analyze")
+async def api_slice_analyze(payload: dict[str, Any]) -> JSONResponse:
+    """Analyze an existing G-code file."""
+    gcode_path = payload.get("gcode_path", "")
+    if not gcode_path:
+        raise HTTPException(status_code=400, detail="Missing 'gcode_path'")
+
+    ws = _workspace_root()
+    resolved = _resolve_safe(gcode_path, ws)
+    if resolved is None:
+        resolved = _resolve_safe(gcode_path, DATA_ROOT)
+    if resolved is None or not resolved.exists():
+        raise HTTPException(status_code=404, detail="G-code file not found or access denied")
+
+    try:
+        from ..tools.slicing import SliceAnalyzeTool
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Slicing tools not available")
+
+    tool = SliceAnalyzeTool()
+    result_str = tool.execute(gcode_path=str(resolved))
+
+    try:
+        result_data = json.loads(result_str)
+    except json.JSONDecodeError:
+        result_data = {"raw": result_str}
+
+    return JSONResponse(result_data)
+
+
+@app.post("/api/slice/layers")
+async def api_slice_layers(payload: dict[str, Any]) -> JSONResponse:
+    """Extract per-layer data from a G-code file."""
+    gcode_path = payload.get("gcode_path", "")
+    if not gcode_path:
+        raise HTTPException(status_code=400, detail="Missing 'gcode_path'")
+
+    ws = _workspace_root()
+    resolved = _resolve_safe(gcode_path, ws)
+    if resolved is None:
+        resolved = _resolve_safe(gcode_path, DATA_ROOT)
+    if resolved is None or not resolved.exists():
+        raise HTTPException(status_code=404, detail="G-code file not found or access denied")
+
+    try:
+        from ..tools.slicing import SlicePreviewLayersTool
+    except ImportError:
+        raise HTTPException(status_code=503, detail="Slicing tools not available")
+
+    tool = SlicePreviewLayersTool()
+    result_str = tool.execute(
+        gcode_path=str(resolved),
+        layer_range=payload.get("layer_range", "all"),
+    )
+
+    try:
+        result_data = json.loads(result_str)
+    except json.JSONDecodeError:
+        result_data = {"raw": result_str}
+
+    return JSONResponse(result_data)
 
 
 # ---------------------------------------------------------------------------

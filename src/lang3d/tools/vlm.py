@@ -32,46 +32,136 @@ def _parse_detail(detail: str) -> VisionDetail | None:
         return None
 
 
+def _normalize_verification(data: dict[str, Any]) -> dict[str, Any]:
+    """Normalize parsed verification data: unify boolean values, null strings."""
+    # Normalize match field: accept true/True/yes/1/"true"
+    raw_match = data.get("match", False)
+    if isinstance(raw_match, str):
+        raw_match = raw_match.lower() in ("true", "yes", "1")
+    data["match"] = bool(raw_match)
+
+    # Normalize optional text fields: treat null/"null"/"None" as None string
+    for field in ("differences", "suggestion", "fix_commands"):
+        val = data.get(field)
+        if val is None or (isinstance(val, str) and val.lower() in ("null", "none", "")):
+            data[field] = "None"
+        else:
+            data[field] = str(val)
+
+    # Ensure observed is a string
+    data["observed"] = str(data.get("observed", ""))
+
+    return data
+
+
 def _parse_verification_json(raw: str) -> dict[str, Any]:
     """Parse structured verification result from VLM output.
 
-    Tries to extract a JSON object from the VLM response.
-    Falls back to field-by-field extraction if JSON parsing fails.
+    Three-stage strategy:
+    1. Extract JSON from markdown code blocks (```json ... ```)
+    2. Extract bare JSON using bracket depth tracking (handles nested/multiline)
+    3. Fallback to field-by-field regex extraction
     """
     import json
     import re
 
-    # Try extracting JSON from response (may be wrapped in markdown code blocks)
-    json_match = re.search(r'\{[^{}]*"match"[^{}]*\}', raw, re.DOTALL)
-    if json_match:
+    # Strategy 1: Markdown code block
+    md_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', raw, re.DOTALL)
+    if md_match:
         try:
-            data = json.loads(json_match.group())
-            return {
-                "match": bool(data.get("match", False)),
-                "observed": str(data.get("observed", "")),
-                "differences": str(data.get("differences", "None")),
-                "suggestion": str(data.get("suggestion", "None")),
-                "fix_commands": str(data.get("fix_commands", "None")),
-            }
+            data = json.loads(md_match.group(1))
+            if isinstance(data, dict) and "match" in data:
+                return _normalize_verification(data)
         except (json.JSONDecodeError, ValueError):
             pass
 
-    # Fallback: field-by-field extraction
+    # Strategy 2: Bracket depth tracking for bare JSON
+    start = raw.find("{")
+    if start >= 0:
+        depth = 0
+        in_string = False
+        escape = False
+        for i in range(start, len(raw)):
+            ch = raw[i]
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = raw[start : i + 1]
+                    try:
+                        data = json.loads(candidate)
+                        if isinstance(data, dict) and "match" in data:
+                            return _normalize_verification(data)
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+                    break
+
+    # Strategy 3: Field-by-field regex extraction
     def _extract_field(name: str) -> str:
-        pattern = rf'{name}[:\s]+(.*?)(?:\n|$)'
+        pattern = rf'["\']?{name}["\']?\s*[:：]\s*(.*?)(?:[,，\n}}]|$)'
         m = re.search(pattern, raw, re.IGNORECASE)
-        return m.group(1).strip() if m else "None"
+        if m:
+            val = m.group(1).strip().strip('"').strip("'")
+            return val if val else "None"
+        return "None"
 
     match_str = _extract_field("match")
-    match_val = "yes" in match_str.lower() or match_str.lower() == "true"
+    match_val = match_str.lower() in ("true", "yes", "1")
 
-    return {
+    result = {
         "match": match_val,
         "observed": _extract_field("observed"),
         "differences": _extract_field("differences"),
         "suggestion": _extract_field("suggestion"),
         "fix_commands": _extract_field("fix_commands"),
     }
+
+    # Extract confidence if present
+    confidence_str = _extract_field("confidence")
+    if confidence_str and confidence_str.lower() not in ("none", "null", ""):
+        result["confidence"] = confidence_str.lower()
+
+    return result
+
+
+def _aggregate_angle_results(angle_results: list[dict[str, Any]]) -> bool:
+    """Aggregate multi-angle verification results using confidence-weighted voting.
+
+    Weights: high=2.0, medium=1.0, low=0.5
+    Final MATCH if total MATCH weight > 50% of total possible weight.
+    """
+    CONFIDENCE_WEIGHTS: dict[str, float] = {
+        "high": 2.0,
+        "medium": 1.0,
+        "low": 0.5,
+    }
+
+    total_weight = 0.0
+    match_weight = 0.0
+
+    for result in angle_results:
+        confidence = str(result.get("confidence", "medium")).lower()
+        weight = CONFIDENCE_WEIGHTS.get(confidence, 1.0)
+        total_weight += weight
+        if result.get("match", False):
+            match_weight += weight
+
+    if total_weight == 0:
+        return False
+
+    return match_weight / total_weight > 0.5
 
 
 class VLMAnalyzeTool(Tool):
@@ -277,7 +367,8 @@ class CADVerifyTool(Tool):
     name = "cad_verify"
     description = (
         "Capture the CAD software window and verify if the 3D model matches the expected design. "
-        "Returns structured verification result. Uses a detailed vision model for thorough analysis."
+        "Returns structured verification result. Uses a detailed vision model for thorough analysis. "
+        "Supports multi-angle verification for higher accuracy."
     )
 
     def __init__(self, router: ModelRouter, screenshot_dir: str = "") -> None:
@@ -303,12 +394,27 @@ class CADVerifyTool(Tool):
                         "type": "string",
                         "description": _DETAIL_DESCRIPTION,
                     },
+                    "angles": {
+                        "type": "string",
+                        "description": (
+                            "Camera angles for multi-view verification, comma-separated "
+                            "(e.g. 'isometric,front,top'). Empty for single view."
+                        ),
+                    },
                 },
                 "required": ["expected"],
             },
         )
 
-    def execute(self, *, expected: str, window_title: str = "FreeCAD", detail: str = "detailed", **kwargs: Any) -> str:
+    def execute(
+        self,
+        *,
+        expected: str,
+        window_title: str = "FreeCAD",
+        detail: str = "detailed",
+        angles: str = "",
+        **kwargs: Any,
+    ) -> str:
         try:
             import ctypes
             import ctypes.wintypes
@@ -339,6 +445,23 @@ class CADVerifyTool(Tool):
                 user32.SetForegroundWindow(hwnd)
                 time.sleep(0.5)
 
+                # Parse requested angles
+                angle_list = [a.strip() for a in angles.split(",") if a.strip()] if angles else []
+
+                if angle_list:
+                    return self._verify_multi_angle(
+                        expected=expected,
+                        angle_list=angle_list,
+                        hwnd=hwnd,
+                        left=left,
+                        top=top,
+                        right=right,
+                        bottom=bottom,
+                        full_title=full_title,
+                        detail=detail,
+                    )
+
+                # Single-angle (original behaviour)
                 save_dir = Path(self.screenshot_dir)
                 save_dir.mkdir(parents=True, exist_ok=True)
                 filepath = save_dir / f"cad_verify_{int(time.time())}.png"
@@ -346,27 +469,7 @@ class CADVerifyTool(Tool):
                 img = ImageGrab.grab(bbox=(left, top, right, bottom))
                 img.save(str(filepath))
 
-                verify_prompt = (
-                    "You are a 3D CAD model verification expert. "
-                    "Analyze the CAD software screenshot and determine if the visible 3D model matches the expected description.\n\n"
-                    f"Expected model: {expected}\n\n"
-                    "You MUST respond with EXACTLY this JSON format (no markdown, no backticks, raw JSON only):\n"
-                    '{"match": true/false, "observed": "what you see in the 3D viewport", '
-                    '"differences": "any differences from expected, or None", '
-                    '"suggestion": "what to fix if not matching, or None", '
-                    '"fix_commands": "suggested fc_batch operations to fix issues, or None"}\n\n'
-                    "Example of a mismatch response:\n"
-                    '{"match": false, "observed": "A cube without any hole", '
-                    '"differences": "Expected center hole is missing", '
-                    '"suggestion": "Add a cylindrical cut operation", '
-                    '"fix_commands": "None"}\n\n'
-                    "Example of a match response:\n"
-                    '{"match": true, "observed": "A 30x30x30mm cube with a center hole", '
-                    '"differences": "None", '
-                    '"suggestion": "None", '
-                    '"fix_commands": "None"}'
-                )
-
+                verify_prompt = self._build_verify_prompt(expected)
                 vd = _parse_detail(detail)
                 result = self.router.vision(str(filepath), verify_prompt, detail=vd)
 
@@ -386,6 +489,126 @@ class CADVerifyTool(Tool):
             return f"Error: All matching windows for '{window_title}' have invalid dimensions"
         except Exception as e:
             return f"Error: {e}"
+
+    # ------------------------------------------------------------------
+    # Multi-angle verification helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_verify_prompt(expected: str) -> str:
+        """Build the verification prompt with lenient matching instructions."""
+        return (
+            "You are a 3D CAD model verification expert.\n\n"
+            "Step 1: Describe what you see in the 3D viewport (shape, dimensions, features). "
+            "Focus on topological features: shape types, number of holes/slots/bosses, "
+            "overall proportions. Ignore viewing angle, lighting, or rendering artifacts.\n"
+            "Step 2: Compare with the expected model description below. "
+            "Match based on structural/topological similarity, not visual pixel-perfect match.\n"
+            "Step 3: Give your conclusion.\n\n"
+            f"Expected model: {expected}\n\n"
+            "Typical match example: If expected is '80x60x8 rectangular plate with 4 mounting holes', "
+            "and you see a rectangular plate with 4 circular through-holes, that is a MATCH.\n\n"
+            "Respond with a JSON object (you may wrap it in ```json```):\n"
+            '{"match": true/false, "observed": "what you see", '
+            '"differences": "any differences or null", '
+            '"suggestion": "fix suggestion or null", '
+            '"fix_commands": "fc_batch operations or null", '
+            '"confidence": "high/medium/low"}\n\n'
+            "CRITICAL MATCHING RULES:\n"
+            "- Be GENEROUS with matching. Only report mismatch if the shape/structure is clearly different.\n"
+            "- Minor visual differences (viewing angle, lighting, edge rendering) should still match=true.\n"
+            "- If the topology matches (same number of features, same shape types), report match=true.\n"
+            "- Use null instead of \"None\" for empty fields."
+        )
+
+    def _verify_multi_angle(
+        self,
+        *,
+        expected: str,
+        angle_list: list[str],
+        hwnd: int,
+        left: int,
+        top: int,
+        right: int,
+        bottom: int,
+        full_title: str,
+        detail: str,
+    ) -> str:
+        """Run verification from multiple camera angles and aggregate results."""
+        from PIL import ImageGrab
+
+        from .freecad import VIEW_METHODS
+
+        save_dir = Path(self.screenshot_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        verify_prompt = self._build_verify_prompt(expected)
+        vd = _parse_detail(detail)
+
+        angle_results: list[dict[str, Any]] = []
+
+        for angle in angle_list:
+            # Switch camera via FreeCAD macro
+            view_method = VIEW_METHODS.get(angle)
+            if view_method:
+                try:
+                    self._set_camera_macro(view_method)
+                except Exception:
+                    pass
+
+            # Bring window to foreground and wait for view update
+            import ctypes
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            time.sleep(1.0)
+
+            filepath = save_dir / f"cad_verify_{angle}_{int(time.time())}.png"
+            img = ImageGrab.grab(bbox=(left, top, right, bottom))
+            img.save(str(filepath))
+
+            result = self.router.vision(str(filepath), verify_prompt, detail=vd)
+            parsed = _parse_verification_json(result)
+            parsed["angle"] = angle
+            parsed["confidence"] = parsed.get("confidence", "medium")
+            angle_results.append(parsed)
+
+        # Aggregate via confidence-weighted voting
+        final_match = _aggregate_angle_results(angle_results)
+
+        # Build output
+        lines = [f"[CAD Verification (Multi-Angle) - Window: '{full_title}']"]
+        lines.append(f"FINAL MATCH: {final_match}")
+        lines.append(f"Angles verified: {len(angle_results)}")
+        lines.append("")
+        for ar in angle_results:
+            match_str = "MATCH" if ar["match"] else "MISMATCH"
+            lines.append(
+                f"  [{ar['angle'].upper()}] {match_str} "
+                f"(confidence: {ar.get('confidence', 'medium')})"
+            )
+            lines.append(f"    Observed: {ar['observed'][:120]}")
+            if ar["differences"] != "None":
+                lines.append(f"    Differences: {ar['differences'][:120]}")
+        lines.append("")
+        lines.append("--- Per-angle raw output ---")
+        for ar in angle_results:
+            lines.append(f"[{ar['angle']}] match={ar['match']}, confidence={ar.get('confidence', 'medium')}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _set_camera_macro(view_method: str) -> None:
+        """Execute a FreeCAD macro to switch the camera view."""
+        from .freecad import _run_freecad_script
+
+        script = f"""
+import FreeCAD, FreeCADGui
+doc = FreeCAD.ActiveDocument
+if doc:
+    v = FreeCADGui.activeDocument().activeView()
+    if v:
+        v.{view_method}()
+        FreeCADGui.SendMsgToActiveView('ViewFit')
+"""
+        _run_freecad_script(script, timeout=10)
 
 
 def _parse_elements_json(raw: str) -> list[dict[str, Any]]:

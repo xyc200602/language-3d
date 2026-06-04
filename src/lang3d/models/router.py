@@ -7,6 +7,7 @@ from typing import Any
 
 from ..config import Config
 from .base import Message, ModelBackend, ModelResponse, ToolDefinition
+from .retry import RetryConfig
 from .glm import GLMBackend
 from .ollama import OllamaBackend
 from .openai import OpenAIBackend
@@ -66,23 +67,31 @@ class ModelRouter:
 
     def _init_backends(self) -> None:
         cfg = self.config
+        retry_cfg = RetryConfig(
+            max_retries=cfg.agent.retry.max_retries,
+            base_delay=cfg.agent.retry.base_delay,
+            max_delay=cfg.agent.retry.max_delay,
+        )
         if cfg.glm.api_key:
             self._backends["glm"] = GLMBackend(
                 api_key=cfg.glm.api_key,
                 base_url=cfg.glm.base_url or "https://open.bigmodel.cn/api/coding/paas/v4",
                 model=cfg.glm.model or "GLM-5.1",
                 vision_model=getattr(cfg.glm, "vision_model", "") or "GLM-4V-Flash",
+                retry_config=retry_cfg,
             )
         if cfg.openai.api_key:
             self._backends["openai"] = OpenAIBackend(
                 api_key=cfg.openai.api_key,
                 base_url=cfg.openai.base_url or "https://api.openai.com/v1",
                 model=cfg.openai.model or "gpt-4o",
+                retry_config=retry_cfg,
             )
         if cfg.ollama.base_url:
             self._backends["ollama"] = OllamaBackend(
                 base_url=cfg.ollama.base_url,
                 model=cfg.ollama.model or "llama3",
+                retry_config=retry_cfg,
             )
 
     def get_backend(self, task_type: TaskType = TaskType.CHAT) -> ModelBackend:

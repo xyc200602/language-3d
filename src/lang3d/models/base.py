@@ -6,7 +6,10 @@ import base64
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .retry import RetryConfig
 
 
 @dataclass
@@ -50,10 +53,17 @@ class ToolDefinition:
 class ModelBackend(ABC):
     """Abstract base class for LLM/VLM backends."""
 
-    def __init__(self, api_key: str = "", base_url: str = "", model: str = "") -> None:
+    def __init__(
+        self,
+        api_key: str = "",
+        base_url: str = "",
+        model: str = "",
+        retry_config: RetryConfig | None = None,
+    ) -> None:
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
+        self.retry_config = retry_config
 
     @abstractmethod
     def chat(

@@ -1,5 +1,81 @@
 [
   {
+    "id": 25,
+    "title": "工程可靠性提升 — LLM 重试 + VLM 多角度验证 + 进程管理 + 异步转换",
+    "description": "解决 4 个关键工程可靠性问题：LLM 调用无重试机制（429 直接失败）、VLM 验证准确率极低（机械臂 0/8）、FreeCAD 进程管理粗暴（taskkill /F）、Web 文件转换阻塞（subprocess.run 同步）。",
+    "steps": [
+      "新建 src/lang3d/models/retry.py：RetryConfig dataclass + call_with_retry() 指数退避 + Retry-After 支持",
+      "修改 config.py 新增 RetrySettings + 环境变量映射",
+      "修改 base.py/glm.py/openai.py/ollama.py/router.py — 所有 API 调用通过 call_with_retry() 包裹",
+      "修改 vlm.py — CADVerifyTool 新增 angles 参数（多角度验证）+ 置信度加权投票 + 宽容 Prompt",
+      "新建 src/lang3d/tools/process_manager.py — FreeCADProcessManager 优雅关闭（WM_CLOSE + 超时强杀）",
+      "修改 freecad.py — FCOpenGUI/FCCloseGUI 使用进程管理器",
+      "修改 app.py — 新增 /api/convert-async + /api/convert-status 异步转换端点",
+      "修改 index.html — 大文件（>5MB）自动异步转换 + 进度轮询",
+      "新建 tests/test_retry.py（24 tests）、test_vlm_multi_angle.py（23 tests）、test_process_manager.py（12 tests）、test_async_convert.py（13 tests）",
+      "全量回归 622/622 tests 通过"
+    ],
+    "priority": 25,
+    "passes": true
+  },
+  {
+    "id": 24,
+    "title": "3D 打印切片集成 — PrusaSlicer/OrcaSlicer CLI 切片流水线",
+    "description": "集成 PrusaSlicer CLI（首选）和 OrcaSlicer CLI（备选），为 Agent 提供 4 个切片工具（slice_model, slice_analyze, slice_preview_layers, slice_vlm_analyze），实现 STL → G-code 的完整自动化切片流水线。",
+    "steps": [
+      "新建 src/lang3d/knowledge/slicing.py：打印机/材料/质量预设 + G-code 解析 + 参数合并",
+      "新建 src/lang3d/tools/slicing.py：4 个切片工具 + 切片器发现 + CLI 命令构建",
+      "修改 src/lang3d/config.py：新增 SlicingSettings + 环境变量映射",
+      "修改 src/lang3d/tools/base.py：TOOL_CATEGORIES + STEP_TOOL_CATEGORIES 新增 slicing",
+      "修改 src/lang3d/agent/core.py：注册切片工具 + 更新系统提示词",
+      "修改 src/lang3d/agent/executor.py：_infer_step_type 检测 slice_* 工具",
+      "修改 src/lang3d/agent/planner.py：切片关键词检测 + few-shot 示例",
+      "修改 src/lang3d/web/app.py：新增 3 个切片 API 端点（/api/slice, /api/slice/analyze, /api/slice/layers）",
+      "修改 src/lang3d/web/static/index.html：新增 Slicing Tab + 完整 UI",
+      "新建 tests/test_slicing.py：57 个测试覆盖知识库、工具注册、G-code 解析、配置、执行器集成"
+    ],
+    "priority": 24,
+    "passes": true
+  },
+  {
+    "id": 23,
+    "title": "短期补强 — 真实几何验证 + 零件装配 + 轴承真实建模",
+    "description": "B1 端到端验证：用 FreeCAD 实际生成 realistic 螺钉/齿轮/验证 STL 质量。B2 零件装配：part_assemble 工具按配合关系定位零件。B3 轴承真实建模：滚珠/滚道/保持架。",
+    "steps": [
+      "B1: 新建 tests/test_part_library_e2e.py（8 个 e2e 测试），验证 realistic 螺钉/齿轮/螺母 + 简化回归",
+      "B3: knowledge/parts_catalog.py 新增 _BEARING_REALISTIC_SCRIPT（外圈+滚道+内圈+滚珠+保持架）",
+      "B3: 3 个轴承模板新增 bearing_detail/ball_count 参数 + fc_script_alternatives + quality_levels",
+      "B3: format_fc_script 新增 bearing_detail 参数识别",
+      "B2: tools/part_library.py 新增 PartAssembleTool（支持 STL/FCStd/STEP 导入+定位+旋转）",
+      "B2: tools/base.py TOOL_CATEGORIES part_library 追加 part_assemble（7→8 个工具）",
+      "B2: web/app.py 新增 POST /api/parts/assemble 端点",
+      "B2: web/static/index.html 新增 Assemble 按钮 + 模态对话框",
+      "B2+B3: tests/test_part_library.py 新增 TestAssemblyTool（6 tests）+ TestBearingRealistic（12 tests）+ 工具总数更新",
+      "修复轴承脚本 format_map 占位符冲突（循环变量 i→idx、f-string 改为字符串拼接）"
+    ],
+    "priority": 23,
+    "passes": true
+  },
+  {
+    "id": 22,
+    "title": "零件库深度完善（真实螺纹 + 渐开线齿轮 + 打印分析 + 持久化）",
+    "description": "在 Task 21 的 15 个标准件模板基础上，实现：A1 真实螺纹建模（螺旋扫掠）、A2 渐开线直齿轮（数学齿廓）、A3 3D 打印可行性分析（悬垂/壁厚/方向）、A4 零件库 JSON 持久化（跨会话复用）。",
+    "steps": [
+      "扩展 ParamDef 支持 string 类型参数（thread_detail/tooth_detail 选择）",
+      "扩展 PartTemplate 支持 quality_levels + fc_script_alternatives 多脚本",
+      "扩展 GeneratedPart 支持 print_analysis + to_dict/from_dict 序列化",
+      "新增 PartsStore JSON 持久化类（add/remove/get/list_all/count）",
+      "3 个螺纹模板新增 realistic 螺纹脚本（makeHelix + makePipe 扫掠）",
+      "spur_gear 新增渐开线齿廓 realistic 脚本（数学公式 + 极坐标阵列）",
+      "新增 PartAnalyzePrintTool（3D 打印可行性分析）",
+      "Web API：GET/DELETE /api/parts/generated、POST /api/parts/analyze",
+      "Web UI：Print Analysis 区域 + quality levels 选择器",
+      "编写 ~56 个新测试覆盖全部功能"
+    ],
+    "priority": 22,
+    "passes": true
+  },
+  {
     "id": 7,
     "title": "VLM UI 元素定位",
     "description": "新增 vlm_locate 工具：截取 CAD 窗口 → VLM 返回 UI 元素名称和坐标 → Agent 可自动点击菜单/按钮，无需手动指定坐标。",

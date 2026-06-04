@@ -4,6 +4,307 @@
 
 ---
 
+## 2026-06-04 - Task 25: 工程可靠性提升
+
+### What was done:
+
+- **Step 1: LLM 调用稳定性 — 重试 + 速率限制**
+  - 新建 `src/lang3d/models/retry.py` — `RetryConfig` dataclass + `call_with_retry()` 函数
+    - 指数退避: `delay = base_delay * 2^attempt + jitter`
+    - 支持 `Retry-After` header（429 时优先使用服务器建议等待时间）
+    - 检测可重试错误：OpenAI SDK 异常、httpx 异常、ConnectionError、OSError、TimeoutError、HTTP 429/5xx
+  - 修改 `src/lang3d/config.py` — 新增 `RetrySettings`（max_retries=3, base_delay=1.0, max_delay=60.0）+ 环境变量映射（`AGENT_RETRY_*`）
+  - 修改 `src/lang3d/models/base.py` — `ModelBackend.__init__` 接受 `retry_config` 参数
+  - 修改 `src/lang3d/models/glm.py`, `openai.py`, `ollama.py` — 所有 API 调用通过 `call_with_retry()` 包裹
+  - 修改 `src/lang3d/models/router.py` — 从 `config.agent.retry` 构建 `RetryConfig` 并传递给各 backend
+
+- **Step 2: VLM 验证准确率优化 — 多角度验证 + 宽容 Prompt**
+  - 修改 `src/lang3d/tools/vlm.py` — `CADVerifyTool` 新增 `angles` 参数
+    - `angles="isometric,front,top"` 时，对每个角度切换 FreeCAD 相机 → 截图 → VLM 分析
+    - 置信度加权投票聚合：high=2.0, medium=1.0, low=0.5，总权重 >50% 则最终 MATCH
+  - 改进验证 Prompt（`_build_verify_prompt`）：
+    - 强化"宽容匹配"指令：只比较拓扑特征，忽略视觉呈现差异
+    - 添加"典型匹配"示例（矩形板 + 4 孔 → MATCH）
+    - 新增 confidence 字段要求
+  - 新增 `_aggregate_angle_results()` — 置信度加权投票
+  - 新增 `_set_camera_macro()` — 通过 FreeCAD 宏切换视角
+  - 改进 `_parse_verification_json()` — 提取 confidence 字段
+
+- **Step 3: FreeCAD 进程管理优化**
+  - 新建 `src/lang3d/tools/process_manager.py` — `FreeCADProcessManager`
+    - PID 追踪 + `subprocess.Popen` 管理
+    - 优雅关闭：先 `WM_CLOSE` → 等待超时 → `taskkill /F` 强杀
+    - `threading.RLock` 防止 `launch_gui` → `kill_existing` 死锁
+    - `_is_pid_alive()`, `_find_window_for_pid()`, `_graceful_kill()` 辅助函数
+  - 修改 `src/lang3d/tools/freecad.py` — `FCOpenGUITool` 和 `FCCloseGUITool` 使用进程管理器，移除硬编码 `taskkill /F /IM FreeCAD.exe`
+
+- **Step 4: 异步文件转换队列**
+  - 修改 `src/lang3d/web/app.py` — 新增 2 个异步转换端点
+    - `POST /api/convert-async` — 提交后台转换任务，返回 `job_id`
+    - `GET /api/convert-status` — 查询转换任务状态（pending/running/done/failed）
+    - `_run_conversion()` — 后台线程执行 FreeCAD 转换
+    - 线程安全队列 `_convert_queue` + `_convert_lock`
+    - 缓存命中时立即返回（不启动后台线程）
+  - 修改 `src/lang3d/web/static/index.html` — 大文件（>5MB）自动使用异步转换
+    - 提交后轮询 `/api/convert-status` 显示进度（pending → running → done）
+    - 小文件仍使用同步转换（保持原行为）
+
+### Testing:
+- 新增 4 个测试文件，72 个新测试全部通过：
+  - `tests/test_retry.py` — 24 tests（RetryConfig、错误检测、延迟计算、重试逻辑、指数退避）
+  - `tests/test_vlm_multi_angle.py` — 23 tests（角度解析、prompt 内容、置信度投票、工具定义、JSON 解析）
+  - `tests/test_process_manager.py` — 12 tests（PID 存活、窗口查找、优雅关闭、进程管理器生命周期）
+  - `tests/test_async_convert.py` — 13 tests（异步提交、状态查询、缓存、并发队列安全）
+- 全量回归：622/622 通过（0 失败，0 回归）
+
+### Notes:
+- `FreeCADProcessManager` 使用 `RLock` 而非 `Lock`，因为 `launch_gui` 内部调用 `kill_existing` 需要可重入锁
+- 异步转换队列使用 `threading.RLock` 而非 `threading.Lock` 保证线程安全
+- VLM 多角度验证需要 FreeCAD GUI 已打开（先调用 `fc_open_gui`），否则仅回退到单角度
+- 重试机制对 OpenAI SDK、httpx、通用网络错误均有效，Ollama backend 通过 wrapper 函数包裹 `httpx.post`
+
+---
+
+## 2026-06-03 - PrusaSlicer 端到端切片验证 + Bug 修复
+
+### What was done:
+
+- **安装 PrusaSlicer 2.9.5**
+  - GitHub 直连下载因防火墙过慢（~30KB/s），改用 gh-proxy.com 镜像，27 秒下载完成
+  - 安装路径：`C:\Program Files\Prusa3D\PrusaSlicer\prusa-slicer-console.exe`
+  - 修复 `--print-center` → `--center`（PrusaSlicer 2.9.5 不支持旧参数名）
+
+- **端到端切片验证（全部通过）**
+  - `slice_model`：base_plate.stl → base_plate.gcode（1219 KB，55 层，预估 3h43m）
+  - `slice_analyze`：解析 G-code 成功提取打印时间、材料用量、尺寸范围
+  - `slice_preview_layers`：成功提取 55 层数据，范围过滤 "1-5" 正确返回 5 层
+
+- **修复 3 个 e2e 测试发现的 Bug**
+  1. **`merge_params()` name 键冲突**：printer/material 预设都有 `name` 字段，material 后合并覆盖 printer name
+     - 修复：新增 `printer_name` 和 `material_name` 两个独立键
+  2. **`slice_model` 输出 printer/material 字段都显示材料名**：因上述 name 冲突
+     - 修复：改用 `params.get("printer_name")` / `params.get("material_name")`
+  3. **`parse_gcode_bounds()` Z 边界返回 0.0**：只统计有挤出的 G-code 行，但 Z 变高通常在无挤出行
+     - 修复：Z 边界从所有 G0/G1 移动中提取，X/Y 边界仍只从挤出移动提取
+
+### Testing:
+- `pytest tests/test_slicing.py -v`：57/57 通过
+- PrusaSlicer CLI 直接测试：`prusa-slicer-console.exe --export-gcode` 成功生成 G-code
+- slice_model e2e：STL → 1219KB G-code，55 层，3h43m
+- slice_analyze e2e：时间/材料/层数/尺寸全部正确解析
+- slice_preview_layers e2e：55 层全量 + "1-5" 范围过滤正确
+
+### Notes:
+- PrusaSlicer 安装使用 gh-proxy.com 镜像绕过防火墙
+- `--top-solid-layers` / `--bottom-solid-layers` 参数在 PrusaSlicer 2.9.5 中可能不支持（未报错但未验证效果）
+- `slice_vlm_analyze` 需要 GUI 模式和 VLM router，未做端到端测试
+
+## 2026-06-03 - 测试修复：9 个预先存在的测试失败
+
+### What was done:
+
+- **修复 `tests/test_part_library_e2e.py`（8 个测试）**
+  - **根因**：f-string 内部使用 `r'{stl_path}'` 生成 FreeCAD 脚本，`r` 前缀阻止变量插值，导致 `os.path.getsize()` 收到字面字符串 `{stl_path}` 而非实际路径
+  - **修复**：`print()` 语句中的 Windows 路径使用正斜杠显示（`replace("\\", "/")`），`os.makedirs` / `doc.saveAs` / `Mesh.export` / `os.path.getsize` 仍用 `r'...'` 原始字符串正确处理反斜杠
+  - **影响**：所有 8 个 e2e 测试（5 realistic + 3 simplified）恢复通过
+
+- **修复 `tests/test_web_panel.py::test_initial_state`（1 个测试）**
+  - **根因**：`_agent_state` 是模块级全局变量，跨测试持久化。当 `test_agent_real_flow.py` 等测试将 `status` 设为 `"complete"` 后，后续运行的 `test_initial_state` 断言 `status == "idle"` 失败
+  - **修复**：在 `test_initial_state` 开头重置 `_agent_state` 到初始值（idle、空日志、空工具调用、空 VLM 结果）
+  - **影响**：web panel 测试从间歇性失败变为稳定通过
+
+- **未修复：`tests/test_agent_real_flow.py::test_agent_planned_modeling`（1 个测试）**
+  - **根因**：LLM 非确定性 — Agent 成功生成 plan 但未成功执行到文件创建
+  - **性质**：e2e 测试依赖真实 LLM API 调用，不可完全消除 flakiness
+  - **建议**：未来可 mock LLM 响应或增加重试逻辑
+
+### Testing:
+- `pytest tests/test_part_library_e2e.py -v`：8/8 通过（修复前 0/8）
+- `pytest tests/test_web_panel.py -v`：32/32 通过（修复前 31/32）
+- 全量回归：574 passed, 1 failed（修复前 565 passed, 10 failed）
+- 净修复：9 个测试恢复通过
+
+### Notes:
+- `test_part_library_e2e.py` 的修复保持了 FreeCAD 文件操作的正确性（仍用 `r'...'` 原始字符串），仅 `print()` 显示路径改为正斜杠
+- web panel 测试的重置策略优于在 `conftest.py` 中用 autouse fixture，因为只有这一个测试依赖"初始状态"
+
+---
+
+## 2026-06-03 - Task 24: 3D 打印切片集成 — PrusaSlicer/OrcaSlicer CLI 切片流水线
+
+### What was done:
+
+- **新建 `src/lang3d/knowledge/slicing.py`** — 切片知识库
+  - 4 个打印机预设（prusa_mk3s, ender_3, bambu_p1s, generic）
+  - 4 个材料预设（PLA/ABS/PETG/TPU，含温度/床温/密度/成本）
+  - 3 个质量预设（draft 0.3mm / standard 0.2mm / high 0.12mm）
+  - `merge_params()` 参数合并函数（预设 + 用户覆盖）
+  - `parse_gcode_stats()` G-code 统计解析（时间/材料/成本/支撑/brim）
+  - `parse_gcode_layers()` 逐层数据提取（Z高度/挤出长度/行程）
+  - `parse_gcode_bounds()` 打印尺寸范围推算
+
+- **新建 `src/lang3d/tools/slicing.py`** — 4 个切片工具
+  - `SliceModelTool`（slice_model）：STL → G-code 切片，支持打印机/材料/质量预设和参数覆盖
+  - `SliceAnalyzeTool`（slice_analyze）：解析 G-code 获取打印统计（时间/材料/成本/层数/尺寸）
+  - `SlicePreviewLayersTool`（slice_preview_layers）：提取每层数据，支持范围过滤（all/1-10/5,10,15）
+  - `SliceVLMAnalyzeTool`（slice_vlm_analyze）：打开切片器 GUI + 截图 + VLM 分析
+  - `_find_slicer()` 切片器发现（环境变量 → 常见路径 → PATH → OrcaSlicer 备选）
+  - `_build_prusa_command()` / `_build_orca_command()` CLI 命令构建
+
+- **修改 `src/lang3d/config.py`** — 新增 `SlicingSettings`
+  - 字段：prusaslicer_path, orcaslicer_path, default_printer, default_material, default_quality, slice_timeout
+  - 环境变量映射：PRUSASLICER_PATH, ORCASLICER_PATH, DEFAULT_PRINTER, DEFAULT_MATERIAL, DEFAULT_QUALITY
+
+- **修改 `src/lang3d/tools/base.py`**
+  - `TOOL_CATEGORIES` 新增 `"slicing"` 类别（4 个工具）
+  - `STEP_TOOL_CATEGORIES` 新增 `"slicing": ["slicing", "vlm", "gui"]`
+
+- **修改 `src/lang3d/agent/core.py`**
+  - `Agent.__init__` 注册切片工具（try/except 优雅降级）
+  - `AGENT_SYSTEM_PROMPT` 添加切片工具说明和工作流
+  - `_web_on_result` 追加 `slice_vlm_analyze` VLM 跟踪
+
+- **修改 `src/lang3d/agent/executor.py`**
+  - `_infer_step_type` 新增切片关键词检测（切片/slice/g-code/gcode/打印/3d print）
+  - 新增 `slice_*` 工具前缀检测归入 `slicing` 类型
+
+- **修改 `src/lang3d/agent/planner.py`**
+  - `_detect_task_type` 新增切片关键词（切片/slice/g-code/3d打印/slicer 等 10 个）
+  - `PLANNER_EXAMPLES` 新增 `slicing` few-shot 示例（3 步切片工作流）
+
+- **修改 `src/lang3d/web/app.py`** — 新增 3 个 API 端点
+  - `POST /api/slice`：提交切片任务（STL → G-code）
+  - `POST /api/slice/analyze`：分析 G-code 统计信息
+  - `POST /api/slice/layers`：提取层信息数据
+
+- **修改 `src/lang3d/web/static/index.html`** — 新增 Slicing Tab
+  - STL 文件选择器（从工作区自动加载）
+  - 打印机/材料/质量预设下拉选择
+  - 参数覆盖（层高/填充率/支撑/brim）
+  - 切片结果展示（统计表格）
+  - Analyze G-code 按钮和 Layer Data 面板
+
+- **新建 `tests/test_slicing.py`** — 57 个测试
+
+### Testing:
+- `pytest tests/test_slicing.py -v`：57/57 通过
+  - TestPrinterPresets（3 tests）：预设完整性、字段校验、默认值
+  - TestMaterialPresets（3 tests）：4 种材料预设、PLA 值验证
+  - TestQualityPresets（3 tests）：3 种质量、排序验证
+  - TestMergeParams（5 tests）：默认合并、自定义预设、用户覆盖、None 忽略、未知回退
+  - TestGcodeParsing（8 tests）：统计解析、空文件、不存在文件、层数提取、坐标范围、Z 计数回退
+  - TestSlicerDiscovery（3 tests）：环境变量路径、未安装降级、GUI 发现
+  - TestSlicingToolRegistration（5 tests）：4 工具注册、工具数量、定义有效性、类别更新
+  - TestSlicingToolDefinitions（4 tests）：各工具参数完整性
+  - TestSlicingToolExecution（11 tests）：错误处理、文件不存在、不支持格式、无切片器、成功分析、范围过滤
+  - TestCommandBuilding（3 tests）：PrusaSlicer 命令构建、支撑/brim 参数
+  - TestSlicingConfig（3 tests）：配置字段、自定义值、环境变量映射
+  - TestExecutorIntegration（3 tests）：步骤类型推断
+  - TestPlannerIntegration（3 tests）：关键词检测、few-shot 存在
+- 全量回归：565 passed, 10 failed（全部为预先存在问题）
+
+### Notes:
+- 切片工具需要安装 PrusaSlicer 或 OrcaSlicer，未安装时返回提示信息不崩溃
+- VLM 分析需要切片器 GUI（PrusaSlicer GUI），通过 `PRUSASLICER_GUI_PATH` 环境变量配置
+- G-code 解析通过注释行提取统计信息（PrusaSlicer/OrcaSlicer 格式），无注释时通过 Z 坐标变化计数层数
+- 工具总数：57（原有）→ 61（+4 切片工具）
+
+---
+
+## 2026-06-03 - Task 23: 短期补强 — 真实几何验证 + 零件装配 + 轴承真实建模
+
+### What was done:
+
+- **B1: 真实几何端到端验证**
+  - 新建 `tests/test_part_library_e2e.py`（8 个 e2e 测试）
+  - `TestRealisticPartGeneration`（5 tests）：M6 realistic 螺钉、M8 realistic 六角螺栓/螺母、20 齿/8 齿 realistic 渐开线齿轮
+  - `TestSimplifiedRegression`（3 tests）：M6 简化螺钉、简化齿轮、全螺纹模板简化脚本批量验证
+  - 使用 `test_e2e_freecad.py` 相同的 `freecad_tools` fixture 模式
+  - 每个测试验证：脚本无 Python Traceback、FCStd 文件存在且非空、STL 文件存在且非空
+
+- **B2: 零件装配工具**
+  - `tools/part_library.py` 新增 `PartAssembleTool`（`part_assemble`）
+  - 支持 `.stl`、`.fcstd`、`.step` 三种格式导入
+  - 每个零件可指定 `position [x,y,z]` 和 `rotation [ax,ay,az,angle_deg]`
+  - 输出 `assembly.FCStd` 和可选 `assembly.stl`
+  - `tools/base.py` TOOL_CATEGORIES["part_library"] 追加 `part_assemble`（7→8 个工具）
+  - `web/app.py` 新增 `POST /api/parts/assemble` 端点（文件验证 + 调用工具）
+  - `web/static/index.html` 新增 Assemble 按钮 + 模态对话框（添加/配置零件、名称/格式选择、运行装配）
+
+- **B3: 轴承真实建模**
+  - `knowledge/parts_catalog.py` 新增 `_BEARING_REALISTIC_SCRIPT`
+  - 轴承脚本包含：外圈（带滚道圆弧槽）、内圈（带滚道圆弧槽）、滚珠（makeSphere 按节圆分布）、保持架（薄环 + 矩形口袋孔）
+  - 自动计算：`ball_d = gap * 0.65`、`pitch_circle = (OD+ID)/4`、`ball_count = floor(π×pitch_circle/(ball_d×1.1))`（最小 4 颗）
+  - 3 个轴承模板（bearing_608/623/625）各新增 `bearing_detail`（string: simplified/realistic）和 `ball_count`（0=自动）参数
+  - 3 个轴承模板各新增 `fc_script_alternatives={"realistic": ...}` 和 `quality_levels=["simplified", "realistic"]`
+  - `format_fc_script()` 新增 `bearing_detail` 参数识别（与 `thread_detail`/`tooth_detail` 并列）
+  - 修复 `format_map()` 占位符冲突：循环变量 `i` 改为 `idx`、f-string 改为 `"Ball" + str(idx)` 避免与参数占位符冲突
+
+### Testing:
+- `tests/test_part_library.py`：110/110 通过（原 82 → 新增 28 个测试）
+  - TestAssemblyTool（6 tests）：注册验证、工具定义、脚本生成、缺失文件错误、空零件错误、不支持格式错误
+  - TestBearingRealistic（12 tests）：滚珠/滚道/保持架关键字、bearing_detail 参数、ball_count 参数、3 轴承模板 realistic alternative、无未替换占位符、简化向后兼容
+  - 工具总数更新：7→8（test_eight_tools_registered、test_tool_count_is_eight）
+- `tests/test_part_library_e2e.py`：8 tests collected（需 FreeCAD 可用时执行）
+- 全量回归：488 passed, 4 failed（全部为预先存在问题：VLM 429 速率限制 2 个、web panel 状态泄漏 1 个、agent planning 1 个）
+
+### Notes:
+- 轴承真实脚本中的 `revolve()` 用于创建滚道环形凹槽，以 Pitch Circle 为中心扫掠三角截面
+- 保持架简化为薄圆柱环 + 矩形口袋切割，未实现完整窗式保持架（复杂度过高）
+- 装配工具使用 `_ASSEMBLY_SCRIPT_TEMPLATE` + `_PART_IMPORT_TEMPLATES` 模式，支持三种文件格式
+- Web 装配 UI 会自动从 `/api/parts/generated` 预填充已生成零件
+
+---
+
+## 2026-06-03 - Task 22: 零件库深度完善（真实螺纹 + 渐开线齿轮 + 打印分析 + 持久化）
+
+### What was done:
+- **A4: 零件库持久化 + 数据模型扩展**
+  - `ParamDef` 新增 `param_type` ("float"|"string") 和 `choices` (合法值列表)，`default` 类型改为 `Any` 支持字符串默认值
+  - `PartTemplate` 新增 `quality_levels` (["simplified","realistic"]) 和 `fc_script_alternatives` (多质量等级脚本映射)
+  - `GeneratedPart` 新增 `print_analysis` 字段、`to_dict()` / `from_dict()` 序列化方法
+  - `resolve_parameters()` 支持 string 类型参数验证（检查 choices 列表）
+  - `format_fc_script()` 根据 thread_detail/tooth_detail 自动选择 realistic 或 simplified 脚本
+  - 新增 `PartsStore` 类：JSON 持久化到 `{workspace}/parts_library/generated_parts.json`，支持 add/remove/get/list_all/count，容错处理损坏 JSON
+  - 所有工具从 `_generated_parts.append()` 迁移到 `_get_parts_store().add()`
+  - Web API：`GET /api/parts/generated`（列出已生成零件+文件存在检查）、`DELETE /api/parts/generated/{name}`（删除记录）
+  - Catalog/Template API 新增 `quality_levels`、`param_type`、`choices` 字段
+
+- **A1: 真实螺纹建模**
+  - 新增 `METRIC_THREAD_PITCH` 常量（M3-M20 共 10 种标准螺距）
+  - 3 个螺纹模板（socket_head_cap_screw、hex_bolt、hex_nut）各新增 `thread_detail`（string）和 `thread_pitch`（float）参数
+  - 真实螺纹 FreeCAD 脚本：`Part.makeHelix()` 生成螺旋路径 → 三角形截面 `makePipe()` 扫掠 → 布尔减法
+  - M3 及以下小尺寸自动 try/except 回退到简化圆柱
+  - 所有 standard_sizes 更新加入 `thread_pitch` 值
+
+- **A2: 渐开线直齿轮**
+  - spur_gear 模板新增 `tooth_detail`、`pressure_angle`（14.5°-30°）、`backlash`（0-1mm）参数
+  - 渐开线数学公式实现：`r_base = r_pitch * cos(pressure_angle)`，30 采样点/侧
+  - 完整齿廓：右渐开线 → 齿顶圆弧 → 左渐开线（镜像）→ 齿根圆弧 → N 齿极坐标阵列
+  - `makePolygon` → `Face` → `extrude` → `cut(bore)` 完整 3D 齿轮生成
+  - standard_sizes 更新加入 `pressure_angle` 和 `backlash`
+
+- **A3: 3D 打印可行性分析**
+  - 新增 `PartAnalyzePrintTool`（part_analyze_print）：分析 STL/FCStd 文件的打印可行性
+  - 分析内容：包围盒、体积/面积、悬垂面比例（>45°法线）、底面接触面积、最小壁厚、推荐打印方向（XY/XZ/YZ 三向对比）、材料用量估算（PLA 20% infill）
+  - `base.py` TOOL_CATEGORIES["part_library"] 追加 `part_analyze_print`（7 个工具）
+  - Web API：`POST /api/parts/analyze` 端点
+  - Web UI：零件详情面板增加 Print Analysis 区域，生成后可一键分析并展示结果（悬垂比例、推荐方向、问题列表）
+
+### Testing:
+- 92/92 part library tests pass（原 36 → 新增 56 个测试）
+- 489/492 full suite tests pass（3 pre-existing failures: FreeCAD unavailable, VLM 429 rate limit, web panel state leak）
+
+### Notes:
+- 真实螺纹使用 `Part.makeHelix()` + `makePipe()` 扫掠，小尺寸（M3）自动回退简化圆柱
+- 渐开线齿轮 30 采样点/侧，对于超大齿数（>100）可能需要增加采样点
+- `PartsStore` 单例模式，首次调用 `_get_parts_store()` 时初始化，自动 load/save
+- 打印分析依赖 FreeCAD 子进程加载 mesh 并遍历 facets 计算法线角度
+
+---
+
+## 2026-06-03 - Task 21: 零件库管理 — 标准件目录与参数化生成
+
 ## 2026-06-03 - Task 21: 零件库管理 — 标准件目录与参数化生成
 
 ### What was done:

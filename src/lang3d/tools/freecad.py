@@ -24,6 +24,7 @@ from typing import Any
 
 from ..models.base import ToolDefinition
 from .base import Tool
+from .process_manager import _process_manager
 
 
 # --- FreeCAD subprocess bridge ---
@@ -849,17 +850,9 @@ class FCOpenGUITool(Tool):
         if not fc_exe:
             return "Error: FreeCAD.exe not found. Install with: winget install FreeCAD"
 
-        # Force-kill any existing FreeCAD processes to prevent pile-up
-        # Using taskkill /F avoids the "Unsaved Document" dialog from WM_CLOSE
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "FreeCAD.exe"],
-                capture_output=True, timeout=5,
-                encoding="utf-8", errors="replace",
-            )
-            time.sleep(1)
-        except Exception:
-            pass
+        # Use process manager for graceful shutdown of existing FreeCAD
+        _process_manager.kill_existing()
+        time.sleep(1)
 
         # Clean up FreeCAD recovery cache to prevent Document Recovery dialog
         try:
@@ -1045,7 +1038,7 @@ class FCOpenGUITool(Tool):
 
             cmd.append(str(macro_path))
 
-        proc = subprocess.Popen(cmd)
+        proc = _process_manager.launch_gui(cmd)
 
         # Wait for window to appear
         time.sleep(wait_seconds)
@@ -1091,21 +1084,15 @@ class FCCloseGUITool(Tool):
             return "No FreeCAD window found (already closed or not running)"
 
         count = len(windows)
-        # Force-kill all FreeCAD processes to avoid "Unsaved Document" dialog
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "FreeCAD.exe"],
-                capture_output=True, timeout=5,
-                encoding="utf-8", errors="replace",
-            )
-        except Exception:
-            pass
+
+        # Use process manager for graceful shutdown
+        _process_manager.kill_existing()
 
         time.sleep(1)
         remaining = _find_windows_by_title("FreeCAD")
         if remaining:
-            return f"Force-killed {count} FreeCAD window(s) (some still visible)"
-        return f"FreeCAD closed: {count} window(s) force-killed"
+            return f"Closed {count} FreeCAD window(s) (some still visible)"
+        return f"FreeCAD closed: {count} window(s)"
 
 
 class FCSetCameraTool(Tool):

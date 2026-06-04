@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from .base import Message, ModelBackend, ModelResponse, ToolCall, ToolDefinition
+from .retry import RetryConfig, call_with_retry
 
 
 class OllamaBackend(ModelBackend):
@@ -18,8 +19,9 @@ class OllamaBackend(ModelBackend):
         base_url: str = "http://localhost:11434",
         model: str = "llama3",
         vision_model: str = "llava",
+        retry_config: RetryConfig | None = None,
     ) -> None:
-        super().__init__(api_key="", base_url=base_url, model=model)
+        super().__init__(api_key="", base_url=base_url, model=model, retry_config=retry_config)
         self.vision_model = vision_model
 
     def chat(
@@ -46,12 +48,16 @@ class OllamaBackend(ModelBackend):
         if tools:
             payload["tools"] = [self._convert_tool(t) for t in tools]
 
-        response = httpx.post(
-            f"{self.base_url}/api/chat",
-            json=payload,
-            timeout=120.0,
-        )
-        response.raise_for_status()
+        def _do_post() -> httpx.Response:
+            resp = httpx.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            return resp
+
+        response = call_with_retry(_do_post, retry_config=self.retry_config)
         data = response.json()
 
         content = data.get("message", {}).get("content", "")
@@ -97,12 +103,16 @@ class OllamaBackend(ModelBackend):
             "options": {"num_predict": max_tokens},
         }
 
-        response = httpx.post(
-            f"{self.base_url}/api/chat",
-            json=payload,
-            timeout=120.0,
-        )
-        response.raise_for_status()
+        def _do_post() -> httpx.Response:
+            resp = httpx.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                timeout=120.0,
+            )
+            resp.raise_for_status()
+            return resp
+
+        response = call_with_retry(_do_post, retry_config=self.retry_config)
         data = response.json()
 
         return data.get("message", {}).get("content", "")
