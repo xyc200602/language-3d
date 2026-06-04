@@ -234,6 +234,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register quality control tools (inspection, test, maintenance)
+        try:
+            from ..tools.quality import register_quality_tools
+            register_quality_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None

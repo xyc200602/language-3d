@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-04 - Task 38: 质量控制
+
+### What was done:
+- **新建 `tools/quality.py` — 质量控制工具**
+  - `generate_inspection_checklist(assembly, tolerance_mm)` — 尺寸检查清单
+    - 每个零件的每个尺寸自动生成 [min, max] 范围
+    - 轴/孔/直径 → critical=True, tolerance=0.1mm (bearing_fit)
+    - 厚度/宽度/高度 → standard tolerance
+    - 长度 → 2x tolerance (less critical)
+  - `generate_test_procedure(assembly)` — 装配后测试流程（5 阶段）
+    1. 外观检查（打印缺陷/螺丝/间隙/走线）
+    2. 机械范围测试（逐关节手动旋转）
+    3. 电气测试（短路检查/供电/串口/归零）
+    4. 功能测试（逐关节运动/联动/极限位置）
+    5. 耐久测试（30min 连续/50 次循环）
+  - `generate_maintenance_guide(assembly)` — 维护指南
+    - 每周：螺丝紧固、运动检查、清洁
+    - 每月：润滑、线缆检查、零位校准
+    - 每季度：全面校准、磨损件更换、电气检查
+    - 每年：深度清洁、舵机更换、固件更新
+    - 4 个常见问题（异响/精度下降/过热/通信不稳定）
+  - `QualityCheckTool` — Agent 工具（支持 section 选择）
+
+- **修改 `agent/core.py`** — 注册 quality_tools
+- **修改 `tools/base.py`** — TOOL_CATEGORIES 新增 "quality"
+
+### Testing:
+- 新建 `tests/test_quality.py` — 32 个测试
+  - TestInspectionChecklist（8 tests）：全部零件/字段/min<max/关键尺寸/自定义公差
+  - TestTestProcedure（8 tests）：5 阶段完整/视觉/机械/电气/功能/耐久/关节覆盖
+  - TestMaintenanceGuide（8 tests）：4 周期/任务字段/常见问题
+  - TestQualityReport（1 test）：三段完整
+  - TestQualityTool（7 tests）：注册/全输出/分节输出/错误/JSON
+- **32/32 通过**
+
+---
+
 ## 2026-06-04 - Task 37: 3D 打印优化
 
 ### What was done:

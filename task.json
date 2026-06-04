@@ -480,7 +480,7 @@
       "新建 tools/quality.py — 质量控制工具"
     ],
     "priority": 38,
-    "passes": false
+    "passes": true
   },
   {
     "id": 39,

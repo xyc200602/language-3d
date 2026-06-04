@@ -59,6 +59,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "print_optimize": [
         "print_optimize",
     ],
+    "quality": [
+        "quality_check",
+    ],
 }
 
 # Map step types to the tool categories they need
