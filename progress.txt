@@ -4,6 +4,36 @@
 
 ---
 
+## 2026-06-05 - Task 46: 移动底盘知识库与差速运动学
+
+### What was done:
+- **新建 knowledge/mobile_base.py** — 完整移动底盘设计知识库：
+  - `DifferentialDriveKinematics`：正运动学(v_left,v_right→v,ω)、逆运动学(v,ω→v_left,v_right)、转弯半径、最大速度、RPM计算
+  - `OmnidirectionalKinematics`：Mecanum 4轮逆运动学(vx,vy,ω→[fl,fr,rl,rr])和正运动学
+  - `MotorTorqueCalculator`：滚动阻力+坡度力矩+加速力矩→总力矩，自动从 DC_MOTOR_CATALOG 选型
+  - `BatterySizingCalculator`：P_total × runtime × safety_factor → 电池容量(Ah)和能量(Wh)
+  - `WheelBaseCalculator`：payload → wheel_diameter, track_width, ground_clearance, wheelbase 推导
+  - `MOBILE_BASE_TEMPLATES`：3种底盘模板（differential_4w/differential_2w/mecanum），每种含零件清单+关节定义+参数范围
+  - `DC_MOTOR_CATALOG`：5款电机（TT马达130/JGA25-370/GA25-370/NEMA17/NEMA23）
+  - `design_mobile_base()`：端到端设计函数（需求→底盘参数+电机选型+电池+运动学）
+- **新建 tools/mobile_design.py** — 2个工具：
+  - `mobile_base_design(requirements)`：载重/速度/坡度/续航→完整底盘设计参数
+  - `differential_drive_sim(v_left, v_right, dt)`：差速运动学轨迹仿真
+- **修改 agent/core.py** — 注册 mobile_design 工具、系统提示词增加底盘设计工作流
+- **修改 agent/planner.py** — _detect_task_type() 新增 mobile_base 关键词、PLANNER_EXAMPLES 新增底盘设计示例
+- **编写 tests/test_mobile_base.py** — 45个测试覆盖：电机目录(3)、差速运动学(8)、全向运动学(3)、力矩计算(4)、电池估算(4)、轮距计算(4)、模板(5)、端到端设计(3)、工具执行(5)、注册(2)、规划器检测(4)
+
+### Testing:
+- `tests/test_mobile_base.py`: 45/45 passed
+- 核心回归测试：155/155 passed
+
+### Notes:
+- complex_robot 检测优先级高于 mobile_base（"差速"/"底盘"等词同时触发两者时走 complex_robot 路径）
+- mobile_base 检测关键词不含与 complex_robot 重叠的词（"底盘设计"/"轮式底盘"等被 complex_robot 拦截）
+- 后续 Task 47 (闭环装配求解器) 需要本任务的底盘模板来构建闭环运动链
+
+---
+
 ## 2026-06-05 - Task 45: 零件质量属性系统 — 密度/质心/惯性张量
 
 ### What was done:

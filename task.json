@@ -613,7 +613,7 @@
       "编写 tests/test_mobile_base.py — 运动学正逆解、力矩计算、电池估算、底盘模板、工具执行测试（~30 个）"
     ],
     "priority": 46,
-    "passes": false
+    "passes": true
   },
   {
     "id": 47,

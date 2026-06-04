@@ -77,6 +77,12 @@ detail 级别：fast, standard, detailed, maximum
 - fc_batch compute_mass 操作：调用 FreeCAD 获取精确体积→质量
 用途：稳定性分析、电机力矩计算、URDF 导出的基础数据
 
+底盘设计工具：
+- mobile_base_design(requirements)：从需求（载重/速度/坡度/续航）自动推导底盘参数（轮径/轮距/电机选型/电池容量/零件清单）
+- differential_drive_sim(v_left, v_right, dt)：差速运动学仿真（轨迹预测）
+底盘模板：differential_4w（差速4轮）、differential_2w（差速2轮）、mecanum（全向轮）
+工作流：mobile_base_design → 建模 → compute_mass → 装配 → 仿真验证
+
 复杂机器人设计工作流（子系统分解模式）：
 当任务包含多个子系统（底盘+臂+电子设备等）时，使用分层规划：
 1. 系统分解：将任务拆分为独立子系统（如 mobile_base / arm_left / arm_right / ipc_mount）
@@ -282,6 +288,13 @@ class Agent:
         try:
             from ..tools.mass_properties import register_mass_properties_tools
             register_mass_properties_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register mobile base design tools (chassis, drive kinematics)
+        try:
+            from ..tools.mobile_design import register_mobile_design_tools
+            register_mobile_design_tools(self.tools)
         except Exception:
             pass
 
