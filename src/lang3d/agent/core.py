@@ -199,6 +199,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register actuator tools (servo/motor selection and analysis)
+        try:
+            from ..tools.actuator_tools import register_actuator_tools
+            register_actuator_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None

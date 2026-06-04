@@ -44,6 +44,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "slicing": [
         "slice_model", "slice_analyze", "slice_preview_layers", "slice_vlm_analyze",
     ],
+    "actuator": [
+        "actuator_select", "actuator_analyze", "actuator_power_budget",
+    ],
 }
 
 # Map step types to the tool categories they need
