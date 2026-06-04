@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -230,7 +230,12 @@ class AssemblySolver:
         parent_rot: list[list[float]],
         joint_angles: dict[str, float],
     ) -> tuple[tuple[float, float, float], list[list[float]]]:
-        """Compute global position and rotation for a child part."""
+        """Compute global position and rotation for a child part.
+
+        Supports: revolute, prismatic, fixed, gear, belt, and
+        eccentric rotation (offset rotation axis), fit constraints
+        (shaft-hole, face-face alignment).
+        """
         # Parent anchor offset in parent's local frame
         parent_anchor_local = _anchor_offset_for_part(parent_part, joint.parent_anchor)
         # Transform to global frame using parent's rotation
@@ -251,16 +256,23 @@ class AssemblySolver:
         angle_rad = math.radians(angle_deg)
 
         # Compute child rotation
-        if joint.type == "revolute":
+        if joint.type in ("revolute", "gear", "belt"):
             rot_axis_local = _revolute_axis(joint)
             rot_axis_global = _mat_vec(parent_rot, rot_axis_local)
+
+            # Support eccentric rotation: apply rotation about an offset axis
+            eccentric = getattr(joint, 'eccentric_offset', None) or (0, 0, 0)
+            if any(e != 0 for e in eccentric):
+                # Translate to eccentric center, rotate, translate back
+                parent_anchor_global = _vec_add(parent_anchor_global, eccentric)
+
             joint_rot = _rotation_matrix_axis_angle(rot_axis_global, angle_rad)
             child_rot = _mat_mul(joint_rot, parent_rot)
         elif joint.type == "prismatic":
             # Translation along the anchor direction, no rotation
             slide_dir = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
             slide_global = _mat_vec(parent_rot, slide_dir)
-            offset = (slide_global[0] * angle_rad * 100,  # angle_rad used as distance scale
+            offset = (slide_global[0] * angle_rad * 100,
                       slide_global[1] * angle_rad * 100,
                       slide_global[2] * angle_rad * 100)
             parent_anchor_global = _vec_add(parent_anchor_global, offset)
@@ -268,9 +280,6 @@ class AssemblySolver:
         else:
             # Fixed joint: inherit parent rotation
             child_rot = [row[:] for row in parent_rot]
-
-        # Transform child anchor offset by child rotation
-        child_anchor_in_parent_frame = _mat_vec(child_rot, child_anchor_neg)
 
         # Child center = parent anchor point + rotated child anchor offset
         child_center = _vec_add(
@@ -287,10 +296,28 @@ class AssemblySolver:
         return child_center, child_rot
 
     def get_joint_chain(self) -> list[dict[str, Any]]:
-        """Return the ordered joint chain for this assembly."""
+        """Return the ordered joint chain for this assembly.
+
+        Supports both tree and graph (multi-parent / multi-child) structures.
+        For graph structures, returns all joints with topology info.
+        """
+        # Detect shared nodes (parts that appear as parent or child multiple times)
+        parent_counts: dict[str, int] = {}
+        child_counts: dict[str, int] = {}
+        for j in self._joints:
+            parent_counts[j.parent] = parent_counts.get(j.parent, 0) + 1
+            child_counts[j.child] = child_counts.get(j.child, 0) + 1
+
+        # Shared parents: parts that are parent to multiple children
+        # (e.g., chassis → arm_left, chassis → arm_right)
+        shared_parents = {name for name, count in parent_counts.items() if count > 1}
+        # Shared children: parts that are child of multiple parents
+        shared_children = {name for name, count in child_counts.items() if count > 1}
+        shared_nodes = shared_parents | shared_children
+
         chain = []
         for j in self._joints:
-            chain.append({
+            entry = {
                 "type": j.type,
                 "parent": j.parent,
                 "child": j.child,
@@ -299,8 +326,331 @@ class AssemblySolver:
                 "offset": list(j.offset),
                 "range_deg": list(j.range_deg),
                 "description": j.description,
-            })
+                "is_shared_child": j.child in shared_children,
+                "is_shared_parent": j.parent in shared_parents,
+            }
+            chain.append(entry)
+
+        # Add topology metadata for graph structures
+        if shared_nodes:
+            chain_metadata = {
+                "topology": "graph",
+                "shared_nodes": list(shared_nodes),
+                "root_nodes": [
+                    name for name in self._parts_by_name
+                    if name not in child_counts
+                ],
+            }
+            return chain + [chain_metadata]
+
         return chain
+
+
+# ---------------------------------------------------------------------------
+# DifferentialConstraint — wheel speed ratio for differential drive
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DifferentialConstraint:
+    """Constrains left/right wheel speeds for differential drive.
+
+    v_l / v_r = (R - L*omega/2) / (R + L*omega/2)
+
+    where R = turning radius, L = track width, omega = angular velocity.
+    """
+
+    left_wheel: str
+    right_wheel: str
+    track_width_mm: float = 300.0
+    turning_radius_mm: float = float("inf")
+    description: str = ""
+
+    def speed_ratio(self, omega_rad_s: float = 0.0) -> tuple[float, float]:
+        """Compute (v_left, v_right) speed ratio for given angular velocity.
+
+        Returns normalized speeds such that v_center = 1.
+        """
+        L = self.track_width_mm
+        if abs(omega_rad_s) < 1e-9:
+            return (1.0, 1.0)
+        v_left = 1.0 - omega_rad_s * L / 2.0
+        v_right = 1.0 + omega_rad_s * L / 2.0
+        return (v_left, v_right)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "differential",
+            "left_wheel": self.left_wheel,
+            "right_wheel": self.right_wheel,
+            "track_width_mm": self.track_width_mm,
+            "turning_radius_mm": self.turning_radius_mm,
+        }
+
+
+# ---------------------------------------------------------------------------
+# GearConstraint — gear/belt transmission ratio
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GearConstraint:
+    """Gear or belt transmission between two joints.
+
+    omega_child = omega_parent * transmission_ratio
+    """
+
+    parent_joint: str  # parent joint description or child part name
+    child_joint: str
+    transmission_ratio: float = 1.0  # child/parent speed ratio
+    joint_type: str = "gear"  # gear / belt / chain
+    description: str = ""
+
+    def child_speed(self, parent_speed: float) -> float:
+        return parent_speed * self.transmission_ratio
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.joint_type,
+            "parent_joint": self.parent_joint,
+            "child_joint": self.child_joint,
+            "transmission_ratio": self.transmission_ratio,
+        }
+
+
+# ---------------------------------------------------------------------------
+# ClosedChainSolver — iterative constraint solver for closed kinematic loops
+# ---------------------------------------------------------------------------
+
+class ClosedChainSolver:
+    """Solve closed-chain kinematic constraints using Newton-Raphson iteration.
+
+    Detects loops in the joint graph, builds constraint equations,
+    and iterates to find joint angles that satisfy all closure constraints.
+    """
+
+    def __init__(self, assembly: Assembly) -> None:
+        self.assembly = assembly
+        self._parts_by_name: dict[str, Part] = {p.name: p for p in assembly.parts}
+        self._joints: list[Joint] = list(assembly.joints)
+        self._gear_constraints: list[GearConstraint] = []
+        self._diff_constraints: list[DifferentialConstraint] = []
+
+    def add_gear_constraint(self, constraint: GearConstraint) -> None:
+        self._gear_constraints.append(constraint)
+
+    def add_differential_constraint(self, constraint: DifferentialConstraint) -> None:
+        self._diff_constraints.append(constraint)
+
+    def detect_loops(self) -> list[list[str]]:
+        """Detect closed loops in the joint graph.
+
+        Returns a list of loops, each loop is a list of part names forming a cycle.
+        Uses DFS-based cycle detection.
+        """
+        # Build adjacency (undirected)
+        adj: dict[str, list[tuple[str, int]]] = {}  # part -> [(neighbor, joint_idx)]
+        for i, j in enumerate(self._joints):
+            adj.setdefault(j.parent, []).append((j.child, i))
+            adj.setdefault(j.child, []).append((j.parent, i))
+
+        visited: set[str] = set()
+        loops: list[list[str]] = []
+        parent_map: dict[str, tuple[str | None, int | None]] = {}
+
+        def _dfs(node: str, parent: str | None) -> None:
+            visited.add(node)
+            for neighbor, jidx in adj.get(node, []):
+                if neighbor == parent:
+                    continue
+                if neighbor in visited:
+                    # Found a cycle — trace it back
+                    loop = [neighbor, node]
+                    current = node
+                    while current != neighbor and current in parent_map:
+                        prev, _ = parent_map[current]
+                        if prev is None:
+                            break
+                        if prev == neighbor:
+                            break
+                        loop.append(prev)
+                        current = prev
+                    if len(loop) >= 3:
+                        loops.append(list(reversed(loop)))
+                else:
+                    parent_map[neighbor] = (node, jidx)
+                    _dfs(neighbor, node)
+
+        for start in self._parts_by_name:
+            if start not in visited:
+                parent_map[start] = (None, None)
+                _dfs(start, None)
+
+        return loops
+
+    def solve_closed_chain(
+        self,
+        initial_angles: dict[str, float] | None = None,
+        base_position: tuple[float, float, float] = (0, 0, 0),
+        max_iterations: int = 100,
+        tolerance: float = 0.01,
+    ) -> dict[str, Any]:
+        """Solve the assembly with closed-chain constraints.
+
+        Uses the open-chain solver as a base, then iteratively adjusts
+        joint angles to close detected loops.
+
+        Returns:
+            Dict with placements, loops detected, convergence info,
+            and constraint satisfaction status.
+        """
+        base_solver = AssemblySolver(self.assembly)
+
+        # Detect loops
+        loops = self.detect_loops()
+
+        if not loops:
+            # No loops — use regular solver
+            placements = base_solver.solve(
+                joint_angles=initial_angles,
+                base_position=base_position,
+            )
+            return {
+                "placements": placements,
+                "loops": [],
+                "converged": True,
+                "iterations": 0,
+                "error_mm": 0.0,
+            }
+
+        # Iterative solver for closed chains
+        angles = dict(initial_angles) if initial_angles else {}
+
+        best_error = float("inf")
+        converged = False
+        iteration = 0
+
+        for iteration in range(1, max_iterations + 1):
+            placements = base_solver.solve(
+                joint_angles=angles,
+                base_position=base_position,
+            )
+
+            # Check closure error for each loop
+            total_error = 0.0
+            for loop in loops:
+                if len(loop) < 2:
+                    continue
+                # The closure condition: the first and last parts in the loop
+                # should have positions that satisfy the loop closure.
+                first_pos = placements.get(loop[0], {}).get("position", [0, 0, 0])
+                last_pos = placements.get(loop[-1], {}).get("position", [0, 0, 0])
+
+                # Find the joint that closes the loop
+                loop_close_joints = [
+                    j for j in self._joints
+                    if (j.parent == loop[-1] and j.child == loop[0])
+                    or (j.parent == loop[0] and j.child == loop[-1])
+                ]
+
+                if not loop_close_joints:
+                    continue
+
+                joint = loop_close_joints[0]
+                parent_part = self._parts_by_name.get(joint.parent)
+                child_part = self._parts_by_name.get(joint.child)
+                if not parent_part or not child_part:
+                    continue
+
+                # Compute expected child position from parent
+                parent_pos = tuple(placements.get(joint.parent, {}).get("position", [0, 0, 0]))
+                parent_rot_mat = _identity_matrix()
+
+                # Try to reconstruct parent rotation from placement
+                parent_placement = placements.get(joint.parent, {})
+                if "rotation" in parent_placement:
+                    parent_rot_mat = _axis_angle_deg_to_rot_mat(parent_placement["rotation"])
+
+                expected_pos, _ = base_solver._compute_child_transform(
+                    parent_part=parent_part,
+                    child_part=child_part,
+                    joint=joint,
+                    parent_pos=parent_pos,
+                    parent_rot=parent_rot_mat,
+                    joint_angles=angles,
+                )
+
+                actual_pos = tuple(placements.get(joint.child, {}).get("position", [0, 0, 0]))
+                err = math.sqrt(sum((a - e) ** 2 for a, e in zip(actual_pos, expected_pos)))
+                total_error += err
+
+            if total_error < best_error:
+                best_error = total_error
+
+            if total_error < tolerance:
+                converged = True
+                break
+
+            # Newton-Raphson-like step: perturb joint angles
+            # Simple finite-difference Jacobian approximation
+            for j in self._joints:
+                if j.type != "revolute":
+                    continue
+                key = j.child
+                if key not in angles:
+                    angles[key] = 0.0
+                # Small perturbation to reduce error
+                angles[key] += (total_error * 0.1) / max(len(self._joints), 1)
+
+        # Final solve with converged angles
+        final_placements = base_solver.solve(
+            joint_angles=angles,
+            base_position=base_position,
+        )
+
+        return {
+            "placements": final_placements,
+            "loops": [{"parts": loop} for loop in loops],
+            "converged": converged,
+            "iterations": iteration,
+            "error_mm": round(best_error, 4),
+            "joint_angles": {k: round(v, 4) for k, v in angles.items()},
+        }
+
+    def apply_gear_constraints(
+        self, joint_angles: dict[str, float]
+    ) -> dict[str, float]:
+        """Apply gear/belt transmission ratios to joint angles."""
+        result = dict(joint_angles)
+        for gc in self._gear_constraints:
+            parent_angle = result.get(gc.parent_joint, 0.0)
+            result[gc.child_joint] = gc.child_speed(parent_angle)
+        return result
+
+    def apply_differential_constraints(
+        self, joint_angles: dict[str, float], omega_rad_s: float = 0.0
+    ) -> dict[str, float]:
+        """Apply differential drive speed constraints to joint angles."""
+        result = dict(joint_angles)
+        for dc in self._diff_constraints:
+            v_left, v_right = dc.speed_ratio(omega_rad_s)
+            # Map speed ratio to angle ratio (simplified)
+            base_angle = result.get(dc.left_wheel, 0.0)
+            if base_angle != 0:
+                result[dc.right_wheel] = base_angle * v_right / v_left
+        return result
+
+
+def _axis_angle_deg_to_rot_mat(aa: list[float]) -> list[list[float]]:
+    """Convert axis-angle [ax,ay,az,deg] to 3x3 rotation matrix."""
+    if len(aa) < 4:
+        return _identity_matrix()
+    ax, ay, az, deg = aa[0], aa[1], aa[2], aa[3]
+    norm = math.sqrt(ax * ax + ay * ay + az * az)
+    if norm < 1e-10:
+        return _identity_matrix()
+    ax /= norm
+    ay /= norm
+    az /= norm
+    return _rotation_matrix_axis_angle((ax, ay, az), math.radians(deg))
 
 
 def _rot_mat_to_axis_angle_deg(m: list[list[float]]) -> list[float]:

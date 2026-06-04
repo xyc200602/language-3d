@@ -83,6 +83,12 @@ detail 级别：fast, standard, detailed, maximum
 底盘模板：differential_4w（差速4轮）、differential_2w（差速2轮）、mecanum（全向轮）
 工作流：mobile_base_design → 建模 → compute_mass → 装配 → 仿真验证
 
+驱动系统与闭环装配：
+- drive_train_design(wheel_count, drive_type, motor_type)：自动生成电机→联轴器→轮子的驱动链装配定义
+- assembly_solve 支持闭环运动链（4轮差速底盘的闭环约束）
+- 闭环求解器使用 Newton-Raphson 迭代，支持齿轮传动比、差速器约束
+- get_joint_chain() 返回树状/图状运动学结构（如双臂共享底盘节点）
+
 复杂机器人设计工作流（子系统分解模式）：
 当任务包含多个子系统（底盘+臂+电子设备等）时，使用分层规划：
 1. 系统分解：将任务拆分为独立子系统（如 mobile_base / arm_left / arm_right / ipc_mount）
@@ -295,6 +301,13 @@ class Agent:
         try:
             from ..tools.mobile_design import register_mobile_design_tools
             register_mobile_design_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register drive train tools (motor → wheel assembly)
+        try:
+            from ..tools.drive_train import register_drive_train_tools
+            register_drive_train_tools(self.tools)
         except Exception:
             pass
 

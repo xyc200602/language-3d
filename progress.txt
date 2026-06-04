@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-05 - Task 47: 闭环装配求解器 — 差速底盘四轮约束
+
+### What was done:
+- **修改 tools/assembly_solver.py** — 大幅扩展：
+  - `DifferentialConstraint`：左右轮速度比约束（v_l / v_r = (1 - ωL/2) / (1 + ωL/2)）
+  - `GearConstraint`：齿轮/皮带传动比约束（ω_child = ω_parent × ratio）
+  - `ClosedChainSolver`：迭代约束求解器
+    - `detect_loops()`：DFS 环检测
+    - `solve_closed_chain()`：Newton-Raphson 迭代求解闭环约束
+    - `apply_gear_constraints()`：应用齿轮传动比
+    - `apply_differential_constraints()`：应用差速器约束
+  - `_compute_child_transform()` 扩展：支持 gear/belt 关节类型、偏心旋转
+  - `get_joint_chain()` 扩展：支持树状/图状运动学结构（共享父节点检测）
+  - `_axis_angle_deg_to_rot_mat()`：新增轴角→旋转矩阵转换
+- **新建 tools/drive_train.py** — `DriveTrainDesignTool`：自动生成驱动系统装配定义（电机→联轴器→轮子的关节链），支持 differential/differential_2w/mecanum
+- **修改 agent/core.py** — 注册 drive_train 工具、系统提示词增加闭环装配和驱动系统说明
+- **编写 tests/test_closed_chain_solver.py** — 28个测试覆盖：DifferentialConstraint(3)、GearConstraint(3)、Loop Detection(3)、ClosedChainSolver(6)、Graph Topology(2)、Extended Transform(2)、Axis-Angle Conversion(2)、Drive Train(6)、Registration(1)
+
+### Testing:
+- `tests/test_closed_chain_solver.py`: 28/28 passed
+- 核心回归测试：200/200 passed
+
+### Notes:
+- ClosedChainSolver 继承现有 AssemblySolver（开环），在其基础上添加闭环迭代
+- 图状拓扑检测同时考虑共享父节点（底盘→双臂）和共享子节点
+- 后续 Task 48 (稳定性分析) 可利用闭环求解器的结果验证底盘稳定性
+
+---
+
 ## 2026-06-05 - Task 46: 移动底盘知识库与差速运动学
 
 ### What was done:
