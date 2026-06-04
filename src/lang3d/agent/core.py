@@ -158,6 +158,20 @@ class Agent:
         except Exception:
             pass
 
+        # Register assembly solver tools (constraint-based auto-positioning)
+        try:
+            from ..tools.assembly_solver import register_assembly_solver_tools
+            register_assembly_solver_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register IK solver tools (inverse kinematics)
+        try:
+            from ..tools.ik_solver import register_ik_tools
+            register_ik_tools(self.tools)
+        except Exception:
+            pass
+
         # Register slicing tools (PrusaSlicer/OrcaSlicer)
         try:
             from ..tools.slicing import register_slicing_tools

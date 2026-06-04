@@ -4,6 +4,116 @@
 
 ---
 
+## 2026-06-04 - Task 28: 逆向运动学求解器
+
+### What was done:
+
+- **Step 1: Joint 新增 axis 字段**
+  - `Joint` dataclass 新增 `axis` 字段（默认 "auto"），支持 "x"/"y"/"z" 显式指定旋转轴
+  - 更新 `ROBOTIC_ARM_ASSEMBLY` 的关节：底座旋转 axis="z"，肩部/肘部 axis="y"（俯仰），腕部 axis="z"
+  - 修改 `assembly_solver.py` 的 `_revolute_axis()` 优先使用显式 axis
+
+- **Step 2: 新建 `tools/ik_solver.py` — IK 求解器**
+  - `_extract_chain()`: 从装配体提取运动链（连杆长度 + 旋转轴 + 关节限位）
+  - `_analytic_3dof()`: 解析解（3-DOF 球面臂：底座偏航 + 2 个俯仰连杆），含 FK 验证
+  - `_ccd_solve()`: CCD 数值解（任意构型），特性包括：
+    - 阻尼因子 0.5 防止振荡
+    - 停滞检测（20 次无改善触发随机重启）
+    - 显式旋转轴支持（Y 轴 = 俯仰，Z 轴 = 偏航）
+  - `solve_ik()` 统一 API：auto 模式先解析后 CCD，ccd 模式仅数值
+  - `IKSolveTool` 工具：Agent 可通过 `ik_solve` 工具求解目标位置
+
+- **Step 3: 注册工具**
+  - `agent/core.py`：注册 `register_ik_tools`
+  - `tools/base.py`：`TOOL_CATEGORIES["assembly"]` 新增 `ik_solve`
+
+- **Step 4: 新建 `tests/test_ik_solver.py` — 31 个测试**
+  - `TestVectorHelpers`：点积/叉积/长度/平面投影
+  - `TestChainExtraction`：运动链提取、连杆长度验证
+  - `TestFKVerify`：正向运动学验证（home/旋转位置）
+  - `TestCCDSolver`：home 零误差、可达目标、不可达目标、IKResult 类型
+  - `TestSolveIK`：auto 回退、多目标、初始角度辅助
+  - `TestFKIKRoundtrip`：FK→IK→FK 往返验证（误差 <1mm / <3mm）
+  - `TestIKSolveTool`：注册、定义、执行、错误处理、JSON 输出
+  - `TestEdgeCases`：无旋转关节、空装配体、原点目标、负坐标、大容差
+
+### Testing:
+
+- 31/31 IK solver 测试通过
+- 44/44 assembly solver 测试通过（含 axis 字段变更）
+- 110/110 part_library 测试通过
+- 205/205 组合测试通过
+- 所有现有功能向后兼容
+
+### Notes:
+
+- 机械臂最大工作半径约 122mm（从肩部算），(100, 0, 150) 等目标超出可达范围
+- CCD 在可达目标上精度 <1mm，不可达目标会报告 error 和 reachable=false
+- 解析解对当前 Y 轴关节的机械臂不够准确（假设关节在 XZ 平面），auto 模式会回退到 CCD
+- axis 字段是 Task 27 之后的关键增强，使得肩部/肘部可以真正俯仰
+
+---
+
+## 2026-06-04 - Task 27: 装配约束求解器
+
+## 2026-06-04 - Task 27: 装配约束求解器
+
+### What was done:
+
+- **Step 1: 修改 `knowledge/mechanics.py` — Joint 新增约束字段**
+  - `Joint` dataclass 新增 `parent_anchor`（默认 "top"）、`child_anchor`（默认 "bottom"）、`offset`（默认 (0,0,0)）三个字段
+  - 向后兼容：所有现有代码无需修改，新字段有合理默认值
+  - 更新 `ROBOTIC_ARM_ASSEMBLY` 的 6 个关节，为每个关节添加了显式锚点约束
+
+- **Step 2: 新建 `tools/assembly_solver.py` — 约束求解器**
+  - `AssemblySolver` 类：根据关节链自动计算每个零件的全局 Placement（位置+旋转）
+  - 支持 `revolute`（绕锚点法线旋转）、`fixed`（继承父件旋转）、`prismatic`（沿锚点方向滑动）三种关节类型
+  - 锚点偏移自动从零件 dimensions 推算（top/bottom 用 height，left/right 用 width，front/back 用 length）
+  - 关节 offset 在子件旋转坐标系中应用，确保旋转时 offset 随关节一起运动
+  - 防循环检测（visited set），空装配体和单零件边界情况处理
+  - `AssemblySolveTool` 工具：Agent 可通过 `assembly_solve` 工具获取零件位置
+  - 支持内置装配体名（robotic_arm）、JSON 字符串、文件路径三种输入方式
+
+- **Step 3: 修改 `tools/part_library.py` — part_assemble 集成求解器**
+  - `PartAssembleTool` 新增 `assembly_definition` 和 `joint_angles` 参数
+  - 提供 `assembly_definition` 时，自动调用 `AssemblySolver` 计算零件位置，覆盖手动 position/rotation
+  - 不提供时保持原有行为，完全向后兼容
+  - `_apply_solver_positions()` 方法封装求解逻辑，失败时静默回退到手动位置
+
+- **Step 4: 修改 `agent/core.py` + `tools/base.py` — 注册工具**
+  - `agent/core.py`：新增 `register_assembly_solver_tools` 注册调用
+  - `tools/base.py`：`TOOL_CATEGORIES` 新增 "assembly" 类别（包含 assembly_solve）
+  - `STEP_TOOL_CATEGORIES["modeling"]` 新增 "assembly" 依赖
+
+- **Step 5: 新建 `tests/test_assembly_solver.py` — 44 个测试**
+  - `TestJointFields`：验证 Joint 新字段的默认值和自定义值
+  - `TestAnchorOffsets`：验证 6 个方向的锚点偏移计算
+  - `TestRotationMath`：验证旋转矩阵数学（单位矩阵、90/180度旋转、矩阵乘法、轴角转换）
+  - `TestSimpleSolver`：两件堆叠、三件链、基座偏移、所有零件放置
+  - `TestRevoluteJoint`：零角度等同固定、非零角度改变旋转
+  - `TestJointOffset`：offset 参数正确应用
+  - `TestRoboticArmChain`：机械臂全链测试（8件全部放置、Z 轴递增、旋转传播、带 offset 旋转移动）
+  - `TestAssemblyParsing`：JSON 解析（最小/带锚点/内置/未知）
+  - `TestAssemblySolveTool`：工具注册、定义、执行（内置/角度/未知/自定义 JSON）
+  - `TestPartAssembleIntegration`：part_assemble 集成求解器
+  - `TestEdgeCases`：空装配体、单零件、循环关节、未知锚点
+
+### Testing:
+
+- 44/44 assembly_solver 测试通过
+- 110/110 part_library 测试通过
+- 499/499 全量回归测试通过（0 failures, 0 errors）
+- 所有现有功能完全向后兼容
+
+### Notes:
+
+- 关节旋转轴基于 `parent_anchor` 方向（top → Z轴旋转 = 偏航，left → X轴旋转等）
+- 对于需要 pitch/roll 的关节（如肩部俯仰），需要使用 `parent_anchor="front"` 或 `"back"`
+- `servo_holder` 不在任何关节链中，被放置在基座位置（符合预期）
+- Task 27 是阶段 A（机械完整性）的第一个任务，为后续 Task 28（IK）、Task 30（端到端装配）奠定基础
+
+---
+
 ## 2026-06-04 - Task 26: 端到端可靠性验证
 
 ### What was done:

@@ -27,6 +27,13 @@ class Joint:
     child: str
     range_deg: tuple[float, float] = (-180, 180)
     description: str = ""
+    # Assembly constraints for auto-positioning
+    parent_anchor: str = "top"       # Parent connection face: top/bottom/left/right/front/back
+    child_anchor: str = "bottom"     # Child connection face
+    offset: tuple[float, float, float] = (0, 0, 0)  # Fine adjustment offset (mm)
+    # Rotation axis for revolute joints (overrides parent_anchor inference)
+    # "auto" = infer from parent_anchor, "x"/"y"/"z" = explicit axis
+    axis: str = "auto"
 
 
 @dataclass
@@ -107,12 +114,18 @@ ROBOTIC_ARM_ASSEMBLY = Assembly(
     description="3 自由度桌面机械臂，适用于教育和实验",
     parts=ROBOTIC_ARM_PARTS,
     joints=[
-        Joint("revolute", "base_plate", "base_joint_housing", (-180, 180), "底座旋转"),
-        Joint("revolute", "base_joint_housing", "shoulder_link", (-90, 90), "肩部俯仰"),
-        Joint("revolute", "shoulder_link", "elbow_joint", (-135, 135), "肘部弯曲"),
-        Joint("fixed", "elbow_joint", "forearm_link", description="固定连接"),
-        Joint("revolute", "forearm_link", "wrist_joint", (-180, 180), "腕部旋转"),
-        Joint("fixed", "wrist_joint", "end_effector_mount", description="固定连接"),
+        Joint("revolute", "base_plate", "base_joint_housing", (-180, 180), "底座旋转",
+              parent_anchor="top", child_anchor="bottom", axis="z"),
+        Joint("revolute", "base_joint_housing", "shoulder_link", (-90, 90), "肩部俯仰",
+              parent_anchor="top", child_anchor="bottom", axis="y"),
+        Joint("revolute", "shoulder_link", "elbow_joint", (-135, 135), "肘部弯曲",
+              parent_anchor="top", child_anchor="bottom", axis="y"),
+        Joint("fixed", "elbow_joint", "forearm_link", description="固定连接",
+              parent_anchor="top", child_anchor="bottom"),
+        Joint("revolute", "forearm_link", "wrist_joint", (-180, 180), "腕部旋转",
+              parent_anchor="top", child_anchor="bottom", axis="z"),
+        Joint("fixed", "wrist_joint", "end_effector_mount", description="固定连接",
+              parent_anchor="top", child_anchor="bottom"),
     ],
 )
 

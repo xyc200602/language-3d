@@ -1,98 +1,5 @@
 [
   {
-    "id": 26,
-    "title": "端到端可靠性验证 — 8 梯度案例 + VLM 准确率实测 + 结构化报告",
-    "description": "设计 8 个梯度案例（Level 1-4）批量跑主链路'自然语言→3D模型→VLM验证'，记录结构化指标（成功率、耗时、重试次数），实测 VLM 验证准确率（standard vs detailed vs multi_angle），暴露主链路真实瓶颈。",
-    "steps": [
-      "新建 tests/test_e2e_reliability.py — 8 梯度案例定义（正方体/圆柱体/带孔平板/L支架/悬臂支架/阶梯轴/法兰联轴器/轴承座）",
-      "实现 CaseResult dataclass + run_single_case() + run_all_cases() + print_report() + save_results_json()",
-      "实现 pytest 集成（TestE2EReliability 类，8 个测试方法）+ 独立脚本入口",
-      "新建 tests/test_vlm_accuracy.py — 3 模型 x 3 配置 VLM 准确率测试",
-      "执行 Level 1-4 全部测试：8/8 (100%) 文件创建成功，6/8 (75%) VLM 验证通过",
-      "VLM 准确率测试：detail=standard 无法检测工程特征，detail=detailed 推荐",
-      "结果保存 data/e2e_report.json + data/vlm_accuracy_report.json",
-      "全量回归 614/614 tests 通过"
-    ],
-    "priority": 26,
-    "passes": true
-  },
-  {
-    "id": 25,
-    "title": "工程可靠性提升 — LLM 重试 + VLM 多角度验证 + 进程管理 + 异步转换",
-    "description": "解决 4 个关键工程可靠性问题：LLM 调用无重试机制（429 直接失败）、VLM 验证准确率极低（机械臂 0/8）、FreeCAD 进程管理粗暴（taskkill /F）、Web 文件转换阻塞（subprocess.run 同步）。",
-    "steps": [
-      "新建 src/lang3d/models/retry.py：RetryConfig dataclass + call_with_retry() 指数退避 + Retry-After 支持",
-      "修改 config.py 新增 RetrySettings + 环境变量映射",
-      "修改 base.py/glm.py/openai.py/ollama.py/router.py — 所有 API 调用通过 call_with_retry() 包裹",
-      "修改 vlm.py — CADVerifyTool 新增 angles 参数（多角度验证）+ 置信度加权投票 + 宽容 Prompt",
-      "新建 src/lang3d/tools/process_manager.py — FreeCADProcessManager 优雅关闭（WM_CLOSE + 超时强杀）",
-      "修改 freecad.py — FCOpenGUI/FCCloseGUI 使用进程管理器",
-      "修改 app.py — 新增 /api/convert-async + /api/convert-status 异步转换端点",
-      "修改 index.html — 大文件（>5MB）自动异步转换 + 进度轮询",
-      "新建 tests/test_retry.py（24 tests）、test_vlm_multi_angle.py（23 tests）、test_process_manager.py（12 tests）、test_async_convert.py（13 tests）",
-      "全量回归 622/622 tests 通过"
-    ],
-    "priority": 25,
-    "passes": true
-  },
-  {
-    "id": 24,
-    "title": "3D 打印切片集成 — PrusaSlicer/OrcaSlicer CLI 切片流水线",
-    "description": "集成 PrusaSlicer CLI（首选）和 OrcaSlicer CLI（备选），为 Agent 提供 4 个切片工具（slice_model, slice_analyze, slice_preview_layers, slice_vlm_analyze），实现 STL → G-code 的完整自动化切片流水线。",
-    "steps": [
-      "新建 src/lang3d/knowledge/slicing.py：打印机/材料/质量预设 + G-code 解析 + 参数合并",
-      "新建 src/lang3d/tools/slicing.py：4 个切片工具 + 切片器发现 + CLI 命令构建",
-      "修改 src/lang3d/config.py：新增 SlicingSettings + 环境变量映射",
-      "修改 src/lang3d/tools/base.py：TOOL_CATEGORIES + STEP_TOOL_CATEGORIES 新增 slicing",
-      "修改 src/lang3d/agent/core.py：注册切片工具 + 更新系统提示词",
-      "修改 src/lang3d/agent/executor.py：_infer_step_type 检测 slice_* 工具",
-      "修改 src/lang3d/agent/planner.py：切片关键词检测 + few-shot 示例",
-      "修改 src/lang3d/web/app.py：新增 3 个切片 API 端点（/api/slice, /api/slice/analyze, /api/slice/layers）",
-      "修改 src/lang3d/web/static/index.html：新增 Slicing Tab + 完整 UI",
-      "新建 tests/test_slicing.py：57 个测试覆盖知识库、工具注册、G-code 解析、配置、执行器集成"
-    ],
-    "priority": 24,
-    "passes": true
-  },
-  {
-    "id": 23,
-    "title": "短期补强 — 真实几何验证 + 零件装配 + 轴承真实建模",
-    "description": "B1 端到端验证：用 FreeCAD 实际生成 realistic 螺钉/齿轮/验证 STL 质量。B2 零件装配：part_assemble 工具按配合关系定位零件。B3 轴承真实建模：滚珠/滚道/保持架。",
-    "steps": [
-      "B1: 新建 tests/test_part_library_e2e.py（8 个 e2e 测试），验证 realistic 螺钉/齿轮/螺母 + 简化回归",
-      "B3: knowledge/parts_catalog.py 新增 _BEARING_REALISTIC_SCRIPT（外圈+滚道+内圈+滚珠+保持架）",
-      "B3: 3 个轴承模板新增 bearing_detail/ball_count 参数 + fc_script_alternatives + quality_levels",
-      "B3: format_fc_script 新增 bearing_detail 参数识别",
-      "B2: tools/part_library.py 新增 PartAssembleTool（支持 STL/FCStd/STEP 导入+定位+旋转）",
-      "B2: tools/base.py TOOL_CATEGORIES part_library 追加 part_assemble（7→8 个工具）",
-      "B2: web/app.py 新增 POST /api/parts/assemble 端点",
-      "B2: web/static/index.html 新增 Assemble 按钮 + 模态对话框",
-      "B2+B3: tests/test_part_library.py 新增 TestAssemblyTool（6 tests）+ TestBearingRealistic（12 tests）+ 工具总数更新",
-      "修复轴承脚本 format_map 占位符冲突（循环变量 i→idx、f-string 改为字符串拼接）"
-    ],
-    "priority": 23,
-    "passes": true
-  },
-  {
-    "id": 22,
-    "title": "零件库深度完善（真实螺纹 + 渐开线齿轮 + 打印分析 + 持久化）",
-    "description": "在 Task 21 的 15 个标准件模板基础上，实现：A1 真实螺纹建模（螺旋扫掠）、A2 渐开线直齿轮（数学齿廓）、A3 3D 打印可行性分析（悬垂/壁厚/方向）、A4 零件库 JSON 持久化（跨会话复用）。",
-    "steps": [
-      "扩展 ParamDef 支持 string 类型参数（thread_detail/tooth_detail 选择）",
-      "扩展 PartTemplate 支持 quality_levels + fc_script_alternatives 多脚本",
-      "扩展 GeneratedPart 支持 print_analysis + to_dict/from_dict 序列化",
-      "新增 PartsStore JSON 持久化类（add/remove/get/list_all/count）",
-      "3 个螺纹模板新增 realistic 螺纹脚本（makeHelix + makePipe 扫掠）",
-      "spur_gear 新增渐开线齿廓 realistic 脚本（数学公式 + 极坐标阵列）",
-      "新增 PartAnalyzePrintTool（3D 打印可行性分析）",
-      "Web API：GET/DELETE /api/parts/generated、POST /api/parts/analyze",
-      "Web UI：Print Analysis 区域 + quality levels 选择器",
-      "编写 ~56 个新测试覆盖全部功能"
-    ],
-    "priority": 22,
-    "passes": true
-  },
-  {
     "id": 7,
     "title": "VLM UI 元素定位",
     "description": "新增 vlm_locate 工具：截取 CAD 窗口 → VLM 返回 UI 元素名称和坐标 → Agent 可自动点击菜单/按钮，无需手动指定坐标。",
@@ -312,5 +219,322 @@
     ],
     "priority": 21,
     "passes": true
+  },
+  {
+    "id": 22,
+    "title": "零件库深度完善（真实螺纹 + 渐开线齿轮 + 打印分析 + 持久化）",
+    "description": "在 Task 21 的 15 个标准件模板基础上，实现：A1 真实螺纹建模（螺旋扫掠）、A2 渐开线直齿轮（数学齿廓）、A3 3D 打印可行性分析（悬垂/壁厚/方向）、A4 零件库 JSON 持久化（跨会话复用）。",
+    "steps": [
+      "扩展 ParamDef 支持 string 类型参数（thread_detail/tooth_detail 选择）",
+      "扩展 PartTemplate 支持 quality_levels + fc_script_alternatives 多脚本",
+      "扩展 GeneratedPart 支持 print_analysis + to_dict/from_dict 序列化",
+      "新增 PartsStore JSON 持久化类（add/remove/get/list_all/count）",
+      "3 个螺纹模板新增 realistic 螺纹脚本（makeHelix + makePipe 扫掠）",
+      "spur_gear 新增渐开线齿廓 realistic 脚本（数学公式 + 极坐标阵列）",
+      "新增 PartAnalyzePrintTool（3D 打印可行性分析）",
+      "Web API：GET/DELETE /api/parts/generated、POST /api/parts/analyze",
+      "Web UI：Print Analysis 区域 + quality levels 选择器",
+      "编写 ~56 个新测试覆盖全部功能"
+    ],
+    "priority": 22,
+    "passes": true
+  },
+  {
+    "id": 23,
+    "title": "短期补强 — 真实几何验证 + 零件装配 + 轴承真实建模",
+    "description": "B1 端到端验证：用 FreeCAD 实际生成 realistic 螺钉/齿轮/验证 STL 质量。B2 零件装配：part_assemble 工具按配合关系定位零件。B3 轴承真实建模：滚珠/滚道/保持架。",
+    "steps": [
+      "B1: 新建 tests/test_part_library_e2e.py（8 个 e2e 测试），验证 realistic 螺钉/齿轮/螺母 + 简化回归",
+      "B3: knowledge/parts_catalog.py 新增 _BEARING_REALISTIC_SCRIPT（外圈+滚道+内圈+滚珠+保持架）",
+      "B3: 3 个轴承模板新增 bearing_detail/ball_count 参数 + fc_script_alternatives + quality_levels",
+      "B3: format_fc_script 新增 bearing_detail 参数识别",
+      "B2: tools/part_library.py 新增 PartAssembleTool（支持 STL/FCStd/STEP 导入+定位+旋转）",
+      "B2: tools/base.py TOOL_CATEGORIES part_library 追加 part_assemble（7→8 个工具）",
+      "B2: web/app.py 新增 POST /api/parts/assemble 端点",
+      "B2: web/static/index.html 新增 Assemble 按钮 + 模态对话框",
+      "B2+B3: tests/test_part_library.py 新增 TestAssemblyTool（6 tests）+ TestBearingRealistic（12 tests）+ 工具总数更新",
+      "修复轴承脚本 format_map 占位符冲突（循环变量 i→idx、f-string 改为字符串拼接）"
+    ],
+    "priority": 23,
+    "passes": true
+  },
+  {
+    "id": 24,
+    "title": "3D 打印切片集成 — PrusaSlicer/OrcaSlicer CLI 切片流水线",
+    "description": "集成 PrusaSlicer CLI（首选）和 OrcaSlicer CLI（备选），为 Agent 提供 4 个切片工具（slice_model, slice_analyze, slice_preview_layers, slice_vlm_analyze），实现 STL → G-code 的完整自动化切片流水线。",
+    "steps": [
+      "新建 src/lang3d/knowledge/slicing.py：打印机/材料/质量预设 + G-code 解析 + 参数合并",
+      "新建 src/lang3d/tools/slicing.py：4 个切片工具 + 切片器发现 + CLI 命令构建",
+      "修改 src/lang3d/config.py：新增 SlicingSettings + 环境变量映射",
+      "修改 src/lang3d/tools/base.py：TOOL_CATEGORIES + STEP_TOOL_CATEGORIES 新增 slicing",
+      "修改 src/lang3d/agent/core.py：注册切片工具 + 更新系统提示词",
+      "修改 src/lang3d/agent/executor.py：_infer_step_type 检测 slice_* 工具",
+      "修改 src/lang3d/agent/planner.py：切片关键词检测 + few-shot 示例",
+      "修改 src/lang3d/web/app.py：新增 3 个切片 API 端点（/api/slice, /api/slice/analyze, /api/slice/layers）",
+      "修改 src/lang3d/web/static/index.html：新增 Slicing Tab + 完整 UI",
+      "新建 tests/test_slicing.py：57 个测试覆盖知识库、工具注册、G-code 解析、配置、执行器集成"
+    ],
+    "priority": 24,
+    "passes": true
+  },
+  {
+    "id": 25,
+    "title": "工程可靠性提升 — LLM 重试 + VLM 多角度验证 + 进程管理 + 异步转换",
+    "description": "解决 4 个关键工程可靠性问题：LLM 调用无重试机制（429 直接失败）、VLM 验证准确率极低（机械臂 0/8）、FreeCAD 进程管理粗暴（taskkill /F）、Web 文件转换阻塞（subprocess.run 同步）。",
+    "steps": [
+      "新建 src/lang3d/models/retry.py：RetryConfig dataclass + call_with_retry() 指数退避 + Retry-After 支持",
+      "修改 config.py 新增 RetrySettings + 环境变量映射",
+      "修改 base.py/glm.py/openai.py/ollama.py/router.py — 所有 API 调用通过 call_with_retry() 包裹",
+      "修改 vlm.py — CADVerifyTool 新增 angles 参数（多角度验证）+ 置信度加权投票 + 宽容 Prompt",
+      "新建 src/lang3d/tools/process_manager.py — FreeCADProcessManager 优雅关闭（WM_CLOSE + 超时强杀）",
+      "修改 freecad.py — FCOpenGUI/FCCloseGUI 使用进程管理器",
+      "修改 app.py — 新增 /api/convert-async + /api/convert-status 异步转换端点",
+      "修改 index.html — 大文件（>5MB）自动异步转换 + 进度轮询",
+      "新建 tests/test_retry.py（24 tests）、test_vlm_multi_angle.py（23 tests）、test_process_manager.py（12 tests）、test_async_convert.py（13 tests）",
+      "全量回归 622/622 tests 通过"
+    ],
+    "priority": 25,
+    "passes": true
+  },
+  {
+    "id": 26,
+    "title": "端到端可靠性验证 — 8 梯度案例 + VLM 准确率实测 + 结构化报告",
+    "description": "设计 8 个梯度案例（Level 1-4）批量跑主链路'自然语言→3D模型→VLM验证'，记录结构化指标（成功率、耗时、重试次数），实测 VLM 验证准确率（standard vs detailed vs multi_angle），暴露主链路真实瓶颈。",
+    "steps": [
+      "新建 tests/test_e2e_reliability.py — 8 梯度案例定义（正方体/圆柱体/带孔平板/L支架/悬臂支架/阶梯轴/法兰联轴器/轴承座）",
+      "实现 CaseResult dataclass + run_single_case() + run_all_cases() + print_report() + save_results_json()",
+      "实现 pytest 集成（TestE2EReliability 类，8 个测试方法）+ 独立脚本入口",
+      "新建 tests/test_vlm_accuracy.py — 3 模型 x 3 配置 VLM 准确率测试",
+      "执行 Level 1-4 全部测试：8/8 (100%) 文件创建成功，6/8 (75%) VLM 验证通过",
+      "VLM 准确率测试：detail=standard 无法检测工程特征，detail=detailed 推荐",
+      "结果保存 data/e2e_report.json + data/vlm_accuracy_report.json",
+      "全量回归 614/614 tests 通过"
+    ],
+    "priority": 26,
+    "passes": true
+  },
+  {
+    "id": 27,
+    "title": "装配约束求解器",
+    "description": "为 Joint 添加约束字段（parent_anchor, child_anchor, offset），实现基于约束的自动定位求解器，让 part_assemble 无需手写坐标即可自动组装",
+    "steps": [
+      "修改 knowledge/mechanics.py — Joint 新增 parent_anchor/child_anchor/offset 字段",
+      "新建 tools/assembly_solver.py — AssemblySolver 约束求解器（支持 revolute/fixed/prismatic）",
+      "修改 tools/part_library.py — part_assemble 调用求解器自动定位",
+      "新建 tests/test_assembly_solver.py — 求解器单元测试",
+      "修改 agent/core.py — 注册 assembly_solve 工具",
+      "修改 tools/base.py — TOOL_CATEGORIES 新增 assembly 类别"
+    ],
+    "priority": 27,
+    "passes": true
+  },
+  {
+    "id": 28,
+    "title": "逆向运动学求解器",
+    "description": "实现逆向运动学求解器，从目标位置反算关节角度，为控制代码生成提供基础",
+    "steps": [
+      "新建 tools/ik_solver.py — 解析解（3-DOF）+ 数值解（CCD/Jacobian）",
+      "修改 tools/motion.py — 集成 IK 求解",
+      "修改 agent/core.py — 注册 ik_solve 工具",
+      "新建 tests/test_ik_solver.py"
+    ],
+    "priority": 28,
+    "passes": true
+  },
+  {
+    "id": 29,
+    "title": "速度优化 — 快速验证模式",
+    "description": "优化 e2e 测试速度（当前 170s/案例），VLM 多角度验证占 60%+ 时间",
+    "steps": [
+      "修改 AGENT_SYSTEM_PROMPT — Level 1-2 零件用 fc_object_info 替代 cad_verify",
+      "修改 vlm.py — 强制 angles=isometric,front,top + 修复窗口匹配",
+      "修改 freecad.py — fc_batch 新增 volume_check 操作",
+      "修改 orchestrator.py — 利用 wave 并行建模"
+    ],
+    "priority": 29,
+    "passes": false
+  },
+  {
+    "id": 30,
+    "title": "端到端装配流程测试",
+    "description": "设计 3 个端到端装配测试案例（法兰连接/机械臂/移动底盘），验证从需求到完整装配的全流程",
+    "steps": [
+      "新建 tests/test_e2e_assembly.py — 3 个装配测试案例",
+      "测试 1: 两段管道法兰连接（2 零件 + 1 装配）",
+      "测试 2: 3-DOF 机械臂（8 零件 + 装配 + IK 验证）",
+      "测试 3: 4 轮差速底盘（10 零件）",
+      "记录结构化指标到 data/e2e_assembly_report.json"
+    ],
+    "priority": 30,
+    "passes": false
+  },
+  {
+    "id": 31,
+    "title": "舵机/电机选型工具",
+    "description": "建立执行器知识库（SG90/MG996R/DS3218 等），实现根据力矩/速度/价格约束自动选型",
+    "steps": [
+      "新建 knowledge/actuators.py — 执行器参数数据库",
+      "新建 tools/actuator_tools.py — actuator_select + actuator_analyze + actuator_power_budget",
+      "修改 agent/core.py — 注册执行器工具",
+      "新建 tests/test_actuator_tools.py"
+    ],
+    "priority": 31,
+    "passes": false
+  },
+  {
+    "id": 32,
+    "title": "Arduino/ESP32 控制代码生成",
+    "description": "生成嵌入式控制代码（IK 求解 + PWM 舵机控制 + 串口通信 + 平滑插值）",
+    "steps": [
+      "新建 tools/code_gen.py — gen_firmware + gen_wiring_diagram + gen_test_sequence",
+      "实现 IK 求解函数从 Python 翻译为 C 代码",
+      "实现 PWM 舵机控制 + 串口通信协议",
+      "实现梯形速度曲线插值",
+      "修改 agent/core.py — 注册代码生成工具",
+      "新建 tests/test_code_gen.py"
+    ],
+    "priority": 32,
+    "passes": false
+  },
+  {
+    "id": 33,
+    "title": "传感器集成规划",
+    "description": "集成限位开关、编码器（AS5600）、IMU（MPU6050）到控制方案中",
+    "steps": [
+      "新建 knowledge/sensors.py — 传感器知识库",
+      "修改 code_gen.py — 传感器反馈集成到 firmware",
+      "修改 actuator_tools.py — 传感器功耗计入总功耗",
+      "新建 tests/test_sensors.py"
+    ],
+    "priority": 33,
+    "passes": false
+  },
+  {
+    "id": 34,
+    "title": "控制系统测试",
+    "description": "用 LLM 生成完整控制代码并做代码审查验证（IK 正确性/力矩裕度/安全限制）",
+    "steps": [
+      "代码生成 + IK 对比验证（Python vs C）",
+      "力矩裕度检查",
+      "安全限制验证（关节限位保护）",
+      "通信协议一致性验证",
+      "生成完整 firmware/ 目录"
+    ],
+    "priority": 34,
+    "passes": false
+  },
+  {
+    "id": 35,
+    "title": "BOM 物料清单自动生成",
+    "description": "自动生成物料清单（零件+标准件+电子件+成本估算）",
+    "steps": [
+      "新建 tools/bom_gen.py — gen_bom() 工具",
+      "零件清单（名称、数量、材料、尺寸、3D打印参数）",
+      "标准件清单（螺丝、螺母、轴承型号和数量）",
+      "电子件清单（舵机型号、控制器、传感器）",
+      "成本估算",
+      "修改 agent/core.py — 注册 BOM 工具",
+      "新建 tests/test_bom_gen.py"
+    ],
+    "priority": 35,
+    "passes": false
+  },
+  {
+    "id": 36,
+    "title": "装配指导书生成",
+    "description": "生成完整的组装步骤文档（零件清单+分步组装+接线说明+校准步骤）",
+    "steps": [
+      "新建 tools/assembly_doc.py — gen_assembly_guide() 工具",
+      "零件清单 + 准备工具",
+      "分步组装（零件名称、安装方向、螺丝规格）",
+      "接线说明（引脚对应表）",
+      "校准步骤 + 常见问题排查",
+      "修改 agent/core.py — 注册文档工具",
+      "新建 tests/test_assembly_doc.py"
+    ],
+    "priority": 36,
+    "passes": false
+  },
+  {
+    "id": 37,
+    "title": "3D 打印优化",
+    "description": "打印方向优化、公差补偿、打印参数推荐、批量排版",
+    "steps": [
+      "打印方向优化（减少支撑、提高强度）",
+      "公差补偿（配合面自动加减 0.2-0.5mm）",
+      "打印参数推荐（层高、填充率、外壳厚度）",
+      "批量排版（多零件排列在打印平台上）",
+      "修改 slicing.py — 集成优化逻辑"
+    ],
+    "priority": 37,
+    "passes": false
+  },
+  {
+    "id": 38,
+    "title": "质量控制",
+    "description": "尺寸检查清单、装配后测试流程、长期维护指南",
+    "steps": [
+      "尺寸检查清单（关键配合尺寸 ±0.1mm）",
+      "装配后测试流程",
+      "长期维护指南（润滑、紧固、更换周期）",
+      "新建 tools/quality.py — 质量控制工具"
+    ],
+    "priority": 38,
+    "passes": false
+  },
+  {
+    "id": 39,
+    "title": "端到端设计测试",
+    "description": "输入“设计一个 3 自由度桌面机械臂”，输出完整工程包（零件+装配+固件+文档+G-code）",
+    "steps": [
+      "完整端到端测试：需求解析→零件建模→装配→IK→选型→固件→BOM→文档→切片",
+      "输出 data/projects/custom_robot/ 完整目录",
+      "验证所有文件完整性和正确性",
+      "记录端到端耗时和成功率"
+    ],
+    "priority": 39,
+    "passes": false
+  },
+  {
+    "id": 40,
+    "title": "迭代设计优化",
+    "description": "修改需求后自动重新设计，设计变更影响分析",
+    "steps": [
+      "需求变更触发重新设计（如提高负载→重新选型+重新建模）",
+      "设计变更影响分析（改一个零件影响哪些其他零件）",
+      "增量更新而非全量重建",
+      "新建 tools/iteration.py"
+    ],
+    "priority": 40,
+    "passes": false
+  },
+  {
+    "id": 41,
+    "title": "多机器人方案对比",
+    "description": "给定需求生成 2-3 种方案对比（串联臂 vs 并联臂 vs SCARA）",
+    "steps": [
+      "方案生成（2-3 种构型）",
+      "各方案对比（工作空间、精度、成本、复杂度）",
+      "推荐最优方案",
+      "新建 tools/scheme_compare.py"
+    ],
+    "priority": 41,
+    "passes": false
+  },
+  {
+    "id": 42,
+    "title": "生产准备就绪检查",
+    "description": "最终检查清单（文件完整/公差合理/BOM正确/代码可编译）+ 生产包归档",
+    "steps": [
+      "最终检查清单验证",
+      "所有文件完整性检查",
+      "公差合理性验证",
+      "BOM 正确性验证",
+      "代码可编译验证",
+      "生成生产包（zip 归档）",
+      "新建 tools/production_check.py"
+    ],
+    "priority": 42,
+    "passes": false
   }
 ]

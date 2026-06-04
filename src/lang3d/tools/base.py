@@ -37,6 +37,10 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
         "part_search", "part_get", "part_generate", "part_list",
         "part_import", "part_save", "part_analyze_print", "part_assemble",
     ],
+    "assembly": [
+        "assembly_solve",
+        "ik_solve",
+    ],
     "slicing": [
         "slice_model", "slice_analyze", "slice_preview_layers", "slice_vlm_analyze",
     ],
@@ -44,7 +48,7 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
 
 # Map step types to the tool categories they need
 STEP_TOOL_CATEGORIES: dict[str, list[str]] = {
-    "modeling": ["freecad", "vlm", "gui", "file_ops", "part_library"],
+    "modeling": ["freecad", "vlm", "gui", "file_ops", "part_library", "assembly"],
     "verification": ["vlm", "gui", "screen"],
     "simulation": ["simulation", "freecad", "vlm", "gui"],
     "cfd": ["cfd", "freecad", "vlm", "gui"],

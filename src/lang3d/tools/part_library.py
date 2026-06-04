@@ -859,6 +859,14 @@ class PartAssembleTool(Tool):
                         },
                         "description": "零件列表，每项包含 file, name, position, rotation",
                     },
+                    "assembly_definition": {
+                        "type": "string",
+                        "description": "装配体定义（内置名称如 'robotic_arm'，或 JSON 字符串）。提供时自动计算零件位置，忽略 parts 中的 position/rotation。",
+                    },
+                    "joint_angles": {
+                        "type": "object",
+                        "description": "关节角度映射 {零件名: 角度(度)}，仅在 assembly_definition 模式下使用",
+                    },
                     "output_format": {
                         "type": "string",
                         "description": "输出格式: fcstd 或 stl（默认 fcstd）",
@@ -873,11 +881,17 @@ class PartAssembleTool(Tool):
         *,
         assembly_name: str,
         parts: list[dict[str, Any]],
+        assembly_definition: str = "",
+        joint_angles: dict[str, float] | None = None,
         output_format: str = "fcstd",
         **kwargs: Any,
     ) -> str:
         if not parts:
             return "错误：零件列表为空"
+
+        # If assembly_definition provided, auto-compute positions via solver
+        if assembly_definition:
+            parts = self._apply_solver_positions(parts, assembly_definition, joint_angles)
 
         # Validate all part files exist
         missing = []
@@ -958,6 +972,34 @@ if _export_list:
                     result_lines.append(f"  {line}")
 
         return "\n".join(result_lines)
+
+    def _apply_solver_positions(
+        self,
+        parts: list[dict[str, Any]],
+        assembly_definition: str,
+        joint_angles: dict[str, float] | None,
+    ) -> list[dict[str, Any]]:
+        """Use assembly solver to compute positions for parts."""
+        try:
+            from .assembly_solver import _resolve_assembly
+            assembly = _resolve_assembly(assembly_definition, "")
+            if assembly is None:
+                return parts
+
+            from .assembly_solver import AssemblySolver
+            solver = AssemblySolver(assembly)
+            placements = solver.solve(joint_angles=joint_angles)
+
+            # Map part names to their solver-computed placements
+            for part in parts:
+                name = part.get("name", "")
+                if name in placements:
+                    p = placements[name]
+                    part["position"] = p["position"]
+                    part["rotation"] = p["rotation"]
+        except Exception:
+            pass  # Silently fall back to manual positions
+        return parts
 
 
 # ---------------------------------------------------------------------------
