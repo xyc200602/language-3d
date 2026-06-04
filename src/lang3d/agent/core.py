@@ -15,7 +15,7 @@ from .executor import Executor
 from .fix_strategy import classify_failure, check_convergence, generate_fix_hint
 from .planner import Planner
 from .reflector import Reflector
-from .state import AgentState, Plan, PlanStep, StepStatus
+from .state import AgentState, HierarchicalPlan, Plan, PlanStep, StepStatus
 from .verifier import Verifier
 
 
@@ -68,6 +68,22 @@ cad_verify 验证策略：
 工具优先级：fc_batch > fc_menu > gui_*。仿真用 fea_run/fea_vlm_analyze，CFD 用 cfd_run/cfd_vlm_analyze，运动用 motion_sim 等。
 detail 级别：fast, standard, detailed, maximum
 单位：mm（毫米）。
+
+质量属性工具：
+- compute_part_mass：根据尺寸和材料计算零件质量（kg）
+- compute_com：计算多零件质心（加权平均）
+- compute_inertia：计算简单形状惯性张量（box/cylinder/sphere）
+- compute_assembly_properties：计算装配体总质量、质心、惯性张量（平行轴定理）
+- fc_batch compute_mass 操作：调用 FreeCAD 获取精确体积→质量
+用途：稳定性分析、电机力矩计算、URDF 导出的基础数据
+
+复杂机器人设计工作流（子系统分解模式）：
+当任务包含多个子系统（底盘+臂+电子设备等）时，使用分层规划：
+1. 系统分解：将任务拆分为独立子系统（如 mobile_base / arm_left / arm_right / ipc_mount）
+2. 对称性复用：4 个轮子只建模 1 次（instance_count=4），双臂只建模一侧（mirror_of）
+3. 子系统并行设计：每个子系统独立建模、独立验证
+4. 接口约束传递：子系统间通过安装接口约束关联（如底盘顶面螺孔→工控机支架底面）
+5. 整机集成验证：装配→干涉检查→稳定性分析→运动学验证
 
 当前工作目录：{workspace}"""
 
@@ -262,6 +278,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register mass properties tools (part mass, COM, inertia, assembly)
+        try:
+            from ..tools.mass_properties import register_mass_properties_tools
+            register_mass_properties_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None
@@ -323,14 +346,38 @@ class Agent:
         self.state = AgentState(workspace=self.config.agent.workspace)
 
         if use_planning:
-            plan = self.planner.create_plan(task)
-            self.state.plan = plan
-            if use_orchestration and self._should_orchestrate(task, plan):
-                return self._run_with_orchestration(task, plan)
+            # Check if this is a complex robot task that needs hierarchical planning
+            if self._should_use_hierarchical(task):
+                plan = self.planner.create_hierarchical_plan(task)
+                self.state.plan = plan
+                # Flatten for backward-compatible execution
+                # (Phase 44 will add true phased execution via PhasedOrchestrator)
+                flat_plan = plan.to_flat_plan()
+                if use_orchestration and self._should_orchestrate(task, flat_plan):
+                    return self._run_with_orchestration(task, flat_plan)
+                else:
+                    self.state.plan = flat_plan
+                    return self._run_with_planning(task)
             else:
-                return self._run_with_planning(task)
+                plan = self.planner.create_plan(task)
+                self.state.plan = plan
+                if use_orchestration and self._should_orchestrate(task, plan):
+                    return self._run_with_orchestration(task, plan)
+                else:
+                    return self._run_with_planning(task)
         else:
             return self._run_direct(task)
+
+    @staticmethod
+    def _should_use_hierarchical(task: str) -> bool:
+        """Determine if a task needs hierarchical (subsystem-level) planning.
+
+        Triggers when the task description matches complex robot patterns
+        (multiple subsystems, wheels, dual arms, etc.).
+        """
+        from .planner import COMPLEX_ROBOT_KEYWORDS
+        task_lower = task.lower()
+        return any(kw in task_lower for kw in COMPLEX_ROBOT_KEYWORDS)
 
     def _should_orchestrate(self, task: str, plan: Plan) -> bool:
         """Heuristic: orchestrate when >= 4 steps with >= 3 modeling steps."""
@@ -402,6 +449,23 @@ class Agent:
                 for s in plan.steps
             ],
         }
+        # Add subsystem info if this is a hierarchical plan
+        if isinstance(plan, HierarchicalPlan):
+            payload["subsystems"] = [
+                {
+                    "name": ss.name,
+                    "description": ss.description,
+                    "parts": ss.parts,
+                    "mirror_of": ss.mirror_of,
+                    "instance_count": ss.instance_count,
+                    "status": ss.status.value if hasattr(ss.status, "value") else str(ss.status),
+                }
+                for ss in plan.subsystems
+            ]
+            payload["system_dependencies"] = [
+                {"source": d.source, "target": d.target, "reason": d.reason}
+                for d in plan.system_dependencies
+            ]
         try:
             completed, total = plan.progress()
             update_agent_state(plan=payload, progress={"completed": completed, "total": total})

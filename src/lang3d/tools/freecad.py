@@ -387,6 +387,50 @@ def _build_script(operations: list[dict]) -> str:
         elif op_type == "raw_script":
             lines.append(op["script"])
 
+        elif op_type == "compute_mass":
+            # Compute mass properties for all solid objects in the document
+            obj_name = op.get("object", "")
+            density = op.get("density", 1240)  # kg/m³, default PLA
+            path = op.get("path", "").replace("\\", "\\\\")
+            if path:
+                lines.append(f'_cm_doc = FreeCAD.openDocument(r"{path}")')
+            else:
+                lines.append("_cm_doc = doc")
+            lines.append("_cm_results = []")
+            if obj_name:
+                lines.append(f'_cm_objs = [doc.getObject("{obj_name}")]')
+            else:
+                lines.append("_cm_objs = [o for o in _cm_doc.Objects if hasattr(o, 'Shape') and o.Shape is not None and o.Shape.Solids]")
+            lines.append("for _cm_o in _cm_objs:")
+            lines.append("    try:")
+            lines.append("        _cm_s = _cm_o.Shape")
+            lines.append("        _cm_vol_mm3 = _cm_s.Volume  # mm³")
+            lines.append("        _cm_vol_m3 = _cm_vol_mm3 * 1e-9")
+            lines.append(f"        _cm_mass = _cm_vol_m3 * {density}  # kg")
+            lines.append("        _cm_bb = _cm_s.BoundBox")
+            lines.append("        _cm_cx = round(_cm_bb.Center.x, 2)")
+            lines.append("        _cm_cy = round(_cm_bb.Center.y, 2)")
+            lines.append("        _cm_cz = round(_cm_bb.Center.z, 2)")
+            lines.append("        _cm_info = {")
+            lines.append('            "name": _cm_o.Name,')
+            lines.append('            "label": _cm_o.Label,')
+            lines.append('            "volume_mm3": round(_cm_vol_mm3, 2),')
+            lines.append('            "mass_kg": round(_cm_mass, 6),')
+            lines.append(f'            "density_kg_m3": {density},')
+            lines.append('            "center_mm": [_cm_cx, _cm_cy, _cm_cz],')
+            lines.append('            "dims_mm": [round(_cm_bb.XLength, 2), round(_cm_bb.YLength, 2), round(_cm_bb.ZLength, 2)],')
+            lines.append("        }")
+            lines.append("        _cm_results.append(_cm_info)")
+            lines.append("    except Exception:")
+            lines.append("        pass")
+            lines.append("import json as _cm_json")
+            lines.append("_cm_output = {'objects': _cm_results, 'total_objects': len(_cm_results)}")
+            lines.append("_cm_total_mass = sum(r['mass_kg'] for r in _cm_results)")
+            lines.append("_cm_output['total_mass_kg'] = round(_cm_total_mass, 6)")
+            lines.append('print("MASS_CHECK_JSON:" + _cm_json.dumps(_cm_output))')
+            if path:
+                lines.append("FreeCAD.closeDocument(_cm_doc.Name)")
+
         lines.append("")
 
     return "\n".join(lines)
@@ -422,6 +466,31 @@ def _execute_operations(operations: list[dict]) -> str:
                                 result_lines.append(f"    ⚠ {obj['volume_warning']}")
                             if "dim_warning" in obj:
                                 result_lines.append(f"    ⚠ {obj['dim_warning']}")
+                        result_lines.append(f"\n--- JSON ---\n{json_str}")
+                        return "\n".join(result_lines)
+                    except json.JSONDecodeError:
+                        pass
+        # Format compute_mass results
+        has_cm = any(op.get("type") == "compute_mass" for op in operations)
+        if has_cm and output:
+            for line in output.splitlines():
+                if line.strip().startswith("MASS_CHECK_JSON:"):
+                    json_str = line.strip()[len("MASS_CHECK_JSON:"):]
+                    try:
+                        data = json.loads(json_str)
+                        objects = data.get("objects", [])
+                        total_mass = data.get("total_mass_kg", 0)
+                        result_lines = [
+                            "[Mass Check]",
+                            f"Objects: {len(objects)}, Total mass: {total_mass:.6f} kg",
+                        ]
+                        for obj in objects:
+                            result_lines.append(
+                                f"  {obj.get('label', obj.get('name', '?'))}: "
+                                f"volume={obj['volume_mm3']:.2f}mm³ "
+                                f"mass={obj['mass_kg']:.6f}kg "
+                                f"com={obj['center_mm']}"
+                            )
                         result_lines.append(f"\n--- JSON ---\n{json_str}")
                         return "\n".join(result_lines)
                     except json.JSONDecodeError:

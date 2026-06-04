@@ -4,6 +4,28 @@
 
 ---
 
+## 2026-06-05 - Task 45: 零件质量属性系统 — 密度/质心/惯性张量
+
+### What was done:
+- **修改 knowledge/mechanics.py** — `Part` 新增 mass, density, center_of_mass (x,y,z), inertia_tensor (3x3) 字段；新增 `MaterialDensity` 类（PLA:1240, ABS:1040, PETG:1270, Nylon:1140, TPU:1200, Aluminum:2700, Steel:7850, StainlessSteel:8000, Copper:8960, Brass:8500, Titanium:4500, CarbonFiber:1600 kg/m³）；新增 `Part.effective_density()`、`Part.compute_volume_mm3()`、`Part.compute_estimated_mass()` 方法
+- **修改 knowledge/mechanics.py** — `Assembly` 新增 total_mass, center_of_mass, inertia_tensor 字段；新增 `compute_assembly_mass()` 函数：递归计算整机质量、质心（加权平均）、惯性张量（平行轴定理 + 局部惯性叠加）
+- **修改 tools/freecad.py** — `fc_batch` 新增 `compute_mass` 操作：通过 FreeCAD 获取精确体积 → 质量计算；`_execute_operations()` 新增 MASS_CHECK_JSON 输出格式化
+- **新建 tools/mass_properties.py** — 4 个工具：`compute_part_mass`(尺寸+材料→质量)、`compute_com`(多零件质心)、`compute_inertia`(box/cylinder/sphere 惯性张量)、`compute_assembly_properties`(装配体总质量+质心+惯性)
+- **修改 agent/core.py** — 注册 mass_properties 工具；系统提示词增加质量属性工具使用说明
+- **编写 tests/test_mass_properties.py** — 41 个测试覆盖：MaterialDensity (12)、Part mass fields (8)、compute_assembly_mass (6)、ComputePartMassTool (3)、ComputeCOMTool (3)、ComputeInertiaTool (4)、ComputeAssemblyPropertiesTool (2)、Registration (2)
+
+### Testing:
+- `tests/test_mass_properties.py`: 41/41 passed
+- 核心回归测试：114/114 passed
+
+### Notes:
+- MaterialDensity.get() 支持模糊匹配（大小写无关、缩写、中划线/下划线）
+- 惯性张量单位为 kg·mm²，质心单位为 mm
+- compute_assembly_mass() 使用平行轴定理并叠加每个零件的局部惯性张量
+- 后续 Task 46 (移动底盘知识库) 需要本任务的质量计算来支撑力矩/稳定性分析
+
+---
+
 ## 2026-06-05 - Task 44: 分阶段编排器 — PhasedOrchestrator 4阶段执行
 
 ### What was done:
