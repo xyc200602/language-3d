@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-06-04 - Task 34: 控制系统测试
+
+### What was done:
+- **新建 `tests/test_control_system.py` — 控制系统全面验证**
+  - TestIKCorrectness（8 tests）：
+    - Python IK 可达目标验证、不可达目标检测
+    - IK 往返精度（FK(IK(target)) ≈ target，误差 < 2mm）
+    - 关节角度限位验证（所有 IK 解在 range_deg 内）
+    - C 代码一致性验证（固件包含正确的余弦定律、acos/atan2、FK 验证）
+    - 固件 link lengths 与 Python 一致性
+    - 固件 joint limits 与 assembly 定义一致
+  - TestTorqueMargin（6 tests）：
+    - 力矩分析覆盖所有旋转关节
+    - 安全系数影响验证（1.5x vs 3.0x）
+    - 负载影响力矩（0g vs 200g）
+    - 远端关节执行器力矩充足
+    - 高力矩执行器可选（>= 14 kg·cm）
+  - TestSafetyLimits（5 tests）：
+    - IK 尊重关节限位
+    - 固件 clamp_angle 函数
+    - 限位开关保护（is_moving = false）
+    - 测试序列角度在限位范围内
+    - 舵机驱动器角度箝位
+  - TestCommunicationProtocol（6 tests）：
+    - 串口命令（G/H/T/P/S）定义完整
+    - 波特率配置
+    - OK 响应
+    - parse_angles 函数
+    - 测试序列使用 G 命令格式
+  - TestFullFirmwareIntegration（7 tests）：
+    - 完整固件包（7 个文件）生成
+    - NUM_JOINTS 跨文件一致性
+    - 功耗预算覆盖执行器+传感器
+    - 接线图匹配执行器
+    - 测试序列覆盖所有关节
+    - C 代码语法合法性
+    - 传感器驱动与 .ino 一致性
+
+### Testing:
+- **32/32 通过**，耗时 0.74s
+- 验证了机械臂完整控制链：IK → 固件代码 → 传感器 → 安全保护 → 通信协议
+
+### Notes:
+- 机械臂 link 参数：L1=35mm (shoulder), L2=32.5mm (elbow), base_height=24mm, max_reach=67.5mm
+- 关节限位：shoulder [-90,90], elbow [-135,135], base/wrist [-180,180]
+- MG996R (11 kg·cm) 对 base 关节力矩不足（需 13.93 kg·cm），应使用 DS3218 (20 kg·cm)
+
+---
+
 ## 2026-06-04 - Task 33: 传感器集成规划
 
 ### What was done:

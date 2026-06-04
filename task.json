@@ -421,7 +421,7 @@
       "生成完整 firmware/ 目录"
     ],
     "priority": 34,
-    "passes": false
+    "passes": true
   },
   {
     "id": 35,
