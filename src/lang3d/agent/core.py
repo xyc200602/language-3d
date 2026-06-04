@@ -213,6 +213,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register BOM generation tools (bill of materials)
+        try:
+            from ..tools.bom_gen import register_bom_tools
+            register_bom_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None

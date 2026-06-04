@@ -437,7 +437,7 @@
       "新建 tests/test_bom_gen.py"
     ],
     "priority": 35,
-    "passes": false
+    "passes": true
   },
   {
     "id": 36,

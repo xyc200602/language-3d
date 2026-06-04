@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-06-04 - Task 35: BOM 物料清单自动生成
+
+### What was done:
+- **新建 `tools/bom_gen.py` — 物料清单生成工具**
+  - `generate_bom(assembly, actuator_ids, sensor_ids, controller)` → 结构化 BOM
+    - 自定义零件：名称、材料、尺寸、估算重量(g)、估算成本(元)、3D 打印参数
+    - 标准件：自动推断螺丝(M3×10)、螺母、轴承(MR105ZZ)数量
+    - 电子件：执行器 + 传感器 + 控制器(ESP32/Arduino) + 面包板+杜邦线
+    - 成本汇总：自定义零件 + 标准件 + 电子件 = 总成本
+  - `format_bom_markdown(bom)` → Markdown 表格文档
+  - `GenBOMTool` — Agent 工具
+  - 体积估算：圆柱体/空心圆柱体/长方体/板件自动识别
+  - PLA 密度 1.25 g/cm³，成本 0.15 元/g
+
+- **修改 `agent/core.py`** — 注册 bom_tools
+- **修改 `tools/base.py`** — TOOL_CATEGORIES 新增 "bom" 类别
+
+### Testing:
+- 新建 `tests/test_bom_gen.py` — 36 个测试
+  - TestBOMStructure（11 tests）：四段式结构、字段完整性、执行器/传感器/控制器/配件
+  - TestCostEstimation（7 tests）：正成本、总成本=各段之和、计数匹配
+  - TestStandardPartsInference（5 tests）：螺丝/螺母/轴承推断、数量与关节数比例
+  - TestBOMMarkdown（5 tests）：标题、段落、表格头、总成本、零件名称
+  - TestBOMControllerVariants（2 tests）：ESP32/Arduino 控制器
+  - TestBOMTool（6 tests）：注册、执行、错误处理、JSON/Markdown 输出
+- **36/36 通过**
+
+### Notes:
+- base_plate dimensions 用 "thickness" 而非 "height"，体积估算已兼容
+- 机械臂 BOM：8 自定义零件 + 4 执行器 + 4 传感器 + 控制器 + 面包板
+- 标准件自动推断：6 个关节 → 24 个 M3×10 螺丝 + 24 个 M3 螺母 + 8 个轴承
+
+---
+
 ## 2026-06-04 - Task 34: 控制系统测试
 
 ### What was done:

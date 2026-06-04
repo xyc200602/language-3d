@@ -50,6 +50,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "code_gen": [
         "gen_firmware", "gen_wiring_diagram", "gen_test_sequence",
     ],
+    "bom": [
+        "gen_bom",
+    ],
 }
 
 # Map step types to the tool categories they need
