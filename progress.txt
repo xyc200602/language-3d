@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-04 - Task 39: 端到端设计测试
+
+### What was done:
+- 创建 `tests/test_e2e_design.py` — 11 阶段完整设计流水线测试
+- 11 个阶段：装配定义 → 装配求解 → 逆向运动学 → 执行器选型 → 固件生成 → 接线图 → 测试序列 → BOM → 装配指导 → 打印优化 → 质量控制
+- `run_full_pipeline()` 函数执行完整流水线，记录每个阶段的耗时、成功/失败、详细信息
+- `save_report()` 保存 JSON 报告到 `data/e2e_design_report.json`
+- `print_report()` 输出人类可读报告
+- 16 个 pytest 测试用例，覆盖全部 11 个阶段
+
+### 修复的问题:
+- **IK 目标距离过远**：最初使用 (50,0,80) 等目标，但机械臂完整链（shoulder=35 + elbow=32.5 + wrist=55 + ee=20 = 142.5mm pitch reach）使得这些目标不在工作空间内
+- 修复方案：使用 (80,0,80), (80,30,80), (90,20,90), (90,0,90) 等目标，配合 tolerance_mm=2.0, max_iterations=500
+
+### Testing:
+- 16/16 测试通过
+- 总流水线耗时 ~154ms（不含 FreeCAD 建模）
+- 所有 11 个阶段全部 PASS
+
+### Notes:
+- 报告保存到 `data/e2e_design_report.json`
+- IK 阶段使用 CCD 求解器，2mm 容差，500 次迭代
+- 后续 Task 40-42 为迭代优化、方案对比、生产检查
+
+---
+
 ## 2026-06-04 - Task 38: 质量控制
 
 ### What was done:
