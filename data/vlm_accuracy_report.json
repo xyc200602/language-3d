@@ -1,0 +1,26 @@
+[
+  {
+    "case_id": "cantilever_bracket",
+    "config": "standard",
+    "match": false,
+    "elapsed_seconds": 5.6594321727752686,
+    "error": null,
+    "raw_output": "[CAD Verification - Window: 'FreeCAD']\nMATCH: False\nOBSERVED: A solid rectangular block with no visible features or holes\nDIFFERENCES: The expected model has specific dimensions and features (holes) which are not present in the observed model\nSUGGESTION: Add the required features such as mounting holes and the bearing hole to match the expected model\nFIX_COMMANDS: Add a 120x80x10mm base plate, a 10x80x60mm vertical plate, and the specified holes\n\n--- Raw VLM output ---\n```json\n{\n  \"match\": false,\n  \"observed\": \"A solid rectangular block with no visible features or holes\",\n  \"differences\": \"The expected model has specific dimensions and features (holes) which are not present in the observed model\",\n  \"suggestion\": \"Add the required features such as mounting holes and the bearing hole to match the expected model\",\n  \"fix_commands\": \"Add a 120x80x10mm base plate, a 10x80x60mm vertical plate, and the specified holes\",\n  \"confidence\": \"high\"\n}\n```"
+  },
+  {
+    "case_id": "stepped_shaft",
+    "config": "standard",
+    "match": false,
+    "elapsed_seconds": 4.610217332839966,
+    "error": null,
+    "raw_output": "[CAD Verification - Window: 'FreeCAD']\nMATCH: False\nOBSERVED: A solid cylindrical shape with no visible features such as holes or slots\nDIFFERENCES: The expected model includes a keyway on the second section, which is not present in the observed model\nSUGGESTION: Add a keyway to the second section of the cylinder\nFIX_COMMANDS: Create a keyway with dimensions 4x2x12mm on the second section of the cylinder\n\n--- Raw VLM output ---\n```json\n{\n  \"match\": false,\n  \"observed\": \"A solid cylindrical shape with no visible features such as holes or slots\",\n  \"differences\": \"The expected model includes a keyway on the second section, which is not present in the observed model\",\n  \"suggestion\": \"Add a keyway to the second section of the cylinder\",\n  \"fix_commands\": \"Create a keyway with dimensions 4x2x12mm on the second section of the cylinder\",\n  \"confidence\": \"high\"\n}\n```"
+  },
+  {
+    "case_id": "l_bracket",
+    "config": "standard",
+    "match": false,
+    "elapsed_seconds": 3.756995677947998,
+    "error": null,
+    "raw_output": "[CAD Verification - Window: 'FreeCAD']\nMATCH: False\nOBSERVED: A rectangular shape with a vertical protrusion, but no visible mounting holes\nDIFFERENCES: The model lacks the specified mounting holes\nSUGGESTION: Add two 6mm diameter mounting holes 15mm from each end of the base plate\nFIX_COMMANDS: fc_batch operations or null\n\n--- Raw VLM output ---\n```json\n{\n  \"match\": false,\n  \"observed\": \"A rectangular shape with a vertical protrusion, but no visible mounting holes\",\n  \"differences\": \"The model lacks the specified mounting holes\",\n  \"suggestion\": \"Add two 6mm diameter mounting holes 15mm from each end of the base plate\",\n  \"fix_commands\": \"fc_batch operations or null\",\n  \"confidence\": \"medium\"\n}\n```"
+  }
+]

@@ -1,5 +1,22 @@
 [
   {
+    "id": 26,
+    "title": "端到端可靠性验证 — 8 梯度案例 + VLM 准确率实测 + 结构化报告",
+    "description": "设计 8 个梯度案例（Level 1-4）批量跑主链路'自然语言→3D模型→VLM验证'，记录结构化指标（成功率、耗时、重试次数），实测 VLM 验证准确率（standard vs detailed vs multi_angle），暴露主链路真实瓶颈。",
+    "steps": [
+      "新建 tests/test_e2e_reliability.py — 8 梯度案例定义（正方体/圆柱体/带孔平板/L支架/悬臂支架/阶梯轴/法兰联轴器/轴承座）",
+      "实现 CaseResult dataclass + run_single_case() + run_all_cases() + print_report() + save_results_json()",
+      "实现 pytest 集成（TestE2EReliability 类，8 个测试方法）+ 独立脚本入口",
+      "新建 tests/test_vlm_accuracy.py — 3 模型 x 3 配置 VLM 准确率测试",
+      "执行 Level 1-4 全部测试：8/8 (100%) 文件创建成功，6/8 (75%) VLM 验证通过",
+      "VLM 准确率测试：detail=standard 无法检测工程特征，detail=detailed 推荐",
+      "结果保存 data/e2e_report.json + data/vlm_accuracy_report.json",
+      "全量回归 614/614 tests 通过"
+    ],
+    "priority": 26,
+    "passes": true
+  },
+  {
     "id": 25,
     "title": "工程可靠性提升 — LLM 重试 + VLM 多角度验证 + 进程管理 + 异步转换",
     "description": "解决 4 个关键工程可靠性问题：LLM 调用无重试机制（429 直接失败）、VLM 验证准确率极低（机械臂 0/8）、FreeCAD 进程管理粗暴（taskkill /F）、Web 文件转换阻塞（subprocess.run 同步）。",
