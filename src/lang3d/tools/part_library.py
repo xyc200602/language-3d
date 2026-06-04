@@ -25,10 +25,84 @@ from .base import Tool
 
 
 # ---------------------------------------------------------------------------
-# In-memory store for generated / imported parts
+# JSON-persisted store for generated / imported parts
 # ---------------------------------------------------------------------------
 
-_generated_parts: list[GeneratedPart] = []
+class PartsStore:
+    """Persistent store for generated parts, backed by a JSON file."""
+
+    def __init__(self, json_path: str | Path) -> None:
+        self._path = Path(json_path)
+        self._parts: list[GeneratedPart] = []
+        self._load()
+
+    def _load(self) -> None:
+        """Load from JSON file. Tolerates missing or corrupted files."""
+        if not self._path.exists():
+            self._parts = []
+            return
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                self._parts = [GeneratedPart.from_dict(item) for item in data]
+            else:
+                self._parts = []
+        except (json.JSONDecodeError, TypeError, KeyError):
+            self._parts = []
+
+    def _save(self) -> None:
+        """Persist current state to JSON file."""
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            data = [p.to_dict() for p in self._parts]
+            self._path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except OSError:
+            pass  # Non-critical: silently ignore write failures
+
+    def add(self, part: GeneratedPart) -> None:
+        """Add a generated part and persist."""
+        self._parts.append(part)
+        self._save()
+
+    def remove(self, name: str) -> bool:
+        """Remove a part by name. Returns True if found and removed."""
+        before = len(self._parts)
+        self._parts = [p for p in self._parts if p.name != name]
+        if len(self._parts) < before:
+            self._save()
+            return True
+        return False
+
+    def get(self, name: str) -> GeneratedPart | None:
+        """Get a part by name."""
+        for p in self._parts:
+            if p.name == name:
+                return p
+        return None
+
+    def list_all(self) -> list[GeneratedPart]:
+        """Return all stored parts."""
+        return list(self._parts)
+
+    def count(self) -> int:
+        """Return number of stored parts."""
+        return len(self._parts)
+
+
+# Module-level store instance (lazy-initialized)
+_parts_store: PartsStore | None = None
+
+
+def _get_parts_store() -> PartsStore:
+    """Get or create the singleton PartsStore."""
+    global _parts_store
+    if _parts_store is None:
+        ws = _workspace_dir()
+        json_path = Path(ws) / "generated_parts.json"
+        _parts_store = PartsStore(json_path)
+    return _parts_store
 
 
 def _workspace_dir() -> str:
@@ -273,7 +347,7 @@ if _export_list:
             stl_path=stl_path,
             created_at=datetime.now().isoformat(),
         )
-        _generated_parts.append(gen)
+        _get_parts_store().add(gen)
 
         result_lines = [
             f"零件生成成功：{template.name_cn} ({template.name_en})",
@@ -422,7 +496,7 @@ class PartImportTool(Tool):
             stl_path=str(dest) if dest.suffix.lower() == ".stl" else "",
             created_at=datetime.now().isoformat(),
         )
-        _generated_parts.append(gen)
+        _get_parts_store().add(gen)
 
         tag_str = f"，标签：{', '.join(tags)}" if tags else ""
         return f"已导入：{name} ({dest.name})，类别：{category}{tag_str}"
@@ -492,10 +566,398 @@ class PartSaveTool(Tool):
             stl_path="",
             created_at=datetime.now().isoformat(),
         )
-        _generated_parts.append(gen)
+        _get_parts_store().add(gen)
 
         tag_str = f"，标签：{', '.join(tags)}" if tags else ""
         return f"已保存到零件库：{name} → {dest}{tag_str}"
+
+
+# ---------------------------------------------------------------------------
+# Tool: part_analyze_print
+# ---------------------------------------------------------------------------
+
+class PartAnalyzePrintTool(Tool):
+    name = "part_analyze_print"
+    description = "分析STL/FCStd文件的3D打印可行性（悬垂、壁厚、打印方向）"
+
+    def get_definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "stl_path": {
+                        "type": "string",
+                        "description": "STL或FCStd文件路径",
+                    },
+                    "orientation": {
+                        "type": "string",
+                        "description": "打印方向: auto, xy, xz, yz",
+                    },
+                },
+                "required": ["stl_path"],
+            },
+        )
+
+    def execute(
+        self,
+        *,
+        stl_path: str,
+        orientation: str = "auto",
+        **kwargs: Any,
+    ) -> str:
+        src = Path(stl_path)
+        if not src.exists():
+            return f"错误：文件不存在 '{stl_path}'"
+
+        ext = src.suffix.lower()
+        if ext not in (".stl", ".fcstd"):
+            return f"错误：不支持的文件格式 '{ext}'，仅支持 STL 和 FCStd"
+
+        analysis = _run_print_analysis(str(src), orientation)
+        return analysis
+
+
+def _run_print_analysis(file_path: str, orientation: str = "auto") -> str:
+    """Run 3D print analysis via FreeCAD subprocess."""
+    script = f'''
+import FreeCAD, Part, Mesh, math, json
+
+path = r"{file_path}"
+ext = path.lower().split(".")[-1]
+
+if ext == "stl":
+    mesh = Mesh.read(path)
+elif ext == "fcstd":
+    doc = FreeCAD.openDocument(path)
+    shapes = []
+    for obj in doc.Objects:
+        if hasattr(obj, "Shape") and obj.Shape is not None:
+            try:
+                shapes.append(obj.Shape)
+            except Exception:
+                pass
+    if shapes:
+        import MeshPart
+        compound = Part.makeCompound(shapes) if len(shapes) > 1 else shapes[0]
+        mesh = MeshPart.meshFromShape(compound, LinearDeflection=0.5, AngularDeflection=0.523599)
+    else:
+        mesh = Mesh.Mesh()
+else:
+    print("PRINT_ANALYSIS_JSON:error: unsupported format")
+    import sys
+    sys.exit(1)
+
+# Bounding box
+bb = mesh.BoundBox
+bbox = {{"x": bb.XLength, "y": bb.YLength, "z": bb.ZLength}}
+
+# Volume and area via Part.Shape
+try:
+    shape = Part.Shape(mesh.topology)
+    volume = shape.Volume
+    area = shape.Area
+except Exception:
+    volume = 0
+    area = 0
+
+# Overhang analysis: check facet normals vs Z-axis
+overhang_count = 0
+total_facets = mesh.CountFacets
+bottom_area = 0.0
+z_min = bb.ZMin
+
+for i in range(total_facets):
+    facet = mesh.getFacet(i)
+    normal = facet.Normal
+    # Angle with Z-axis (0,0,1)
+    cos_angle = normal.z / max(normal.Length, 1e-10)
+    angle_deg = math.degrees(math.acos(max(-1, min(1, cos_angle))))
+    # Overhang: normal pointing more than 45 degrees from vertical
+    if angle_deg > 135:  # more than 45deg from vertical downward
+        overhang_count += 1
+    # Bottom face: Z near ZMin and normal pointing down
+    avg_z = (facet.p1.z + facet.p2.z + facet.p3.z) / 3
+    if avg_z <= z_min + 0.5 and normal.z < -0.5:
+        tri_area = facet.Area
+        bottom_area += tri_area
+
+overhang_ratio = overhang_count / max(total_facets, 1)
+
+# Minimum wall thickness (approximate as min bbox dimension)
+min_wall = min(bb.XLength, bb.YLength, bb.ZLength)
+
+# Recommended orientation: check XY, XZ, YZ bottom areas
+orientations = {{
+    "xy": bottom_area,
+    "xz": 0,
+    "yz": 0,
+}}
+# For XZ orientation, X-length is height, so bottom is YZ plane
+for i in range(total_facets):
+    facet = mesh.getFacet(i)
+    normal = facet.Normal
+    avg_y = (facet.p1.y + facet.p2.y + facet.p3.y) / 3
+    if avg_y <= bb.YMin + 0.5 and normal.y < -0.5:
+        orientations["xz"] += facet.Area
+    avg_x = (facet.p1.x + facet.p2.x + facet.p3.x) / 3
+    if avg_x <= bb.XMin + 0.5 and normal.x < -0.5:
+        orientations["yz"] += facet.Area
+
+if orientation == "auto":
+    best_orient = max(orientations, key=orientations.get)
+else:
+    best_orient = orientation
+
+# Material estimate (PLA, 20% infill, density 1.24 g/cm3)
+material_grams = volume * 0.2 * 0.00124 if volume > 0 else 0
+
+# Issues list
+issues = []
+if overhang_ratio > 0.3:
+    issues.append("高悬垂比例 (>30%)，需要支撑结构")
+if min_wall < 0.8:
+    issues.append("最小壁厚过薄 (<0.8mm)，可能无法打印")
+if bottom_area < 10:
+    issues.append("底面接触面积过小，可能需要支撑或调整方向")
+
+result = {{
+    "bounding_box": bbox,
+    "volume_mm3": round(volume, 2),
+    "surface_area_mm2": round(area, 2),
+    "overhang_ratio": round(overhang_ratio, 3),
+    "overhang_facets": overhang_count,
+    "total_facets": total_facets,
+    "bottom_area_mm2": round(bottom_area, 2),
+    "min_wall_thickness_mm": round(min_wall, 2),
+    "recommended_orientation": best_orient,
+    "orientation_areas": {{k: round(v, 2) for k, v in orientations.items()}},
+    "material_estimate_grams": round(material_grams, 2),
+    "issues": issues,
+    "printable": len(issues) == 0,
+}}
+print("PRINT_ANALYSIS_JSON:" + json.dumps(result, ensure_ascii=False))
+'''
+
+    try:
+        output = _run_freecad_script_local(script, timeout=120)
+    except RuntimeError as e:
+        return f"FreeCAD 执行错误：{e}"
+    except Exception as e:
+        return f"执行错误：{e}"
+
+    # Parse output for JSON
+    for line in output.splitlines():
+        if line.strip().startswith("PRINT_ANALYSIS_JSON:"):
+            json_str = line.strip()[len("PRINT_ANALYSIS_JSON:"):]
+            return f"3D打印可行性分析：\n{json_str}"
+
+    return f"分析完成（无法解析JSON结果）\n{output}"
+
+
+# ---------------------------------------------------------------------------
+# Tool: part_assemble
+# ---------------------------------------------------------------------------
+
+_ASSEMBLY_SCRIPT_TEMPLATE = """\
+import FreeCAD, Part, Mesh, os, math
+
+doc = FreeCAD.newDocument("{assembly_name}")
+
+{part_operations}
+
+doc.recompute()
+
+# Save document
+os.makedirs(r"{output_dir}", exist_ok=True)
+doc.saveAs(r"{fcstd_path}")
+print(f"Assembly saved: {fcstd_path}")
+
+{stl_export}
+"""
+
+_PART_IMPORT_TEMPLATES = {
+    ".stl": """\
+# Import STL: {name}
+mesh_{idx} = Mesh.read(r"{file}")
+shape_{idx} = Part.Shape(mesh_{idx}.topology)
+shape_{idx}.translate(FreeCAD.Vector({tx}, {ty}, {tz}))
+# Apply rotation
+rot_{idx} = FreeCAD.Rotation(FreeCAD.Vector({rax}, {ray}, {raz}), {rangle})
+placement_{idx} = FreeCAD.Placement(FreeCAD.Vector({tx}, {ty}, {tz}), rot_{idx})
+obj_{idx} = doc.addObject("Part::Feature", "{name}")
+shape_{idx}.Placement = placement_{idx}
+obj_{idx}.Shape = shape_{idx}
+""",
+    ".fcstd": """\
+# Import FCStd: {name}
+_import_doc_{idx} = FreeCAD.openDocument(r"{file}")
+_shapes_{idx} = []
+for _o in _import_doc_{idx}.Objects:
+    if hasattr(_o, 'Shape') and _o.Shape is not None:
+        try:
+            _shapes_{idx}.append(_o.Shape)
+        except Exception:
+            pass
+if _shapes_{idx}:
+    _compound_{idx} = Part.makeCompound(_shapes_{idx}) if len(_shapes_{idx}) > 1 else _shapes_{idx}[0]
+    rot_{idx} = FreeCAD.Rotation(FreeCAD.Vector({rax}, {ray}, {raz}), {rangle})
+    placement_{idx} = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), rot_{idx}, FreeCAD.Vector({tx}, {ty}, {tz}))
+    obj_{idx} = doc.addObject("Part::Feature", "{name}")
+    _compound_{idx}.Placement = placement_{idx}
+    obj_{idx}.Shape = _compound_{idx}
+FreeCAD.closeDocument(_import_doc_{idx}.Name)
+""",
+    ".step": """\
+# Import STEP: {name}
+_import_shape_{idx} = Part.Shape()
+_import_shape_{idx}.read(r"{file}")
+rot_{idx} = FreeCAD.Rotation(FreeCAD.Vector({rax}, {ray}, {raz}), {rangle})
+placement_{idx} = FreeCAD.Placement(FreeCAD.Vector({tx}, {ty}, {tz}), rot_{idx})
+obj_{idx} = doc.addObject("Part::Feature", "{name}")
+_import_shape_{idx}.Placement = placement_{idx}
+obj_{idx}.Shape = _import_shape_{idx}
+""",
+}
+
+
+class PartAssembleTool(Tool):
+    name = "part_assemble"
+    description = "将多个已生成零件组装到一个 FreeCAD 文档中，按配合关系自动定位"
+
+    def get_definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "assembly_name": {
+                        "type": "string",
+                        "description": "装配体名称（用于文档和文件命名）",
+                    },
+                    "parts": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "file": {"type": "string", "description": "零件文件路径 (.stl/.fcstd/.step)"},
+                                "name": {"type": "string", "description": "零件名称"},
+                                "position": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "description": "位置 [x, y, z]，默认 [0,0,0]",
+                                },
+                                "rotation": {
+                                    "type": "array",
+                                    "items": {"type": "number"},
+                                    "description": "旋转轴+角 [ax, ay, az, angle_deg]，默认 [0,0,1,0]",
+                                },
+                            },
+                            "required": ["file", "name"],
+                        },
+                        "description": "零件列表，每项包含 file, name, position, rotation",
+                    },
+                    "output_format": {
+                        "type": "string",
+                        "description": "输出格式: fcstd 或 stl（默认 fcstd）",
+                    },
+                },
+                "required": ["assembly_name", "parts"],
+            },
+        )
+
+    def execute(
+        self,
+        *,
+        assembly_name: str,
+        parts: list[dict[str, Any]],
+        output_format: str = "fcstd",
+        **kwargs: Any,
+    ) -> str:
+        if not parts:
+            return "错误：零件列表为空"
+
+        # Validate all part files exist
+        missing = []
+        for p in parts:
+            fpath = Path(p["file"])
+            if not fpath.exists():
+                missing.append(p["file"])
+        if missing:
+            return f"错误：以下零件文件不存在：\n" + "\n".join(f"  - {f}" for f in missing)
+
+        ws = _workspace_dir()
+        fcstd_path = str(Path(ws) / f"{assembly_name}.FCStd")
+        stl_path = str(Path(ws) / f"{assembly_name}.stl")
+
+        # Build part operations
+        part_ops: list[str] = []
+        for idx, part in enumerate(parts):
+            fpath = Path(part["file"])
+            ext = fpath.suffix.lower()
+            pos = part.get("position", [0, 0, 0])
+            rot = part.get("rotation", [0, 0, 1, 0])
+            name = part.get("name", f"Part{idx}")
+
+            if ext not in _PART_IMPORT_TEMPLATES:
+                return f"错误：不支持的文件格式 '{ext}'（零件: {name}）"
+
+            template = _PART_IMPORT_TEMPLATES[ext]
+            op = template.format(
+                idx=idx,
+                file=str(fpath),
+                name=name,
+                tx=pos[0] if len(pos) > 0 else 0,
+                ty=pos[1] if len(pos) > 1 else 0,
+                tz=pos[2] if len(pos) > 2 else 0,
+                rax=rot[0] if len(rot) > 0 else 0,
+                ray=rot[1] if len(rot) > 1 else 0,
+                raz=rot[2] if len(rot) > 2 else 1,
+                rangle=rot[3] if len(rot) > 3 else 0,
+            )
+            part_ops.append(op)
+
+        stl_export = ""
+        if output_format == "stl":
+            stl_export = f"""\
+_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]
+if _export_list:
+    Mesh.export(_export_list, r'{stl_path}')
+    print(f"STL: {stl_path} ({os.path.getsize(r'{stl_path}'):,} bytes)")
+"""
+
+        script = _ASSEMBLY_SCRIPT_TEMPLATE.format(
+            assembly_name=assembly_name,
+            part_operations="\n".join(part_ops),
+            output_dir=ws,
+            fcstd_path=fcstd_path,
+            stl_export=stl_export,
+        )
+
+        try:
+            output = _run_freecad_script_local(script, timeout=120)
+        except RuntimeError as e:
+            return f"FreeCAD 执行错误：{e}"
+        except Exception as e:
+            return f"执行错误：{e}"
+
+        result_lines = [
+            f"装配体生成成功：{assembly_name}",
+            f"零件数量：{len(parts)}",
+            f"FCStd: {fcstd_path}",
+        ]
+        if output_format == "stl" and Path(stl_path).exists():
+            size_kb = Path(stl_path).stat().st_size // 1024
+            result_lines.append(f"STL: {stl_path} ({size_kb} KB)")
+
+        if output:
+            for line in output.splitlines():
+                if line.strip():
+                    result_lines.append(f"  {line}")
+
+        return "\n".join(result_lines)
 
 
 # ---------------------------------------------------------------------------
@@ -511,6 +973,8 @@ def register_part_library_tools(registry: Any) -> None:
         PartListTool(),
         PartImportTool(),
         PartSaveTool(),
+        PartAnalyzePrintTool(),
+        PartAssembleTool(),
     ]
     for tool in tools:
         registry.register(tool)

@@ -45,11 +45,11 @@ class Reflector:
         # Build context about what happened
         recent_tools = ""
         if tool_history:
-            last_5 = tool_history[-5:]
+            last_10 = tool_history[-10:]
             recent_tools = "\n".join(
                 f"- {t['name']}({list(t.get('arguments', {}).keys())}): "
-                f"{t.get('result', '')[:200]}"
-                for t in last_5
+                f"{t.get('result', '')[:300]}"
+                for t in last_10
             )
 
         vlm_section = ""
@@ -82,7 +82,7 @@ class Reflector:
             messages=[Message(role="user", content=prompt)],
             system=REFLECTOR_SYSTEM_PROMPT,
             task_type=TaskType.REASONING,
-            max_tokens=1024,
+            max_tokens=2048,
             temperature=0.5,
         )
 

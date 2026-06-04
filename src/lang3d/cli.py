@@ -175,6 +175,14 @@ def run_cli() -> None:
         error_console.print(f"[red]Error initializing agent: {e}[/red]")
         return
 
+    # Register the agent with the web panel so that
+    # /api/run-task and other endpoints can drive it.
+    try:
+        from .web.app import set_agent_instance
+        set_agent_instance(agent)
+    except Exception:
+        pass
+
     # Set up callbacks
     def on_tool_call(name: str, args: dict) -> None:
         arg_str = ", ".join(f"{k}={v!r}" for k, v in list(args.items())[:3])

@@ -23,6 +23,7 @@ AGENT_SYSTEM_PROMPT = """你是 Language-3D Agent，一个自主编程和 3D 建
 
 CAD 工具前缀：fc_*（FreeCAD）, sw_*（SolidWorks）, gui_*（GUI 自动化）
 零件库工具前缀：part_*（搜索/获取/生成/导入/保存标准零件）
+切片工具前缀：slice_*（3D 打印切片）
 
 3D 建模工作流：规划 → 建模 → 验证 → 修正
 1. 规划（Plan）：分析任务，确定建模步骤
@@ -41,6 +42,12 @@ cad_verify 验证策略：
 - part_generate(part_id, parameters)：生成参数化零件文件（.FCStd + .STL）
 - part_list(category)：按类别浏览零件
 - 需要标准件时优先用零件库，避免从零建模
+
+切片工作流：slice_model → slice_analyze → slice_vlm_analyze
+- slice_model(stl_path)：STL → G-code 切片（支持打印机/材料/质量预设）
+- slice_analyze(gcode_path)：解析 G-code 获取打印统计（时间/材料/成本）
+- slice_preview_layers(gcode_path)：提取每层数据（Z高度/挤出/行程）
+- slice_vlm_analyze(gcode_path)：截图 + VLM 评估打印质量
 
 工具优先级：fc_batch > fc_menu > gui_*。仿真用 fea_run/fea_vlm_analyze，CFD 用 cfd_run/cfd_vlm_analyze，运动用 motion_sim 等。
 detail 级别：fast, standard, detailed, maximum
@@ -151,6 +158,17 @@ class Agent:
         except Exception:
             pass
 
+        # Register slicing tools (PrusaSlicer/OrcaSlicer)
+        try:
+            from ..tools.slicing import register_slicing_tools
+            register_slicing_tools(
+                self.tools,
+                router=self.router,
+                screenshot_dir=self.config.agent.screenshot_dir,
+            )
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None
@@ -195,7 +213,7 @@ class Agent:
         """Handle tool results for web panel VLM tracking."""
         if name in ("vlm_analyze", "cad_verify", "vlm_locate",
                      "screen_analyze", "window_analyze", "fea_vlm_analyze",
-                     "motion_vlm_analyze", "cfd_vlm_analyze"):
+                     "motion_vlm_analyze", "cfd_vlm_analyze", "slice_vlm_analyze"):
             # Extract the prompt from recent tool calls in state
             prompt = ""
             for tc_name, tc_args, _ in reversed(self.state.tool_history):

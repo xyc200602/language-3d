@@ -19,6 +19,17 @@ from lang3d.web.app import (
 class TestWebAppState:
     def test_initial_state(self):
         from lang3d.web import app as web_app
+        # Reset to initial state first — module-level globals persist across tests
+        web_app._agent_state.update({
+            "status": "idle",
+            "logs": [],
+            "tool_calls": [],
+            "vlm_results": [],
+            "thinking": "",
+            "thinking_history": [],
+            "sub_agents": [],
+            "dag": None,
+        })
         state = web_app._agent_state
         assert state["status"] == "idle"
         assert state["logs"] == []
@@ -182,3 +193,120 @@ class TestAgentWebIntegration:
         assert agent._on_tool_call is not None
         assert agent._on_tool_result is not None
         assert agent._on_thinking is not None
+
+
+class TestNewEndpoints:
+    """Tests for the Phase 4 new endpoints (file/task/model/browse/session)."""
+
+    def test_screenshot_file_rejects_escape(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/screenshot-file", params={"path": "../../../etc/passwd"})
+        assert r.status_code == 403
+
+    def test_screenshot_file_missing(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/screenshot-file", params={"path": "does-not-exist.png"})
+        assert r.status_code == 404
+
+    def test_file_endpoint_rejects_unknown(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/file", params={"path": "does-not-exist.txt"})
+        assert r.status_code == 404
+
+    def test_models_endpoint(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/models")
+        assert r.status_code == 200
+        assert "models" in r.json()
+
+    def test_browse_endpoint_root(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/browse")
+        assert r.status_code == 200
+        data = r.json()
+        assert "entries" in data
+        assert "path" in data
+
+    def test_browse_endpoint_pagination(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/browse", params={"page": 1, "page_size": 5})
+        assert r.status_code == 200
+        data = r.json()
+        assert data["page"] == 1
+        assert data["page_size"] == 5
+        assert len(data["entries"]) <= 5
+
+    def test_sessions_endpoint(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/sessions")
+        assert r.status_code == 200
+        assert "sessions" in r.json()
+
+    def test_session_detail_not_found(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/session/does-not-exist")
+        assert r.status_code == 404
+
+    def test_run_task_no_agent(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.post("/api/run-task", json={"task": "test", "mode": "run"})
+        assert r.status_code == 503
+
+    def test_run_task_missing_task(self):
+        from fastapi.testclient import TestClient
+        from lang3d.web.app import set_agent_instance
+        # Register a dummy so we get past the 503
+        class FakeAgent:
+            class state:
+                workspace = "."
+                session_id = "x"
+        set_agent_instance(FakeAgent())
+        client = TestClient(app)
+        r = client.post("/api/run-task", json={"task": "", "mode": "run"})
+        assert r.status_code == 400
+        # Reset
+        from lang3d.web import app as web_app
+        web_app._agent_instance = None
+
+    def test_is_running_endpoint(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/is-running")
+        assert r.status_code == 200
+        assert "running" in r.json()
+
+    def test_stop_task_idle(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.post("/api/stop-task")
+        assert r.status_code == 200
+
+    def test_task_history_endpoint(self):
+        from fastapi.testclient import TestClient
+        client = TestClient(app)
+        r = client.get("/api/task-history")
+        assert r.status_code == 200
+        assert "history" in r.json()
+
+    def test_set_agent_instance(self):
+        from lang3d.web.app import set_agent_instance, _agent_state
+
+        class FakeAgent:
+            class state:
+                workspace = "."
+                session_id = "FAKE-SID-123"
+
+        set_agent_instance(FakeAgent())
+        assert _agent_state["session_id"] == "FAKE-SID-123"
+        # Reset
+        from lang3d.web import app as web_app
+        web_app._agent_instance = None

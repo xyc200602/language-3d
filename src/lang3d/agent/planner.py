@@ -133,6 +133,26 @@ PLANNER_EXAMPLES: dict[str, str] = {
   }
 ]
 """,
+    "slicing": """
+示例（3D 打印切片）：
+[
+  {
+    "description": "使用 slice_model 将 STL 文件切片为 G-code（PLA/标准质量）",
+    "expected_tools": ["slice_model"],
+    "verification": "G-code 文件生成成功"
+  },
+  {
+    "description": "使用 slice_analyze 分析 G-code 打印统计信息",
+    "expected_tools": ["slice_analyze"],
+    "verification": "获取打印时间、材料用量等信息"
+  },
+  {
+    "description": "使用 slice_preview_layers 查看各层详情",
+    "expected_tools": ["slice_preview_layers"],
+    "verification": "获取每层 Z 高度和挤出数据"
+  }
+]
+""",
 }
 
 
@@ -163,6 +183,14 @@ class Planner:
         for kw in part_keywords:
             if kw in task_lower:
                 return "part_usage"
+        # Slicing keywords
+        slicing_keywords = [
+            "切片", "slice", "g-code", "gcode", "3d打印", "3d print",
+            "打印", "slicer", "切片器", "切片分析",
+        ]
+        for kw in slicing_keywords:
+            if kw in task_lower:
+                return "slicing"
         return "single_part"
 
     def create_plan(self, task: str, context: str = "") -> Plan:

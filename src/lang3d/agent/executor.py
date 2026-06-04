@@ -53,10 +53,14 @@ class Executor:
             return "cfd"
         if any(k in desc_lower for k in ("运动", "motion", "轨迹", "关节")):
             return "motion"
+        if any(k in desc_lower for k in ("切片", "slice", "g-code", "gcode", "打印", "3d print")):
+            return "slicing"
 
         # Check by tools
         if any("fc_" in t or "cad" in t or "part_" in t for t in tools_lower):
             return "modeling"
+        if any("slice_" in t for t in tools_lower):
+            return "slicing"
         if any(t in ("cad_verify", "vlm_analyze") for t in tools_lower):
             return "verification"
         if any(t in ("file_read", "file_write", "file_edit", "bash") for t in tools_lower):

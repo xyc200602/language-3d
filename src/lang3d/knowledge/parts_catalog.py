@@ -18,11 +18,13 @@ class ParamDef:
     name: str
     display_name_cn: str
     unit: str = "mm"
-    default: float = 0.0
+    default: Any = 0.0
     min_value: float = 0.0
     max_value: float = 1000.0
     step: float = 0.1
     fixed: bool = False  # If True, user cannot change this parameter
+    param_type: str = "float"       # "float" | "string"
+    choices: list[str] = field(default_factory=list)  # valid values for string params
 
 
 @dataclass
@@ -41,6 +43,8 @@ class PartTemplate:
     fc_script_template: str = ""   # FreeCAD Python script with {param} placeholders
     standard_sizes: list[dict[str, float]] = field(default_factory=list)
     notes: str = ""
+    quality_levels: list[str] = field(default_factory=lambda: ["simplified"])
+    fc_script_alternatives: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -53,6 +57,32 @@ class GeneratedPart:
     fcstd_path: str = ""
     stl_path: str = ""
     created_at: str = ""
+    print_analysis: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize all fields to a dict."""
+        return {
+            "template_id": self.template_id,
+            "name": self.name,
+            "parameters": self.parameters,
+            "fcstd_path": self.fcstd_path,
+            "stl_path": self.stl_path,
+            "created_at": self.created_at,
+            "print_analysis": self.print_analysis,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> GeneratedPart:
+        """Deserialize from a dict."""
+        return cls(
+            template_id=data.get("template_id", ""),
+            name=data.get("name", ""),
+            parameters=data.get("parameters", {}),
+            fcstd_path=data.get("fcstd_path", ""),
+            stl_path=data.get("stl_path", ""),
+            created_at=data.get("created_at", ""),
+            print_analysis=data.get("print_analysis", {}),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +103,12 @@ CATEGORY_TREE: dict[str, list[str]] = {
 # FreeCAD script templates
 # ---------------------------------------------------------------------------
 
+# Metric thread pitch lookup table (ISO coarse pitch)
+METRIC_THREAD_PITCH: dict[int, float] = {
+    3: 0.5, 4: 0.7, 5: 0.8, 6: 1.0, 8: 1.25,
+    10: 1.5, 12: 1.75, 14: 2.0, 16: 2.0, 20: 2.5,
+}
+
 _SOCKET_HEAD_CAP_SCREW_SCRIPT = """\
 import FreeCAD, Part, math
 doc = FreeCAD.newDocument("socket_head_cap_screw")
@@ -90,6 +126,54 @@ head_obj.Shape = head
 allen_r = {thread_diameter} * 0.3
 allen = Part.makeCylinder(allen_r, head_h * 0.6)
 allen.translate(FreeCAD.Vector(0, 0, {length}))
+cut = head.cut(allen)
+head_obj.Shape = cut
+doc.recompute()
+"""
+
+_SOCKET_HEAD_CAP_SCREW_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("socket_head_cap_screw_realistic")
+# Realistic thread via helix sweep
+thread_d = {thread_diameter}
+thread_l = {length}
+pitch = {thread_pitch}
+minor_r = (thread_d - pitch * 1.226) / 2
+pitch_r = (thread_d - pitch * 0.6495) / 2
+try:
+    # Shaft core (minor diameter cylinder)
+    shaft = Part.makeCylinder(minor_r, thread_l)
+    # Helix path for thread sweep
+    helix_wire = Part.makeHelix(pitch, thread_l, pitch_r)
+    # Thread profile: triangular cross-section
+    prof_h = (thread_d / 2 - minor_r)
+    profile_pts = [
+        FreeCAD.Vector(0, 0, 0),
+        FreeCAD.Vector(prof_h, 0, pitch / 8),
+        FreeCAD.Vector(0, 0, pitch / 4),
+    ]
+    profile_wire = Part.makePolygon(profile_pts + [profile_pts[0]])
+    profile_face = Part.Face(profile_wire)
+    # Sweep profile along helix
+    thread_sweep = profile_face.makePipe(helix_wire)
+    # Boolean: cut threads into shaft
+    result = shaft.fuse(thread_sweep)
+    thread_obj = doc.addObject("Part::Feature", "Thread")
+    thread_obj.Shape = result
+except Exception:
+    # Fallback for small sizes where boolean may fail
+    thread_obj = doc.addObject("Part::Feature", "Thread")
+    thread_obj.Shape = Part.makeCylinder(thread_d / 2, thread_l)
+# Head
+head_h = thread_d
+head = Part.makeCylinder({head_diameter}/2, head_h)
+head.translate(FreeCAD.Vector(0, 0, thread_l))
+head_obj = doc.addObject("Part::Feature", "Head")
+head_obj.Shape = head
+# Allen hole in head
+allen_r = thread_d * 0.3
+allen = Part.makeCylinder(allen_r, head_h * 0.6)
+allen.translate(FreeCAD.Vector(0, 0, thread_l))
 cut = head.cut(allen)
 head_obj.Shape = cut
 doc.recompute()
@@ -115,6 +199,51 @@ hex_prism = hex_face.extrude(FreeCAD.Vector(0, 0, h))
 # Center hole
 hole = Part.makeCylinder({nominal_diameter}/2, h)
 result = hex_prism.cut(hole)
+obj = doc.addObject("Part::Feature", "HexNut")
+obj.Shape = result
+doc.recompute()
+"""
+
+_HEX_NUT_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("hex_nut_realistic")
+nom_d = {nominal_diameter}
+pitch = {thread_pitch}
+# Hex body
+r = nom_d * 1.1
+h = nom_d * 0.8
+hex_body = Part.makePolygon([
+    FreeCAD.Vector(r, 0, 0),
+    FreeCAD.Vector(r/2, r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(-r/2, r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(-r, 0, 0),
+    FreeCAD.Vector(-r/2, -r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(r/2, -r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(r, 0, 0),
+])
+hex_face = Part.Face(hex_body)
+hex_prism = hex_face.extrude(FreeCAD.Vector(0, 0, h))
+# Center hole (minor diameter for thread)
+minor_r = (nom_d - pitch * 1.226) / 2
+try:
+    hole = Part.makeCylinder(minor_r, h)
+    # Helical thread inside the hole
+    pitch_r = (nom_d - pitch * 0.6495) / 2
+    helix_wire = Part.makeHelix(pitch, h, pitch_r)
+    prof_h = (nom_d / 2 - minor_r)
+    profile_pts = [
+        FreeCAD.Vector(0, 0, 0),
+        FreeCAD.Vector(-prof_h, 0, pitch / 8),
+        FreeCAD.Vector(0, 0, pitch / 4),
+    ]
+    profile_wire = Part.makePolygon(profile_pts + [profile_pts[0]])
+    profile_face = Part.Face(profile_wire)
+    thread_sweep = profile_face.makePipe(helix_wire)
+    hole_with_thread = hole.fuse(thread_sweep)
+    result = hex_prism.cut(hole_with_thread)
+except Exception:
+    hole = Part.makeCylinder(nom_d / 2, h)
+    result = hex_prism.cut(hole)
 obj = doc.addObject("Part::Feature", "HexNut")
 obj.Shape = result
 doc.recompute()
@@ -158,6 +287,52 @@ head_obj.Shape = hex_prism
 doc.recompute()
 """
 
+_HEX_BOLT_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("hex_bolt_realistic")
+thread_d = {thread_diameter}
+thread_l = {length}
+pitch = {thread_pitch}
+minor_r = (thread_d - pitch * 1.226) / 2
+pitch_r = (thread_d - pitch * 0.6495) / 2
+try:
+    shaft = Part.makeCylinder(minor_r, thread_l)
+    helix_wire = Part.makeHelix(pitch, thread_l, pitch_r)
+    prof_h = (thread_d / 2 - minor_r)
+    profile_pts = [
+        FreeCAD.Vector(0, 0, 0),
+        FreeCAD.Vector(prof_h, 0, pitch / 8),
+        FreeCAD.Vector(0, 0, pitch / 4),
+    ]
+    profile_wire = Part.makePolygon(profile_pts + [profile_pts[0]])
+    profile_face = Part.Face(profile_wire)
+    thread_sweep = profile_face.makePipe(helix_wire)
+    result = shaft.fuse(thread_sweep)
+    thread_obj = doc.addObject("Part::Feature", "Thread")
+    thread_obj.Shape = result
+except Exception:
+    thread_obj = doc.addObject("Part::Feature", "Thread")
+    thread_obj.Shape = Part.makeCylinder(thread_d / 2, thread_l)
+# Hex head
+r = thread_d * 1.0
+head_h = thread_d * 0.7
+hex_body = Part.makePolygon([
+    FreeCAD.Vector(r, 0, 0),
+    FreeCAD.Vector(r/2, r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(-r/2, r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(-r, 0, 0),
+    FreeCAD.Vector(-r/2, -r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(r/2, -r*math.sqrt(3)/2, 0),
+    FreeCAD.Vector(r, 0, 0),
+])
+hex_face = Part.Face(hex_body)
+hex_prism = hex_face.extrude(FreeCAD.Vector(0, 0, head_h))
+hex_prism.translate(FreeCAD.Vector(0, 0, thread_l))
+head_obj = doc.addObject("Part::Feature", "Head")
+head_obj.Shape = hex_prism
+doc.recompute()
+"""
+
 _BEARING_SCRIPT = """\
 import FreeCAD, Part
 doc = FreeCAD.newDocument("bearing")
@@ -171,6 +346,127 @@ outer_obj.Shape = result
 # Inner ring solid
 inner_obj = doc.addObject("Part::Feature", "InnerRing")
 inner_obj.Shape = inner_ring
+doc.recompute()
+"""
+
+_BEARING_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("bearing_realistic")
+
+OD = {outer_diameter}
+ID = {inner_diameter}
+W = {width}
+ball_count = int({ball_count}) if int({ball_count}) > 0 else 0
+
+# Calculate bearing geometry
+gap = (OD - ID) / 2.0  # radial gap between rings
+raceway_depth = gap * 0.15  # groove depth
+ball_d = gap * 0.65  # ball diameter fits in the gap
+pitch_circle = (OD + ID) / 4.0  # pitch circle radius
+raceway_r = ball_d * 0.55  # raceway groove curvature radius
+
+if ball_count == 0:
+    ball_count = int(math.pi * 2 * pitch_circle / (ball_d * 1.1))
+    ball_count = max(ball_count, 4)  # minimum 4 balls
+
+half_w = W / 2.0
+
+# --- Outer ring ---
+outer_od = OD / 2.0
+outer_id = outer_od - gap * 0.4 - raceway_depth  # inner bore of outer ring
+outer_ring = Part.makeCylinder(outer_od, W)
+outer_bore = Part.makeCylinder(outer_id, W)
+outer_ring = outer_ring.cut(outer_bore)
+
+# Outer raceway groove (toroidal cut on inner surface of outer ring, at mid-width)
+for z_off in [0]:
+    groove_profile = Part.Wire([
+        FreeCAD.Vector(outer_id, 0, half_w - raceway_r + z_off),
+        FreeCAD.Vector(outer_id + raceway_depth * 0.5, 0, half_w + z_off),
+        FreeCAD.Vector(outer_id, 0, half_w + raceway_r + z_off),
+    ])
+    groove_face = Part.Face(groove_profile)
+    groove_revolve = groove_face.revolve(
+        FreeCAD.Vector(0, 0, half_w + z_off),
+        FreeCAD.Vector(0, 0, 1), 360
+    )
+    outer_ring = outer_ring.cut(groove_revolve)
+
+outer_obj = doc.addObject("Part::Feature", "OuterRing")
+outer_obj.Shape = outer_ring
+
+# --- Inner ring ---
+inner_od = ID / 2.0 + gap * 0.4 + raceway_depth
+inner_id = ID / 2.0
+inner_ring = Part.makeCylinder(inner_od, W)
+inner_bore = Part.makeCylinder(inner_id, W)
+inner_ring = inner_ring.cut(inner_bore)
+
+# Inner raceway groove
+groove_profile2 = Part.Wire([
+    FreeCAD.Vector(inner_od, 0, half_w - raceway_r),
+    FreeCAD.Vector(inner_od - raceway_depth * 0.5, 0, half_w),
+    FreeCAD.Vector(inner_od, 0, half_w + raceway_r),
+])
+groove_face2 = Part.Face(groove_profile2)
+groove_revolve2 = groove_face2.revolve(
+    FreeCAD.Vector(0, 0, half_w),
+    FreeCAD.Vector(0, 0, 1), 360
+)
+inner_ring = inner_ring.cut(groove_revolve2)
+
+inner_obj = doc.addObject("Part::Feature", "InnerRing")
+inner_obj.Shape = inner_ring
+
+# --- Balls ---
+ball_r = ball_d / 2.0
+for idx in range(ball_count):
+    angle = 2 * math.pi * idx / ball_count
+    x = pitch_circle * math.cos(angle)
+    y = pitch_circle * math.sin(angle)
+    ball = Part.makeSphere(ball_r)
+    ball.translate(FreeCAD.Vector(x, y, half_w))
+    ball_obj = doc.addObject("Part::Feature", "Ball" + str(idx))
+    ball_obj.Shape = ball
+
+# --- Cage (simplified: thin ring with rectangular pockets) ---
+cage_inner = pitch_circle - ball_d * 0.45
+cage_outer = pitch_circle + ball_d * 0.45
+cage_thickness = W * 0.08  # thin cage
+cage_z = half_w - cage_thickness / 2
+
+cage_body = Part.makeCylinder(cage_outer, cage_thickness)
+cage_bore = Part.makeCylinder(cage_inner, cage_thickness)
+cage_body.translate(FreeCAD.Vector(0, 0, cage_z))
+cage_bore.translate(FreeCAD.Vector(0, 0, cage_z))
+cage = cage_body.cut(cage_bore)
+
+# Cut ball pockets (rectangular holes) in cage
+pocket_w = ball_d * 0.85  # pocket width
+pocket_d = ball_d  # pocket depth radial
+for idx in range(ball_count):
+    angle = 2 * math.pi * idx / ball_count
+    cos_a = math.cos(angle)
+    sin_a = math.sin(angle)
+    # Pocket centered on pitch circle at this angle
+    cx = pitch_circle * cos_a
+    cy = pitch_circle * sin_a
+    # Create pocket as small box, rotated to be radial
+    pocket = Part.makeBox(pocket_d, pocket_w, cage_thickness)
+    # Position pocket
+    pocket.translate(FreeCAD.Vector(
+        cx - pocket_d / 2,
+        cy - pocket_w / 2,
+        cage_z
+    ))
+    try:
+        cage = cage.cut(pocket)
+    except Exception:
+        pass
+
+cage_obj = doc.addObject("Part::Feature", "Cage")
+cage_obj.Shape = cage
+
 doc.recompute()
 """
 
@@ -279,6 +575,101 @@ obj.Shape = result
 doc.recompute()
 """
 
+_SPUR_GEAR_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("spur_gear_realistic")
+# Involute spur gear with mathematically accurate tooth profile
+num_teeth = {teeth}
+mod = {module}
+thk = {thickness}
+bore_d = {bore_diameter}
+pressure_angle = math.radians({pressure_angle})
+backlash_val = {backlash}
+
+r_pitch = num_teeth * mod / 2
+r_base = r_pitch * math.cos(pressure_angle)
+r_addendum = r_pitch + mod
+r_dedendum = r_pitch - 1.25 * mod
+
+# Involute function: returns (x, y) for parameter t
+def involute_xy(r, t):
+    x = r * (math.cos(t) + t * math.sin(t))
+    y = r * (math.sin(t) - t * math.cos(t))
+    return (x, y)
+
+# Find t where involute reaches addendum radius
+def find_t_at_radius(r_base, target_r):
+    for t_test in [i * 0.01 for i in range(1, 2000)]:
+        x, y = involute_xy(r_base, t_test)
+        r = math.sqrt(x*x + y*y)
+        if r >= target_r:
+            return t_test
+    return 1.0
+
+t_max = find_t_at_radius(r_base, r_addendum)
+# Tooth angular half-width at pitch circle
+inv_at_pitch = find_t_at_radius(r_base, r_pitch)
+x_p, y_p = involute_xy(r_base, inv_at_pitch)
+angle_at_pitch = math.atan2(y_p, x_p)
+tooth_half_angle = math.pi / (2 * num_teeth) + angle_at_pitch
+
+# Build single tooth profile
+num_pts = 30
+right_flank = []
+for i in range(num_pts + 1):
+    t = i * t_max / num_pts
+    x, y = involute_xy(r_base, t)
+    right_flank.append((x, y))
+
+# Addendum arc (top of tooth)
+addendum_pts = []
+tooth_top_angle = tooth_half_angle
+for i in range(5):
+    a = -tooth_top_angle + 2 * tooth_top_angle * i / 4
+    addendum_pts.append((r_addendum * math.cos(a), r_addendum * math.sin(a)))
+
+# Left flank (mirror of right)
+left_flank = [(x, -y) for x, y in reversed(right_flank)]
+
+# Combine: right flank + addendum arc + left flank
+tooth_pts = right_flank + addendum_pts + left_flank
+
+# Build full gear profile by rotating tooth copies
+all_points = []
+tooth_angle = 2 * math.pi / num_teeth
+for tooth_idx in range(num_teeth):
+    offset = tooth_idx * tooth_angle
+    cos_o = math.cos(offset)
+    sin_o = math.sin(offset)
+    for (x, y) in tooth_pts:
+        rx = x * cos_o - y * sin_o
+        ry = x * sin_o + y * cos_o
+        all_points.append(FreeCAD.Vector(rx, ry, 0))
+    # Add root arc points between teeth
+    root_start_angle = offset + tooth_half_angle + backlash_val / r_pitch
+    root_end_angle = offset + tooth_angle - tooth_half_angle - backlash_val / r_pitch
+    for i in range(5):
+        a = root_start_angle + (root_end_angle - root_start_angle) * i / 4
+        all_points.append(FreeCAD.Vector(r_dedendum * math.cos(a), r_dedendum * math.sin(a), 0))
+
+# Close the profile
+if all_points:
+    all_points.append(all_points[0])
+
+# Create wire, face, extrude
+gear_wire = Part.makePolygon(all_points)
+gear_face = Part.Face(gear_wire)
+gear_body = gear_face.extrude(FreeCAD.Vector(0, 0, thk))
+
+# Cut bore
+bore = Part.makeCylinder(bore_d / 2, thk)
+result = gear_body.cut(bore)
+
+obj = doc.addObject("Part::Feature", "SpurGear")
+obj.Shape = result
+doc.recompute()
+"""
+
 _L_BRACKET_SCRIPT = """\
 import FreeCAD, Part
 doc = FreeCAD.newDocument("l_bracket")
@@ -329,17 +720,22 @@ PART_CATALOG: dict[str, PartTemplate] = {
             ParamDef("thread_diameter", "螺纹直径", "mm", 3, 1, 30, 0.5),
             ParamDef("length", "螺钉长度", "mm", 10, 2, 200, 1),
             ParamDef("head_diameter", "头部直径", "mm", 5.5, 2, 50, 0.5, fixed=False),
+            ParamDef("thread_detail", "螺纹细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("thread_pitch", "螺距", "mm", 1.0, 0.25, 4.0, 0.05),
         ],
         fc_script_template=_SOCKET_HEAD_CAP_SCREW_SCRIPT,
+        fc_script_alternatives={"realistic": _SOCKET_HEAD_CAP_SCREW_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
         standard_sizes=[
-            {"thread_diameter": 3, "length": 10, "head_diameter": 5.5},
-            {"thread_diameter": 3, "length": 20, "head_diameter": 5.5},
-            {"thread_diameter": 4, "length": 16, "head_diameter": 7.0},
-            {"thread_diameter": 5, "length": 20, "head_diameter": 8.5},
-            {"thread_diameter": 6, "length": 25, "head_diameter": 10.0},
-            {"thread_diameter": 8, "length": 30, "head_diameter": 13.0},
+            {"thread_diameter": 3, "length": 10, "head_diameter": 5.5, "thread_pitch": 0.5},
+            {"thread_diameter": 3, "length": 20, "head_diameter": 5.5, "thread_pitch": 0.5},
+            {"thread_diameter": 4, "length": 16, "head_diameter": 7.0, "thread_pitch": 0.7},
+            {"thread_diameter": 5, "length": 20, "head_diameter": 8.5, "thread_pitch": 0.8},
+            {"thread_diameter": 6, "length": 25, "head_diameter": 10.0, "thread_pitch": 1.0},
+            {"thread_diameter": 8, "length": 30, "head_diameter": 13.0, "thread_pitch": 1.25},
         ],
-        notes="螺纹为简化圆柱体表示，非真实螺纹几何",
+        notes="螺纹为简化圆柱体表示，非真实螺纹几何。选择 realistic 启用螺旋扫掠螺纹。",
     ),
 
     "hex_nut": PartTemplate(
@@ -352,15 +748,20 @@ PART_CATALOG: dict[str, PartTemplate] = {
         tags=["螺母", "六角", "DIN934", "紧固件", "nut", "hex"],
         parameters=[
             ParamDef("nominal_diameter", "公称直径", "mm", 3, 1, 30, 0.5),
+            ParamDef("thread_detail", "螺纹细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("thread_pitch", "螺距", "mm", 1.0, 0.25, 4.0, 0.05),
         ],
         fc_script_template=_HEX_NUT_SCRIPT,
+        fc_script_alternatives={"realistic": _HEX_NUT_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
         standard_sizes=[
-            {"nominal_diameter": 3},
-            {"nominal_diameter": 4},
-            {"nominal_diameter": 5},
-            {"nominal_diameter": 6},
-            {"nominal_diameter": 8},
-            {"nominal_diameter": 10},
+            {"nominal_diameter": 3, "thread_pitch": 0.5},
+            {"nominal_diameter": 4, "thread_pitch": 0.7},
+            {"nominal_diameter": 5, "thread_pitch": 0.8},
+            {"nominal_diameter": 6, "thread_pitch": 1.0},
+            {"nominal_diameter": 8, "thread_pitch": 1.25},
+            {"nominal_diameter": 10, "thread_pitch": 1.5},
         ],
     ),
 
@@ -397,16 +798,21 @@ PART_CATALOG: dict[str, PartTemplate] = {
         parameters=[
             ParamDef("thread_diameter", "螺纹直径", "mm", 4, 2, 30, 0.5),
             ParamDef("length", "螺栓长度", "mm", 20, 5, 300, 1),
+            ParamDef("thread_detail", "螺纹细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("thread_pitch", "螺距", "mm", 1.0, 0.25, 4.0, 0.05),
         ],
         fc_script_template=_HEX_BOLT_SCRIPT,
+        fc_script_alternatives={"realistic": _HEX_BOLT_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
         standard_sizes=[
-            {"thread_diameter": 4, "length": 20},
-            {"thread_diameter": 5, "length": 25},
-            {"thread_diameter": 6, "length": 30},
-            {"thread_diameter": 8, "length": 40},
-            {"thread_diameter": 10, "length": 50},
+            {"thread_diameter": 4, "length": 20, "thread_pitch": 0.7},
+            {"thread_diameter": 5, "length": 25, "thread_pitch": 0.8},
+            {"thread_diameter": 6, "length": 30, "thread_pitch": 1.0},
+            {"thread_diameter": 8, "length": 40, "thread_pitch": 1.25},
+            {"thread_diameter": 10, "length": 50, "thread_pitch": 1.5},
         ],
-        notes="螺纹为简化圆柱体表示",
+        notes="螺纹为简化圆柱体表示。选择 realistic 启用螺旋扫掠螺纹。",
     ),
 
     "bearing_608": PartTemplate(
@@ -421,8 +827,13 @@ PART_CATALOG: dict[str, PartTemplate] = {
             ParamDef("inner_diameter", "内径", "mm", 8, 1, 100, 1),
             ParamDef("outer_diameter", "外径", "mm", 22, 5, 200, 1),
             ParamDef("width", "宽度", "mm", 7, 1, 50, 1),
+            ParamDef("bearing_detail", "轴承细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("ball_count", "滚珠数量", "", 0, 0, 50, 1),
         ],
         fc_script_template=_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
         standard_sizes=[
             {"inner_diameter": 8, "outer_diameter": 22, "width": 7},
         ],
@@ -440,8 +851,13 @@ PART_CATALOG: dict[str, PartTemplate] = {
             ParamDef("inner_diameter", "内径", "mm", 3, 1, 100, 1),
             ParamDef("outer_diameter", "外径", "mm", 10, 5, 200, 1),
             ParamDef("width", "宽度", "mm", 4, 1, 50, 1),
+            ParamDef("bearing_detail", "轴承细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("ball_count", "滚珠数量", "", 0, 0, 50, 1),
         ],
         fc_script_template=_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
         standard_sizes=[
             {"inner_diameter": 3, "outer_diameter": 10, "width": 4},
         ],
@@ -459,8 +875,13 @@ PART_CATALOG: dict[str, PartTemplate] = {
             ParamDef("inner_diameter", "内径", "mm", 5, 1, 100, 1),
             ParamDef("outer_diameter", "外径", "mm", 16, 5, 200, 1),
             ParamDef("width", "宽度", "mm", 5, 1, 50, 1),
+            ParamDef("bearing_detail", "轴承细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("ball_count", "滚珠数量", "", 0, 0, 50, 1),
         ],
         fc_script_template=_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
         standard_sizes=[
             {"inner_diameter": 5, "outer_diameter": 16, "width": 5},
         ],
@@ -588,14 +1009,23 @@ PART_CATALOG: dict[str, PartTemplate] = {
             ParamDef("module", "模数", "mm", 1.0, 0.3, 10, 0.1),
             ParamDef("thickness", "齿厚", "mm", 6.0, 1, 50, 0.5),
             ParamDef("bore_diameter", "轴孔直径", "mm", 8.0, 2, 50, 0.5),
+            ParamDef("tooth_detail", "齿廓细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("pressure_angle", "压力角", "deg", 20.0, 14.5, 30.0, 0.5),
+            ParamDef("backlash", "侧隙", "mm", 0.1, 0.0, 1.0, 0.01),
         ],
         fc_script_template=_SPUR_GEAR_SCRIPT,
+        fc_script_alternatives={"realistic": _SPUR_GEAR_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
         standard_sizes=[
-            {"teeth": 20, "module": 1.0, "thickness": 6, "bore_diameter": 8},
-            {"teeth": 30, "module": 1.0, "thickness": 6, "bore_diameter": 8},
-            {"teeth": 16, "module": 1.5, "thickness": 8, "bore_diameter": 10},
+            {"teeth": 20, "module": 1.0, "thickness": 6, "bore_diameter": 8,
+             "pressure_angle": 20.0, "backlash": 0.1},
+            {"teeth": 30, "module": 1.0, "thickness": 6, "bore_diameter": 8,
+             "pressure_angle": 20.0, "backlash": 0.1},
+            {"teeth": 16, "module": 1.5, "thickness": 8, "bore_diameter": 10,
+             "pressure_angle": 20.0, "backlash": 0.1},
         ],
-        notes="齿轮为简化圆柱体表示，非渐开线齿廓",
+        notes="齿轮为简化圆柱体表示，非渐开线齿廓。选择 realistic 启用渐开线齿廓建模。",
     ),
 
     "l_bracket": PartTemplate(
@@ -700,38 +1130,57 @@ def get_all_templates() -> list[PartTemplate]:
 def resolve_parameters(
     template: PartTemplate,
     params: dict[str, Any] | None = None,
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Fill defaults for missing parameters and validate ranges.
 
     Returns a complete parameter dict with all parameters filled in.
-    Raises ValueError if a parameter is out of range.
+    For string-type parameters, validates against choices list.
+    Raises ValueError if a parameter is out of range or invalid choice.
     """
-    resolved: dict[str, float] = {}
+    resolved: dict[str, Any] = {}
     for pdef in template.parameters:
         if params and pdef.name in params:
-            val = float(params[pdef.name])
-            if val < pdef.min_value or val > pdef.max_value:
-                raise ValueError(
-                    f"Parameter '{pdef.name}' value {val} out of range "
-                    f"[{pdef.min_value}, {pdef.max_value}]"
-                )
-            resolved[pdef.name] = val
+            if pdef.param_type == "string":
+                val = str(params[pdef.name])
+                if pdef.choices and val not in pdef.choices:
+                    raise ValueError(
+                        f"Parameter '{pdef.name}' value '{val}' not in choices {pdef.choices}"
+                    )
+                resolved[pdef.name] = val
+            else:
+                val = float(params[pdef.name])
+                if val < pdef.min_value or val > pdef.max_value:
+                    raise ValueError(
+                        f"Parameter '{pdef.name}' value {val} out of range "
+                        f"[{pdef.min_value}, {pdef.max_value}]"
+                    )
+                resolved[pdef.name] = val
         else:
             resolved[pdef.name] = pdef.default
     return resolved
 
 
-def format_fc_script(template: PartTemplate, params: dict[str, float]) -> str:
+def format_fc_script(template: PartTemplate, params: dict[str, Any]) -> str:
     """Substitute parameter values into the FreeCAD script template.
 
+    Selects the appropriate script based on detail level (thread_detail or
+    tooth_detail), falling back to the default simplified script.
     Uses Python str.format_map to replace {param_name} placeholders.
     """
-    # Convert float values to clean strings (avoid scientific notation)
+    # Determine detail level from params
+    detail = params.get(
+        "thread_detail",
+        params.get("tooth_detail", params.get("bearing_detail", "simplified")),
+    )
+    # Select script: prefer alternative matching detail level
+    script_template = template.fc_script_alternatives.get(detail, template.fc_script_template)
+
+    # Convert values to clean strings (avoid scientific notation)
     clean_params: dict[str, str] = {}
     for k, v in params.items():
-        if v == int(v):
+        if isinstance(v, (int, float)) and v == int(v):
             clean_params[k] = str(int(v))
         else:
             clean_params[k] = str(v)
 
-    return template.fc_script_template.format_map(clean_params)
+    return script_template.format_map(clean_params)

@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.env.local
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+nul
+
+# FreeCAD generated files
+*.FCBak
+*.preview.stl
+
+# Generated project data (runtime output)
+data/projects/**/*.stl
+data/projects/**/*.FCStd
+data/projects/**/*.FCBak
+data/projects/**/*.gcode
+data/projects/**/build_*.py
+data/projects/_*.py
+data/screenshots/
+
+# Temporary test artifacts
+test_*.FCStd
+test_*.FCStd.*
+gui_*.png
+window_*.png
+create_cylinder.py
+
+# Legacy development logs (migrated to progress.txt)
+development_log/

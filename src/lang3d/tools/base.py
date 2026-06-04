@@ -35,7 +35,10 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "solidworks": ["sw_create_part", "sw_open_gui", "sw_close_gui", "sw_export"],
     "part_library": [
         "part_search", "part_get", "part_generate", "part_list",
-        "part_import", "part_save",
+        "part_import", "part_save", "part_analyze_print", "part_assemble",
+    ],
+    "slicing": [
+        "slice_model", "slice_analyze", "slice_preview_layers", "slice_vlm_analyze",
     ],
 }
 
@@ -46,6 +49,7 @@ STEP_TOOL_CATEGORIES: dict[str, list[str]] = {
     "simulation": ["simulation", "freecad", "vlm", "gui"],
     "cfd": ["cfd", "freecad", "vlm", "gui"],
     "motion": ["motion", "freecad", "vlm", "gui"],
+    "slicing": ["slicing", "vlm", "gui"],
     "file_ops": ["file_ops", "shell"],
     "general": ["file_ops", "shell", "screen", "vlm", "freecad", "gui"],
 }
