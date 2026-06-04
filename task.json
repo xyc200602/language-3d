@@ -366,7 +366,7 @@
       "记录结构化指标到 data/e2e_assembly_report.json"
     ],
     "priority": 30,
-    "passes": false
+    "passes": true
   },
   {
     "id": 31,

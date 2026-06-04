@@ -1,0 +1,62 @@
+{
+  "timestamp": "2026-06-04 20:01:51",
+  "summary": {
+    "total": 3,
+    "passed": 3,
+    "total_parts": 20,
+    "total_joints": 16,
+    "ik_tested": 3,
+    "ik_reachable": 3,
+    "avg_solver_ms": 0.05
+  },
+  "cases": [
+    {
+      "case_id": "flange",
+      "case_name": "法兰连接",
+      "part_count": 2,
+      "joint_count": 1,
+      "success": true,
+      "positions_computed": true,
+      "chain_valid": true,
+      "ik_targets_tested": 0,
+      "ik_reachable": 0,
+      "ik_avg_error_mm": 0.0,
+      "solver_time_ms": 0.026900001103058457,
+      "ik_time_ms": 0.0,
+      "error": null,
+      "details": {}
+    },
+    {
+      "case_id": "robotic_arm",
+      "case_name": "3-DOF 机械臂",
+      "part_count": 8,
+      "joint_count": 6,
+      "success": true,
+      "positions_computed": true,
+      "chain_valid": true,
+      "ik_targets_tested": 3,
+      "ik_reachable": 3,
+      "ik_avg_error_mm": 3.2931333333333335,
+      "solver_time_ms": 0.060699996538460255,
+      "ik_time_ms": 38.25250000227243,
+      "error": null,
+      "details": {}
+    },
+    {
+      "case_id": "chassis",
+      "case_name": "4轮差速底盘",
+      "part_count": 10,
+      "joint_count": 9,
+      "success": true,
+      "positions_computed": true,
+      "chain_valid": true,
+      "ik_targets_tested": 0,
+      "ik_reachable": 0,
+      "ik_avg_error_mm": 0.0,
+      "solver_time_ms": 0.05459999374579638,
+      "ik_time_ms": 0.0,
+      "error": null,
+      "details": {}
+    }
+  ]
+}
