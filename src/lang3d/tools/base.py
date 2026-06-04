@@ -62,6 +62,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "quality": [
         "quality_check",
     ],
+    "iteration": [
+        "iteration_design",
+    ],
 }
 
 # Map step types to the tool categories they need

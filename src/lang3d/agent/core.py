@@ -241,6 +241,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register iteration design tools (change impact, redesign)
+        try:
+            from ..tools.iteration import register_iteration_tools
+            register_iteration_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None

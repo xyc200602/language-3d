@@ -506,7 +506,7 @@
       "新建 tools/iteration.py"
     ],
     "priority": 40,
-    "passes": false
+    "passes": true
   },
   {
     "id": 41,

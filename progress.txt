@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-04 - Task 40: 迭代设计优化
+
+### What was done:
+- 创建 `src/lang3d/tools/iteration.py` — 迭代设计优化工具
+- 支持 5 种变更类型：payload（负载）、reach（工作半径）、material（材料）、actuator（执行器）、controller（控制器）
+- `analyze_impact()` — 分析需求变更的影响范围（影响哪些零件/关节/制品）
+- `apply_change()` — 应用变更并只重新生成受影响的制品（增量更新）
+- `iterate_design()` — 完整迭代流程（分析→应用→重新生成）
+- `compare_designs()` — 比较两个设计快照的差异
+- `create_snapshot()` — 创建设计快照，可选生成全部制品
+- `IterationTool` — Agent 工具注册
+- 注册到 `agent/core.py` 和 `tools/base.py`
+
+### 关键设计决策:
+- 变更严重程度自动评估：minor / moderate / major（基于变化比例）
+- 增量更新：只重新生成受影响制品（如材料变更不触发固件重生成）
+- 深拷贝保护：原始快照在迭代中不被修改
+- 负载变更自动重新选型：如果当前执行器力矩不足，自动选择更强的型号
+
+### Testing:
+- 53/53 测试通过（test_iteration.py）
+- 覆盖：影响分析、变更应用、增量更新、设计比较、完整迭代、工具执行
+- 0 回归（e2e_design 16/16 仍通过）
+
+---
+
 ## 2026-06-04 - Task 39: 端到端设计测试
 
 ### What was done:
