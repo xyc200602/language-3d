@@ -4,6 +4,46 @@
 
 ---
 
+## 2026-06-04 - Task 37: 3D 打印优化
+
+### What was done:
+- **新建 `tools/print_optimize.py` — 3D 打印优化工具**
+  - `optimize_orientation(part)` — 打印方向推荐
+    - 圆柱体竖直放置（轴竖直，最佳层粘合）
+    - 方形体平放（最小高度在 Z 方向，减少层数）
+    - 检测特征：孔/轴承座/走线通道 → 调整方向
+    - 标记是否需要支撑材料
+  - `apply_tolerance_compensation(dims, fit_type, material)` — 公差补偿
+    - 收缩补偿：PLA 0.3%, ABS 0.8%, PETG 0.4%, NYLON 1.2%
+    - 配合间隙：tight_fit 0.15mm, sliding_fit 0.3mm, loose_fit 0.5mm, bearing_fit 0.1mm
+    - 外部尺寸减间隙，内部尺寸加间隙
+  - `recommend_print_params(part, quality)` — 参数推荐
+    - 3 级质量：draft (0.3mm/10%), standard (0.2mm/20%), high (0.12mm/30%)
+    - 轴承座零件自动增加填充 40% 和壁厚 4 层
+    - 轻量化零件自动降低填充 15%
+    - 粗略估算打印时间
+  - `pack_parts_on_plate(parts, printer)` — 批量排版
+    - 贪心网格排列，最大面积优先
+    - 支持 Ender3/Prusa MK3/Bambu X1C/自定义
+    - 计算排版利用率和所需板数
+  - `optimize_assembly_print(assembly, ...)` — 一站式优化
+  - `PrintOptimizeTool` — Agent 工具
+
+- **修改 `agent/core.py`** — 注册 print_optimize_tools
+- **修改 `tools/base.py`** — TOOL_CATEGORIES 新增 "print_optimize"
+
+### Testing:
+- 新建 `tests/test_print_optimize.py` — 39 个测试
+  - TestOrientationOptimization（7 tests）：圆柱/方盒/空心/实心/孔/走线/全部零件
+  - TestToleranceCompensation（7 tests）：PLA/ABS 收缩、滑动/紧配合间隙、补偿值
+  - TestPrintParams（7 tests）：3 级质量、轴承高填充、轻量低填充、时间估算
+  - TestPlatePacking（7 tests）：单件/全零件/坐标/利用率/多打印机/不重叠/空列表
+  - TestFullAssemblyOptimization（5 tests）：全部零件/三个 section/排版/汇总/质量对比
+  - TestPrintOptimizeTool（6 tests）：注册/执行/质量/打印机/错误/JSON
+- **39/39 通过**
+
+---
+
 ## 2026-06-04 - Task 36: 装配指导书生成
 
 ### What was done:

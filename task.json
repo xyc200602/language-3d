@@ -467,7 +467,7 @@
       "修改 slicing.py — 集成优化逻辑"
     ],
     "priority": 37,
-    "passes": false
+    "passes": true
   },
   {
     "id": 38,

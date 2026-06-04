@@ -227,6 +227,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register print optimization tools (3D print settings)
+        try:
+            from ..tools.print_optimize import register_print_optimize_tools
+            register_print_optimize_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None
