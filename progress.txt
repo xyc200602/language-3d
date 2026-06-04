@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-06-04 - Task 32: Arduino/ESP32 控制代码生成
+
+### What was done:
+- **新建 `src/lang3d/tools/code_gen.py` — 嵌入式代码生成工具**
+  - `generate_firmware(assembly, actuator_ids, controller)` → 5 个文件
+    - `robot_arm.ino` — 主程序（setup/loop、串口协议 G/H/T/P、梯形速度插值 smooth_step）
+    - `ik_solver.h/cpp` — IK 求解器（余弦定律解析解 + FK 验证 + 关节限位 clamp_angle）
+    - `servo_driver.h/cpp` — PWM 舵机驱动（angle_to_pwm 映射、SERVO_MIN/MAX_PULSE）
+  - `generate_wiring(actuator_ids, controller)` → 接线说明文档（引脚分配、电源、GND）
+  - `generate_test_sequence(assembly, steps)` → 3 阶段测试序列（单关节→范围→联动）
+  - 支持 ESP32（ESP32Servo.h）和 Arduino（Servo.h）两种控制器
+  - 3 个 Agent 工具：GenFirmwareTool、GenWiringDiagramTool、GenTestSequenceTool
+
+- **修改 `src/lang3d/agent/core.py`** — 注册 code_gen_tools
+- **修改 `src/lang3d/tools/base.py`** — TOOL_CATEGORIES 新增 code_gen 类别
+
+### Testing:
+- 新建 `tests/test_code_gen.py` — 30 个测试
+  - TestFirmwareGeneration（13 tests）：5 文件生成、setup/loop、串口、IK 余弦定律、关节限位、FK、舵机 PWM
+  - TestWiringDiagram（5 tests）：基本接线、ESP32/Arduino 引脚、电源信息、重复执行器
+  - TestTestSequence（4 tests）：3 阶段、串口命令、自定义步数、检查清单
+  - TestCodeGenTools（8 tests）：工具注册、执行、错误处理
+- **全部 30/30 通过**，耗时 0.05s
+
+### Notes:
+- IK 求解器 C 代码从 Python tools/ik_solver.py 的解析解直接翻译
+- 串口协议：G=目标位置、H=归零、T=设置时间、P=打印当前角度
+- 梯形速度插值使用 smooth_step 三次多项式（ease-in-out）
+
+---
+
 ## 2026-06-04 - Task 31: 舵机/电机选型工具
 
 ### What was done:

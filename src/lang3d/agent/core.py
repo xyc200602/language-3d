@@ -206,6 +206,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register code generation tools (firmware, wiring, test sequence)
+        try:
+            from ..tools.code_gen import register_code_gen_tools
+            register_code_gen_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None

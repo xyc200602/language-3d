@@ -47,6 +47,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "actuator": [
         "actuator_select", "actuator_analyze", "actuator_power_budget",
     ],
+    "code_gen": [
+        "gen_firmware", "gen_wiring_diagram", "gen_test_sequence",
+    ],
 }
 
 # Map step types to the tool categories they need

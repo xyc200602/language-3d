@@ -394,7 +394,7 @@
       "新建 tests/test_code_gen.py"
     ],
     "priority": 32,
-    "passes": false
+    "passes": true
   },
   {
     "id": 33,
