@@ -519,7 +519,7 @@
       "新建 tools/scheme_compare.py"
     ],
     "priority": 41,
-    "passes": false
+    "passes": true
   },
   {
     "id": 42,

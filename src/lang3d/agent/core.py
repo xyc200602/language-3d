@@ -248,6 +248,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register scheme comparison tools
+        try:
+            from ..tools.scheme_compare import register_scheme_tools
+            register_scheme_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None
