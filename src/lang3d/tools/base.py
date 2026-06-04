@@ -53,6 +53,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "bom": [
         "gen_bom",
     ],
+    "assembly_doc": [
+        "gen_assembly_guide",
+    ],
 }
 
 # Map step types to the tool categories they need

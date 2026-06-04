@@ -4,6 +4,39 @@
 
 ---
 
+## 2026-06-04 - Task 36: 装配指导书生成
+
+### What was done:
+- **新建 `tools/assembly_doc.py` — 装配指导书生成工具**
+  - `generate_assembly_guide(assembly, actuator_ids, sensor_ids, controller)` → Markdown 文档
+  - 7 个章节：
+    1. 零件清单（自定义零件 + 标准件数量）
+    2. 所需工具（螺丝刀、烙铁、万用表、USB 线）
+    3. 装配步骤（从关节链自动生成，每个关节一步）
+       - 关节类型、旋转范围、锚面方向
+       - 操作指令：对准→安装轴承→穿轴→固定→安装舵机
+    4. 接线说明（舵机引脚表 + 传感器接线 + 注意事项）
+    5. 校准步骤（上电→串口→归零→校零→检查传感器）
+    6. 测试清单（逐关节测试 checkbox）
+    7. 常见问题排查（不动/抖动/不平滑/无响应/角度不对）
+  - `GenAssemblyGuideTool` — Agent 工具
+
+- **修改 `agent/core.py`** — 注册 assembly_doc_tools
+- **修改 `tools/base.py`** — TOOL_CATEGORIES 新增 "assembly_doc"
+
+### Testing:
+- 新建 `tests/test_assembly_doc.py` — 35 个测试
+  - TestGuideStructure（10 tests）：7 个章节 + 标题 + 非空
+  - TestPartsChecklist（3 tests）：零件名 + 标准件 + 工具
+  - TestAssemblySteps（5 tests）：关节匹配 + 范围 + 类型 + 执行器 + 锚面
+  - TestWiringInstructions（5 tests）：有/无执行器 + 传感器 + ESP32/Arduino
+  - TestCalibrationAndTest（5 tests）：串口 + 归零 + 检查清单 + 关节测试 + 传感器
+  - TestTroubleshooting（2 tests）：问题 + 解决方案
+  - TestAssemblyDocTool（5 tests）：注册 + 执行 + 错误 + 全参数
+- **35/35 通过**
+
+---
+
 ## 2026-06-04 - Task 35: BOM 物料清单自动生成
 
 ### What was done:

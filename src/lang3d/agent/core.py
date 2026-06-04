@@ -220,6 +220,13 @@ class Agent:
         except Exception:
             pass
 
+        # Register assembly documentation tools (assembly guide)
+        try:
+            from ..tools.assembly_doc import register_assembly_doc_tools
+            register_assembly_doc_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None

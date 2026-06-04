@@ -453,7 +453,7 @@
       "新建 tests/test_assembly_doc.py"
     ],
     "priority": 36,
-    "passes": false
+    "passes": true
   },
   {
     "id": 37,
