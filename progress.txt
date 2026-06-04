@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-06-04 - Task 29: 速度优化 — 快速验证模式
+
+### What was done:
+
+- **Step 1: fc_batch 新增 volume_check 操作**
+  - 轻量级验证：加载文件检查所有对象的体积、尺寸、面/边数量，无需 VLM
+  - 支持 dimension 检查（指定期望尺寸 + tolerance_mm）、volume 范围检查
+  - 输出结构化 JSON（VOLUME_CHECK_JSON:），由 `_execute_operations` 格式化为可读报告
+  - 可检查当前文档或外部文件（path 参数）
+  - 耗时 <5s（vs cad_verify 的 60-100s）
+
+- **Step 2: VLM 验证优化**
+  - `cad_verify` 默认 angles 从 "" 改为 "isometric,front,top"，始终使用三角度验证
+  - 窗口匹配改进：优先选择带文档名的窗口（含 .FCStd/.stp），避免匹配到错误的 FreeCAD 窗口
+
+- **Step 3: 更新 AGENT_SYSTEM_PROMPT**
+  - 新增分级验证策略：Level 1-2 用 volume_check（<5s），Level 3+ 用 cad_verify
+  - 装配体验证用 interference_check 替代 VLM
+  - 新增装配工具说明：assembly_solve、ik_solve
+  - 修复 Python `.format()` 兼容性（移除 JSON 大括号）
+
+- **Step 4: 新建 tests/test_speed_optimization.py — 18 个测试**
+  - `TestVolumeCheckOperation`：7 个测试（描述、脚本生成、尺寸/体积/路径/JSON 输出）
+  - `TestVLMDefaultAngles`：2 个测试（默认角度验证）
+  - `TestSystemPrompt`：7 个测试（volume_check、Level 策略、assembly/ik、interference）
+  - `TestBackwardCompatibility`：2 个测试（object_info、所有原始操作）
+
+- **修复 test_prompt.py**：3 个因 prompt 内容变更而失败的测试
+
+### Testing:
+
+- 18/18 speed_optimization 测试通过
+- 10/10 prompt 测试通过（含修复）
+- 239/239 组合回归测试通过
+- 所有现有功能向后兼容
+
+### Notes:
+
+- volume_check 不需要 FreeCAD GUI 或 VLM，在 headless 模式下运行
+- Level 1-2 零件（正方体/圆柱体/平板）的验证速度从 ~60s 降到 <5s
+- VLM 默认三角度验证避免了 agent 自由选择时可能选错角度的问题
+
+---
+
+## 2026-06-04 - Task 28: 逆向运动学求解器
+
 ## 2026-06-04 - Task 28: 逆向运动学求解器
 
 ### What was done:

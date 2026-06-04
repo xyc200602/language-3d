@@ -310,6 +310,65 @@ def _build_script(operations: list[dict]) -> str:
             lines.append(f'doc.removeObject("{obj_name}")')
             lines.append("doc.recompute()")
 
+        elif op_type == "volume_check":
+            # Lightweight verification: load file and check all object
+            # dimensions without opening GUI or using VLM.
+            path = op.get("path", "").replace("\\", "\\\\")
+            checks = op.get("checks", {})
+            # Expected dims, volume range, etc.
+            expected_dims = checks.get("dimensions", {})
+            min_volume = checks.get("min_volume", 0)
+            max_volume = checks.get("max_volume", float("inf"))
+            if path:
+                lines.append(f'_vc_doc = FreeCAD.openDocument(r"{path}")')
+                lines.append("if not _vc_doc:")
+                lines.append('    print("VOLUME_CHECK:error: Failed to open document")')
+                lines.append("else:")
+            else:
+                lines.append("_vc_doc = doc")
+            lines.append("_vc_results = []")
+            lines.append("_vc_pass = True")
+            lines.append("for _vc_o in _vc_doc.Objects:")
+            lines.append("    if hasattr(_vc_o, 'Shape') and _vc_o.Shape is not None:")
+            lines.append("        try:")
+            lines.append("            _vc_s = _vc_o.Shape")
+            lines.append("            _vc_bb = _vc_s.BoundBox")
+            lines.append("            _vc_info = {")
+            lines.append('                "name": _vc_o.Name,')
+            lines.append('                "label": _vc_o.Label,')
+            lines.append('                "volume": round(_vc_s.Volume, 2),')
+            lines.append('                "area": round(_vc_s.Area, 2),')
+            lines.append('                "dims": [round(_vc_bb.XLength, 2), round(_vc_bb.YLength, 2), round(_vc_bb.ZLength, 2)],')
+            lines.append('                "center": [round(_vc_bb.Center.x, 2), round(_vc_bb.Center.y, 2), round(_vc_bb.Center.z, 2)],')
+            lines.append('                "edges": len(_vc_s.Edges), "faces": len(_vc_s.Faces),')
+            lines.append("            }")
+            if min_volume > 0:
+                lines.append(f"            if _vc_s.Volume < {min_volume}:")
+                lines.append(f'                _vc_info["volume_warning"] = "below minimum {min_volume}"')
+                lines.append("                _vc_pass = False")
+            if max_volume < float("inf"):
+                lines.append(f"            if _vc_s.Volume > {max_volume}:")
+                lines.append(f'                _vc_info["volume_warning"] = "above maximum {max_volume}"')
+                lines.append("                _vc_pass = False")
+            if expected_dims:
+                for dim_name, dim_val in expected_dims.items():
+                    dim_map = {"length": "XLength", "width": "YLength", "height": "ZLength",
+                               "x": "XLength", "y": "YLength", "z": "ZLength"}
+                    attr = dim_map.get(dim_name.lower(), dim_name)
+                    tol = checks.get("tolerance_mm", 1.0)
+                    lines.append(f'            _vc_actual = getattr(_vc_bb, "{attr}", 0)')
+                    lines.append(f"            if abs(_vc_actual - {dim_val}) > {tol}:")
+                    lines.append(f'                _vc_info["dim_warning"] = "{dim_name}: expected {dim_val}, got " + str(round(_vc_actual, 2))')
+                    lines.append("                _vc_pass = False")
+            lines.append("            _vc_results.append(_vc_info)")
+            lines.append("        except Exception:")
+            lines.append("            pass")
+            lines.append('import json as _vc_json')
+            lines.append("_vc_output = {'pass': _vc_pass, 'objects': _vc_results, 'total_objects': len(_vc_results)}")
+            lines.append('print("VOLUME_CHECK_JSON:" + _vc_json.dumps(_vc_output))')
+            if path:
+                lines.append("FreeCAD.closeDocument(_vc_doc.Name)")
+
         elif op_type == "rotate":
             obj_name = op["object"]
             axis = op["axis"]  # x, y, z
@@ -338,6 +397,35 @@ def _execute_operations(operations: list[dict]) -> str:
     script = _build_script(operations)
     try:
         output = _run_freecad_script(script)
+        # Format volume_check results nicely
+        has_vc = any(op.get("type") == "volume_check" for op in operations)
+        if has_vc and output:
+            for line in output.splitlines():
+                if line.strip().startswith("VOLUME_CHECK_JSON:"):
+                    json_str = line.strip()[len("VOLUME_CHECK_JSON:"):]
+                    try:
+                        data = json.loads(json_str)
+                        passed = data.get("pass", False)
+                        objects = data.get("objects", [])
+                        result_lines = [
+                            f"[Volume Check] {'PASS' if passed else 'FAIL'}",
+                            f"Objects checked: {len(objects)}",
+                        ]
+                        for obj in objects:
+                            dims = obj.get("dims", [0, 0, 0])
+                            result_lines.append(
+                                f"  {obj.get('label', obj.get('name', '?'))}: "
+                                f"volume={obj.get('volume', 0):.1f}mm³ "
+                                f"dims={dims[0]:.1f}x{dims[1]:.1f}x{dims[2]:.1f}mm"
+                            )
+                            if "volume_warning" in obj:
+                                result_lines.append(f"    ⚠ {obj['volume_warning']}")
+                            if "dim_warning" in obj:
+                                result_lines.append(f"    ⚠ {obj['dim_warning']}")
+                        result_lines.append(f"\n--- JSON ---\n{json_str}")
+                        return "\n".join(result_lines)
+                    except json.JSONDecodeError:
+                        pass
         return output if output else "OK"
     except RuntimeError as e:
         return f"Error: {e}"
@@ -765,7 +853,7 @@ class FCBatchTool(Tool):
         "Each operation is a JSON object with 'type' and parameters. "
         "Available types: new_doc, make_box, make_cylinder, make_sphere, make_cone, "
         "boolean, move, rotate, cylinder_with_hole, plate_with_holes, fillet, chamfer, "
-        "save, export_stl, export_step, object_info, delete_object."
+        "save, export_stl, export_step, object_info, delete_object, volume_check."
     )
 
     def get_definition(self) -> ToolDefinition:

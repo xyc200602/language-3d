@@ -352,7 +352,7 @@
       "修改 orchestrator.py — 利用 wave 并行建模"
     ],
     "priority": 29,
-    "passes": false
+    "passes": true
   },
   {
     "id": 30,

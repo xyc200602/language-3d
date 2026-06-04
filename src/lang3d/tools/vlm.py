@@ -412,7 +412,7 @@ class CADVerifyTool(Tool):
         expected: str,
         window_title: str = "FreeCAD",
         detail: str = "detailed",
-        angles: str = "",
+        angles: str = "isometric,front,top",
         **kwargs: Any,
     ) -> str:
         try:
@@ -430,6 +430,16 @@ class CADVerifyTool(Tool):
             user32 = ctypes.windll.user32
             screen_w = user32.GetSystemMetrics(0)
             screen_h = user32.GetSystemMetrics(1)
+
+            # Sort matches: prefer windows with document names (contain ".FCStd"
+            # or similar) over generic "FreeCAD" windows.
+            def _window_priority(item: tuple) -> tuple:
+                _hwnd, title = item
+                has_doc = (".fcstd" in title.lower() or ".stp" in title.lower()
+                          or "[unnamed]" in title.lower())
+                return (0 if has_doc else 1, title)
+
+            matches = sorted(matches, key=_window_priority)
 
             # Find a window with valid dimensions
             for hwnd, full_title in matches:

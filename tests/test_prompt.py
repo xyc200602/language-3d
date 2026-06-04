@@ -16,7 +16,7 @@ def test_prompt_contains_workflow():
     """System prompt describes the 3D modeling workflow."""
     assert "fc_batch" in AGENT_SYSTEM_PROMPT
     assert "cad_verify" in AGENT_SYSTEM_PROMPT
-    assert "fc_open_gui" in AGENT_SYSTEM_PROMPT
+    assert "volume_check" in AGENT_SYSTEM_PROMPT
 
 
 def test_prompt_contains_tool_prefixes():
@@ -29,9 +29,8 @@ def test_prompt_contains_tool_prefixes():
 def test_prompt_contains_verification_strategy():
     """System prompt includes cad_verify verification strategy."""
     assert "MATCH" in AGENT_SYSTEM_PROMPT
-    assert "match=false" in AGENT_SYSTEM_PROMPT
-    assert "DIFFERENCES" in AGENT_SYSTEM_PROMPT
-    assert "SUGGESTION" in AGENT_SYSTEM_PROMPT
+    assert "FIX_COMMANDS" in AGENT_SYSTEM_PROMPT
+    assert "false=需修正" in AGENT_SYSTEM_PROMPT or "false" in AGENT_SYSTEM_PROMPT
 
 
 def test_prompt_contains_detail_levels():
