@@ -31,6 +31,10 @@ class OrchestratorSettings(BaseModel):
     max_parallel_agents: int = 3
     max_retries_per_step: int = 3
     enable_parallel: bool = True
+    # Phased orchestration (Task 44)
+    phase_execution: bool = True
+    layout_model: str = ""  # model for layout planning; empty = use default
+    integration_timeout: int = 600  # seconds for integration phase
 
 
 class SimulationSettings(BaseModel):
@@ -78,7 +82,7 @@ class AgentConfig(BaseModel):
     retry: RetrySettings = Field(default_factory=RetrySettings)
 
     # Execution tuning (unified from hardcoded values)
-    max_turns_per_step: int = 10
+    max_turns_per_step: int = 25
     max_verify_retries: int = 3
     max_plan_retries: int = 3
     conversation_max_tokens: int = 8000

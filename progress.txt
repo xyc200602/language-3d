@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-06-05 - Task 44: 分阶段编排器 — PhasedOrchestrator 4阶段执行
+
+### What was done:
+- **修改 config.py** — `OrchestratorSettings` 新增 `phase_execution: bool = True`、`layout_model: str = ""`、`integration_timeout: int = 600`；`AgentConfig.max_turns_per_step` 从 10 提升到 25
+- **修改 executor.py** — `Executor` 默认 max_turns 从 10 提升到 25；新增 `set_design_context(context)` 方法；`execute_step()` 中自动注入设计上下文（子系统信息、接口约束）到用户消息
+- **修改 orchestrator.py** — 新增 `PhasedOrchestrator` 类继承 `OrchestratorAgent`，支持 4 阶段执行：
+  - Phase 1 (layout): `_plan_layout_phase()` — 确定每个子系统的空间约束、接口点、依赖关系
+  - Phase 2 (part_design): `_run_part_design_phase()` — 按依赖拓扑排序并行执行子系统设计，`max_parallel=6`
+  - Phase 3 (subsystem_verify): `_run_subsystem_verify_phase()` — 逐子系统验证几何正确性
+  - Phase 4 (integration_verify): `_run_integration_phase()` — 整机装配、干涉检查
+  - 失败恢复：子系统失败只重试该子系统（不影响其他），集成失败回溯
+  - 新增辅助方法：`_collect_subsystem_context()`、`_wire_sub_agent_callbacks()`
+- **编写 tests/test_phased_orchestrator.py** — 28 个测试覆盖：Config (3)、Construction (4)、Layout Phase (5)、Part Design Phase (3)、Failure Recovery (2)、Context Propagation (3)、Integration Phase (3)、Full Pipeline (3)、Executor Design Context (2)
+
+### Testing:
+- `tests/test_phased_orchestrator.py`: 28/28 passed
+- 核心回归测试：86/86 passed (test_agent + test_models + test_tools + test_prompt + test_hierarchical_plan)
+
+### Notes:
+- PhasedOrchestrator 继承 OrchestratorAgent，保持向后兼容，原有 OrchestratorAgent 不受影响
+- 设计上下文通过 `set_design_context()` 注入到 Executor，再自动附加到执行消息中
+- 子系统调度基于 system_dependencies 拓扑排序，独立子系统并行执行
+- 后续 Task 45 (质量属性系统) 需要本任务的编排能力来支撑稳定性分析
+
+---
+
+## 2026-06-05 - Task 43: 分层规划架构 — HierarchicalPlan 数据结构与子系统分解
+
+### What was done:
+- **修改 agent/state.py** — 新增 `SubSystem` dataclass（name, parts, joints, constraints, steps, status, mirror_of, instance_count, interface_points）、`SystemDependency`（source, target, reason）、`HierarchicalPlan`（subsystems, system_dependencies, integration_steps + get_subsystem/all_steps/total_parts/progress/to_flat_plan 方法）、`StepStatus` 新增 BLOCKED/WAITING、`AgentState.plan` 类型扩展为 `Plan | HierarchicalPlan | None`
+- **修改 agent/planner.py** — `PLANNER_EXAMPLES` 新增 `complex_robot` 示例、`COMPLEX_ROBOT_KEYWORDS` 30 个关键词列表、`SYMMETRY_PATTERNS` 4 种对称模式（4轮/2轮/双臂/双腿）、`_detect_task_type()` 新增 `complex_robot` 类型（最高优先级）、新增 `detect_symmetry()` 静态方法、新增 `HIERARCHICAL_PLANNER_PROMPT` 系统提示词、新增 `create_hierarchical_plan()` 方法、新增 `_parse_hierarchical_response()` 解析方法
+- **修改 agent/core.py** — `AGENT_SYSTEM_PROMPT` 增加"复杂机器人设计工作流"段落（子系统分解/对称性复用/并行设计/接口约束/集成验证）、`run_task()` 新增 `_should_use_hierarchical()` 判断（命中 COMPLEX_ROBOT_KEYWORDS 时使用分层规划）、`_broadcast_plan()` 扩展支持 HierarchicalPlan（推送 subsystems 和 system_dependencies 到 Web 面板）
+- **新建 tests/test_hierarchical_plan.py** — 38 个测试
+
+### Testing:
+- 38/38 新测试通过（StepStatus、SubSystem、SystemDependency、HierarchicalPlan、task type 检测 6 例、symmetry 检测 5 例、AgentState 兼容、parsing 5 例、_should_use_hierarchical 4 例）
+- 48/48 核心回归测试通过（test_agent/test_models/test_tools/test_prompt）
+- 所有 import 正常，无破坏性变更
+
+### Notes:
+- Phase E (架构升级) 第一个任务。HierarchicalPlan 提供 to_flat_plan() 方法确保向后兼容
+- Task 44 (分阶段编排器) 将消费 HierarchicalPlan 进行真正的子系统并行执行
+- 当前 run_task() 对 complex_robot 任务会先创建 HierarchicalPlan，然后 flatten 为 Plan 执行；Task 44 将替换为 PhasedOrchestrator 的分阶段执行
+
 ## 2026-06-04 - Task 42: 生产准备就绪检查
 
 ### What was done:

@@ -34,11 +34,16 @@ class Executor:
         self,
         router: ModelRouter,
         tool_registry: ToolRegistry,
-        max_turns_per_step: int = 10,
+        max_turns_per_step: int = 25,
     ) -> None:
         self.router = router
         self.tools = tool_registry
         self.max_turns = max_turns_per_step
+        self._design_context: dict[str, Any] | None = None
+
+    def set_design_context(self, context: dict[str, Any] | None) -> None:
+        """Inject design context (subsystem info, interface constraints, etc.)."""
+        self._design_context = context
 
     @staticmethod
     def _infer_step_type(step: PlanStep) -> str:
@@ -102,6 +107,16 @@ class Executor:
         # Add reflection from previous attempts if any
         if step.attempts > 1:
             messages[0].content += f"\n\n（这是第 {step.attempts} 次尝试，之前的尝试失败了）"
+
+        # Inject design context if available (subsystem, interface constraints, etc.)
+        if self._design_context:
+            ctx_lines = ["\n\n## 设计上下文"]
+            for key, val in self._design_context.items():
+                if isinstance(val, (list, dict)):
+                    ctx_lines.append(f"- {key}: {val}")
+                else:
+                    ctx_lines.append(f"- {key}: {val}")
+            messages[0].content += "\n".join(ctx_lines)
 
         step_type = self._infer_step_type(step)
 

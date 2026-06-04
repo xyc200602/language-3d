@@ -536,5 +536,307 @@
     ],
     "priority": 42,
     "passes": true
+  },
+  {
+    "id": 43,
+    "title": "分层规划架构 — HierarchicalPlan 数据结构与子系统分解",
+    "description": "为支持 40-50 零件复杂机器人设计，重构 Plan 数据结构为分层子系统模型。当前扁平 List[PlanStep] 无法管理复杂装配，需要 HierarchicalPlan 支持子系统分组（底盘/臂/电子）、子系统间依赖、子系统内步骤隔离。参考 ArtiCAD (arXiv 2604.10992) 多 Agent 装配生成架构和 Physics-in-the-Loop (arXiv 2605.19717) 分层验证架构。",
+    "steps": [
+      "修改 agent/state.py — 新增 SubSystem dataclass（name, parts, joints, constraints, status）、HierarchicalPlan（subsystems: List[SubSystem], system_dependencies）、StepStatus 新增 BLOCKED/WAITING",
+      "修改 agent/planner.py — 实现 create_hierarchical_plan()：LLM 将复杂任务分解为子系统（底盘/左臂/右臂/工控机/传感器塔），每个子系统生成独立零件级计划",
+      "修改 agent/planner.py — PLANNER_EXAMPLES 新增复杂机器人分解示例（4轮底盘+双臂+工控机）、PLANNER_SYSTEM_PROMPT 增加子系统分解指导",
+      "修改 agent/planner.py — _detect_task_type() 新增 complex_robot 类型检测（关键词：轮/底盘/移动/双臂/多臂/工控机/AGV）",
+      "修改 agent/planner.py — 新增 _detect_symmetry() 自动识别对称零件（4轮→只建模1次×4实例、双臂→镜像）",
+      "修改 agent/core.py — AGENT_SYSTEM_PROMPT 增加子系统设计工作流和对称性复用说明",
+      "修改 agent/core.py — run_task() 新增复杂度判断：零件>15 或 包含多子系统关键词时使用 hierarchical 模式",
+      "编写 tests/test_hierarchical_plan.py — 子系统分解、依赖推断、对称性检测、层级状态管理测试（~25 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 43,
+    "passes": true
+  },
+  {
+    "id": 44,
+    "title": "分阶段编排器 — 子系统并行设计 → 集成验证",
+    "description": "重构 Orchestrator 支持分阶段执行：Phase 1 子系统布局规划 → Phase 2 子系统并行零件设计 → Phase 3 子系统内验证 → Phase 4 整机集成验证。当前单阶段 wave 执行无法处理子系统间的接口约束和集成验证。",
+    "steps": [
+      "修改 agent/orchestrator.py — 新增 PhasedOrchestrator 类，支持 4 阶段执行（layout → part_design → subsystem_verify → integration_verify）",
+      "修改 agent/orchestrator.py — max_parallel 提升到 6，支持多子系统并行设计",
+      "修改 agent/orchestrator.py — 新增 _plan_layout_phase()：确定子系统空间布局、接口约束（如底盘顶面螺孔位置决定工控机支架底面）、质量预算分配",
+      "修改 agent/orchestrator.py — 新增 _run_part_design_phase()：每个子系统作为独立 sub-agent 并行执行，传递布局约束作为上下文",
+      "修改 agent/orchestrator.py — 新增 _run_integration_phase()：整机装配 → 干涉检查 → 稳定性分析 → 运动学验证",
+      "修改 agent/orchestrator.py — 失败恢复策略：子系统失败时只重试该子系统，不影响其他；集成失败时回溯到布局阶段",
+      "修改 agent/executor.py — max_turns_per_step 从 10 提升到 25，支持复杂零件多轮建模",
+      "修改 agent/executor.py — 步骤执行时传递设计上下文（所属子系统、相邻零件、接口约束）",
+      "修改 config.py — OrchestratorSettings 新增 phase_execution: bool、layout_model: str、integration_timeout: int",
+      "编写 tests/test_phased_orchestrator.py — 阶段执行、并行设计、失败恢复、上下文传递测试（~20 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 44,
+    "passes": true
+  },
+  {
+    "id": 45,
+    "title": "零件质量属性系统 — 密度/质心/惯性张量",
+    "description": "为支持后续稳定性分析和电机力矩计算，为零件和装配体添加物理属性（质量、质心、惯性张量）。当前 Part 只有几何尺寸，缺少质量相关信息。这是稳定性分析、力矩计算、URDF 导出的基础。",
+    "steps": [
+      "修改 knowledge/mechanics.py — Part 新增 mass, density, center_of_mass (x,y,z), inertia_tensor (3x3) 字段",
+      "修改 knowledge/mechanics.py — 新增 MaterialDensity 常量（PLA:1.24, ABS:1.04, PETG:1.27, 铝合金:2700, 钢:7850, 铜:8960 kg/m³）",
+      "修改 knowledge/mechanics.py — Assembly 新增 total_mass, center_of_mass, inertia_tensor 字段",
+      "修改 knowledge/mechanics.py — 新增 compute_assembly_mass()：递归计算子系统和整机质量、质心（加权平均）、惯性张量（平行轴定理）",
+      "修改 tools/freecad.py — fc_batch 新增 compute_mass 操作：调用 FreeCAD 的 Shape.Solids[0].MassMatrixOfVolume 获取质量属性",
+      "修改 tools/freecad.py — fc_batch volume_check 扩展：同时验证质量在合理范围内",
+      "新建 tools/mass_properties.py — compute_part_mass(dims, material)、compute_com(parts)、compute_inertia(part, material)、compute_assembly_properties(assembly) 工具",
+      "修改 agent/core.py — 注册 mass_properties 工具、系统提示词增加质量属性说明",
+      "编写 tests/test_mass_properties.py — 单件质量、递归质心、惯性张量、装配体属性、材料库测试（~20 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 45,
+    "passes": false
+  },
+  {
+    "id": 46,
+    "title": "移动底盘知识库与差速运动学",
+    "description": "建立移动底盘设计知识库：差速驱动/全向驱动运动学模型、电机力矩计算、电池容量估算、轮距/轴距/离地间隙设计规则。为 Agent 提供从自然语言需求（载重/速度/续航/坡度）到底盘参数（轮径/轮距/电机力矩/电池容量）的自动推导能力。",
+    "steps": [
+      "新建 knowledge/mobile_base.py — DifferentialDriveKinematics 类（正运动学/逆运动学/转弯半径/最大速度计算）",
+      "新建 knowledge/mobile_base.py — OmnidirectionalKinematics 类（Mecanum 轮 4 轮逆运动学）",
+      "新建 knowledge/mobile_base.py — MotorTorqueCalculator：T_rolling + T_incline + T_accel → 电机选型参数",
+      "新建 knowledge/mobile_base.py — BatterySizingCalculator：P_total × runtime × safety_factor → 电池容量(Ah)和电压",
+      "新建 knowledge/mobile_base.py — WheelBaseCalculator：payload → wheel_diameter, track_width, ground_clearance, wheelbase 推导",
+      "新建 knowledge/mobile_base.py — MOBILE_BASE_TEMPLATES：差速4轮/差速2轮/Mecanum/全向轮/Ackermann 5 种底盘模板，每种含零件清单+关节定义+参数范围",
+      "新建 knowledge/mobile_base.py — DC_MOTOR_CATALOG：常用直流电机参数（TT马达/370电机/NEMA17/NEMA23/JGA25-370 等）",
+      "新建 tools/mobile_design.py — mobile_base_design(requirements) 工具：输入（载重/速度/坡度/续航）→ 输出（底盘参数+零件清单+电机选型+电池选型）",
+      "新建 tools/mobile_design.py — differential_drive_sim(v_left, v_right, dt) 工具：差速运动学仿真（轨迹预测）",
+      "修改 agent/core.py — 注册 mobile_design 工具、系统提示词增加底盘设计工作流",
+      "修改 agent/planner.py — _detect_task_type() 新增 mobile_base 关键词、PLANNER_EXAMPLES 新增底盘设计示例",
+      "编写 tests/test_mobile_base.py — 运动学正逆解、力矩计算、电池估算、底盘模板、工具执行测试（~30 个）"
+    ],
+    "priority": 46,
+    "passes": false
+  },
+  {
+    "id": 47,
+    "title": "闭环装配求解器 — 支持差速底盘四轮约束",
+    "description": "当前 assembly_solver 只支持开环树状装配（BFS/DFS）。四轮差速底盘形成闭环运动链（左前轮→底盘→右前轮→地面→左前轮），需要迭代约束求解器处理闭环。同时扩展支持齿轮传动比、皮带传动、差速器约束。",
+    "steps": [
+      "修改 tools/assembly_solver.py — Joint 新增 joint_type: gear/belt/differential 字段和 transmission_ratio, gear_ratio 参数",
+      "修改 tools/assembly_solver.py — 新增 ClosedChainSolver 类：迭代约束求解（Newton-Raphson），支持闭环运动链的约束满足",
+      "修改 tools/assembly_solver.py — 新增 solve_closed_chain() 方法：检测环路 → 建立约束方程组 → 迭代求解 → 验证收敛",
+      "修改 tools/assembly_solver.py — 新增 DifferentialConstraint 类：左右轮速度比约束（v_l / v_r = (R - L·ω/2) / (R + L·ω/2)）",
+      "修改 tools/assembly_solver.py — _compute_child_transform() 扩展：支持偏心旋转、本地坐标系、配合约束（轴孔/面面贴合）",
+      "修改 tools/assembly_solver.py — get_joint_chain() 扩展：支持树状/图状运动学结构（双臂共享底盘节点）",
+      "新建 tools/drive_train.py — drive_train_design(wheel_count, drive_type, motor_type) 工具：自动生成驱动系统装配定义（电机→减速器→轮子的关节链）",
+      "修改 agent/core.py — 注册 drive_train 工具、系统提示词增加闭环装配和驱动系统说明",
+      "编写 tests/test_closed_chain_solver.py — 闭环约束求解、差速约束、齿轮传动、配合约束、驱动系统生成测试（~25 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 47,
+    "passes": false
+  },
+  {
+    "id": 48,
+    "title": "稳定性分析工具 — 质心/支撑多边形/Force-Angle 稳定性指标",
+    "description": "实现机器人稳定性分析：递归质心计算→支撑多边形构建→Force-Angle 稳定性指标→翻倒风险预警。对于工控机+双臂在上、重心偏高的机器人，这是安全性验证的关键。参考 Force-Angle stability measure (Papadopoulos, 1996) 和 ZMP 方法。",
+    "steps": [
+      "新建 tools/stability.py — compute_support_polygon(contact_points) → 凸包（Graham scan 算法）",
+      "新建 tools/stability.py — compute_static_stability(com, support_polygon) → 最小距离（质心投影到支撑多边形边缘的最短距离）",
+      "新建 tools/stability.py — compute_force_angle_stability(com, contacts, forces) → Force-Angle 指标（正值=稳定，负值=翻倒）",
+      "新建 tools/stability.py — compute_zmp(com, linear_momentum, angular_momentum, height) → ZMP 坐标",
+      "新建 tools/stability.py — check_tip_over_risk(assembly, pose) → 综合评估（静态稳定性+动态稳定性+翻倒裕度）",
+      "新建 tools/stability.py — generate_stability_report(assembly) → Markdown 报告（质心位置、支撑多边形、稳定裕度、风险等级、建议）",
+      "新建 tools/stability.py — StabilityAnalysisTool：Agent 工具（调用上述分析）",
+      "修改 agent/core.py — 注册 stability 工具、系统提示词增加稳定性验证策略（高重心设计必须过稳定性检查）",
+      "修改 agent/planner.py — 集成验证阶段自动插入 stability 分析步骤",
+      "编写 tests/test_stability.py — 凸包计算、静态稳定性、Force-Angle、ZMP、翻倒风险、报告生成测试（~25 个）"
+    ],
+    "priority": 48,
+    "passes": false
+  },
+  {
+    "id": 49,
+    "title": "双臂协调 — 集中式 IK + 碰撞检测 + 工作空间分析",
+    "description": "当前 IK 求解器只支持单臂。双臂机器人需要：集中式 12+DOF 联合求解、臂间自碰撞检测（胶囊体+GJK）、共享工作空间重叠分析和可达性地图。参考 ABB YuMi 集中式运动规划方法。",
+    "steps": [
+      "修改 tools/ik_solver.py — LinkSegment 新增 inertia, motor_spec, coupling_ratio 字段",
+      "修改 tools/ik_solver.py — 新增 JacobianIKSolver 类：数值 Jacobian + 加权伪逆 + nullspace 优化（最小化关节运动/力矩）",
+      "修改 tools/ik_solver.py — 新增 solve_dual_arm_ik(arm1_chain, arm2_chain, target1, target2, collision_constraint) → 双臂联合求解",
+      "修改 tools/ik_solver.py — 新增 DualArmMode 枚举：INDEPENDENT（独立求解）/ COORDINATED（协调求解）/ MASTER_SLAVE（主从模式）",
+      "新建 tools/collision.py — Capsule 实体（线段+半径）、build_capsule_model(links) 将手臂近似为胶囊体序列",
+      "新建 tools/collision.py — gjk_distance(capsule_a, capsule_b) GJK 算法计算最小距离",
+      "新建 tools/collision.py — check_self_collision(arm1_capsules, arm2_capsules, safety_margin=10mm) → 碰撞报告",
+      "新建 tools/workspace.py — compute_workspace(chain, n_samples=1000) Monte Carlo 采样工作空间",
+      "新建 tools/workspace.py — compute_shared_workspace(arm1, arm2) 双臂工作空间重叠区域",
+      "新建 tools/workspace.py — WorkspaceAnalysisTool：Agent 工具（工作空间可视化+可达性分析）",
+      "修改 agent/core.py — 注册 collision 和 workspace 工具、系统提示词增加双臂设计指导",
+      "编写 tests/test_dual_arm_ik.py — Jacobian 求解、双臂协调、碰撞检测、工作空间分析测试（~30 个）"
+    ],
+    "priority": 49,
+    "passes": false
+  },
+  {
+    "id": 50,
+    "title": "直流电机固件生成 — PID + 编码器 + 差速驱动",
+    "description": "当前 code_gen.py 只生成舵机 PWM 固件。移动底盘需要直流电机 PID 控制、编码器反馈、差速运动学驱动。扩展固件生成能力覆盖直流有刷电机+编码器的完整控制链。",
+    "steps": [
+      "修改 tools/code_gen.py — 新增 DCMotorController 类：PWM 驱动 + PID 速度/位置环 + 编码器中断",
+      "修改 tools/code_gen.py — 新增 DifferentialDriveController 类：左右轮速度→线速度/角速度转换 + 转弯补偿",
+      "修改 tools/code_gen.py — gen_firmware() 扩展：检测底盘零件后自动生成电机控制代码（而非舵机代码）",
+      "修改 tools/code_gen.py — 新增 gen_motor_driver_code(motors, encoders, controller) → Arduino/ESP32 C 代码",
+      "修改 tools/code_gen.py — 新增 gen_odometry_code(wheels, encoders) → 轮式里程计代码（位置估算）",
+      "修改 knowledge/actuators.py — 新增 DC_MOTOR_SPEC 常量（TT马达/370/JGA25-370 的额定参数、PID 初值）",
+      "修改 knowledge/sensors.py — 新增 ENCODER_SPEC 常量（霍尔编码器/光电编码器/AS5600 的 PPR、接口）",
+      "修改 agent/core.py — 系统提示词增加直流电机固件生成工作流",
+      "编写 tests/test_dc_motor_firmware.py — PID 参数生成、差速控制代码、编码器代码、里程计代码测试（~20 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 50,
+    "passes": false
+  },
+  {
+    "id": 51,
+    "title": "功率预算与电池选型工具",
+    "description": "实现整机功率预算计算：各子系统功耗估算（电机+控制器+工控机+传感器）→ 峰值/平均功率 → 电池容量选型 → 续航时间估算 → 充电策略建议。这是复杂机器人设计中电子与机械的桥接能力。",
+    "steps": [
+      "新建 tools/power_budget.py — PowerConsumer dataclass（name, type, peak_power_w, avg_power_w, duty_cycle）",
+      "新建 tools/power_budget.py — PowerBudgetCalculator 类：add_consumer() / compute_total_peak() / compute_total_avg() / estimate_runtime(battery_ah, voltage) / recommend_battery(runtime_target)",
+      "新建 tools/power_budget.py — 自动从装配体推断功耗：舵机(从选型) + 直流电机(从力矩×速度) + 控制器(从电机数) + 工控机(TDP) + 传感器(额定功率)",
+      "新建 tools/power_budget.py — BATTERY_CATALOG 常量：LiPo/LiFePO4/18650 的能量密度、C-rate、循环寿命、价格参考",
+      "新建 tools/power_budget.py — PowerBudgetTool：Agent 工具 → 功率预算报告（Markdown 表格 + 饼图数据）",
+      "修改 agent/core.py — 注册 power_budget 工具",
+      "编写 tests/test_power_budget.py — 功耗估算、电池选型、续航计算、自动推断测试（~15 个）"
+    ],
+    "priority": 51,
+    "passes": false
+  },
+  {
+    "id": 52,
+    "title": "FreeCAD 高级建模操作 — 扫掠/放样/阵列/镜像/薄壳",
+    "description": "当前 fc_batch 只支持基本体素+布尔+倒角+圆角。复杂机器人零件（电机支架、传感器罩、电缆通道）需要扫掠（sweep）、放样（loft）、圆形/矩形阵列（pattern）、镜像（mirror）、薄壳（shell）等高级操作。",
+    "steps": [
+      "修改 tools/freecad.py — _build_script() 新增 sweep 操作：sketch_profile + helix/path → 扫掠体（用于弹簧、电缆通道、把手）",
+      "修改 tools/freecad.py — _build_script() 新增 loft 操作：多个 sketch profile → 放样体（用于变截面零件、外壳）",
+      "修改 tools/freecad.py — _build_script() 新增 polar_pattern 操作：feature + count + angle → 圆周阵列（用于法兰螺栓孔、叶片）",
+      "修改 tools/freecad.py — _build_script() 新增 linear_pattern 操作：feature + count + spacing → 线性阵列（用于散热片、栅格）",
+      "修改 tools/freecad.py — _build_script() 新增 mirror 操作：feature + plane → 镜像（用于对称零件：右臂=镜像左臂）",
+      "修改 tools/freecad.py — _build_script() 新增 shell 操作：solid + faces_to_remove + thickness → 薄壳（用于外壳、罩子）",
+      "修改 tools/freecad.py — _build_script() 新增 draft 操作：face + angle + direction → 拔模（用于注塑件/打印件脱模）",
+      "修改 tools/freecad.py — FreeCAD 子进程超时从 60s 提升到 300s，支持复杂零件",
+      "修改 agent/core.py — AGENT_SYSTEM_PROMPT 更新：增加高级建模操作说明和使用场景",
+      "编写 tests/test_advanced_modeling.py — 每种新操作的建模+导出+验证测试（~18 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 52,
+    "passes": false
+  },
+  {
+    "id": 53,
+    "title": "零件库扩展 — 轮子/轮毂/支架/铜柱/底盘零件模板",
+    "description": "当前零件库 15 种标准件缺少复杂机器人所需的：轮子（实心/充气/Mecanum）、轮毂、电机支架、铜柱/六角柱、底盘板、L型支架、电池盒。扩展到 25+ 种模板，并增加按子系统分类的组织方式。",
+    "steps": [
+      "修改 knowledge/parts_catalog.py — 新增 wheel_simple（实心轮）、wheel_pneumatic（充气轮）、wheel_mecanum（麦克纳姆轮）模板",
+      "修改 knowledge/parts_catalog.py — 新增 hub_adapter（轮毂适配器）、motor_bracket（电机L型/U型支架）模板",
+      "修改 knowledge/parts_catalog.py — 新增 standoff（铜柱/六角柱）、battery_holder（电池盒）、pcb_mount（PCB 安装柱）模板",
+      "修改 knowledge/parts_catalog.py — 新增 chassis_plate（底盘板，参数化开孔）、corner_bracket（角码）模板",
+      "修改 knowledge/parts_catalog.py — CATEGORY_TREE 增加 mobile_base、mounting 结构子类别",
+      "修改 knowledge/parts_catalog.py — PartsStore 支持按 subsystem 分组查询",
+      "修改 knowledge/parts_catalog.py — 新增智能搜索：query='20mm mount' → 自动匹配 compatible parts（安装孔距匹配）",
+      "更新 Web API 和前端：Part Library Tab 增加按子系统分类浏览",
+      "编写 tests/test_parts_catalog_extended.py — 新模板、子系统分组、智能搜索测试（~15 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 53,
+    "passes": false
+  },
+  {
+    "id": 54,
+    "title": "ROS URDF 自动导出 — 从 FreeCAD 装配体到 ROS2 仿真",
+    "description": "实现从 Language-3D 装配体自动生成 ROS2 URDF/Xacro 文件，包含 link 几何（STL）、joint 定义（类型/轴/限位）、质量/惯性属性、Gazebo 仿真配置。参考 FreeCAD RobotCAD v10 和 UrdfArchitect 的实现方案。",
+    "steps": [
+      "新建 tools/urdf_export.py — AssemblyToURDF 转换器：遍历装配树 → 生成 URDF XML（link + joint + material）",
+      "新建 tools/urdf_export.py — 每个零件导出为简化 STL（碰撞用凸包碰撞体 + 可视用原始 STL）",
+      "新建 tools/urdf_export.py — 从 Part.mass/inertia 自动填充 link 的 inertial 标签（mass, origin, inertia 3x3 矩阵）",
+      "新建 tools/urdf_export.py — 从 Joint 自动生成 joint 标签（type/parent/child/origin/axis/limit）",
+      "新建 tools/urdf_export.py — 新增 Gazebo plugin 配置：差速驱动插件（libgazebo_ros_diff_drive）、机械臂位置控制（libgazebo_ros_joint_state_publisher）",
+      "新建 tools/urdf_export.py — 生成 ROS2 包目录结构（urdf/ + meshes/ + launch/ + config/ + package.xml + CMakeLists.txt）",
+      "新建 tools/urdf_export.py — URDFExportTool：Agent 工具 → 调用转换器 → 保存 ROS2 包",
+      "修改 agent/core.py — 注册 urdf_export 工具、系统提示词增加 URDF 导出说明",
+      "编写 tests/test_urdf_export.py — URDF 生成、link/joint 验证、惯性矩阵、碰撞体、ROS2 包结构测试（~20 个）"
+    ],
+    "priority": 54,
+    "passes": false
+  },
+  {
+    "id": 55,
+    "title": "电缆走线规划工具",
+    "description": "实现电缆/线束走线规划：定义连接关系（传感器→控制器→电机）→ 3D 空间路径搜索（JPS/B-spline）→ 弯曲半径约束 → 走线报告。支持自动检测哪些零件间需要电缆连接。",
+    "steps": [
+      "新建 tools/cable_routing.py — CableSpec dataclass（start_connector, end_connector, diameter, min_bend_radius, length_limit）",
+      "新建 tools/cable_routing.py — build_3d_grid(assembly, resolution=5mm) → 自由空间体素网格（排除零件占用空间）",
+      "新建 tools/cable_routing.py — find_cable_path(grid, start, end, constraints) → JPS 路径搜索 → B-spline 平滑 → 弯曲半径验证",
+      "新建 tools/cable_routing.py — auto_detect_connections(assembly) → 从零件类型推断电缆连接（电机→控制器、传感器→工控机、电池→电源板）",
+      "新建 tools/cable_routing.py — generate_cable_report(cables) → 走线方案报告（电缆清单、路径长度、弯曲检查、固定点建议）",
+      "新建 tools/cable_routing.py — CableRoutingTool：Agent 工具",
+      "修改 agent/core.py — 注册 cable_routing 工具",
+      "编写 tests/test_cable_routing.py — 路径搜索、弯曲检查、自动连接推断、报告生成测试（~15 个）"
+    ],
+    "priority": 55,
+    "passes": false
+  },
+  {
+    "id": 56,
+    "title": "FreeCAD 草图建模 — Sketch + Extrude/Revolve 工作流",
+    "description": "当前只支持基本体素（box/cylinder/sphere/cone）+ 布尔运算。很多机器人零件（电机支架、传感器座、外壳）无法用体素组合高效表达。需要增加 2D 草图→3D 特征的工作流（sketch + extrude/revolve/cut），参考 Text2CAD 和 CAD-Llama 的参数化建模方案。",
+    "steps": [
+      "修改 tools/freecad.py — _build_script() 新增 create_sketch 操作：points/lines/arcs/circles/constraints → 2D 草图",
+      "修改 tools/freecad.py — _build_script() 新增 extrude_sketch 操作：sketch + height/direction → 拉伸体",
+      "修改 tools/freecad.py — _build_script() 新增 revolve_sketch 操作：sketch + axis + angle → 旋转体（用于轴、套筒、手轮）",
+      "修改 tools/freecad.py — _build_script() 新增 pocket 操作：sketch + depth → 减材挖槽",
+      "修改 tools/freecad.py — _build_script() 新增 sketch_with_dimensions：支持参数化草图（长度/角度/半径变量化）",
+      "修改 agent/core.py — AGENT_SYSTEM_PROMPT 增加草图建模指导：何时用体素+布尔、何时用草图+拉伸",
+      "新建 tests/test_sketch_modeling.py — 草图创建、拉伸、旋转、挖槽、参数化草图测试（~15 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 56,
+    "passes": false
+  },
+  {
+    "id": 57,
+    "title": "复杂机器人端到端验证 — 4轮底盘+工控机+双臂完整设计",
+    "description": "最终集成验证：输入'设计一个 4 轮差速底盘移动机器人，上面安装工控机和两个 3-DOF 机械臂'，验证 Language-3D 能从自然语言输出完整工程包（40+ 零件建模 + 装配 + 运动学 + 稳定性 + 固件 + BOM + URDF + 走线 + 切片）。这是 Phase E-H 的最终验收测试。",
+    "steps": [
+      "新建 tests/test_complex_robot_e2e.py — ComplexRobotTestCase 定义（需求→预期输出清单）",
+      "阶段 1 测试：子系统分解 — Planner 正确拆分为底盘/左臂/右臂/工控机/传感器塔 5 个子系统",
+      "阶段 2 测试：对称性 — 4 轮只建模 1 次、双臂镜像，验证复用机制",
+      "阶段 3 测试：零件建模 — 40+ 零件全部生成 FCStd + STL，验证几何正确性",
+      "阶段 4 测试：装配求解 — 闭环装配（4轮底盘）+ 树状装配（双臂），验证定位正确",
+      "阶段 5 测试：运动学 — 差速运动学正确、双臂 IK 收敛、无碰撞",
+      "阶段 6 测试：稳定性 — 质心在支撑多边形内、Force-Angle > 0、静态和动态稳定",
+      "阶段 7 测试：固件 — 电机 PID + 差速驱动 + 舵机控制 + 里程计代码完整",
+      "阶段 8 测试：工程输出 — BOM + 装配指导 + URDF + 电缆走线 + 切片 G-code 全部生成",
+      "阶段 9 测试：功率预算 — 功耗估算合理、电池选型满足续航要求",
+      "记录完整指标到 data/complex_robot_report.json（耗时/成功率/各阶段结果）"
+    ],
+    "priority": 57,
+    "passes": false
+  },
+  {
+    "id": 58,
+    "title": "Web 面板复杂机器人设计支持 — 子系统可视化 + 3D 整机预览",
+    "description": "扩展 Web 面板支持复杂机器人设计的监控和交互：子系统分解可视化、40+ 零件的装配层级树、整机 3D 预览（多模型叠加）、设计进度仪表盘（各子系统状态）、稳定性热力图。",
+    "steps": [
+      "修改 web/app.py — GET /api/design/hierarchy 返回子系统分解结构（子系统名→零件列表→状态）",
+      "修改 web/app.py — GET /api/design/assembly-tree 返回装配层级树（可展开/折叠）",
+      "修改 web/app.py — GET /api/design/stability 返回稳定性分析结果（质心、支撑多边形、Force-Angle 指标）",
+      "修改 web/app.py — GET /api/design/power-budget 返回功率预算报告",
+      "修改 web/static/index.html — 新增 Design Tab：子系统卡片布局（每个子系统显示进度、零件数、状态）",
+      "修改 web/static/index.html — 装配层级树组件（可展开折叠，点击零件高亮 3D 模型）",
+      "修改 web/static/index.html — 3D 预览扩展：支持多 STL 叠加显示（不同子系统不同颜色），点击零件高亮",
+      "修改 web/static/index.html — 设计仪表盘：子系统进度条、总零件进度、验证通过率、稳定性指标",
+      "编写 tests/test_web_complex_robot.py — 新端点测试（~10 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 58,
+    "passes": false
   }
 ]
