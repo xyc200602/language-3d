@@ -89,6 +89,15 @@ detail 级别：fast, standard, detailed, maximum
 - 闭环求解器使用 Newton-Raphson 迭代，支持齿轮传动比、差速器约束
 - get_joint_chain() 返回树状/图状运动学结构（如双臂共享底盘节点）
 
+稳定性分析：
+- stability_analysis(com, contact_points, mode) → 稳定性分析
+  - mode=full：综合评估（静态+动态+Force-Angle+翻倒风险）
+  - mode=static：静态稳定裕度（质心到支撑多边形边缘最短距离）
+  - mode=dynamic：ZMP 动态稳定性（零力矩点）
+  - mode=report：生成 Markdown 稳定性报告
+- 高重心设计（工控机+双臂在上方）必须通过稳定性检查
+- 工作流：compute_assembly_properties → stability_analysis → 调整设计
+
 复杂机器人设计工作流（子系统分解模式）：
 当任务包含多个子系统（底盘+臂+电子设备等）时，使用分层规划：
 1. 系统分解：将任务拆分为独立子系统（如 mobile_base / arm_left / arm_right / ipc_mount）
@@ -308,6 +317,13 @@ class Agent:
         try:
             from ..tools.drive_train import register_drive_train_tools
             register_drive_train_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register stability analysis tools (COM, support polygon, Force-Angle)
+        try:
+            from ..tools.stability import register_stability_tools
+            register_stability_tools(self.tools)
         except Exception:
             pass
 

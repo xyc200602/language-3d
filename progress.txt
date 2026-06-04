@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-05 - Task 48: 稳定性分析工具 — 质心/支撑多边形/Force-Angle/ZMP
+
+### What was done:
+- **新建 tools/stability.py** — 完整稳定性分析工具集：
+  - `compute_support_polygon(contact_points)` — Graham scan 凸包算法，从地面接触点构建支撑多边形
+  - `compute_static_stability(com, polygon)` — 静态稳定裕度（质心投影到支撑多边形边缘最短距离，正=稳定/负=不稳定）
+  - `compute_force_angle_stability(com, contacts, forces)` — Force-Angle 稳定性指标（Papadopoulos 1996），正值=稳定
+  - `compute_zmp(com, mass, accel)` — 零力矩点动态稳定性（flat ground简化模型）
+  - `check_tip_over_risk(com, contacts, mass, accel)` — 综合翻倒风险评估（静态+动态+Force-Angle → 风险等级 LOW/MEDIUM/HIGH/CRITICAL）
+  - `generate_stability_report(com, contacts, mass)` — Markdown 格式稳定性报告（质心位置、支撑多边形、稳定裕度、风险等级、建议）
+  - `StabilityAnalysisTool` — Agent 工具，支持 4 种模式（full/static/dynamic/report）
+- **修改 agent/core.py** — 注册 stability 工具、系统提示词增加稳定性分析工作流
+- **编写 tests/test_stability.py** — 32个测试覆盖：Convex Hull (8)、Static Stability (5)、Force-Angle (3)、ZMP (4)、Tip-Over Risk (4)、Report (2)、Tool Execution (4)、Registration (2)
+
+### Testing:
+- `tests/test_stability.py`: 32/32 passed
+- 核心回归测试：228/228 passed
+
+### Notes:
+- Force-Angle 指标：质心越偏离支撑多边形中心，metric_deg 越小（越不稳定）
+- ZMP：静止时 ZMP=COM投影，加速度导致 ZMP 偏移
+- 翻倒风险评分：COM在多边形外(+100)、裕度不足(+30)、ZMP偏移(+20)、Force-Angle不足(+25)
+- 后续 Task 49 (双臂协调) 可利用稳定性工具验证臂伸出时的整体稳定性
+
+---
+
 ## 2026-06-05 - Task 47: 闭环装配求解器 — 差速底盘四轮约束
 
 ### What was done:

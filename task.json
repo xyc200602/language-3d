@@ -651,7 +651,7 @@
       "编写 tests/test_stability.py — 凸包计算、静态稳定性、Force-Angle、ZMP、翻倒风险、报告生成测试（~25 个）"
     ],
     "priority": 48,
-    "passes": false
+    "passes": true
   },
   {
     "id": 49,
