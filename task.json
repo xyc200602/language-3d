@@ -407,7 +407,7 @@
       "新建 tests/test_sensors.py"
     ],
     "priority": 33,
-    "passes": false
+    "passes": true
   },
   {
     "id": 34,

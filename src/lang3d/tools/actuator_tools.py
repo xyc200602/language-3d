@@ -19,6 +19,7 @@ from ..knowledge.actuators import (
     torque_to_nm,
 )
 from ..knowledge.mechanics import Assembly
+from ..knowledge.sensors import get_sensor
 from ..models.base import ToolDefinition
 from ..tools.assembly_solver import AssemblySolver
 from .base import Tool
@@ -172,13 +173,15 @@ def power_budget(
     actuator_ids: list[str],
     duty_cycle: float = 0.3,
     include_margin: float = 1.3,
+    sensor_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Calculate power budget for a set of actuators.
+    """Calculate power budget for a set of actuators and sensors.
 
     Args:
         actuator_ids: List of actuator IDs.
         duty_cycle: Fraction of time actuators are under load (0-1).
         include_margin: Power supply overhead factor (default 1.3x).
+        sensor_ids: Optional list of sensor IDs to include in power budget.
     """
     actuators: list[Actuator] = []
     for aid in actuator_ids:
@@ -186,11 +189,18 @@ def power_budget(
         if a:
             actuators.append(a)
 
-    if not actuators:
-        return {"actuators": [], "count": 0, "total_power_w": 0,
+    # Resolve sensors
+    resolved_sensors = []
+    for sid in (sensor_ids or []):
+        s = get_sensor(sid)
+        if s:
+            resolved_sensors.append(s)
+
+    if not actuators and not resolved_sensors:
+        return {"actuators": [], "sensors": [], "count": 0, "total_power_w": 0,
                 "supply_power_w": 0, "supply_voltage_v": 0, "supply_current_a": 0,
                 "margin_factor": include_margin, "duty_cycle": duty_cycle,
-                "recommendation": "无执行器"}
+                "recommendation": "无执行器和传感器"}
 
     # Per-actuator power estimate:
     # Idle power + (stall - idle) * duty_cycle, all at nominal voltage
@@ -212,19 +222,34 @@ def power_budget(
             "power_w": round(power_w, 1),
         })
 
+    # Sensor power (continuous, always on)
+    sensor_details = []
+    for s in resolved_sensors:
+        power_w = (s.current_ma / 1000.0) * s.voltage
+        total_power_w += power_w
+        max_voltage = max(max_voltage, s.voltage)
+        sensor_details.append({
+            "id": s.id,
+            "name": s.name,
+            "voltage_v": s.voltage,
+            "current_ma": s.current_ma,
+            "power_w": round(power_w, 2),
+        })
+
     supply_power_w = total_power_w * include_margin
     supply_current_a = supply_power_w / max_voltage if max_voltage > 0 else 0
 
     return {
         "actuators": actuator_details,
+        "sensors": sensor_details,
         "count": len(actuators),
-        "total_power_w": round(total_power_w, 1),
+        "total_power_w": round(total_power_w, 3),
         "duty_cycle": duty_cycle,
-        "supply_power_w": round(supply_power_w, 1),
+        "supply_power_w": round(supply_power_w, 3),
         "supply_voltage_v": round(max_voltage, 1),
-        "supply_current_a": round(supply_current_a, 2),
+        "supply_current_a": round(supply_current_a, 3),
         "margin_factor": include_margin,
-        "recommendation": f"推荐电源: {round(supply_power_w)}W / {round(max_voltage, 1)}V / {round(supply_current_a, 1)}A",
+        "recommendation": f"推荐电源: {round(supply_power_w, 1)}W / {round(max_voltage, 1)}V / {round(supply_current_a, 2)}A",
     }
 
 
@@ -367,23 +392,36 @@ class ActuatorPowerBudgetTool(Tool):
                     "description": "执行器 ID 列表（如 ['MG996R', 'MG996R', 'SG90']）",
                 },
                 "duty_cycle": {"type": "number", "description": "占空比 (0-1, 默认 0.3)"},
+                "sensor_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "传感器 ID 列表（如 ['AS5600', 'MPU6050']）",
+                },
             }, "required": ["actuator_ids"]},
         )
 
     def execute(self, *, actuator_ids: list[str], duty_cycle: float = 0.3,
+                sensor_ids: list[str] | None = None,
                 **kwargs: Any) -> str:
-        result = power_budget(actuator_ids, duty_cycle)
+        result = power_budget(actuator_ids, duty_cycle, sensor_ids=sensor_ids)
         if "error" in result:
             return result["error"]
 
         lines = [
-            f"[Power Budget] {result['count']} 个执行器",
+            f"[Power Budget] {result['count']} 个执行器" +
+            (f" + {len(result.get('sensors', []))} 个传感器" if result.get('sensors') else ""),
             f"占空比: {duty_cycle * 100:.0f}%, 裕量: {result['margin_factor']}x",
             "",
             "--- 执行器功耗 ---",
         ]
         for a in result["actuators"]:
             lines.append(f"  {a['name']}: {a['voltage_v']}V / {a['avg_current_ma']:.0f}mA = {a['power_w']}W")
+
+        if result.get("sensors"):
+            lines.append("")
+            lines.append("--- 传感器功耗 ---")
+            for s in result["sensors"]:
+                lines.append(f"  {s['name']}: {s['voltage_v']}V / {s['current_ma']:.0f}mA = {s['power_w']}W")
 
         lines.extend([
             "",

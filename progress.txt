@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-06-04 - Task 33: 传感器集成规划
+
+### What was done:
+- **新建 `knowledge/sensors.py` — 传感器知识库**
+  - 8 种传感器：
+    - 限位开关：LIMIT_SWITCH_MICRO, LIMIT_SWITCH_ROLLER（关节行程端点检测）
+    - 电位器：POT_10K（模拟角度反馈）
+    - 磁编码器：AS5600（14-bit I2C）, AS5048A（14-bit SPI）（高精度角度反馈）
+    - IMU：MPU6050（六轴惯性测量）
+    - 测距：VL53L0X（ToF 激光测距，末端避障）
+  - Sensor dataclass：id/name/category/interface/voltage/current/resolution/range_deg/pins
+  - `recommend_sensors_for_joints()`：根据关节数自动推荐传感器组合
+
+- **修改 `tools/code_gen.py` — 传感器集成到固件**
+  - `generate_firmware()` 新增 `sensor_ids` 参数
+  - 自动生成 `sensor_driver.h` 和 `sensor_driver.cpp`（仅当指定传感器时）
+  - AS5600 磁编码器驱动：I2C 读取 14-bit 角度
+  - 限位开关驱动：数字输入 + INPUT_PULLUP + 限位保护中断
+  - MPU6050 IMU 驱动：I2C + 姿态数据
+  - 电位器驱动：ADC 模拟读取
+  - 主 .ino 新增：sensor_init()、sensor_read_all() 定时读取、限位安全保护、S 命令打印传感器状态
+
+- **修改 `tools/actuator_tools.py` — 功耗计算包含传感器**
+  - `power_budget()` 新增 `sensor_ids` 参数
+  - 传感器功耗（连续、常开）计入总功耗
+  - 输出新增 `sensors` 字段（每个传感器的功耗明细）
+
+### Testing:
+- 新建 `tests/test_sensors.py` — 47 个测试
+  - TestSensorKnowledgeBase（13 tests）：数据库完整性、查询、字段验证
+  - TestSensorRecommendations（9 tests）：编码器/电位器/限位/IMU 推荐组合
+  - TestFirmwareWithSensors（15 tests）：传感器驱动文件生成、I2C/AS5600/限位安全
+  - TestFirmwareWithPotentiometers（3 tests）：电位器传感器驱动
+  - TestPowerBudgetWithSensors（7 tests）：功耗含传感器、纯传感器功耗
+- **47/47 通过**，且 30/30 code_gen + 42/42 actuator_tools 回归全部通过
+
+### Notes:
+- 传感器 ID 命名：LIMIT_SWITCH_MICRO/ROLLER, POT_10K, AS5600, AS5048A, MPU6050, VL53L0X
+- 推荐传感器配置：4 关节 = 4x AS5600 + 4x LIMIT_SWITCH_MICRO + 1x MPU6050 = 9 个传感器
+- 功耗精度改为 3 位小数（传感器功耗为毫瓦级）
+
+---
+
 ## 2026-06-04 - Task 32: Arduino/ESP32 控制代码生成
 
 ### What was done:

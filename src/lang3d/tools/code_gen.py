@@ -5,6 +5,7 @@ Generates Arduino/ESP32 C/C++ code including:
   - PWM servo control
   - Serial communication protocol
   - Trapezoidal velocity interpolation
+  - Sensor integration (limit switches, encoders, IMU)
 
 Tools:
   gen_firmware        - Generate complete firmware (.ino + .cpp + .h)
@@ -21,6 +22,12 @@ from typing import Any
 
 from ..knowledge.actuators import get_actuator
 from ..knowledge.mechanics import Assembly
+from ..knowledge.sensors import (
+    Sensor,
+    get_sensor,
+    list_sensors,
+    recommend_sensors_for_joints,
+)
 from ..models.base import ToolDefinition
 from .assembly_solver import _resolve_assembly
 from .base import Tool
@@ -36,8 +43,17 @@ def generate_firmware(
     actuator_ids: list[str],
     controller: str = "esp32",
     baud_rate: int = 115200,
+    sensor_ids: list[str] | None = None,
 ) -> dict[str, str]:
     """Generate firmware files for a robotic assembly.
+
+    Args:
+        assembly: The mechanical assembly definition.
+        actuator_ids: List of actuator IDs (one per joint).
+        controller: "esp32" or "arduino".
+        baud_rate: Serial baud rate.
+        sensor_ids: Optional list of sensor IDs to integrate (e.g.
+            ["AS5600", "LIMIT_SWITCH_MICRO", "MPU6050"]).
 
     Returns dict of {filename: content}.
     """
@@ -60,6 +76,14 @@ def generate_firmware(
     # Servo pins
     servo_pins = _assign_pins(len(joint_names), controller)
 
+    # Resolve sensor objects
+    sensors: list[Sensor] = []
+    if sensor_ids:
+        for sid in sensor_ids:
+            s = get_sensor(sid)
+            if s:
+                sensors.append(s)
+
     files: dict[str, str] = {}
 
     # Main .ino file
@@ -68,6 +92,7 @@ def generate_firmware(
         servo_pins=servo_pins,
         controller=controller,
         baud_rate=baud_rate,
+        sensors=sensors,
     )
 
     # IK solver
@@ -89,6 +114,11 @@ def generate_firmware(
         servo_pins=servo_pins,
     )
 
+    # Sensor driver (only if sensors are specified)
+    if sensors:
+        files["sensor_driver.h"] = _gen_sensor_header(sensors)
+        files["sensor_driver.cpp"] = _gen_sensor_cpp(sensors, controller)
+
     return files
 
 
@@ -109,6 +139,7 @@ def _gen_main_ino(
     servo_pins: list[int],
     controller: str,
     baud_rate: int,
+    sensors: list[Sensor] | None = None,
 ) -> str:
     n = len(joint_names)
     servo_init = "\n".join(
@@ -121,14 +152,58 @@ def _gen_main_ino(
     )
     includes_lib = "ESP32Servo.h" if controller == "esp32" else "Servo.h"
 
+    # Sensor includes and init
+    sensor_include = ""
+    sensor_init_block = ""
+    sensor_read_block = ""
+    sensor_status_cmd = ""
+
+    if sensors:
+        sensor_include = '#include "sensor_driver.h"'
+        sensor_init_lines = ["  sensor_init();"]
+        sensor_init_block = "\n".join(sensor_init_lines)
+
+        # Periodic sensor reading in loop
+        sensor_read_lines = [
+            "  // Read sensors",
+            "  sensor_read_all();",
+        ]
+        # Check limit switches before moving
+        has_limit = any(s.category == "limit_switch" for s in sensors)
+        if has_limit:
+            sensor_read_lines.extend([
+                "",
+                "  // Safety: check limit switches before moving",
+                "  if (is_moving) {",
+                "    for (int i = 0; i < NUM_JOINTS; i++) {",
+                "      if (sensor_limit_triggered(i)) {",
+                "        is_moving = false;",
+                "        Serial.print(\"LIMIT: joint \");",
+                "        Serial.println(i);",
+                "        break;",
+                "      }",
+                "    }",
+                "  }",
+            ])
+        sensor_read_block = "\n".join(sensor_read_lines)
+
+        sensor_status_cmd = """
+    case 'S':  // Sensor status
+      sensor_print_status();
+      break;
+"""
+
+    # Build the complete .ino
     return f"""\
 // Robot Arm Controller - Auto-generated
 // Controller: {controller}
 // Joints: {n}
+{"// Sensors: " + ", ".join(s.name for s in sensors) if sensors else ""}
 
 #include <{includes_lib}>
 #include "ik_solver.h"
 #include "servo_driver.h"
+{sensor_include}
 
 {servo_decls}
 
@@ -146,10 +221,11 @@ bool is_moving = false;
 void setup() {{
   Serial.begin({baud_rate});
   Serial.println("Robot Arm Ready");
-  Serial.println("Commands: G<joint_angles_csv> | H<home> | T<duration_ms>");
+  Serial.println("Commands: G<joint_angles_csv> | H<home> | T<duration_ms> | P<print> | S<sensor status>");
 
   // Initialize servos
 {servo_init}
+{sensor_init_block}
 
   // Move to home position
   for (int i = 0; i < NUM_JOINTS; i++) {{
@@ -164,6 +240,8 @@ void loop() {{
   if (Serial.available()) {{
     parse_command(Serial.readStringUntil('\\n'));
   }}
+
+{sensor_read_block}
 
   // Interpolate towards target
   if (is_moving) {{
@@ -242,7 +320,7 @@ void parse_command(String cmd) {{
       }}
       Serial.println();
       break;
-
+{sensor_status_cmd}
     default:
       Serial.print("Unknown command: ");
       Serial.println(cmd);
@@ -509,6 +587,265 @@ float servo_read(int servo_id) {{
 
 
 # ---------------------------------------------------------------------------
+# Sensor driver generation
+# ---------------------------------------------------------------------------
+
+def _gen_sensor_header(sensors: list[Sensor]) -> str:
+    """Generate sensor_driver.h."""
+    sensor_list = "\n".join(
+        f"  // {i}: {s.name} ({s.category})" for i, s in enumerate(sensors)
+    )
+    has_encoder = any(s.category == "encoder" for s in sensors)
+    has_limit = any(s.category == "limit_switch" for s in sensors)
+    has_imu = any(s.category == "imu" for s in sensors)
+    has_analog = any(s.category == "potentiometer" for s in sensors)
+
+    decls = ""
+    if has_encoder:
+        decls += """
+// Read encoder angle for a joint (degrees)
+float sensor_read_encoder(int joint_index);
+"""
+    if has_limit:
+        decls += """
+// Check if limit switch is triggered for a joint
+bool sensor_limit_triggered(int joint_index);
+"""
+    if has_imu:
+        decls += """
+// Read IMU orientation (roll, pitch, yaw in degrees)
+void sensor_read_imu(float orientation[3]);
+"""
+    if has_analog:
+        decls += """
+// Read potentiometer angle for a joint (degrees)
+float sensor_read_potentiometer(int joint_index);
+"""
+
+    return f"""\
+// Sensor Driver - Auto-generated
+// Sensors: {len(sensors)}
+{sensor_list}
+
+#ifndef SENSOR_DRIVER_H
+#define SENSOR_DRIVER_H
+
+#include <Arduino.h>
+
+#define NUM_SENSORS {len(sensors)}
+
+// Initialize all sensors
+void sensor_init(void);
+
+// Read all sensors (call in main loop)
+void sensor_read_all(void);
+
+// Print sensor status to Serial
+void sensor_print_status(void);
+{decls}
+
+#endif
+"""
+
+
+def _gen_sensor_cpp(sensors: list[Sensor], controller: str) -> str:
+    """Generate sensor_driver.cpp."""
+    includes = '#include "sensor_driver.h"\n'
+    init_lines: list[str] = []
+    read_lines: list[str] = []
+    status_lines: list[str] = []
+
+    has_encoder = any(s.category == "encoder" for s in sensors)
+    has_limit = any(s.category == "limit_switch" for s in sensors)
+    has_imu = any(s.category == "imu" for s in sensors)
+    has_analog = any(s.category == "potentiometer" for s in sensors)
+
+    # Collect pin assignments
+    encoder_sensors = [s for s in sensors if s.category == "encoder"]
+    limit_sensors = [s for s in sensors if s.category == "limit_switch"]
+    imu_sensors = [s for s in sensors if s.category == "imu"]
+    pot_sensors = [s for s in sensors if s.category == "potentiometer"]
+
+    # I2C includes
+    needs_i2c = has_encoder or has_imu
+    if needs_i2c:
+        includes += "#include <Wire.h>\n"
+
+    if has_imu:
+        includes += "#include <MPU6050.h>\n"
+
+    # Pin definitions for limit switches
+    if has_limit:
+        limit_pins = ", ".join(
+            str(25 + i) if controller == "esp32" else str(2 + i)
+            for i in range(len(limit_sensors))
+        )
+        limit_decls = f"""\
+static const int NUM_LIMIT_SWITCHES = {len(limit_sensors)};
+static const int LIMIT_SWITCH_PINS[NUM_LIMIT_SWITCHES] = {{{limit_pins}}};
+static bool limit_state[NUM_LIMIT_SWITCHES] = {{false}};
+"""
+    else:
+        limit_decls = ""
+
+    # Pin definitions for potentiometers
+    if has_analog:
+        pot_pins = ", ".join(
+            str(36 + i) if controller == "esp32" else str(14 + i)
+            for i in range(len(pot_sensors))
+        )
+        pot_decls = f"""\
+static const int NUM_POTS = {len(pot_sensors)};
+static const int POT_PINS[NUM_POTS] = {{{pot_pins}}};
+static float pot_angles[NUM_POTS] = {{0}};
+"""
+    else:
+        pot_decls = ""
+
+    # Encoder state
+    if has_encoder:
+        encoder_decls = f"""\
+static const int NUM_ENCODERS = {len(encoder_sensors)};
+static float encoder_angles[NUM_ENCODERS] = {{0}};
+// AS5600 I2C address
+#define AS5600_ADDR 0x36
+#define AS5600_RAW_ANGLE_H 0x0C
+#define AS5600_RAW_ANGLE_L 0x0D
+"""
+    else:
+        encoder_decls = ""
+
+    # IMU state
+    if has_imu:
+        imu_decls = """\
+static float imu_orientation[3] = {0, 0, 0};  // roll, pitch, yaw
+"""
+    else:
+        imu_decls = ""
+
+    # Init code
+    init_lines.append("void sensor_init() {")
+    if needs_i2c:
+        init_lines.append("  Wire.begin();")
+    if has_limit:
+        init_lines.append(f"  for (int i = 0; i < NUM_LIMIT_SWITCHES; i++) {{")
+        init_lines.append(f"    pinMode(LIMIT_SWITCH_PINS[i], INPUT_PULLUP);")
+        init_lines.append(f"  }}")
+    if has_imu:
+        init_lines.append("  // MPU6050 init is handled by library begin()")
+    init_lines.append("}")
+
+    # Read all sensors
+    read_lines.append("void sensor_read_all() {")
+    if has_encoder:
+        read_lines.append("  for (int i = 0; i < NUM_ENCODERS; i++) {")
+        read_lines.append("    encoder_angles[i] = read_as5600_angle(AS5600_ADDR);")
+        read_lines.append("  }")
+    if has_limit:
+        read_lines.append("  for (int i = 0; i < NUM_LIMIT_SWITCHES; i++) {")
+        read_lines.append("    limit_state[i] = (digitalRead(LIMIT_SWITCH_PINS[i]) == LOW);")
+        read_lines.append("  }")
+    if has_analog:
+        read_lines.append("  for (int i = 0; i < NUM_POTS; i++) {")
+        read_lines.append("    int raw = analogRead(POT_PINS[i]);")
+        read_lines.append("    pot_angles[i] = (float)raw / 4095.0f * 300.0f;  // Map ADC to 0-300 deg")
+        read_lines.append("  }")
+    read_lines.append("}")
+
+    # Status print
+    status_lines.append("void sensor_print_status() {")
+    if has_encoder:
+        status_lines.append("  Serial.println(\"--- Encoders ---\");")
+        status_lines.append("  for (int i = 0; i < NUM_ENCODERS; i++) {")
+        status_lines.append("    Serial.print(\"  Joint \"); Serial.print(i);")
+        status_lines.append("    Serial.print(\": \"); Serial.print(encoder_angles[i], 1);")
+        status_lines.append("    Serial.println(\" deg\");")
+        status_lines.append("  }")
+    if has_limit:
+        status_lines.append("  Serial.println(\"--- Limit Switches ---\");")
+        status_lines.append("  for (int i = 0; i < NUM_LIMIT_SWITCHES; i++) {")
+        status_lines.append("    Serial.print(\"  Joint \"); Serial.print(i);")
+        status_lines.append("    Serial.print(\": \"); Serial.println(limit_state[i] ? \"TRIGGERED\" : \"OK\");")
+        status_lines.append("  }")
+    if has_imu:
+        status_lines.append("  Serial.println(\"--- IMU ---\");")
+        status_lines.append("  Serial.print(\"  R: \"); Serial.print(imu_orientation[0], 1);")
+        status_lines.append("  Serial.print(\" P: \"); Serial.print(imu_orientation[1], 1);")
+        status_lines.append("  Serial.print(\" Y: \"); Serial.println(imu_orientation[2], 1);")
+    status_lines.append("}")
+
+    # Per-sensor-type functions
+    func_blocks: list[str] = []
+
+    if has_encoder:
+        func_blocks.append("""
+float sensor_read_encoder(int joint_index) {
+  if (joint_index < 0 || joint_index >= NUM_ENCODERS) return 0;
+  return encoder_angles[joint_index];
+}
+
+// Read AS5600 angle via I2C
+static float read_as5600_angle(int addr) {
+  Wire.beginTransmission(addr);
+  Wire.write(AS5600_RAW_ANGLE_H);
+  Wire.endTransmission(false);
+  Wire.requestFrom(addr, 2);
+  uint16_t raw = (Wire.read() << 8) | Wire.read();
+  raw &= 0x0FFF;  // 12-bit mask
+  return (float)raw / 4096.0f * 360.0f;
+}
+""")
+
+    if has_limit:
+        func_blocks.append("""
+bool sensor_limit_triggered(int joint_index) {
+  if (joint_index < 0 || joint_index >= NUM_LIMIT_SWITCHES) return false;
+  return limit_state[joint_index];
+}
+""")
+
+    if has_imu:
+        func_blocks.append("""
+void sensor_read_imu(float orientation[3]) {
+  orientation[0] = imu_orientation[0];
+  orientation[1] = imu_orientation[1];
+  orientation[2] = imu_orientation[2];
+}
+""")
+
+    if has_analog:
+        func_blocks.append("""
+float sensor_read_potentiometer(int joint_index) {
+  if (joint_index < 0 || joint_index >= NUM_POTS) return 0;
+  return pot_angles[joint_index];
+}
+""")
+
+    init_block = "\n".join(init_lines)
+    read_block = "\n".join(read_lines)
+    status_block = "\n".join(status_lines)
+    func_block = "\n".join(func_blocks)
+
+    return f"""\
+// Sensor Driver Implementation - Auto-generated
+
+{includes}
+
+{encoder_decls}
+{limit_decls}
+{pot_decls}
+{imu_decls}
+
+{init_block}
+
+{read_block}
+
+{status_block}
+{func_block}
+"""
+
+
+# ---------------------------------------------------------------------------
 # Wiring diagram
 # ---------------------------------------------------------------------------
 
@@ -663,6 +1000,10 @@ class GenFirmwareTool(Tool):
                     "type": "string", "enum": ["esp32", "arduino"],
                     "description": "控制器类型（默认 esp32）",
                 },
+                "sensor_ids": {
+                    "type": "array", "items": {"type": "string"},
+                    "description": "传感器 ID 列表（如 AS5600, LIMIT_SWITCH_MICRO, MPU6050）",
+                },
                 "output_dir": {"type": "string", "description": "输出目录路径"},
             }, "required": ["actuator_ids"]},
         )
@@ -670,6 +1011,7 @@ class GenFirmwareTool(Tool):
     def execute(self, *, assembly_name: str = "robotic_arm",
                 actuator_ids: list[str] | None = None,
                 controller: str = "esp32", output_dir: str = "",
+                sensor_ids: list[str] | None = None,
                 **kwargs: Any) -> str:
         if not actuator_ids:
             return "错误：未指定执行器 ID 列表"
@@ -678,7 +1020,7 @@ class GenFirmwareTool(Tool):
         if assembly is None:
             return f"错误：未找到装配体 '{assembly_name}'"
 
-        files = generate_firmware(assembly, actuator_ids, controller)
+        files = generate_firmware(assembly, actuator_ids, controller, sensor_ids=sensor_ids)
 
         # Optionally write to disk
         if output_dir:
