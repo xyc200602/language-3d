@@ -147,6 +147,14 @@ detail 级别：fast, standard, detailed, maximum
 4. 接口约束传递：子系统间通过安装接口约束关联（如底盘顶面螺孔→工控机支架底面）
 5. 整机集成验证：装配→干涉检查→稳定性分析→运动学验证
 
+ROS URDF 导出（urdf_export 工具）：
+- 从装配体自动生成 ROS2 URDF/Xacro 文件
+- 包含 link 几何（STL 网格）、joint 定义（类型/轴/限位）、质量/惯性属性
+- 自动检测差速驱动/机械臂类型并添加 Gazebo 插件
+- 生成完整 ROS2 包结构：urdf/ + meshes/ + launch/ + config/ + package.xml + CMakeLists.txt
+- 参数：assembly_name（必需）、mode=xml|package、output_dir、package_name
+- 工作流：装配体建模 → urdf_export(mode=package) → ROS2 启动仿真
+
 当前工作目录：{workspace}"""
 
 
@@ -386,6 +394,13 @@ class Agent:
         try:
             from ..tools.stability import register_stability_tools
             register_stability_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register URDF export tools
+        try:
+            from ..tools.urdf_export import register_urdf_tools
+            register_urdf_tools(self.tools)
         except Exception:
             pass
 

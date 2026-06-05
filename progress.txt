@@ -4,7 +4,32 @@
 
 ---
 
-## 2026-06-05 - Task 53: 零件库扩展 — 轮子/轮毂/支架/铜柱/底盘零件模板
+## 2026-06-05 - Task 54: ROS URDF 自动导出 — 从 FreeCAD 装配体到 ROS2 仿真
+
+### What was done:
+- **新建 tools/urdf_export.py** — 完整 URDF 导出系统：
+  - `_sanitize_name()` / `_resolve_axis()` / `_infer_inertia()` 辅助函数
+  - `URDFLink` / `URDFJoint` / `GazeboPlugin` 中间数据类
+  - `AssemblyToURDF` 核心转换器：遍历 Assembly → 生成 URDF XML（link + joint + material + gazebo plugin）
+    - 每个 link 包含：inertial（mass/com/inertia）、visual（mesh + material）、collision（mesh）
+    - 每个 joint 包含：parent/child、origin、axis、limit（effort/velocity）
+    - 自动检测差速驱动（2个z轴revolute joint）→ 添加 libgazebo_ros_diff_drive.so 插件
+    - 自动添加 libgazebo_ros_joint_state_publisher.so 插件
+  - `ROS2PackageBuilder`：生成完整 ROS2 包目录结构（urdf/ + meshes/ + launch/ + config/ + package.xml + CMakeLists.txt）
+  - `URDFExportTool`：Agent 工具，支持 xml/package 输出模式
+- **修改 agent/core.py** — 注册 urdf_export 工具 + 系统提示增加 URDF 导出文档
+- **编写 tests/test_urdf_export.py** — 49个测试覆盖：
+  - Helper(14)、AssemblyToURDF(11)、GazeboPlugins(3)、UserInertia(1)、
+  - ROS2PackageBuilder(6)、URDFExportTool(5)、Registration(2)、Integration(5)
+
+### Testing:
+- `tests/test_urdf_export.py`: 49/49 passed
+- 全量回归测试：1556/1556 passed（比 Task 53 增加 49 个新测试）
+
+### Notes:
+- STL 网格文件路径预设为 meshes/<link_name>.stl，需配合 FreeCAD STL 导出使用
+- 惯性张量从零件尺寸自动估算（box/cylinder），也可使用用户提供的精确值（自动 mm²→m² 转换）
+- 差速驱动插件自动检测：2个 z 轴 revolute joint → diff_drive
 
 ### What was done:
 - **修改 knowledge/parts_catalog.py** — 扩展零件库从 15 → 24 种模板：

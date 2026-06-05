@@ -764,7 +764,7 @@
       "编写 tests/test_urdf_export.py — URDF 生成、link/joint 验证、惯性矩阵、碰撞体、ROS2 包结构测试（~20 个）"
     ],
     "priority": 54,
-    "passes": false
+    "passes": true
   },
   {
     "id": 55,
