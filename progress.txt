@@ -4,7 +4,35 @@
 
 ---
 
-## 2026-06-06 - Task 63: 装配求解器重写 — 数据模型 + 约束转换器 + 碰撞检测 + 验证集成
+## 2026-06-06 - Task 59: 工程包导出工具 — ExportPackageTool + /export CLI 命令
+
+### What was done:
+- **新建 `src/lang3d/tools/export_package.py`** (~500 行)
+  - `build_complex_robot()` — 从 export_complex_robot.py 搬入，生成 41 零件机器人 Assembly
+  - `_freecad_ops_for_part()` — 从原脚本搬入，生成 FreeCAD 操作列表
+  - `_build_subsystems()` — 从原脚本提取，返回 5 个子系统分解 dict
+  - `export_engineering_package()` — 12 步 pipeline 核心函数（装配求解→质量→FreeCAD→URDF/ROS2→BOM→装配指导→固件→接线→电缆走线→功率预算→稳定性→设计报告+README+子系统JSON）
+  - `ExportPackageTool(Tool)` — Agent 工具类，支持 assembly_name / assembly_json / output_dir / actuator_ids / controller / components 参数
+  - `register_export_package_tools()` — 注册函数
+  - `_resolve_assembly_input()` — 支持 built-in 装配体名（complex_robot/4w_dual_arm）或 JSON 字符串自定义装配体
+- **修改 `src/lang3d/agent/core.py`**
+  - cable_routing 注册块之后新增 export_package 注册块
+  - AGENT_SYSTEM_PROMPT 新增 export_package 工具说明（参数、CLI 命令）
+- **修改 `src/lang3d/tools/base.py`**
+  - TOOL_CATEGORIES 新增 `"export": ["export_package"]`
+- **修改 `src/lang3d/cli.py`**
+  - print_help() 新增 `/export <name> [dir]` 说明
+  - 命令分发新增 `/export` 解析逻辑（解析 assembly_name 和可选 output_dir，调用 agent.tools.execute("export_package", ...)）
+- **新建 `tests/test_export_package.py`** — 12 个测试
+
+### Testing:
+- `pytest tests/test_export_package.py -v` — 12/12 passed
+- `pytest tests/ -k "not e2e"` — 1695/1696 passed（1 个预先存在的失败：test_config_extended.py max_turns_per_step 断言值不匹配，与本任务无关）
+
+### Notes:
+- 原脚本 export_complex_robot.py 保留未删除（作为参考）
+- ExportPackageTool 默认装配体为 complex_robot，也可通过 assembly_json 传入自定义装配体
+- ROS2 包结构：ROS2PackageBuilder.write() 在指定目录内创建以包名命名的子目录
 
 ### What was done:
 - **Phase A: 数据模型扩展** (`knowledge/mechanics.py`)
