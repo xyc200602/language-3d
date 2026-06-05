@@ -79,6 +79,16 @@ cad_verify 验证策略：
 - slice_preview_layers(gcode_path)：提取每层数据（Z高度/挤出/行程）
 - slice_vlm_analyze(gcode_path)：截图 + VLM 评估打印质量
 
+直流电机固件生成：
+- gen_motor_driver(motors)：生成 PID 速度/位置控制 + 编码器反馈 C 代码
+  - motors=[dict(motor_id, encoder_id, pwm_pin, dir_pin1, dir_pin2, enc_a_pin, enc_b_pin)]
+  - 自动从 DC_MOTOR_PID_SPECS 匹配 Kp/Ki/Kd 参数
+  - 支持 TT/GA25-370/JGB37-520/NEMA17 等电机
+- gen_odometry(wheel_radius, wheel_base, encoder_ppr, gear_ratio)：生成差速底盘里程计
+  - 自动计算 CPR 和 mm/tick
+  - 含 Pose(x,y,θ) 更新和 velocity_to_wheels 速度分解
+- 工作流：gen_motor_driver → gen_odometry → gen_firmware（电机底盘模式）
+
 高级建模操作（fc_batch 内）：
 - sweep：沿路径扫掠截面（弹簧/螺纹/弯管）。参数：profile(circle/rectangle), profile_radius, path_type(helix/circle/line), pitch, height, helix_radius, turns
 - loft：在多个截面之间过渡（锥形过渡/支架/喷嘴）。参数：profiles([dict(type,radius,center)...]), radius1, radius2, height, solid, ruled

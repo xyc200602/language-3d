@@ -229,3 +229,58 @@ def recommend_sensors_for_joints(
         })
 
     return recommendations
+
+
+# ============================================================================
+# Encoder Specification Database
+# ============================================================================
+
+@dataclass
+class EncoderSpec:
+    """Detailed encoder specification for DC motor control."""
+    id: str
+    name: str
+    category: str       # "magnetic", "optical", "hall"
+    ppr: int            # Pulses per revolution (before quadrature)
+    quadrature: bool    # True = A+B channels (4x PPR), False = single channel
+    interface: str      # "i2c", "spi", "gpio_ab", "adc"
+    max_rpm: int        # Max measurable RPM
+    voltage: float      # Operating voltage (V)
+    notes: str = ""
+
+
+ENCODER_SPECS: dict[str, EncoderSpec] = {
+    "HALL_TT_7PPR": EncoderSpec(
+        id="HALL_TT_7PPR", name="TT 电机霍尔编码器 7PPR",
+        category="hall", ppr=7, quadrature=True,
+        interface="gpio_ab", max_rpm=5000,
+        voltage=3.3,
+        notes="TT 减速电机自带霍尔编码器，7 PPR × 4 × 48:1 = 1344 脉冲/输出转",
+    ),
+    "HALL_370_11PPR": EncoderSpec(
+        id="HALL_370_11PPR", name="370 电机霍尔编码器 11PPR",
+        category="hall", ppr=11, quadrature=True,
+        interface="gpio_ab", max_rpm=8000,
+        voltage=3.3,
+        notes="GA25-370/JGB37-520 常用霍尔编码器，11 PPR × 4 = 44 CPR",
+    ),
+    "OPTICAL_360PPR": EncoderSpec(
+        id="OPTICAL_360PPR", name="光电编码器 360PPR",
+        category="optical", ppr=360, quadrature=True,
+        interface="gpio_ab", max_rpm=6000,
+        voltage=5.0,
+        notes="高分辨率光电编码器，适合精确定位，360 × 4 = 1440 CPR",
+    ),
+    "AS5600_ENCODER": EncoderSpec(
+        id="AS5600_ENCODER", name="AS5600 磁编码器 (电机轴)",
+        category="magnetic", ppr=4096, quadrature=False,
+        interface="i2c", max_rpm=3000,
+        voltage=3.3,
+        notes="14-bit 绝对角度，I2C 读取，适合精确速度/位置控制",
+    ),
+}
+
+
+def get_encoder_spec(encoder_id: str) -> EncoderSpec | None:
+    """Look up an encoder spec by ID."""
+    return ENCODER_SPECS.get(encoder_id)

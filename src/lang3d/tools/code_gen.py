@@ -20,13 +20,15 @@ import math
 from pathlib import Path
 from typing import Any
 
-from ..knowledge.actuators import get_actuator
+from ..knowledge.actuators import get_actuator, get_motor_pid_spec, DCMotorPIDSpec
 from ..knowledge.mechanics import Assembly
 from ..knowledge.sensors import (
     Sensor,
     get_sensor,
     list_sensors,
     recommend_sensors_for_joints,
+    get_encoder_spec,
+    EncoderSpec,
 )
 from ..models.base import ToolDefinition
 from .assembly_solver import _resolve_assembly
@@ -1100,8 +1102,589 @@ class GenTestSequenceTool(Tool):
 # Registration
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# DC Motor PID Controller
+# ---------------------------------------------------------------------------
+
+
+def gen_motor_driver_code(
+    motors: list[dict[str, Any]],
+    controller: str = "esp32",
+) -> dict[str, str]:
+    """Generate DC motor driver code with PID speed/position control.
+
+    Args:
+        motors: List of motor configs, each with keys:
+            motor_id (str), encoder_id (str), pwm_pin (int),
+            dir_pin1 (int), dir_pin2 (int), enc_a_pin (int), enc_b_pin (int)
+        controller: "esp32" or "arduino".
+
+    Returns dict of {filename: content}.
+    """
+    n = len(motors)
+
+    # Resolve PID specs for each motor
+    pid_specs: list[DCMotorPIDSpec | None] = []
+    encoder_specs: list[EncoderSpec | None] = []
+    for m in motors:
+        pid_specs.append(get_motor_pid_spec(m.get("motor_id", "")))
+        encoder_specs.append(get_encoder_spec(m.get("encoder_id", "")))
+
+    # Generate header
+    header = f"""\
+// DC Motor Driver - Auto-generated
+// Motors: {n}, Controller: {controller}
+
+#ifndef DC_MOTOR_DRIVER_H
+#define DC_MOTOR_DRIVER_H
+
+#include <Arduino.h>
+
+#define NUM_MOTORS {n}
+
+struct MotorPins {{
+  int pwm_pin;
+  int dir1_pin;
+  int dir2_pin;
+  int enc_a_pin;
+  int enc_b_pin;
+}};
+
+struct PIDState {{
+  float kp, ki, kd;
+  float integral;
+  float prev_error;
+  float output;
+  int max_pwm;
+  int sample_period_ms;
+}};
+
+// Initialize motor driver
+void motor_init();
+
+// Set motor speed (-255 to 255)
+void motor_set_speed(int motor_id, int speed);
+
+// PID update (call in timer interrupt or loop at sample_period_ms)
+void motor_pid_update(int motor_id, float target_speed_rpm);
+
+// Set PID target speed
+void motor_set_target_rpm(int motor_id, float rpm);
+
+// Set PID target position (encoder ticks)
+void motor_set_target_ticks(int motor_id, long ticks);
+
+// Read encoder count
+long motor_read_encoder(int motor_id);
+
+// Read current speed (RPM)
+float motor_read_speed(int motor_id);
+
+// Reset PID state
+void motor_pid_reset(int motor_id);
+
+#endif
+"""
+
+    # Build arrays for C code
+    pwm_pins = ", ".join(str(m.get("pwm_pin", 0)) for m in motors)
+    dir1_pins = ", ".join(str(m.get("dir_pin1", 0)) for m in motors)
+    dir2_pins = ", ".join(str(m.get("dir_pin2", 0)) for m in motors)
+    enc_a = ", ".join(str(m.get("enc_a_pin", 0)) for m in motors)
+    enc_b = ", ".join(str(m.get("enc_b_pin", 0)) for m in motors)
+
+    # PID defaults
+    kp_vals = ", ".join(f"{(p.kp if p else 1.0):.2f}f" for p in pid_specs)
+    ki_vals = ", ".join(f"{(p.ki if p else 0.3):.2f}f" for p in pid_specs)
+    kd_vals = ", ".join(f"{(p.kd if p else 0.05):.2f}f" for p in pid_specs)
+    max_pwm_vals = ", ".join(f"{(p.max_pwm if p else 200)}" for p in pid_specs)
+    sample_ms = ", ".join(f"{(p.sample_period_ms if p else 20)}" for p in pid_specs)
+
+    # Encoder PPR and gear ratios
+    ppr_vals = ", ".join(f"{(e.ppr if e else 11)}" for e in encoder_specs)
+    quad_vals = ", ".join("true" if (e and e.quadrature) else "false" for e in encoder_specs)
+    gear_ratios = ", ".join(f"{(p.gear_ratio if p else 1.0):.1f}f" for p in pid_specs)
+
+    # PID initializer block for C struct array
+    pid_init_parts = []
+    for p in pid_specs:
+        if p:
+            pid_init_parts.append(f"{{{p.kp:.2f}f, {p.ki:.2f}f, {p.kd:.2f}f, 0, 0, 0, {p.max_pwm}, {p.sample_period_ms}}}")
+        else:
+            pid_init_parts.append("{1.0f, 0.3f, 0.05f, 0, 0, 0, 200, 20}")
+    pid_init_block = ", ".join(pid_init_parts)
+
+    impl = f"""\
+// DC Motor Driver Implementation - Auto-generated
+// Motors: {n}
+
+#include "dc_motor_driver.h"
+
+// Pin assignments
+static const MotorPins MOTORS[NUM_MOTORS] = {{
+  {{{ pwm_pins.replace(', ', '}, {') }}}
+}};
+// Expanded for clarity:
+static const int PWM_PINS[{n}] = {{{ pwm_pins }}};
+static const int DIR1_PINS[{n}] = {{{ dir1_pins }}};
+static const int DIR2_PINS[{n}] = {{{ dir2_pins }}};
+static const int ENC_A_PINS[{n}] = {{{ enc_a }}};
+static const int ENC_B_PINS[{n}] = {{{ enc_b }}};
+
+// Encoder state (volatile for ISR)
+static volatile long encoder_counts[{n}] = {{0}};
+static long last_counts[{n}] = {{0}};
+
+// Speed measurement
+static float current_speed_rpm[{n}] = {{0}};
+
+// PID state per motor (initialized properly in motor_init)
+static PIDState pid[{n}] = {{
+  {pid_init_block}
+}};
+// Initialize with proper values
+static bool pid_initialized = false;
+
+static const int MAX_PWM[{n}] = {{{ max_pwm_vals }}};
+static const int SAMPLE_MS[{n}] = {{{ sample_ms }}};
+static const int ENCODER_PPR[{n}] = {{{ ppr_vals }}};
+static const bool ENCODER_QUAD[{n}] = {{{ quad_vals }}};
+static const float GEAR_RATIO[{n}] = {{{ gear_ratios }}};
+
+// Target
+static float target_rpm[{n}] = {{0}};
+static long target_ticks[{n}] = {{0}};
+static bool position_mode[{n}] = {{false}};
+
+// --- Encoder ISRs ---
+"""
+
+    # Generate ISR functions for each motor
+    for i in range(n):
+        impl += f"""
+void IRAM_ATTR encoder_isr_{i}() {{
+  static int last_state_{i} = 0;
+  int a = digitalRead(ENC_A_PINS[{i}]);
+  int b = digitalRead(ENC_B_PINS[{i}]);
+  int state = (a << 1) | b;
+  // Quadrature decode
+  if (state != last_state_{i}) {{
+    if ((state ^ last_state_{i}) == 0x03) {{
+      encoder_counts[{i}]++;
+    }} else {{
+      encoder_counts[{i}]--;
+    }}
+    last_state_{i} = state;
+  }}
+}}
+"""
+
+    impl += """
+void motor_init() {
+"""
+
+    for i in range(n):
+        impl += f"""  pinMode(PWM_PINS[{i}], OUTPUT);
+  pinMode(DIR1_PINS[{i}], OUTPUT);
+  pinMode(DIR2_PINS[{i}], OUTPUT);
+  pinMode(ENC_A_PINS[{i}], INPUT_PULLUP);
+  pinMode(ENC_B_PINS[{i}], INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(ENC_A_PINS[{i}]), encoder_isr_{i}, CHANGE);
+"""
+        p = pid_specs[i]
+        if p:
+            impl += f"  pid[{i}] = {{{p.kp:.2f}f, {p.ki:.2f}f, {p.kd:.2f}f, 0, 0, 0, {p.max_pwm}, {p.sample_period_ms}}};\n"
+        else:
+            impl += f"  pid[{i}] = {{1.0f, 0.3f, 0.05f, 0, 0, 0, 200, 20}};\n"
+
+    impl += """  pid_initialized = true;
+}
+
+void motor_set_speed(int motor_id, int speed) {
+  if (motor_id < 0 || motor_id >= NUM_MOTORS) return;
+  int abs_speed = (speed > 0) ? speed : -speed;
+  if (abs_speed > 255) abs_speed = 255;
+
+  if (speed >= 0) {
+    digitalWrite(DIR1_PINS[motor_id], HIGH);
+    digitalWrite(DIR2_PINS[motor_id], LOW);
+  } else {
+    digitalWrite(DIR1_PINS[motor_id], LOW);
+    digitalWrite(DIR2_PINS[motor_id], HIGH);
+  }
+  analogWrite(PWM_PINS[motor_id], abs_speed);
+}
+
+void motor_pid_update(int motor_id, float target) {
+  if (motor_id < 0 || motor_id >= NUM_MOTORS) return;
+
+  // Read current encoder
+  long current = encoder_counts[motor_id];
+  float dt_sec = (float)pid[motor_id].sample_period_ms / 1000.0f;
+
+  // Compute speed (RPM at output shaft)
+  long delta = current - last_counts[motor_id];
+  last_counts[motor_id] = current;
+  int cpr = ENCODER_PPR[motor_id] * (ENCODER_QUAD[motor_id] ? 4 : 1);
+  if (cpr == 0) cpr = 1;
+  current_speed_rpm[motor_id] = (float)delta / (float)cpr * 60.0f / dt_sec / GEAR_RATIO[motor_id];
+
+  if (position_mode[motor_id]) {
+    // Position PID
+    float error = (float)(target_ticks[motor_id] - current);
+    pid[motor_id].integral += error * dt_sec;
+    pid[motor_id].integral = constrain(pid[motor_id].integral, -1000, 1000);
+    float deriv = (error - pid[motor_id].prev_error) / dt_sec;
+    pid[motor_id].prev_error = error;
+    pid[motor_id].output = pid[motor_id].kp * error +
+                           pid[motor_id].ki * pid[motor_id].integral +
+                           pid[motor_id].kd * deriv;
+  } else {
+    // Speed PID
+    float error = target - current_speed_rpm[motor_id];
+    pid[motor_id].integral += error * dt_sec;
+    pid[motor_id].integral = constrain(pid[motor_id].integral, -500, 500);
+    float deriv = (error - pid[motor_id].prev_error) / dt_sec;
+    pid[motor_id].prev_error = error;
+    pid[motor_id].output = pid[motor_id].kp * error +
+                           pid[motor_id].ki * pid[motor_id].integral +
+                           pid[motor_id].kd * deriv;
+  }
+
+  int pwm = (int)pid[motor_id].output;
+  pwm = constrain(pwm, -pid[motor_id].max_pwm, pid[motor_id].max_pwm);
+  motor_set_speed(motor_id, pwm);
+}
+
+void motor_set_target_rpm(int motor_id, float rpm) {
+  if (motor_id < 0 || motor_id >= NUM_MOTORS) return;
+  target_rpm[motor_id] = rpm;
+  position_mode[motor_id] = false;
+}
+
+void motor_set_target_ticks(int motor_id, long ticks) {
+  if (motor_id < 0 || motor_id >= NUM_MOTORS) return;
+  target_ticks[motor_id] = ticks;
+  position_mode[motor_id] = true;
+}
+
+long motor_read_encoder(int motor_id) {
+  if (motor_id < 0 || motor_id >= NUM_MOTORS) return 0;
+  return encoder_counts[motor_id];
+}
+
+float motor_read_speed(int motor_id) {
+  if (motor_id < 0 || motor_id >= NUM_MOTORS) return 0;
+  return current_speed_rpm[motor_id];
+}
+
+void motor_pid_reset(int motor_id) {
+  if (motor_id < 0 || motor_id >= NUM_MOTORS) return;
+  pid[motor_id].integral = 0;
+  pid[motor_id].prev_error = 0;
+  pid[motor_id].output = 0;
+  encoder_counts[motor_id] = 0;
+  last_counts[motor_id] = 0;
+  target_rpm[motor_id] = 0;
+  target_ticks[motor_id] = 0;
+  position_mode[motor_id] = false;
+}
+"""
+
+    return {
+        "dc_motor_driver.h": header,
+        "dc_motor_driver.cpp": impl,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Odometry (differential drive)
+# ---------------------------------------------------------------------------
+
+
+def gen_odometry_code(
+    wheel_radius_mm: float = 32.5,
+    wheel_base_mm: float = 150.0,
+    encoder_ppr: int = 7,
+    gear_ratio: float = 48.0,
+    quadrature: bool = True,
+) -> str:
+    """Generate differential drive odometry code (C/C++ for Arduino/ESP32).
+
+    Args:
+        wheel_radius_mm: Wheel radius in mm.
+        wheel_base_mm: Distance between left and right wheel centers (mm).
+        encoder_ppr: Encoder pulses per revolution (before quadrature).
+        gear_ratio: Motor gear ratio (output_rev / motor_rev).
+        quadrature: True if encoder has A+B channels (4x decoding).
+
+    Returns:
+        C++ header+implementation as a single string.
+    """
+    cpr = encoder_ppr * (4 if quadrature else 1) * gear_ratio
+    mm_per_tick = 2.0 * math.pi * wheel_radius_mm / cpr if cpr > 0 else 1.0
+
+    return f"""\
+// Differential Drive Odometry - Auto-generated
+// Wheel radius: {wheel_radius_mm} mm
+// Wheel base: {wheel_base_mm} mm
+// CPR (counts per output revolution): {cpr:.0f}
+// MM per tick: {mm_per_tick:.4f}
+
+#ifndef ODOMETRY_H
+#define ODOMETRY_H
+
+#include <Arduino.h>
+#include <math.h>
+
+static const float WHEEL_RADIUS_MM = {wheel_radius_mm:.2f}f;
+static const float WHEEL_BASE_MM = {wheel_base_mm:.2f}f;
+static const long CPR = {cpr:.0f}L;
+static const float MM_PER_TICK = {mm_per_tick:.6f}f;
+
+struct Pose {{
+  float x;     // mm
+  float y;     // mm
+  float theta; // radians
+}};
+
+// Update odometry from encoder readings
+// left_ticks, right_ticks: current encoder counts
+// Returns updated pose
+Pose odometry_update(long left_ticks, long right_ticks);
+
+// Get current pose
+Pose odometry_get_pose();
+
+// Reset odometry to origin
+void odometry_reset();
+
+// Convert velocity commands to wheel speeds
+// v_linear: mm/s, v_angular: rad/s
+// Returns (left_rpm, right_rpm)
+void odometry_velocity_to_wheels(float v_linear, float v_angular,
+                                  float *left_rpm, float *right_rpm);
+
+#endif
+
+// === Implementation ===
+
+static Pose _pose = {{0, 0, 0}};
+static long _last_left = 0;
+static long _last_right = 0;
+
+Pose odometry_update(long left_ticks, long right_ticks) {{
+  long dl = left_ticks - _last_left;
+  long dr = right_ticks - _last_right;
+  _last_left = left_ticks;
+  _last_right = right_ticks;
+
+  float dist_l = (float)dl * MM_PER_TICK;
+  float dist_r = (float)dr * MM_PER_TICK;
+
+  float dist = (dist_r + dist_l) / 2.0f;
+  float dtheta = (dist_r - dist_l) / WHEEL_BASE_MM;
+
+  // Update pose
+  if (fabsf(dtheta) < 0.0001f) {{
+    // Straight line
+    _pose.x += dist * cosf(_pose.theta);
+    _pose.y += dist * sinf(_pose.theta);
+  }} else {{
+    // Arc
+    float r = dist / dtheta;
+    _pose.x += r * (sinf(_pose.theta + dtheta) - sinf(_pose.theta));
+    _pose.y += r * (cosf(_pose.theta) - cosf(_pose.theta + dtheta));
+    _pose.theta += dtheta;
+  }}
+
+  // Normalize theta to [-PI, PI]
+  while (_pose.theta > M_PI) _pose.theta -= 2.0f * M_PI;
+  while (_pose.theta < -M_PI) _pose.theta += 2.0f * M_PI;
+
+  return _pose;
+}}
+
+Pose odometry_get_pose() {{
+  return _pose;
+}}
+
+void odometry_reset() {{
+  _pose.x = 0;
+  _pose.y = 0;
+  _pose.theta = 0;
+  _last_left = 0;
+  _last_right = 0;
+}}
+
+void odometry_velocity_to_wheels(float v_linear, float v_angular,
+                                  float *left_rpm, float *right_rpm) {{
+  // v_linear: mm/s, v_angular: rad/s
+  // Differential drive: v_l = v - omega * L/2, v_r = v + omega * L/2
+  float v_left = v_linear - v_angular * WHEEL_BASE_MM / 2.0f;
+  float v_right = v_linear + v_angular * WHEEL_BASE_MM / 2.0f;
+
+  // Convert mm/s to RPM at wheel shaft
+  // RPM = (v_mm/s) / (2*PI*r_mm) * 60
+  float circumference = 2.0f * M_PI * WHEEL_RADIUS_MM;
+  *left_rpm = (v_left / circumference) * 60.0f;
+  *right_rpm = (v_right / circumference) * 60.0f;
+}}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Tools: gen_motor_driver / gen_odometry
+# ---------------------------------------------------------------------------
+
+
+class GenMotorDriverTool(Tool):
+    name = "gen_motor_driver"
+    description = (
+        "生成直流电机驱动代码（PID 速度/位置控制 + 编码器反馈）。"
+        "支持 Arduino/ESP32，自动匹配电机 PID 参数。"
+    )
+
+    def get_definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name, description=self.description,
+            parameters={"type": "object", "properties": {
+                "motors": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "电机配置列表 [{motor_id, encoder_id, pwm_pin, dir_pin1, dir_pin2, enc_a_pin, enc_b_pin}]",
+                },
+                "controller": {
+                    "type": "string", "enum": ["esp32", "arduino"],
+                    "description": "控制器类型（默认 esp32）",
+                },
+                "output_dir": {"type": "string", "description": "输出目录路径"},
+            }, "required": ["motors"]},
+        )
+
+    def execute(self, *, motors: list[dict] | None = None,
+                controller: str = "esp32", output_dir: str = "",
+                **kwargs: Any) -> str:
+        if not motors:
+            return "错误：未指定电机配置"
+
+        files = gen_motor_driver_code(motors, controller)
+
+        if output_dir:
+            out = Path(output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            for fname, content in files.items():
+                (out / fname).write_text(content, encoding="utf-8")
+
+        lines = [
+            f"[Motor Driver Generated]",
+            f"Controller: {controller}",
+            f"Motors: {len(motors)}",
+            f"Files: {len(files)}",
+            "",
+            "--- Motor Config ---",
+        ]
+        for i, m in enumerate(motors):
+            lines.append(f"  Motor {i}: {m.get('motor_id', '?')} + {m.get('encoder_id', '?')}")
+            pid = get_motor_pid_spec(m.get("motor_id", ""))
+            if pid:
+                lines.append(f"    PID: Kp={pid.kp}, Ki={pid.ki}, Kd={pid.kd}")
+
+        if output_dir:
+            lines.append(f"\nSaved to: {output_dir}")
+
+        lines.append("\n--- Preview: dc_motor_driver.h ---")
+        lines.append(files["dc_motor_driver.h"][:600])
+
+        return "\n".join(lines)
+
+
+class GenOdometryTool(Tool):
+    name = "gen_odometry"
+    description = (
+        "生成差速底盘里程计代码（位置推算+速度分解）。"
+        "输出 C++ 头文件，含 Pose 更新和轮速分解函数。"
+    )
+
+    def get_definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name, description=self.description,
+            parameters={"type": "object", "properties": {
+                "wheel_radius_mm": {
+                    "type": "number",
+                    "description": "轮子半径 mm（默认 32.5）",
+                },
+                "wheel_base_mm": {
+                    "type": "number",
+                    "description": "轮距 mm（默认 150）",
+                },
+                "encoder_ppr": {
+                    "type": "integer",
+                    "description": "编码器 PPR（默认 7）",
+                },
+                "gear_ratio": {
+                    "type": "number",
+                    "description": "减速比（默认 48）",
+                },
+                "quadrature": {
+                    "type": "boolean",
+                    "description": "是否正交编码（默认 true）",
+                },
+                "output_dir": {
+                    "type": "string",
+                    "description": "输出目录路径",
+                },
+            }, "required": []},
+        )
+
+    def execute(self, *, wheel_radius_mm: float = 32.5,
+                wheel_base_mm: float = 150.0,
+                encoder_ppr: int = 7,
+                gear_ratio: float = 48.0,
+                quadrature: bool = True,
+                output_dir: str = "",
+                **kwargs: Any) -> str:
+        code = gen_odometry_code(
+            wheel_radius_mm=wheel_radius_mm,
+            wheel_base_mm=wheel_base_mm,
+            encoder_ppr=encoder_ppr,
+            gear_ratio=gear_ratio,
+            quadrature=quadrature,
+        )
+
+        if output_dir:
+            out = Path(output_dir)
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "odometry.h").write_text(code, encoding="utf-8")
+
+        cpr = encoder_ppr * (4 if quadrature else 1) * gear_ratio
+        mm_per_tick = 2.0 * math.pi * wheel_radius_mm / cpr if cpr > 0 else 0
+
+        lines = [
+            "[Odometry Code Generated]",
+            f"Wheel radius: {wheel_radius_mm} mm",
+            f"Wheel base: {wheel_base_mm} mm",
+            f"CPR: {cpr:.0f}",
+            f"MM/tick: {mm_per_tick:.4f}",
+            "",
+            "--- Preview ---",
+            code[:800],
+        ]
+
+        if output_dir:
+            lines.append(f"\nSaved to: {output_dir}/odometry.h")
+
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Registration
+# ---------------------------------------------------------------------------
+
 def register_code_gen_tools(registry: Any) -> None:
     """Register code generation tools."""
     registry.register(GenFirmwareTool())
     registry.register(GenWiringDiagramTool())
     registry.register(GenTestSequenceTool())
+    registry.register(GenMotorDriverTool())
+    registry.register(GenOdometryTool())

@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-06-05 - Task 50: 直流电机固件 — PID + 编码器 + 差速驱动
+
+### What was done:
+- **修改 knowledge/actuators.py** — 新增：
+  - `DCMotorPIDSpec` 数据类：motor_id, encoder_ppr, gear_ratio, kp/ki/kd, max_pwm, sample_period_ms
+  - `DC_MOTOR_PID_SPECS` 数据库：TT_MOTOR(1:48)、GA25_370(1:30)、JGB37_520(1:30)、NEMA17
+  - `get_motor_pid_spec()` 查找函数
+  - 新增 GA25_370 执行器到 ACTUATORS 字典（6V, 3kg·cm, 300RPM）
+- **修改 knowledge/sensors.py** — 新增：
+  - `EncoderSpec` 数据类：ppr, quadrature, interface, max_rpm, voltage
+  - `ENCODER_SPECS` 数据库：HALL_TT_7PPR、HALL_370_11PPR、OPTICAL_360PPR、AS5600_ENCODER
+  - `get_encoder_spec()` 查找函数
+- **修改 tools/code_gen.py** — 新增：
+  - `gen_motor_driver_code(motors, controller)`：生成 PID 速度/位置控制 C 代码
+    - 自动匹配 DCMotorPIDSpec 的 Kp/Ki/Kd 参数
+    - 生成编码器 ISR（正交解码）、速度测量、PID 更新循环
+    - 支持速度模式和位置模式切换
+  - `gen_odometry_code(wheel_radius, wheel_base, ...)`：差速底盘里程计
+    - 自动计算 CPR 和 mm/tick
+    - Pose(x,y,θ) 更新（直线/弧线处理）
+    - velocity_to_wheels(v_linear, v_angular) 速度分解
+  - `GenMotorDriverTool`：Agent 工具
+  - `GenOdometryTool`：Agent 工具
+- **修改 agent/core.py** — 系统提示增加直流电机固件生成文档
+- **编写 tests/test_dc_motor_firmware.py** — 27个测试覆盖：
+  - DCMotorPIDSpec(6)、EncoderSpec(5)、gen_motor_driver_code(5)
+  - GenMotorDriverTool(2)、gen_odometry_code(5)、GenOdometryTool(2)、Registration(2)
+
+### Testing:
+- `tests/test_dc_motor_firmware.py`: 27/27 passed
+- 全量回归测试：1443/1443 passed
+
+### Notes:
+- TT 电机 CPR = 7 × 4 × 48 = 1344 脉冲/输出转
+- GA25-370 CPR = 11 × 4 × 30 = 1320 脉冲/输出转
+- 里程计使用弧线公式处理转弯，直线段用简化公式
+- 后续 Task 51（功率预算）可结合电机电流数据估算全系统功耗
+- 后续 Task 57（复杂机器人 E2E）可集成电机驱动+里程计完整验证
+
 ## 2026-06-05 - Task 49: 双臂协调 — 集中式 IK + 碰撞检测 + 工作空间分析
 
 ### What was done:

@@ -145,6 +145,17 @@ ACTUATORS: dict[str, Actuator] = {
         dimensions_mm={"length": 72.0, "width": 37.0, "height": 37.0},
         shaft_diameter_mm=6.0,
     ),
+    "GA25_370": Actuator(
+        id="GA25_370", name="GA25-370 减速电机 (1:30)", category="dc_motor",
+        torque_kgcm=3.0, speed_s_per_60deg=0, rpm=300,
+        voltage=6.0, voltage_range=(3.0, 9.0),
+        current_idle_ma=80, current_stall_ma=2000,
+        weight_g=60, price_cny=20,
+        rotation_range=(0, 0), interface="pwm",
+        description="6V 减速电机，带霍尔编码器，桌面机器人底盘",
+        dimensions_mm={"length": 54.0, "width": 25.0, "height": 25.0},
+        shaft_diameter_mm=4.0,
+    ),
 
     # ---- Stepper Motors ----
     "28BYJ48": Actuator(
@@ -218,3 +229,54 @@ def torque_to_nm(torque_kgcm: float) -> float:
 def nm_to_torque(nm: float) -> float:
     """Convert N·m to kg·cm."""
     return nm * 100.0 / 9.80665
+
+
+# ============================================================================
+# DC Motor PID Tuning Defaults
+# ============================================================================
+
+@dataclass
+class DCMotorPIDSpec:
+    """Recommended PID tuning parameters for a DC motor with encoder."""
+    motor_id: str
+    encoder_ppr: int          # Encoder pulses per revolution
+    gear_ratio: float         # Gear reduction ratio (output_rev / motor_rev)
+    kp: float                 # Proportional gain
+    ki: float                 # Integral gain
+    kd: float                 # Derivative gain
+    max_pwm: int              # Max PWM duty cycle (0-255 for 8-bit)
+    sample_period_ms: int     # PID loop period in ms
+    description: str = ""
+
+
+DC_MOTOR_PID_SPECS: dict[str, DCMotorPIDSpec] = {
+    "TT_MOTOR": DCMotorPIDSpec(
+        motor_id="TT_MOTOR", encoder_ppr=7, gear_ratio=48.0,
+        kp=1.2, ki=0.3, kd=0.05,
+        max_pwm=200, sample_period_ms=20,
+        description="TT 减速电机 1:48，低速高扭矩，适合差速底盘",
+    ),
+    "GA25_370": DCMotorPIDSpec(
+        motor_id="GA25_370", encoder_ppr=11, gear_ratio=30.0,
+        kp=1.5, ki=0.4, kd=0.08,
+        max_pwm=220, sample_period_ms=20,
+        description="GA25-370 减速电机 1:30，中等精度差速底盘",
+    ),
+    "JGB37_520": DCMotorPIDSpec(
+        motor_id="JGB37_520", encoder_ppr=11, gear_ratio=30.0,
+        kp=2.0, ki=0.5, kd=0.1,
+        max_pwm=240, sample_period_ms=10,
+        description="JGB37-520 12V 减速电机，AGV 底盘常用",
+    ),
+    "NEMA17_DRV": DCMotorPIDSpec(
+        motor_id="NEMA17", encoder_ppr=400, gear_ratio=1.0,
+        kp=3.0, ki=0.8, kd=0.15,
+        max_pwm=255, sample_period_ms=5,
+        description="NEMA17 步进（驱动器模式），高精度定位",
+    ),
+}
+
+
+def get_motor_pid_spec(motor_id: str) -> DCMotorPIDSpec | None:
+    """Look up PID tuning spec for a motor."""
+    return DC_MOTOR_PID_SPECS.get(motor_id.upper())

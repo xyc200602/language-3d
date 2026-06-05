@@ -41,7 +41,7 @@ from lang3d.tools.base import ToolRegistry
 
 class TestDatabaseIntegrity:
     def test_actuator_count(self):
-        assert len(ACTUATORS) == 13
+        assert len(ACTUATORS) == 14
 
     def test_all_categories(self):
         categories = {a.category for a in ACTUATORS.values()}
@@ -73,7 +73,7 @@ class TestDatabaseIntegrity:
         assert get_actuator("NONEXISTENT") is None
 
     def test_list_actuators_all(self):
-        assert len(list_actuators()) == 13
+        assert len(list_actuators()) == 14
 
     def test_list_actuators_filtered(self):
         servos = list_actuators("servo")
