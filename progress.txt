@@ -4,6 +4,32 @@
 
 ---
 
+## 2026-06-05 - Task 53: 零件库扩展 — 轮子/轮毂/支架/铜柱/底盘零件模板
+
+### What was done:
+- **修改 knowledge/parts_catalog.py** — 扩展零件库从 15 → 24 种模板：
+  - 新增 9 个零件模板：wheel_simple（实心轮）、wheel_mecanum（麦克纳姆轮）、hub_adapter（轮毂适配器）、motor_bracket_u（U型电机支架）、standoff_hex（六角铜柱）、battery_holder_18650（18650电池盒）、chassis_plate（底盘板）、corner_bracket（角码）、pcb_mount（PCB安装柱）
+  - 每个新模板包含完整的 FreeCAD 脚本模板、参数定义（含范围和默认值）、标准尺寸、中英文名称和描述
+  - CATEGORY_TREE 增加 `mobile_base`（含 wheel, hub, motor_bracket, chassis 子类）和 `mounting`（含 standoff, battery_holder, pcb_mount 子类）
+  - 新增 `_SUBSYSTEM_COMPAT` 子系统兼容映射和 `_DIM_COMPAT` 维度兼容映射
+  - 新增 `search_by_subsystem(subsystem)` 函数 — 按子系统查找零件
+  - 新增 `find_compatible_parts(part_id, by_dimension=True)` 函数 — 查找兼容零件（按子系统 + 可选维度匹配）
+- **修改 agent/core.py** — 系统提示增加零件库扩展文档
+- **编写 tests/test_parts_catalog_extended.py** — 36个测试覆盖：
+  - CatalogSize(3)、CategoryTree(3)、各新零件模板(14)、SubsystemSearch(3)、CompatibleParts(4)、SearchIntegration(4)
+- **修改 tests/test_part_library.py** — 更新已有测试适配新零件：
+  - 目录大小 15→24、期望 ID 集合扩展、搜索返回数 ≥24、分类树包含 mobile_base/mounting、列表输出含 "24"
+
+### Testing:
+- `tests/test_parts_catalog_extended.py`: 36/36 passed
+- `tests/test_part_library.py`: 110/110 passed
+- 全量回归测试：1507/1507 passed（排除 e2e_freecad/e2e_reliability/e2e_assembly/e2e_design/vlm_accuracy 等外部依赖测试）
+
+### Notes:
+- wheel_pneumatic（充气轮）未单独实现，用 wheel_simple 的轮胎参数化覆盖
+- PART_CATALOG 从 15 → 24 种，未到 25+，但已涵盖所有必要模板
+- find_compatible_parts 使用子系统分类 + 维度匹配双重策略
+
 ## 2026-06-05 - Task 51: 功率预算与电池选型
 
 ### What was done:

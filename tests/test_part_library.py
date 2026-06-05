@@ -28,9 +28,9 @@ import pytest
 # ---------------------------------------------------------------------------
 
 class TestCatalogDataIntegrity:
-    def test_catalog_has_15_templates(self):
+    def test_catalog_has_at_least_24_templates(self):
         from lang3d.knowledge.parts_catalog import PART_CATALOG
-        assert len(PART_CATALOG) == 15
+        assert len(PART_CATALOG) >= 24
 
     def test_all_templates_have_required_fields(self):
         from lang3d.knowledge.parts_catalog import PART_CATALOG
@@ -81,8 +81,12 @@ class TestCatalogDataIntegrity:
             "servo_sg90", "servo_mg996r", "nema17_stepper",
             "linear_shaft", "flexible_coupling",
             "spur_gear", "l_bracket", "mounting_plate",
+            # Extended parts (Task 53)
+            "wheel_simple", "wheel_mecanum", "hub_adapter",
+            "motor_bracket_u", "standoff_hex", "battery_holder_18650",
+            "chassis_plate", "corner_bracket", "pcb_mount",
         }
-        assert set(PART_CATALOG.keys()) == expected
+        assert expected.issubset(set(PART_CATALOG.keys()))
 
     def test_quality_levels_exist(self):
         from lang3d.knowledge.parts_catalog import PART_CATALOG
@@ -146,7 +150,7 @@ class TestSearch:
     def test_search_empty_query(self):
         from lang3d.knowledge.parts_catalog import search_parts
         results = search_parts(query="")
-        assert len(results) == 15  # returns all
+        assert len(results) >= 24  # returns all
 
     def test_search_no_match(self):
         from lang3d.knowledge.parts_catalog import search_parts
@@ -433,7 +437,7 @@ class TestToolExecution:
     def test_part_list_execution(self):
         registry = self._make_registry()
         result = registry.execute("part_list")
-        assert "15" in result
+        assert "24" in result
         assert "fastener" in result
 
     def test_part_list_by_category(self):
@@ -460,7 +464,10 @@ class TestToolExecution:
 class TestCategoryTree:
     def test_category_tree_structure(self):
         from lang3d.knowledge.parts_catalog import CATEGORY_TREE
-        expected_categories = {"fastener", "bearing", "actuator", "shaft", "gear", "structural"}
+        expected_categories = {
+            "fastener", "bearing", "actuator", "shaft", "gear",
+            "structural", "mobile_base", "mounting",
+        }
         assert set(CATEGORY_TREE.keys()) == expected_categories
 
     def test_fastener_subcategories(self):

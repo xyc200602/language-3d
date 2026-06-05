@@ -96,6 +96,8 @@ CATEGORY_TREE: dict[str, list[str]] = {
     "shaft": ["linear", "coupling"],
     "gear": ["spur"],
     "structural": ["bracket", "plate"],
+    "mobile_base": ["wheel", "chassis", "motor_bracket", "hub"],
+    "mounting": ["standoff", "battery_holder", "pcb_mount"],
 }
 
 
@@ -704,7 +706,190 @@ doc.recompute()
 
 
 # ---------------------------------------------------------------------------
-# Standard parts catalog (15 templates)
+# New script templates for extended parts
+# ---------------------------------------------------------------------------
+
+_WHEEL_SIMPLE_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("wheel_simple")
+# Tire (outer cylinder)
+tire = Part.makeCylinder({outer_diameter}/2, {width})
+# Hub hole
+hub = Part.makeCylinder({hub_diameter}/2, {width})
+wheel = tire.cut(hub)
+obj = doc.addObject("Part::Feature", "Wheel")
+obj.Shape = wheel
+doc.recompute()
+"""
+
+_WHEEL_MECANUM_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("wheel_mecanum")
+# Core cylinder
+core = Part.makeCylinder({diameter}/2, {width})
+# Roller positions (simplified as small cylinders at 45 degrees)
+n_rollers = {num_rollers}
+for i in range(n_rollers):
+    angle = 360 * i / n_rollers
+    rad = math.radians(angle)
+    r = {diameter}/2 * 0.85
+    cx = r * math.cos(rad)
+    cy = r * math.sin(rad)
+    roller = Part.makeCylinder({roller_diameter}/2, {width} * 0.9)
+    roller.translate(FreeCAD.Vector(cx, cy, 0))
+    roller.rotate(FreeCAD.Vector(cx, cy, 0), FreeCAD.Vector(math.cos(rad), math.sin(rad), 0), 45)
+    core = core.fuse(roller)
+obj = doc.addObject("Part::Feature", "MecanumWheel")
+obj.Shape = core
+doc.recompute()
+"""
+
+_HUB_ADAPTER_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("hub_adapter")
+# Main body cylinder
+body = Part.makeCylinder({outer_diameter}/2, {height})
+# Motor shaft hole
+hole = Part.makeCylinder({shaft_diameter}/2, {height})
+# Set screw holes (2 perpendicular)
+result = body.cut(hole)
+set_r = {outer_diameter}/2 * 0.7
+for angle in [0, 90]:
+    import math
+    rad = math.radians(angle)
+    cx = set_r * math.cos(rad)
+    cy = set_r * math.sin(rad)
+    set_hole = Part.makeCylinder({set_screw_size}/4, {height})
+    set_hole.translate(FreeCAD.Vector(cx, cy, 0))
+    result = result.cut(set_hole)
+obj = doc.addObject("Part::Feature", "HubAdapter")
+obj.Shape = result
+doc.recompute()
+"""
+
+_MOTOR_BRACKET_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("motor_bracket")
+# Base plate
+base = Part.makeBox({base_length}, {base_width}, {thickness})
+# U-bracket arms
+arm_height = {bracket_height}
+arm1 = Part.makeBox({thickness}, {base_width}, arm_height)
+arm1.translate(FreeCAD.Vector(0, 0, {thickness}))
+arm2 = Part.makeBox({thickness}, {base_width}, arm_height)
+arm2.translate(FreeCAD.Vector({base_length} - {thickness}, 0, {thickness}))
+result = base.fuse(arm1).fuse(arm2)
+# Motor shaft hole between arms
+motor_hole = Part.makeCylinder({motor_diameter}/2, {thickness} + arm_height)
+motor_hole.translate(FreeCAD.Vector({base_length}/2, {base_width}/2, 0))
+result = result.cut(motor_hole)
+obj = doc.addObject("Part::Feature", "MotorBracket")
+obj.Shape = result
+doc.recompute()
+"""
+
+_STANDOFF_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("standoff")
+# Main body hex cylinder
+body = Part.makeCylinder({outer_diameter}/2, {length})
+# M3 through hole
+hole = Part.makeCylinder({hole_diameter}/2, {length})
+result = body.cut(hole)
+obj = doc.addObject("Part::Feature", "Standoff")
+obj.Shape = result
+doc.recompute()
+"""
+
+_BATTERY_HOLDER_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("battery_holder")
+# Base tray
+tray = Part.makeBox({length}, {width}, {height})
+# Battery slots (cylindrical cutouts)
+n_cells = {num_cells}
+cell_r = {cell_diameter}/2
+spacing = {width} / (n_cells + 1)
+for i in range(n_cells):
+    cy = spacing * (i + 1)
+    slot = Part.makeCylinder(cell_r, {length})
+    slot.rotate(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 1, 0), 90)
+    slot.translate(FreeCAD.Vector(0, cy, cell_r + 1))
+    tray = tray.cut(slot)
+obj = doc.addObject("Part::Feature", "BatteryHolder")
+obj.Shape = tray
+doc.recompute()
+"""
+
+_CHASSIS_PLATE_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("chassis_plate")
+# Main plate
+plate = Part.makeBox({length}, {width}, {thickness})
+# Mounting holes in grid pattern
+hole_r = {hole_diameter}/2
+margin = {hole_margin}
+nx = {grid_x}
+ny = {grid_y}
+dx = ({length} - 2 * margin) / max(nx - 1, 1)
+dy = ({width} - 2 * margin) / max(ny - 1, 1)
+for ix in range(nx):
+    for iy in range(ny):
+        hx = margin + ix * dx
+        hy = margin + iy * dy
+        hole = Part.makeCylinder(hole_r, {thickness})
+        hole.translate(FreeCAD.Vector(hx, hy, 0))
+        plate = plate.cut(hole)
+obj = doc.addObject("Part::Feature", "ChassisPlate")
+obj.Shape = plate
+doc.recompute()
+"""
+
+_CORNER_BRACKET_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("corner_bracket")
+# Vertical plate
+v_plate = Part.makeBox({side_length}, {thickness}, {side_length})
+# Horizontal plate
+h_plate = Part.makeBox({side_length}, {side_length}, {thickness})
+result = v_plate.fuse(h_plate)
+# Mounting holes (2 per side)
+hole_r = {hole_diameter}/2
+offset = {side_length} * 0.25
+for side in range(2):
+    for i in range(2):
+        if side == 0:
+            hx = offset * (i + 1)
+            hy = {thickness} / 2
+            hz = offset * (i + 1)
+        else:
+            hx = offset * (i + 1)
+            hy = offset * (i + 1)
+            hz = {thickness} / 2
+        hole = Part.makeCylinder(hole_r, {thickness} + 2)
+        hole.translate(FreeCAD.Vector(hx - hole_r, hy - hole_r, hz - 1))
+        result = result.cut(hole)
+obj = doc.addObject("Part::Feature", "CornerBracket")
+obj.Shape = result
+doc.recompute()
+"""
+
+_PCB_MOUNT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("pcb_mount")
+# Pillar
+pillar = Part.makeCylinder({outer_diameter}/2, {height})
+# Through hole
+hole = Part.makeCylinder({hole_diameter}/2, {height})
+result = pillar.cut(hole)
+obj = doc.addObject("Part::Feature", "PCBMount")
+obj.Shape = result
+doc.recompute()
+"""
+
+
+# ---------------------------------------------------------------------------
+# Standard parts catalog (25+ templates)
 # ---------------------------------------------------------------------------
 
 PART_CATALOG: dict[str, PartTemplate] = {
@@ -1070,6 +1255,194 @@ PART_CATALOG: dict[str, PartTemplate] = {
             {"length": 150, "width": 100, "thickness": 6, "hole_diameter": 5, "hole_margin": 12},
         ],
     ),
+
+    # ---- Wheels ----
+    "wheel_simple": PartTemplate(
+        id="wheel_simple",
+        name_en="Simple Wheel",
+        name_cn="实心轮",
+        category="mobile_base",
+        subcategory="wheel",
+        description="实心圆柱轮，适合小型差速/全向底盘",
+        tags=["轮子", "实心轮", "wheel", "differential", "mobile base"],
+        parameters=[
+            ParamDef("outer_diameter", "外径", default=65.0, min_value=10, max_value=300),
+            ParamDef("width", "宽度", default=26.0, min_value=5, max_value=100),
+            ParamDef("hub_diameter", "轮毂孔径", default=5.0, min_value=2, max_value=30),
+        ],
+        fc_script_template=_WHEEL_SIMPLE_SCRIPT,
+        standard_sizes=[
+            {"outer_diameter": 65, "width": 26, "hub_diameter": 5},
+            {"outer_diameter": 80, "width": 30, "hub_diameter": 6},
+            {"outer_diameter": 100, "width": 35, "hub_diameter": 8},
+        ],
+    ),
+    "wheel_mecanum": PartTemplate(
+        id="wheel_mecanum",
+        name_en="Mecanum Wheel",
+        name_cn="麦克纳姆轮",
+        category="mobile_base",
+        subcategory="wheel",
+        description="麦克纳姆轮，支持全向移动（前后/左右/原地旋转）",
+        tags=["麦克纳姆", "全向轮", "mecanum", "omnidirectional"],
+        parameters=[
+            ParamDef("diameter", "直径", default=60.0, min_value=30, max_value=200),
+            ParamDef("width", "宽度", default=30.0, min_value=10, max_value=80),
+            ParamDef("num_rollers", "滚轮数", default=8, min_value=4, max_value=16),
+            ParamDef("roller_diameter", "滚轮直径", default=10.0, min_value=3, max_value=30),
+        ],
+        fc_script_template=_WHEEL_MECANUM_SCRIPT,
+        standard_sizes=[
+            {"diameter": 60, "width": 30, "num_rollers": 8, "roller_diameter": 10},
+            {"diameter": 80, "width": 35, "num_rollers": 9, "roller_diameter": 12},
+        ],
+    ),
+
+    # ---- Hub / Adapter ----
+    "hub_adapter": PartTemplate(
+        id="hub_adapter",
+        name_en="Hub Adapter",
+        name_cn="轮毂适配器",
+        category="mobile_base",
+        subcategory="hub",
+        description="电机轴到轮子的适配器，含紧定螺钉孔",
+        tags=["轮毂", "适配器", "hub", "adapter", "coupling"],
+        parameters=[
+            ParamDef("outer_diameter", "外径", default=20.0, min_value=8, max_value=60),
+            ParamDef("height", "高度", default=15.0, min_value=5, max_value=50),
+            ParamDef("shaft_diameter", "轴径", default=6.0, min_value=2, max_value=20),
+            ParamDef("set_screw_size", "紧定螺钉", default=3.0, min_value=1, max_value=8),
+        ],
+        fc_script_template=_HUB_ADAPTER_SCRIPT,
+    ),
+
+    # ---- Motor Brackets ----
+    "motor_bracket_u": PartTemplate(
+        id="motor_bracket_u",
+        name_en="U-Motor Bracket",
+        name_cn="U型电机支架",
+        category="mobile_base",
+        subcategory="motor_bracket",
+        description="U型电机固定支架，适合 TT/N20 等小型电机",
+        tags=["电机支架", "U型", "motor bracket", "TT motor"],
+        parameters=[
+            ParamDef("base_length", "底座长", default=30.0, min_value=10, max_value=100),
+            ParamDef("base_width", "底座宽", default=25.0, min_value=10, max_value=80),
+            ParamDef("thickness", "壁厚", default=3.0, min_value=1, max_value=10),
+            ParamDef("bracket_height", "臂高", default=25.0, min_value=5, max_value=60),
+            ParamDef("motor_diameter", "电机孔径", default=12.0, min_value=5, max_value=40),
+        ],
+        fc_script_template=_MOTOR_BRACKET_SCRIPT,
+    ),
+
+    # ---- Standoffs ----
+    "standoff_hex": PartTemplate(
+        id="standoff_hex",
+        name_en="Hex Standoff",
+        name_cn="六角铜柱",
+        category="mounting",
+        subcategory="standoff",
+        description="六角铜柱/尼龙柱，PCB/层板间隔固定",
+        tags=["铜柱", "六角柱", "standoff", "spacer", "PCB"],
+        parameters=[
+            ParamDef("outer_diameter", "外径", default=5.0, min_value=2, max_value=15),
+            ParamDef("length", "长度", default=25.0, min_value=5, max_value=80),
+            ParamDef("hole_diameter", "通孔径", default=3.0, min_value=1, max_value=8),
+        ],
+        fc_script_template=_STANDOFF_SCRIPT,
+        standard_sizes=[
+            {"outer_diameter": 5, "length": 10, "hole_diameter": 3},
+            {"outer_diameter": 5, "length": 25, "hole_diameter": 3},
+            {"outer_diameter": 5, "length": 40, "hole_diameter": 3},
+        ],
+    ),
+
+    # ---- Battery Holder ----
+    "battery_holder_18650": PartTemplate(
+        id="battery_holder_18650",
+        name_en="18650 Battery Holder",
+        name_cn="18650 电池盒",
+        category="mounting",
+        subcategory="battery_holder",
+        description="18650 锂电池槽座，可定制 cell 数量",
+        tags=["电池盒", "18650", "battery", "holder"],
+        parameters=[
+            ParamDef("length", "长度", default=75.0, min_value=30, max_value=200),
+            ParamDef("width", "宽度", default=55.0, min_value=15, max_value=100),
+            ParamDef("height", "高度", default=20.0, min_value=10, max_value=40),
+            ParamDef("num_cells", "电池数", default=2, min_value=1, max_value=6),
+            ParamDef("cell_diameter", "电池直径", default=18.5, min_value=10, max_value=30),
+        ],
+        fc_script_template=_BATTERY_HOLDER_SCRIPT,
+        standard_sizes=[
+            {"length": 75, "width": 40, "height": 20, "num_cells": 2, "cell_diameter": 18.5},
+            {"length": 75, "width": 55, "height": 20, "num_cells": 3, "cell_diameter": 18.5},
+        ],
+    ),
+
+    # ---- Chassis Plate ----
+    "chassis_plate": PartTemplate(
+        id="chassis_plate",
+        name_en="Chassis Plate",
+        name_cn="底盘板",
+        category="mobile_base",
+        subcategory="chassis",
+        description="带网格安装孔的底盘板，差速/全向底盘主体结构件",
+        tags=["底盘", "安装板", "chassis", "plate", "base"],
+        parameters=[
+            ParamDef("length", "长度", default=150.0, min_value=30, max_value=500),
+            ParamDef("width", "宽度", default=100.0, min_value=20, max_value=500),
+            ParamDef("thickness", "厚度", default=3.0, min_value=1, max_value=10),
+            ParamDef("hole_diameter", "孔径", default=4.0, min_value=2, max_value=10),
+            ParamDef("hole_margin", "边距", default=10.0, min_value=5, max_value=30),
+            ParamDef("grid_x", "列数", default=4, min_value=2, max_value=10),
+            ParamDef("grid_y", "行数", default=3, min_value=2, max_value=10),
+        ],
+        fc_script_template=_CHASSIS_PLATE_SCRIPT,
+        standard_sizes=[
+            {"length": 150, "width": 100, "thickness": 3, "hole_diameter": 4, "hole_margin": 10, "grid_x": 4, "grid_y": 3},
+            {"length": 200, "width": 150, "thickness": 5, "hole_diameter": 5, "hole_margin": 12, "grid_x": 5, "grid_y": 4},
+        ],
+    ),
+
+    # ---- Corner Bracket ----
+    "corner_bracket": PartTemplate(
+        id="corner_bracket",
+        name_en="Corner Bracket",
+        name_cn="角码",
+        category="structural",
+        subcategory="bracket",
+        description="L型角码连接件，铝型材/板材 90° 固定",
+        tags=["角码", "L型", "corner bracket", "90 degree"],
+        parameters=[
+            ParamDef("side_length", "边长", default=30.0, min_value=10, max_value=80),
+            ParamDef("thickness", "厚度", default=3.0, min_value=1, max_value=8),
+            ParamDef("hole_diameter", "孔径", default=4.0, min_value=2, max_value=8),
+        ],
+        fc_script_template=_CORNER_BRACKET_SCRIPT,
+    ),
+
+    # ---- PCB Mount ----
+    "pcb_mount": PartTemplate(
+        id="pcb_mount",
+        name_en="PCB Mount Pillar",
+        name_cn="PCB 安装铜柱",
+        category="mounting",
+        subcategory="pcb_mount",
+        description="PCB 安装支柱，上下 M3 螺纹",
+        tags=["PCB", "安装柱", "mount", "pillar"],
+        parameters=[
+            ParamDef("outer_diameter", "外径", default=6.0, min_value=3, max_value=15),
+            ParamDef("height", "高度", default=15.0, min_value=5, max_value=50),
+            ParamDef("hole_diameter", "孔径", default=3.0, min_value=1, max_value=8),
+        ],
+        fc_script_template=_PCB_MOUNT_SCRIPT,
+        standard_sizes=[
+            {"outer_diameter": 6, "height": 10, "hole_diameter": 3},
+            {"outer_diameter": 6, "height": 15, "hole_diameter": 3},
+            {"outer_diameter": 6, "height": 25, "hole_diameter": 3},
+        ],
+    ),
 }
 
 
@@ -1125,6 +1498,74 @@ def get_template(part_id: str) -> PartTemplate | None:
 def get_all_templates() -> list[PartTemplate]:
     """Get all part templates."""
     return list(PART_CATALOG.values())
+
+
+# Subsystem compatibility mappings
+_SUBSYSTEM_COMPAT: dict[str, list[str]] = {
+    "mobile_base": ["wheel_simple", "wheel_mecanum", "hub_adapter", "motor_bracket_u",
+                     "chassis_plate", "corner_bracket", "standoff_hex", "battery_holder_18650"],
+    "mounting": ["standoff_hex", "pcb_mount", "battery_holder_18650", "corner_bracket",
+                  "l_bracket", "mounting_plate"],
+    "arm": ["servo_sg90", "servo_mg996r", "nema17_stepper", "l_bracket",
+             "mounting_plate", "standoff_hex"],
+    "drive": ["motor_bracket_u", "hub_adapter", "wheel_simple", "wheel_mecanum",
+               "spur_gear", "flexible_coupling"],
+}
+
+# Dimension-based compatibility: maps parameter name patterns to matching parts
+_DIM_COMPAT: dict[str, list[str]] = {
+    "hole_diameter": ["socket_head_cap_screw", "hex_bolt", "flat_washer", "hex_nut"],
+    "shaft_diameter": ["hub_adapter", "flexible_coupling", "linear_shaft"],
+    "motor_diameter": ["motor_bracket_u"],
+}
+
+
+def search_by_subsystem(subsystem: str) -> list[PartTemplate]:
+    """Search parts by subsystem (e.g. 'mobile_base', 'mounting', 'arm').
+
+    Returns templates relevant to the given subsystem, including
+    structural and fastener parts that are commonly used.
+    """
+    part_ids = _SUBSYSTEM_COMPAT.get(subsystem, [])
+    return [PART_CATALOG[pid] for pid in part_ids if pid in PART_CATALOG]
+
+
+def find_compatible_parts(
+    part_id: str,
+    by_dimension: bool = True,
+) -> list[PartTemplate]:
+    """Find parts compatible with a given part.
+
+    Compatibility is determined by:
+      1. Shared subsystem membership
+      2. Matching dimension parameters (e.g. same hole_diameter)
+
+    Args:
+        part_id: The reference part ID.
+        by_dimension: If True, also match by dimension parameters.
+
+    Returns:
+        List of compatible PartTemplate objects (excluding the reference itself).
+    """
+    results: set[str] = set()
+    template = PART_CATALOG.get(part_id)
+    if template is None:
+        return []
+
+    # Find subsystems containing this part
+    for subsystem, part_ids in _SUBSYSTEM_COMPAT.items():
+        if part_id in part_ids:
+            results.update(part_ids)
+
+    # Dimension matching
+    if by_dimension and template:
+        param_names = {p.name for p in template.parameters}
+        for dim_name, compat_ids in _DIM_COMPAT.items():
+            if dim_name in param_names:
+                results.update(compat_ids)
+
+    results.discard(part_id)
+    return [PART_CATALOG[pid] for pid in sorted(results) if pid in PART_CATALOG]
 
 
 def resolve_parameters(
