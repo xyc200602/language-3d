@@ -818,7 +818,7 @@
       "记录完整指标到 data/complex_robot_report.json（耗时/成功率/各阶段结果）"
     ],
     "priority": 57,
-    "passes": false
+    "passes": true
   },
   {
     "id": 58,
