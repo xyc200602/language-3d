@@ -167,6 +167,12 @@ ROS URDF 导出（urdf_export 工具）：
 - 输出电缆走线报告：电缆清单、路径长度、弯曲检查、固定点建议
 - 参数：assembly_name、mode=report|json、resolution（体素精度，默认 5mm）
 
+工程包导出（export_package 工具）：
+- 一键导出完整工程包：FreeCAD 建模脚本 + URDF/ROS2 包 + BOM + 装配指导 + 固件代码 + 接线图 + 电缆走线 + 功率预算 + 稳定性分析 + 设计报告
+- 支持内置装配体（complex_robot、4w_dual_arm）或自定义 assembly_json
+- 参数：assembly_name、assembly_json、output_dir、actuator_ids、controller、components
+- CLI 命令：/export [assembly_name] [output_dir]
+
 当前工作目录：{workspace}"""
 
 
@@ -427,6 +433,13 @@ class Agent:
         try:
             from ..tools.cable_routing import register_cable_routing_tools
             register_cable_routing_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register export package tools (engineering package export)
+        try:
+            from ..tools.export_package import register_export_package_tools
+            register_export_package_tools(self.tools)
         except Exception:
             pass
 

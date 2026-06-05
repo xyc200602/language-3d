@@ -36,6 +36,7 @@ def print_help() -> None:
   [cyan]/run <task>[/cyan]      Run a task with planning
   [cyan]/chat <message>[/cyan]  Chat without tools
   [cyan]/direct <task>[/cyan]   Run without planning
+  [cyan]/export <name> [dir][/cyan]  Export engineering package
   [cyan]/tools[/cyan]           List available tools
   [cyan]/status[/cyan]          Show current state
   [cyan]/agents[/cyan]          Show active sub-agents
@@ -274,6 +275,19 @@ def run_cli() -> None:
             try:
                 response = agent.chat(msg)
                 console.print(Markdown(response.content))
+            except Exception as e:
+                error_console.print(f"[red]Error: {e}[/red]")
+        elif user_input.startswith("/export"):
+            parts = user_input[8:].strip().split()
+            assembly_name = parts[0] if parts else "complex_robot"
+            output_dir = parts[1] if len(parts) > 1 else None
+            console.print(f"[yellow]Exporting engineering package for: {assembly_name}[/yellow]\n")
+            try:
+                kwargs: dict[str, Any] = {"assembly_name": assembly_name}
+                if output_dir:
+                    kwargs["output_dir"] = output_dir
+                result = agent.tools.execute("export_package", **kwargs)
+                console.print(Markdown(result))
             except Exception as e:
                 error_console.print(f"[red]Error: {e}[/red]")
         else:

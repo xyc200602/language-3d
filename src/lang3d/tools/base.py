@@ -72,6 +72,9 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "production": [
         "production_check",
     ],
+    "export": [
+        "export_package",
+    ],
 }
 
 # Map step types to the tool categories they need
