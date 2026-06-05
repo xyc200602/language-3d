@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-06 - Task 63: 装配求解器定位修复 — 兄弟零件自动分布
+
+### What was done:
+- 修改 `assembly_solver.py` — 新增 `ANCHOR_TANGENTS`、`ANCHOR_FACE_DIMS` 映射表
+- 新增 `_face_extent_for_part(part, anchor)` 函数：返回父零件锚点面的 (width, depth)
+- 新增 `_compute_distribution_offset(child_index, total, face_extent, tangents)` 函数：2→line, 3-4→grid, 5+→circle
+- 修改 `solve()` — 新增 `sibling_groups` 按 (parent, parent_anchor) 分组，传递 child_index/total_children
+- 修改 `_compute_child_transform()` — 新增 child_index/total_children 参数，在 anchor offset 后叠加分布偏移
+- 向后兼容：单子零件 total_children=1 时 lateral_offset=(0,0,0) 不变
+- 新建 `tests/test_solver_distribution.py` — 23 个测试覆盖所有分布模式
+- 更新 `tests/test_complex_robot_e2e.py` — 新增 5 个分布验证测试 (47 总测试)
+- 重新生成 3D 装配体（FreeCAD），机器人不再堆成竖直棍子
+
+### 分布效果验证:
+```
+4 Wheels: (-120,-70,-2) (90,-70,-2) (-120,70,-2) (90,70,-2) — 4 角分布
+4 Standoffs: (-105,-70,27.5) (105,-70,27.5) (-105,70,27.5) (105,70,27.5) — 4 角分布
+4 Motors: (-105,-70,-15) (105,-70,-15) (-105,70,-15) (105,70,-15) — 4 角分布
+2 Arm bases: (-98,0,21.5) (98,0,21.5) — 左右线分布
+```
+
+### Testing:
+- 44 existing assembly_solver tests: all passed (backward compatible)
+- 23 new distribution tests: all passed
+- 47 complex robot e2e tests: all passed (5 new distribution tests included)
+- Total: 114/114 passed
+- FreeCAD 3D assembly regenerated: FCStd (32KB) + STL (666KB) — parts now properly distributed
+
+### Notes:
+- ANCHOR_TANGENTS maps each anchor to its two in-plane tangent vectors
+- ANCHOR_FACE_DIMS maps each anchor to the dimension keys for the two tangent directions
+- Grid distribution uses 35% of face extent (70% total span) for margin
+- Circle distribution uses min(width,depth) * 0.35 as radius
+- Distribution offset is rotated by parent's rotation matrix so it follows 3D orientation
+
+---
+
 ## 2026-06-05 - Phase I 规划：工程包导出 + 性能优化 + 3D 可视化
 
 ### 深度研究结论

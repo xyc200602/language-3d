@@ -48,6 +48,29 @@ ANCHOR_DIM_KEYS: dict[str, list[str]] = {
     "back":   ["length", "depth"],
 }
 
+# Tangent vectors for each anchor face — the two axes that lie within the face.
+# Used to distribute sibling children along the face plane.
+ANCHOR_TANGENTS: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
+    "top":    ((1, 0, 0), (0, 1, 0)),   # X and Y
+    "bottom": ((1, 0, 0), (0, 1, 0)),   # X and Y
+    "left":   ((0, 0, 1), (0, 1, 0)),   # Z and Y
+    "right":  ((0, 0, 1), (0, 1, 0)),   # Z and Y
+    "front":  ((1, 0, 0), (0, 0, 1)),   # X and Z
+    "back":   ((1, 0, 0), (0, 0, 1)),   # X and Z
+}
+
+# For each anchor, which dimension keys give the face width and depth?
+# Face "width" = extent along tangent1, "depth" = extent along tangent2.
+ANCHOR_FACE_DIMS: dict[str, tuple[list[str], list[str]]] = {
+    # anchor: (tangent1_dim_keys, tangent2_dim_keys)
+    "top":    (["length", "diameter"], ["width", "depth", "diameter"]),
+    "bottom": (["length", "diameter"], ["width", "depth", "diameter"]),
+    "left":   (["height", "thickness"], ["width", "depth", "diameter"]),
+    "right":  (["height", "thickness"], ["width", "depth", "diameter"]),
+    "front":  (["length", "diameter"], ["height", "thickness"]),
+    "back":   (["length", "diameter"], ["height", "thickness"]),
+}
+
 
 def _half_extent(part: Part, anchor: str) -> float:
     """Estimate the half-extent of a part along the anchor direction."""
@@ -64,6 +87,94 @@ def _anchor_offset_for_part(part: Part, anchor: str) -> tuple[float, float, floa
     direction = ANCHOR_DIRECTIONS.get(anchor, (0, 0, 1))
     half = _half_extent(part, anchor)
     return (direction[0] * half, direction[1] * half, direction[2] * half)
+
+
+def _face_extent_for_part(part: Part, anchor: str) -> tuple[float, float]:
+    """Return the (width, depth) of the parent's face for a given anchor.
+
+    These are the extents in the two tangent directions of the face,
+    used to distribute sibling children.
+    """
+    dim_pairs = ANCHOR_FACE_DIMS.get(anchor, (["length"], ["width"]))
+    t1_keys, t2_keys = dim_pairs
+    dims = part.dimensions
+
+    # First tangent (width)
+    w = 0.0
+    for key in t1_keys:
+        if key in dims:
+            w = dims[key]
+            break
+    # For cylindrical parts with only diameter, use diameter for both
+    if w == 0 and "diameter" in dims and "length" not in dims:
+        w = dims["diameter"]
+
+    # Second tangent (depth)
+    d = 0.0
+    for key in t2_keys:
+        if key in dims:
+            d = dims[key]
+            break
+    if d == 0 and "diameter" in dims and "width" not in dims and "depth" not in dims:
+        d = dims["diameter"]
+
+    return (w, d)
+
+
+def _compute_distribution_offset(
+    child_index: int,
+    total_children: int,
+    face_extent: tuple[float, float],
+    tangents: tuple[tuple[float, float, float], tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    """Compute lateral offset for a child within a sibling group.
+
+    Distribution modes:
+      - 1 child: no offset (center)
+      - 2 children: line along tangent1 at ±quarter extent
+      - 3-4 children: grid at quarter-extent corners
+      - 5+ children: circle on the face
+
+    The offset stays within 70% of the face extent to avoid overflow.
+    """
+    if total_children <= 1:
+        return (0.0, 0.0, 0.0)
+
+    w, d = face_extent
+    # Use 70% of face for margin
+    margin = 0.35  # half of 70%
+    t1, t2 = tangents
+
+    if total_children == 2:
+        # Line distribution along tangent1
+        offsets = [-margin, margin]
+        x = offsets[child_index] * w
+        return (t1[0] * x, t1[1] * x, t1[2] * x)
+
+    if total_children <= 4:
+        # Grid: 2x2 corners (or fewer if total < 4)
+        # Positions: (-,-), (-,+), (+,-), (+,+)
+        row = child_index // 2
+        col = child_index % 2
+        sx = (-margin if col == 0 else margin) * w
+        sy = (-margin if row == 0 else margin) * d
+        return (
+            t1[0] * sx + t2[0] * sy,
+            t1[1] * sx + t2[1] * sy,
+            t1[2] * sx + t2[2] * sy,
+        )
+
+    # 5+ children: circle distribution
+    n = total_children
+    angle = 2 * math.pi * child_index / n
+    radius = min(w, d) * margin
+    sx = radius * math.cos(angle)
+    sy = radius * math.sin(angle)
+    return (
+        t1[0] * sx + t2[0] * sy,
+        t1[1] * sx + t2[1] * sy,
+        t1[2] * sx + t2[2] * sy,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +275,14 @@ class AssemblySolver:
         for j in self._joints:
             children_of.setdefault(j.parent, []).append((j, j.child))
 
+        # Group children by (parent, parent_anchor) to compute sibling distribution
+        # Key: (parent_name, parent_anchor) → list of child indices in children_of
+        sibling_groups: dict[tuple[str, str], list[int]] = {}
+        for parent_name, child_list in children_of.items():
+            for idx, (joint, _) in enumerate(child_list):
+                key = (parent_name, joint.parent_anchor)
+                sibling_groups.setdefault(key, []).append(idx)
+
         # Find root: a part that is never a child
         child_set = {j.child for j in self._joints}
         all_names = set(self._parts_by_name.keys())
@@ -192,14 +311,21 @@ class AssemblySolver:
                 "rotation": _rot_mat_to_axis_angle_deg(rot_mat),
             }
 
-            # Process children
-            for joint, child_name in children_of.get(part_name, []):
+            # Process children with sibling distribution
+            child_list = children_of.get(part_name, [])
+            for local_idx, (joint, child_name) in enumerate(child_list):
                 if child_name in visited:
                     continue
                 child_part = self._parts_by_name.get(child_name)
                 parent_part = self._parts_by_name.get(part_name)
                 if not child_part or not parent_part:
                     continue
+
+                # Find this child's index within its sibling group
+                group_key = (part_name, joint.parent_anchor)
+                group_indices = sibling_groups.get(group_key, [local_idx])
+                sibling_index = group_indices.index(local_idx) if local_idx in group_indices else 0
+                total_siblings = len(group_indices)
 
                 child_pos, child_rot = self._compute_child_transform(
                     parent_part=parent_part,
@@ -208,6 +334,8 @@ class AssemblySolver:
                     parent_pos=pos,
                     parent_rot=rot_mat,
                     joint_angles=joint_angles,
+                    child_index=sibling_index,
+                    total_children=total_siblings,
                 )
                 stack.append((child_name, child_pos, child_rot))
 
@@ -229,12 +357,19 @@ class AssemblySolver:
         parent_pos: tuple[float, float, float],
         parent_rot: list[list[float]],
         joint_angles: dict[str, float],
+        child_index: int = 0,
+        total_children: int = 1,
     ) -> tuple[tuple[float, float, float], list[list[float]]]:
         """Compute global position and rotation for a child part.
 
         Supports: revolute, prismatic, fixed, gear, belt, and
         eccentric rotation (offset rotation axis), fit constraints
         (shaft-hole, face-face alignment).
+
+        Args:
+            child_index: Index of this child within its sibling group
+                         (children sharing the same parent+parent_anchor).
+            total_children: Total number of siblings in this group.
         """
         # Parent anchor offset in parent's local frame
         parent_anchor_local = _anchor_offset_for_part(parent_part, joint.parent_anchor)
@@ -243,6 +378,19 @@ class AssemblySolver:
             parent_pos,
             _mat_vec(parent_rot, parent_anchor_local),
         )
+
+        # Compute sibling distribution offset if multiple children share
+        # the same (parent, parent_anchor) face
+        if total_children > 1:
+            face_extent = _face_extent_for_part(parent_part, joint.parent_anchor)
+            tangents = ANCHOR_TANGENTS.get(joint.parent_anchor, ((1, 0, 0), (0, 1, 0)))
+            dist_offset = _compute_distribution_offset(
+                child_index, total_children, face_extent, tangents,
+            )
+            # Rotate distribution offset by parent's rotation (so it follows
+            # the parent's orientation in 3D space)
+            dist_global = _mat_vec(parent_rot, dist_offset)
+            parent_anchor_global = _vec_add(parent_anchor_global, dist_global)
 
         # Child anchor offset in child's local frame (points inward, negate)
         child_anchor_local = _anchor_offset_for_part(child_part, joint.child_anchor)

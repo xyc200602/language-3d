@@ -397,6 +397,36 @@ class TestAssemblySolving:
             assert wheel is not None, f"wheel_{s} not in positions"
             assert wheel["position"][2] < base_z, f"wheel_{s} not below base"
 
+    def test_wheels_distributed_not_stacked(self, solved_positions):
+        """4 wheels must be at 4 distinct positions, not stacked at one point."""
+        positions = [tuple(solved_positions[f"wheel_{s}"]["position"]) for s in ["fl", "fr", "rl", "rr"]]
+        assert len(set(positions)) == 4, "All 4 wheels should be at distinct positions"
+
+    def test_standoffs_distributed_not_stacked(self, solved_positions):
+        """4 standoffs must be at 4 distinct positions."""
+        positions = [tuple(solved_positions[f"standoff_{s}"]["position"]) for s in ["fl", "fr", "rl", "rr"]]
+        assert len(set(positions)) == 4, "All 4 standoffs should be at distinct positions"
+
+    def test_dual_arms_separated(self, solved_positions):
+        """Left and right arm bases must be at different positions."""
+        pos_l = tuple(solved_positions["arm_l_base"]["position"])
+        pos_r = tuple(solved_positions["arm_r_base"]["position"])
+        assert pos_l != pos_r, "Dual arm bases should be at different positions"
+
+    def test_motors_distributed_not_stacked(self, solved_positions):
+        """4 motors must be at 4 distinct positions."""
+        positions = [tuple(solved_positions[f"motor_{s}"]["position"]) for s in ["fl", "fr", "rl", "rr"]]
+        assert len(set(positions)) == 4, "All 4 motors should be at distinct positions"
+
+    def test_wheels_have_lateral_separation(self, solved_positions):
+        """Wheels should have both X and Y separation (not just stacked in Z)."""
+        positions = {s: solved_positions[f"wheel_{s}"]["position"] for s in ["fl", "fr", "rl", "rr"]}
+        xs = [positions[s][0] for s in ["fl", "fr", "rl", "rr"]]
+        ys = [positions[s][1] for s in ["fl", "fr", "rl", "rr"]]
+        # Must have non-zero range in both X and Y
+        assert max(xs) - min(xs) > 10, "Wheels should have X separation"
+        assert max(ys) - min(ys) > 10, "Wheels should have Y separation"
+
     def test_top_plate_above_base(self, solved_positions):
         base_z = solved_positions["base_plate"]["position"][2]
         top_z = solved_positions["top_plate"]["position"][2]
