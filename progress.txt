@@ -38,6 +38,16 @@
 - Grid distribution uses 35% of face extent (70% total span) for margin
 - Circle distribution uses min(width,depth) * 0.35 as radius
 - Distribution offset is rotated by parent's rotation matrix so it follows 3D orientation
+- **Anchor alignment rotation** added: rotates child so its anchor face normal aligns with -parent_anchor_normal
+  - top→bottom, bottom→top, left→right, right→left: identity (no rotation needed)
+  - left→bottom: R_y(-90°) — wheel cylinder axis now points horizontally
+  - right→bottom: R_y(+90°) — encoder on motor right side
+  - front→bottom: R_x(-90°) — sensor on front face
+- **FreeCAD script updated**: shapes now centered in all 3 axes, rotation applied before translation
+  - Boxes: center via translate(-l/2, -w/2, -h/2)
+  - Cylinders: center via translate(0, 0, -h/2)
+  - Rotation via shape.rotate(origin, axis, angle_deg)
+- Total tests: 123/123 (44 existing + 32 distribution + 47 e2e)
 
 ---
 

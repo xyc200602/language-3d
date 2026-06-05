@@ -178,6 +178,67 @@ def _compute_distribution_offset(
 
 
 # ---------------------------------------------------------------------------
+# Anchor face alignment rotation
+# ---------------------------------------------------------------------------
+
+def _anchor_alignment_rotation(parent_anchor: str, child_anchor: str) -> list[list[float]]:
+    """Compute rotation to align child anchor face with parent anchor face.
+
+    Rotates the child so its child_anchor outward normal points in the
+    direction opposite to the parent_anchor outward normal, ensuring the
+    two faces are oriented toward each other.
+
+    For example, parent_anchor="left" + child_anchor="bottom":
+      parent left normal = (-1,0,0), child bottom normal = (0,0,-1)
+      child bottom should point in +X (opposite of parent left = +1,0,0)
+      → rotate child so (0,0,-1) maps to (1,0,0) → R_y(-90°)
+    """
+    d_parent = ANCHOR_DIRECTIONS.get(parent_anchor, (0, 0, 1))
+    d_child = ANCHOR_DIRECTIONS.get(child_anchor, (0, 0, 1))
+
+    # Target: child anchor normal should face the parent (opposite of parent normal)
+    target = (-d_parent[0], -d_parent[1], -d_parent[2])
+
+    dot = d_child[0] * target[0] + d_child[1] * target[1] + d_child[2] * target[2]
+
+    # Already aligned (e.g., top→bottom: child (0,0,-1) → target (0,0,-1))
+    if dot > 1.0 - 1e-10:
+        return _identity_matrix()
+
+    # Anti-parallel: 180° rotation (e.g., top→top: child (0,0,1) → target (0,0,-1))
+    if dot < -1.0 + 1e-10:
+        if abs(d_child[0]) < 0.9:
+            perp = (1.0, 0.0, 0.0)
+        else:
+            perp = (0.0, 1.0, 0.0)
+        cross = (
+            d_child[1] * perp[2] - d_child[2] * perp[1],
+            d_child[2] * perp[0] - d_child[0] * perp[2],
+            d_child[0] * perp[1] - d_child[1] * perp[0],
+        )
+        norm = math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2)
+        if norm < 1e-10:
+            return _identity_matrix()
+        return _rotation_matrix_axis_angle(
+            (cross[0] / norm, cross[1] / norm, cross[2] / norm), math.pi
+        )
+
+    # General case: rotate around cross(d_child, target)
+    cross = (
+        d_child[1] * target[2] - d_child[2] * target[1],
+        d_child[2] * target[0] - d_child[0] * target[2],
+        d_child[0] * target[1] - d_child[1] * target[0],
+    )
+    norm = math.sqrt(cross[0] ** 2 + cross[1] ** 2 + cross[2] ** 2)
+    if norm < 1e-10:
+        return _identity_matrix()
+    angle = math.acos(max(-1.0, min(1.0, dot)))
+    return _rotation_matrix_axis_angle(
+        (cross[0] / norm, cross[1] / norm, cross[2] / norm), angle
+    )
+
+
+# ---------------------------------------------------------------------------
 # Rotation helpers
 # ---------------------------------------------------------------------------
 
@@ -403,7 +464,10 @@ class AssemblySolver:
             angle_deg = joint_angles.get(joint.description, 0.0)
         angle_rad = math.radians(angle_deg)
 
-        # Compute child rotation
+        # Anchor alignment: rotate child so its anchor faces the parent's anchor
+        align_rot = _anchor_alignment_rotation(joint.parent_anchor, joint.child_anchor)
+
+        # Compute child rotation: parent_rot @ joint_rot @ align_rot
         if joint.type in ("revolute", "gear", "belt"):
             rot_axis_local = _revolute_axis(joint)
             rot_axis_global = _mat_vec(parent_rot, rot_axis_local)
@@ -415,19 +479,19 @@ class AssemblySolver:
                 parent_anchor_global = _vec_add(parent_anchor_global, eccentric)
 
             joint_rot = _rotation_matrix_axis_angle(rot_axis_global, angle_rad)
-            child_rot = _mat_mul(joint_rot, parent_rot)
+            child_rot = _mat_mul(joint_rot, _mat_mul(parent_rot, align_rot))
         elif joint.type == "prismatic":
-            # Translation along the anchor direction, no rotation
+            # Translation along the anchor direction, alignment only
             slide_dir = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
             slide_global = _mat_vec(parent_rot, slide_dir)
             offset = (slide_global[0] * angle_rad * 100,
                       slide_global[1] * angle_rad * 100,
                       slide_global[2] * angle_rad * 100)
             parent_anchor_global = _vec_add(parent_anchor_global, offset)
-            child_rot = [row[:] for row in parent_rot]
+            child_rot = _mat_mul(parent_rot, align_rot)
         else:
-            # Fixed joint: inherit parent rotation
-            child_rot = [row[:] for row in parent_rot]
+            # Fixed joint: inherit parent rotation + anchor alignment
+            child_rot = _mat_mul(parent_rot, align_rot)
 
         # Child center = parent anchor point + rotated child anchor offset
         child_center = _vec_add(

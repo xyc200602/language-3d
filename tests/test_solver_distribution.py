@@ -21,8 +21,12 @@ from lang3d.knowledge.mechanics import Assembly, Joint, Part
 from lang3d.tools.assembly_solver import (
     ANCHOR_TANGENTS,
     AssemblySolver,
+    _anchor_alignment_rotation,
     _compute_distribution_offset,
     _face_extent_for_part,
+    _identity_matrix,
+    _mat_vec,
+    _rotation_matrix_axis_angle,
 )
 
 
@@ -590,3 +594,128 @@ class TestBackwardCompatibility:
         # Ascending Z
         assert p["b"]["position"][2] > p["a"]["position"][2]
         assert p["c"]["position"][2] > p["b"]["position"][2]
+
+
+# ============================================================================
+# Test: Anchor alignment rotation
+# ============================================================================
+
+
+class TestAnchorAlignmentRotation:
+    """Test that _anchor_alignment_rotation produces correct rotations."""
+
+    def test_top_to_bottom_is_identity(self):
+        """top→bottom: child bottom (0,0,-1) should face parent top (0,0,1) → target (0,0,-1).
+        (0,0,-1)→(0,0,-1) is identity rotation."""
+        rot = _anchor_alignment_rotation("top", "bottom")
+        assert rot == _identity_matrix()
+
+    def test_bottom_to_top_is_identity(self):
+        """bottom→top: similar reasoning, identity."""
+        rot = _anchor_alignment_rotation("bottom", "top")
+        assert rot == _identity_matrix()
+
+    def test_left_to_right_is_identity(self):
+        """left→right: child right (1,0,0) faces parent left (-1,0,0) → target (1,0,0).
+        (1,0,0)→(1,0,0) is identity."""
+        rot = _anchor_alignment_rotation("left", "right")
+        assert rot == _identity_matrix()
+
+    def test_left_to_bottom_is_90_around_y(self):
+        """left→bottom: child bottom (0,0,-1) faces parent left (-1,0,0) → target (1,0,0).
+        Should rotate (0,0,-1) to (1,0,0), which is -90° around Y."""
+        rot = _anchor_alignment_rotation("left", "bottom")
+        # Verify: rot @ (0,0,-1) should ≈ (1,0,0)
+        result = _mat_vec(rot, (0, 0, -1))
+        assert result[0] == pytest.approx(1.0, abs=0.01)
+        assert result[1] == pytest.approx(0.0, abs=0.01)
+        assert result[2] == pytest.approx(0.0, abs=0.01)
+
+    def test_right_to_bottom_is_90_around_y(self):
+        """right→bottom: child bottom (0,0,-1) faces parent right (1,0,0) → target (-1,0,0).
+        Should rotate (0,0,-1) to (-1,0,0), which is 90° around Y."""
+        rot = _anchor_alignment_rotation("right", "bottom")
+        result = _mat_vec(rot, (0, 0, -1))
+        assert result[0] == pytest.approx(-1.0, abs=0.01)
+        assert result[1] == pytest.approx(0.0, abs=0.01)
+        assert result[2] == pytest.approx(0.0, abs=0.01)
+
+    def test_front_to_bottom(self):
+        """front→bottom: child bottom (0,0,-1) faces parent front (0,-1,0) → target (0,1,0).
+        Should rotate (0,0,-1) to (0,1,0)."""
+        rot = _anchor_alignment_rotation("front", "bottom")
+        result = _mat_vec(rot, (0, 0, -1))
+        assert result[0] == pytest.approx(0.0, abs=0.01)
+        assert result[1] == pytest.approx(1.0, abs=0.01)
+        assert result[2] == pytest.approx(0.0, abs=0.01)
+
+
+class TestLateralAnchorRotation:
+    """Test that lateral anchor connections produce rotated child orientations."""
+
+    def test_wheel_on_motor_left_gets_rotated(self):
+        """A wheel attached to motor's left face should have non-zero rotation."""
+        motor = _make_box("motor", 40, 30, 25)
+        wheel = _make_cylinder("wheel", 32.5, 26)
+
+        asm = Assembly(
+            name="motor_wheel",
+            parts=[motor, wheel],
+            joints=[
+                Joint("revolute", "motor", "wheel",
+                      axis="z", range_deg=(-360, 360),
+                      parent_anchor="left", child_anchor="bottom"),
+            ],
+        )
+
+        solver = AssemblySolver(asm)
+        p = solver.solve()
+
+        # Wheel rotation should NOT be identity (0,0,1,0)
+        wheel_rot = p["wheel"]["rotation"]
+        # For left→bottom, the wheel should be rotated
+        assert abs(wheel_rot[3]) > 0.1, "Wheel should have non-trivial rotation"
+
+    def test_wheel_position_is_lateral(self):
+        """Wheel should be to the left of the motor, not above or below."""
+        motor = _make_box("motor", 40, 30, 25)
+        wheel = _make_cylinder("wheel", 32.5, 26)
+
+        asm = Assembly(
+            name="motor_wheel",
+            parts=[motor, wheel],
+            joints=[
+                Joint("fixed", "motor", "wheel",
+                      parent_anchor="left", child_anchor="bottom"),
+            ],
+        )
+
+        solver = AssemblySolver(asm)
+        p = solver.solve()
+
+        motor_x = p["motor"]["position"][0]
+        wheel_x = p["wheel"]["position"][0]
+        # Wheel should be to the LEFT of motor (more negative X)
+        assert wheel_x < motor_x, f"Wheel ({wheel_x}) should be left of motor ({motor_x})"
+
+    def test_encoder_on_motor_right_gets_rotated(self):
+        """An encoder on motor's right face should be to the right of motor."""
+        motor = _make_box("motor", 40, 30, 25)
+        encoder = _make_cylinder("encoder", 6, 5)
+
+        asm = Assembly(
+            name="motor_encoder",
+            parts=[motor, encoder],
+            joints=[
+                Joint("fixed", "motor", "encoder",
+                      parent_anchor="right", child_anchor="bottom"),
+            ],
+        )
+
+        solver = AssemblySolver(asm)
+        p = solver.solve()
+
+        motor_x = p["motor"]["position"][0]
+        encoder_x = p["encoder"]["position"][0]
+        # Encoder should be to the RIGHT of motor
+        assert encoder_x > motor_x, f"Encoder ({encoder_x}) should be right of motor ({motor_x})"
