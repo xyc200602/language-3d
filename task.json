@@ -781,7 +781,7 @@
       "编写 tests/test_cable_routing.py — 路径搜索、弯曲检查、自动连接推断、报告生成测试（~15 个）"
     ],
     "priority": 55,
-    "passes": false
+    "passes": true
   },
   {
     "id": 56,

@@ -4,7 +4,38 @@
 
 ---
 
-## 2026-06-05 - Task 54: ROS URDF 自动导出 — 从 FreeCAD 装配体到 ROS2 仿真
+## 2026-06-05 - Task 55: 电缆走线规划工具
+
+### What was done:
+- **新建 tools/cable_routing.py** — 完整电缆走线规划系统：
+  - `CableSpec` 数据类：start/end connector、diameter、min_bend_radius、length_limit、voltage、color
+  - `CablePath` 数据类：waypoints、length、bend_ok、min_bend_radius_actual、fixed_points（夹具位置）
+  - `VoxelGrid` 3D 体素占用网格：mark_occupied_box / is_free / 索引转换
+  - `build_3d_grid(part_positions, parts)` — 从装配体零件位置构建自由空间体素网格
+  - A* 路径搜索（26-connected 3D）+ `_find_nearest_free` 最近空闲体素搜索
+  - Chaikin 角切平滑算法 `_smooth_path`
+  - 弯曲半径验证 `_check_bend_radius`：沿路径检查每个弯曲的最小半径
+  - `find_cable_path(grid, start, end, spec)` — 完整走线：A*→平滑→弯曲验证→固定点建议
+  - `auto_detect_connections(assembly)` — 自动推断电缆连接：
+    - actuator → controller（signal + power）
+    - sensor → controller（data）
+    - battery → controller/power（power）
+  - `generate_cable_report(cable_paths)` — Markdown 走线报告（电缆清单+路径长度+弯曲检查+警告）
+  - `CableRoutingTool` Agent 工具：支持 report/json 输出模式
+- **修改 agent/core.py** — 注册 cable_routing 工具 + 系统提示增加走线规划文档
+- **编写 tests/test_cable_routing.py** — 33个测试覆盖：
+  - CableSpec/Path(4)、VoxelGrid(3)、Build3dGrid(2)、AStar(2)、
+  - SmoothPath(2)、BendRadius(3)、PathLength(2)、FindCablePath(2)、
+  - AutoDetect(4)、Report(3)、Tool(4)、Registration(2)
+
+### Testing:
+- `tests/test_cable_routing.py`: 33/33 passed
+- 全量回归测试：1589/1589 passed
+
+### Notes:
+- A* 搜索使用 26-connected 3D 邻域，体素精度可配置（默认 5mm）
+- 固定点建议：每 ~100mm 一个线夹
+- auto_detect 基于零件 category 字段推断连接关系
 
 ### What was done:
 - **新建 tools/urdf_export.py** — 完整 URDF 导出系统：

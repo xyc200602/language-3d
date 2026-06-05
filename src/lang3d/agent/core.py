@@ -155,6 +155,12 @@ ROS URDF 导出（urdf_export 工具）：
 - 参数：assembly_name（必需）、mode=xml|package、output_dir、package_name
 - 工作流：装配体建模 → urdf_export(mode=package) → ROS2 启动仿真
 
+电缆走线规划（cable_routing 工具）：
+- 自动检测零件间电缆连接（actuator→controller、sensor→controller、battery→power）
+- 3D 体素网格 A* 路径搜索 + Chaikin 平滑 + 弯曲半径约束验证
+- 输出电缆走线报告：电缆清单、路径长度、弯曲检查、固定点建议
+- 参数：assembly_name、mode=report|json、resolution（体素精度，默认 5mm）
+
 当前工作目录：{workspace}"""
 
 
@@ -401,6 +407,13 @@ class Agent:
         try:
             from ..tools.urdf_export import register_urdf_tools
             register_urdf_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register cable routing tools
+        try:
+            from ..tools.cable_routing import register_cable_routing_tools
+            register_cable_routing_tools(self.tools)
         except Exception:
             pass
 
