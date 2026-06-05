@@ -707,7 +707,7 @@
       "编写 tests/test_power_budget.py — 功耗估算、电池选型、续航计算、自动推断测试（~15 个）"
     ],
     "priority": 51,
-    "passes": false
+    "passes": true
   },
   {
     "id": 52,

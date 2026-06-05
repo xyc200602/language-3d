@@ -4,6 +4,37 @@
 
 ---
 
+## 2026-06-05 - Task 51: 功率预算与电池选型
+
+### What was done:
+- **新建 tools/power_budget.py** — 完整功率预算分析系统：
+  - `PowerConsumer` 数据类：name, category, peak/avg_power, duty_cycle, voltage, quantity
+  - `BatterySpec` 数据类：chemistry, voltage, capacity, c_rate, weight, price, cycle_life
+  - `BATTERY_CATALOG` 数据库：9 种电池（LiPo 2S/3S/4S/6S、LiFePO4 12V/24V、18650 3S2P/4S2P、铅酸 12V）
+  - `PowerBudgetCalculator` 类：
+    - add_consumer / add_motor / add_servo / add_controller / add_sensor_load
+    - compute_total_peak() / compute_total_avg()（峰值/平均功耗）
+    - estimate_runtime(battery_ah, voltage, safety_factor=0.8)
+    - recommend_battery(runtime_target_h, chemistry)（按运行时间排序推荐）
+    - generate_report()（Markdown 报告：负载表 + 汇总 + 电池推荐）
+    - to_dict()（JSON 导出）
+  - `auto_populate_from_actuators(actuator_ids, compute_controller_w)` 从执行器列表自动生成预算
+  - `PowerBudgetTool`：Agent 工具，支持 report/json 输出模式
+- **修改 agent/core.py** — 注册 power_budget 工具 + 系统提示增加功率预算文档
+- **编写 tests/test_power_budget.py** — 28个测试覆盖：
+  - PowerConsumer(4)、BatterySpec(4)、BatteryCatalog(4)
+  - PowerBudgetCalculator(10)、AutoPopulate(2)、PowerBudgetTool(3)、Registration(1)
+
+### Testing:
+- `tests/test_power_budget.py`: 28/28 passed
+- 全量回归测试：1471/1471 passed
+
+### Notes:
+- TT 电机 peak ≈ 3.6W (3V × 1.2A)，avg ≈ 1.23W (含 30% 负载系数)
+- LiPo 3S 2200mAh 运行双 TT 电机 + 控制器约 1.5-2 小时
+- safety_factor 默认 0.8（80% DoD），LiFePO4 可用 0.9
+- 后续 Task 57（复杂机器人 E2E）可集成完整功率预算验证
+
 ## 2026-06-05 - Task 50: 直流电机固件 — PID + 编码器 + 差速驱动
 
 ### What was done:

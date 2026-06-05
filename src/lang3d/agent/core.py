@@ -89,6 +89,13 @@ cad_verify 验证策略：
   - 含 Pose(x,y,θ) 更新和 velocity_to_wheels 速度分解
 - 工作流：gen_motor_driver → gen_odometry → gen_firmware（电机底盘模式）
 
+功率预算分析：
+- power_budget(actuator_ids, mode)：系统功耗估算 + 电池选型
+  - 自动计算峰值/平均功耗（电机/舵机/控制器/传感器）
+  - 电池推荐：LiPo/LiFePO4/18650，按运行时间排序
+  - mode=report 输出 Markdown 报告，mode=json 输出结构化数据
+  - 支持自定义 duty_cycle、controller 功耗、safety_factor
+
 高级建模操作（fc_batch 内）：
 - sweep：沿路径扫掠截面（弹簧/螺纹/弯管）。参数：profile(circle/rectangle), profile_radius, path_type(helix/circle/line), pitch, height, helix_radius, turns
 - loft：在多个截面之间过渡（锥形过渡/支架/喷嘴）。参数：profiles([dict(type,radius,center)...]), radius1, radius2, height, solid, ruled
@@ -288,6 +295,13 @@ class Agent:
         try:
             from ..tools.actuator_tools import register_actuator_tools
             register_actuator_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register power budget tools (system power analysis + battery selection)
+        try:
+            from ..tools.power_budget import register_power_budget_tools
+            register_power_budget_tools(self.tools)
         except Exception:
             pass
 
