@@ -17,6 +17,8 @@ class StepStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    BLOCKED = "blocked"
+    WAITING = "waiting"
 
 
 @dataclass
@@ -53,6 +55,92 @@ class Plan:
         return completed, len(self.steps)
 
 
+# --- Hierarchical Plan (Phase E: Task 43) ---
+
+
+@dataclass
+class SubSystem:
+    """A subsystem within a complex robot design.
+
+    Examples: mobile_base, arm_left, arm_right, ipc_mount, sensor_tower.
+    Each subsystem has its own isolated set of plan steps.
+    """
+
+    name: str = ""
+    description: str = ""
+    parts: list[str] = field(default_factory=list)
+    joints: list[str] = field(default_factory=list)
+    constraints: dict[str, Any] = field(default_factory=dict)
+    steps: list[PlanStep] = field(default_factory=list)
+    status: StepStatus = StepStatus.PENDING
+    # Symmetry: if non-empty, this subsystem is a mirrored/instanced copy
+    mirror_of: str = ""  # name of the source subsystem (e.g. "arm_left")
+    instance_count: int = 1  # how many identical copies (e.g. 4 for wheels)
+    # Interface constraints with other subsystems
+    interface_points: dict[str, Any] = field(default_factory=dict)
+
+    def progress(self) -> tuple[int, int]:
+        completed = sum(1 for s in self.steps if s.status == StepStatus.COMPLETED)
+        return completed, len(self.steps)
+
+
+@dataclass
+class SystemDependency:
+    """Dependency between two subsystems (e.g. arm depends on base for mounting)."""
+
+    source: str = ""  # subsystem that must complete first
+    target: str = ""  # subsystem that depends on source
+    reason: str = ""  # why the dependency exists (e.g. "mounting interface")
+
+
+@dataclass
+class HierarchicalPlan:
+    """A hierarchical plan that organizes steps into subsystems.
+
+    Used for complex robot designs with 15+ parts that need to be decomposed
+    into manageable subsystems (mobile base, arms, electronics, etc.).
+    """
+
+    goal: str = ""
+    subsystems: list[SubSystem] = field(default_factory=list)
+    system_dependencies: list[SystemDependency] = field(default_factory=list)
+    integration_steps: list[PlanStep] = field(default_factory=list)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def get_subsystem(self, name: str) -> SubSystem | None:
+        for ss in self.subsystems:
+            if ss.name == name:
+                return ss
+        return None
+
+    def all_steps(self) -> list[PlanStep]:
+        """Collect all steps across all subsystems and integration."""
+        steps: list[PlanStep] = []
+        for ss in self.subsystems:
+            steps.extend(ss.steps)
+        steps.extend(self.integration_steps)
+        return steps
+
+    def total_parts(self) -> int:
+        return sum(len(ss.parts) for ss in self.subsystems)
+
+    def progress(self) -> tuple[int, int]:
+        completed = 0
+        total = 0
+        for ss in self.subsystems:
+            c, t = ss.progress()
+            completed += c
+            total += t
+        c, t = len([s for s in self.integration_steps if s.status == StepStatus.COMPLETED]), len(self.integration_steps)
+        completed += c
+        total += t
+        return completed, total
+
+    def to_flat_plan(self) -> Plan:
+        """Convert to a flat Plan for backward compatibility."""
+        return Plan(goal=self.goal, steps=self.all_steps())
+
+
 class AgentState:
     """Manages the state of an agent session."""
 
@@ -60,7 +148,7 @@ class AgentState:
         self.session_id: str = uuid.uuid4().hex[:12]
         self.created_at: str = datetime.now().isoformat()
         self.workspace = Path(workspace) if workspace else Path.cwd()
-        self.plan: Plan | None = None
+        self.plan: Plan | HierarchicalPlan | None = None
         self.conversation: list[dict[str, Any]] = []
         self.tool_history: list[dict[str, Any]] = []
         self.screenshots: list[str] = []
