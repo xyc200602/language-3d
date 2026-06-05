@@ -65,6 +65,16 @@ cad_verify 验证策略：
 - slice_preview_layers(gcode_path)：提取每层数据（Z高度/挤出/行程）
 - slice_vlm_analyze(gcode_path)：截图 + VLM 评估打印质量
 
+高级建模操作（fc_batch 内）：
+- sweep：沿路径扫掠截面（弹簧/螺纹/弯管）。参数：profile(circle/rectangle), profile_radius, path_type(helix/circle/line), pitch, height, helix_radius, turns
+- loft：在多个截面之间过渡（锥形过渡/支架/喷嘴）。参数：profiles([dict(type,radius,center)...]), radius1, radius2, height, solid, ruled
+- polar_pattern：圆周阵列（螺栓孔圆/风扇叶片/叶轮）。参数：object, count, angle(默认360), axis, center
+- linear_pattern：线性阵列（散热片/格栅/齿条）。参数：object, count, spacing, direction
+- mirror：镜像特征（右臂=左臂镜像）。参数：object, plane(XY/YZ/XZ)
+- shell：抽壳（盒子/容器/外壳）。参数：object, thickness, faces_to_remove(list)
+- draft：拔模斜度（注塑/3D打印脱模）。参数：object, angle(度), direction, faces(list)
+FreeCAD 子进程超时已从 60s 提升至 300s 以支持复杂操作。
+
 工具优先级：fc_batch > fc_menu > gui_*。仿真用 fea_run/fea_vlm_analyze，CFD 用 cfd_run/cfd_vlm_analyze，运动用 motion_sim 等。
 detail 级别：fast, standard, detailed, maximum
 单位：mm（毫米）。

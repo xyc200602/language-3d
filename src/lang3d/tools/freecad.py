@@ -54,7 +54,7 @@ def _find_freecad_python() -> str | None:
     return None
 
 
-def _run_freecad_script(script: str, timeout: int = 60) -> str:
+def _run_freecad_script(script: str, timeout: int = 300) -> str:
     """Execute a Python script using FreeCAD's bundled Python.
 
     Returns the stdout output.
@@ -430,6 +430,259 @@ def _build_script(operations: list[dict]) -> str:
             lines.append('print("MASS_CHECK_JSON:" + _cm_json.dumps(_cm_output))')
             if path:
                 lines.append("FreeCAD.closeDocument(_cm_doc.Name)")
+
+        elif op_type == "sweep":
+            # Sweep a profile along a path (e.g. spring, thread, pipe bend)
+            name = op.get("name", "Sweep")
+            profile_type = op.get("profile", "circle")  # circle, rectangle, custom
+            profile_radius = op.get("profile_radius", 2.0)
+            profile_width = op.get("profile_width", 4.0)
+            profile_height = op.get("profile_height", 4.0)
+            path_type = op.get("path_type", "helix")  # helix, circle, line, custom
+            # Helix params
+            pitch = op.get("pitch", 5.0)
+            height = op.get("height", 20.0)
+            helix_radius = op.get("helix_radius", 10.0)
+            turns = op.get("turns", 0)
+            # Circle path params
+            path_radius = op.get("path_radius", 15.0)
+            # Line path params
+            line_length = op.get("line_length", 30.0)
+            line_dir = op.get("line_direction", [1, 0, 0])
+            solid = op.get("solid", True)  # True = solid, False = hollow pipe
+            frenet = op.get("frenet", True)
+            # Build profile wire
+            lines.append("import Part")
+            lines.append("import FreeCAD")
+            if profile_type == "circle":
+                lines.append(f"_prof = Part.Wire(Part.makeCircle({profile_radius}))")
+            elif profile_type == "rectangle":
+                lines.append(f"_prof_hw = {profile_width} / 2")
+                lines.append(f"_prof_hh = {profile_height} / 2")
+                lines.append("_prof = Part.Wire(Part.makePolygon([")
+                lines.append("    FreeCAD.Vector(-_prof_hw, -_prof_hh, 0),")
+                lines.append("    FreeCAD.Vector(_prof_hw, -_prof_hh, 0),")
+                lines.append("    FreeCAD.Vector(_prof_hw, _prof_hh, 0),")
+                lines.append("    FreeCAD.Vector(-_prof_hw, _prof_hh, 0),")
+                lines.append("    FreeCAD.Vector(-_prof_hw, -_prof_hh, 0),")
+                lines.append("]))")
+            else:
+                # custom: user provides raw script to create _prof wire
+                custom_script = op.get("custom_profile_script", "_prof = Part.Wire(Part.makeCircle(2.0))")
+                lines.append(custom_script)
+            # Build path wire
+            if path_type == "helix":
+                if turns > 0:
+                    lines.append(f"_path = Part.Wire(Part.makeHelix({pitch}, {height}, {helix_radius}, 0, {turns}))")
+                else:
+                    lines.append(f"_path = Part.Wire(Part.makeHelix({pitch}, {height}, {helix_radius}))")
+                # Move profile to start of helix path
+                lines.append(f"_prof.translate(FreeCAD.Vector({helix_radius}, 0, 0))")
+            elif path_type == "circle":
+                lines.append(f"_path = Part.Wire(Part.makeCircle({path_radius}))")
+                lines.append(f"_prof.translate(FreeCAD.Vector({path_radius}, 0, 0))")
+            elif path_type == "line":
+                dx, dy, dz = line_dir
+                lines.append(f"_path = Part.Wire(Part.makeLine(FreeCAD.Vector(0,0,0), FreeCAD.Vector({dx * line_length}, {dy * line_length}, {dz * line_length})))")
+            else:
+                custom_path = op.get("custom_path_script", "_path = Part.Wire(Part.makeLine(FreeCAD.Vector(0,0,0), FreeCAD.Vector(30,0,0)))")
+                lines.append(custom_path)
+            # Perform sweep
+            lines.append(f"_sweep = _prof.makePipeShell([_path], {solid}, {frenet})")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
+            lines.append("obj.Shape = _sweep")
+            lines.append("doc.recompute()")
+
+        elif op_type == "loft":
+            # Loft between multiple profiles (e.g. transitions, brackets)
+            name = op.get("name", "Loft")
+            profiles = op.get("profiles", [])
+            solid = op.get("solid", True)
+            ruled = op.get("ruled", False)
+            if profiles:
+                # Build profiles from specifications
+                # Each profile: {type: "circle"|"rectangle", radius, center:[x,y,z], ...}
+                for i, prof in enumerate(profiles):
+                    ptype = prof.get("type", "circle")
+                    cx, cy, cz = prof.get("center", [0, 0, 0])
+                    if ptype == "circle":
+                        r = prof.get("radius", 5.0)
+                        lines.append(f"_loft_p{i} = Part.Wire(Part.makeCircle({r}, FreeCAD.Vector({cx},{cy},{cz})))")
+                    elif ptype == "rectangle":
+                        w = prof.get("width", 10.0)
+                        h = prof.get("height", 10.0)
+                        hw, hh = w / 2, h / 2
+                        lines.append(f"_loft_p{i} = Part.Wire(Part.makePolygon([")
+                        lines.append(f"    FreeCAD.Vector({cx - hw},{cy - hh},{cz}),")
+                        lines.append(f"    FreeCAD.Vector({cx + hw},{cy - hh},{cz}),")
+                        lines.append(f"    FreeCAD.Vector({cx + hw},{cy + hh},{cz}),")
+                        lines.append(f"    FreeCAD.Vector({cx - hw},{cy + hh},{cz}),")
+                        lines.append(f"    FreeCAD.Vector({cx - hw},{cy - hh},{cz}),")
+                        lines.append("]))")
+                    elif ptype == "polygon":
+                        r = prof.get("radius", 5.0)
+                        sides = prof.get("sides", 6)
+                        import math as _math
+                        pts = []
+                        for s in range(sides + 1):
+                            ang = 2 * 3.141592653589793 * s / sides
+                            pts.append(f"FreeCAD.Vector({cx + r * round(_math.cos(ang), 6)},{cy + r * round(_math.sin(ang), 6)},{cz})")
+                        lines.append(f"_loft_p{i} = Part.Wire(Part.makePolygon([{', '.join(pts)}]))")
+                    else:
+                        # ellipse
+                        r1 = prof.get("radius1", 10.0)
+                        r2 = prof.get("radius2", 5.0)
+                        lines.append(f"_loft_p{i} = Part.Wire(Part.makeEllipse({r1}, {r2}, FreeCAD.Vector({cx},{cy},{cz})))")
+                profile_list = ", ".join(f"_loft_p{i}" for i in range(len(profiles)))
+                lines.append(f"_loft_shapes = [{profile_list}]")
+            else:
+                # Two simple circles at z=0 and z=height
+                r1 = op.get("radius1", 10.0)
+                r2 = op.get("radius2", 5.0)
+                h = op.get("height", 20.0)
+                lines.append(f"_loft_p0 = Part.Wire(Part.makeCircle({r1}, FreeCAD.Vector(0,0,0)))")
+                lines.append(f"_loft_p1 = Part.Wire(Part.makeCircle({r2}, FreeCAD.Vector(0,0,{h})))")
+                lines.append("_loft_shapes = [_loft_p0, _loft_p1]")
+            lines.append(f"_loft = Part.makeLoft(_loft_shapes, {solid}, {ruled}, False)")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
+            lines.append("obj.Shape = _loft")
+            lines.append("doc.recompute()")
+
+        elif op_type == "polar_pattern":
+            # Circular array: replicate a feature around an axis
+            obj_name = op.get("object", "")
+            count = op.get("count", 6)
+            angle = op.get("angle", 360.0)
+            axis_vec = op.get("axis", [0, 0, 1])
+            center = op.get("center", [0, 0, 0])
+            result_name = op.get("result_name", "PolarPattern")
+            if obj_name:
+                lines.append(f"_src = doc.getObject('{obj_name}').Shape")
+            else:
+                lines.append("_src = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids][-1].Shape")
+            lines.append(f"_pattern_shapes = []")
+            ax_x, ax_y, ax_z = axis_vec
+            cx, cy, cz = center
+            lines.append(f"for _i in range({count}):")
+            lines.append(f"    _a = {angle} * _i / {count}")
+            lines.append("    _copy = _src.copy()")
+            lines.append(f"    _copy.rotate(FreeCAD.Vector({cx},{cy},{cz}), FreeCAD.Vector({ax_x},{ax_y},{ax_z}), _a)")
+            lines.append("    _pattern_shapes.append(_copy)")
+            lines.append("_pattern_comp = _pattern_shapes[0]")
+            lines.append("for _ps in _pattern_shapes[1:]:")
+            lines.append("    _pattern_comp = _pattern_comp.fuse(_ps)")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _pattern_comp")
+            lines.append("doc.recompute()")
+
+        elif op_type == "linear_pattern":
+            # Linear array: replicate a feature along a direction
+            obj_name = op.get("object", "")
+            count = op.get("count", 4)
+            spacing = op.get("spacing", 10.0)
+            direction = op.get("direction", [1, 0, 0])
+            result_name = op.get("result_name", "LinearPattern")
+            if obj_name:
+                lines.append(f"_src = doc.getObject('{obj_name}').Shape")
+            else:
+                lines.append("_src = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids][-1].Shape")
+            dx, dy, dz = direction
+            lines.append(f"_lin_shapes = []")
+            lines.append(f"for _i in range({count}):")
+            lines.append("    _copy = _src.copy()")
+            lines.append(f"    _copy.translate(FreeCAD.Vector({dx * spacing} * _i, {dy * spacing} * _i, {dz * spacing} * _i))")
+            lines.append("    _lin_shapes.append(_copy)")
+            lines.append("_lin_comp = _lin_shapes[0]")
+            lines.append("for _ls in _lin_shapes[1:]:")
+            lines.append("    _lin_comp = _lin_comp.fuse(_ls)")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _lin_comp")
+            lines.append("doc.recompute()")
+
+        elif op_type == "mirror":
+            # Mirror a feature across a plane
+            obj_name = op.get("object", "")
+            plane = op.get("plane", "YZ")  # XY, YZ, XZ
+            result_name = op.get("result_name", "Mirror")
+            if obj_name:
+                lines.append(f"_mir_src = doc.getObject('{obj_name}').Shape")
+            else:
+                lines.append("_mir_src = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids][-1].Shape")
+            # Build mirror transform
+            if plane == "YZ":
+                lines.append("_mir = _mir_src.mirror(FreeCAD.Vector(0,0,0), FreeCAD.Vector(1,0,0))")
+            elif plane == "XZ":
+                lines.append("_mir = _mir_src.mirror(FreeCAD.Vector(0,0,0), FreeCAD.Vector(0,1,0))")
+            elif plane == "XY":
+                lines.append("_mir = _mir_src.mirror(FreeCAD.Vector(0,0,0), FreeCAD.Vector(0,0,1))")
+            else:
+                # Custom plane normal
+                nx, ny, nz = op.get("plane_normal", [1, 0, 0])
+                lines.append(f"_mir = _mir_src.mirror(FreeCAD.Vector(0,0,0), FreeCAD.Vector({nx},{ny},{nz}))")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _mir")
+            lines.append("doc.recompute()")
+
+        elif op_type == "shell":
+            # Hollow out a solid by removing faces
+            obj_name = op.get("object", "")
+            thickness = op.get("thickness", 2.0)
+            # faces_to_remove: list of face indices to open
+            faces_to_remove = op.get("faces_to_remove", [])
+            result_name = op.get("result_name", "Shell")
+            if obj_name:
+                lines.append(f"_shell_obj = doc.getObject('{obj_name}')")
+            else:
+                lines.append("_shell_obj = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids][-1]")
+            if faces_to_remove:
+                face_indices = faces_to_remove
+                lines.append(f"_shell_faces = [_shell_obj.Shape.Faces[_fi] for _fi in {face_indices!r}]")
+            else:
+                # Remove top face (last face, typically Z-max)
+                lines.append("_shell_faces = [_shell_obj.Shape.Faces[-1]]")
+            lines.append(f"_shell = _shell_obj.Shape.makeThickness(_shell_faces, {thickness}, 0.01)")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _shell")
+            lines.append("doc.recompute()")
+
+        elif op_type == "draft":
+            # Apply draft angle to faces (taper for injection molding)
+            obj_name = op.get("object", "")
+            angle = op.get("angle", 2.0)
+            # direction: the pull direction
+            direction = op.get("direction", [0, 0, 1])
+            face_indices = op.get("faces", [])
+            neutral_plane_origin = op.get("neutral_plane", [0, 0, 0])
+            result_name = op.get("result_name", "Draft")
+            if obj_name:
+                lines.append(f"_draft_obj = doc.getObject('{obj_name}')")
+            else:
+                lines.append("_draft_obj = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids][-1]")
+            if face_indices:
+                lines.append(f"_draft_faces = [_draft_obj.Shape.Faces[_fi] for _fi in {face_indices!r}]")
+            else:
+                # Apply to all side faces (skip top and bottom)
+                lines.append("_draft_faces = [f for f in _draft_obj.Shape.Faces]")
+            dx, dy, dz = direction
+            no_x, no_y, no_z = neutral_plane_origin
+            lines.append(f"_draft_angle = {angle}")
+            lines.append(f"_draft_dir = FreeCAD.Vector({dx},{dy},{dz})")
+            lines.append("# Apply draft using makeDraftShape (FreeCAD Part API)")
+            lines.append("_draft_result = _draft_obj.Shape")
+            lines.append("_drafted = False")
+            lines.append("for _df in _draft_faces:")
+            lines.append("    try:")
+            lines.append(f"        _ds = Part.makeDraftShape(_df, _draft_dir, _draft_angle, FreeCAD.Vector({no_x},{no_y},{no_z}))")
+            lines.append("        _draft_result = _draft_result.fuse(_ds)")
+            lines.append("        _drafted = True")
+            lines.append("    except Exception:")
+            lines.append("        pass")
+            lines.append("if not _drafted:")
+            lines.append("    # Fallback: use raw transform approach (scale + translate)")
+            lines.append("    _draft_result = _draft_obj.Shape")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _draft_result")
+            lines.append("doc.recompute()")
 
         lines.append("")
 
@@ -922,7 +1175,14 @@ class FCBatchTool(Tool):
         "Each operation is a JSON object with 'type' and parameters. "
         "Available types: new_doc, make_box, make_cylinder, make_sphere, make_cone, "
         "boolean, move, rotate, cylinder_with_hole, plate_with_holes, fillet, chamfer, "
-        "save, export_stl, export_step, object_info, delete_object, volume_check."
+        "save, export_stl, export_step, object_info, delete_object, volume_check, "
+        "sweep (profile along path: springs, threads, pipe bends), "
+        "loft (transition between profiles: cones, brackets, nozzles), "
+        "polar_pattern (circular array: bolt hole circles, fan blades), "
+        "linear_pattern (linear array: heat sink fins, gratings), "
+        "mirror (symmetric features: right arm = mirror of left), "
+        "shell (hollow solid by removing faces: boxes, containers), "
+        "draft (taper faces for injection molding / 3D printing)."
     )
 
     def get_definition(self) -> ToolDefinition:

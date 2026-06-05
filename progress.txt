@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-06-05 - Task 52: FreeCAD 高级建模 — 扫掠/放样/阵列/镜像/抽壳/拔模
+
+### What was done:
+- **修改 tools/freecad.py** — `_build_script()` 新增 7 种高级建模操作：
+  - `sweep`：沿路径扫掠截面（弹簧/螺纹/弯管）。支持 profile(circle/rectangle/custom)、path_type(helix/circle/line/custom)、solid/frenet 参数
+  - `loft`：多截面之间过渡（锥形/支架/喷嘴）。支持 profiles([circle/rectangle/polygon/ellipse])、simple two-circle 模式、solid/ruled 参数
+  - `polar_pattern`：圆周阵列（螺栓孔圆/风扇叶片/叶轮）。支持 count/angle/axis/center 参数
+  - `linear_pattern`：线性阵列（散热片/格栅/齿条）。支持 count/spacing/direction 参数
+  - `mirror`：镜像特征（对称零件右臂=左臂镜像）。支持 plane(XY/YZ/XZ/custom_normal)
+  - `shell`：抽壳（盒子/容器/外壳）。支持 thickness/faces_to_remove 参数
+  - `draft`：拔模斜度（注塑/3D打印脱模）。支持 angle/direction/faces 参数
+- **修改 tools/freecad.py** — FreeCAD 子进程超时从 60s 提升至 300s
+- **修改 tools/freecad.py** — fc_batch description 更新，列出所有新操作类型及用途
+- **修改 agent/core.py** — AGENT_SYSTEM_PROMPT 增加高级建模操作文档（参数说明+使用场景）
+- **编写 tests/test_advanced_modeling.py** — 25个测试覆盖：
+  - Script Generation (14): Sweep(4)、Loft(3)、Pattern(2)、Mirror(2)、Shell(2)、Draft(1)
+  - Integration with FreeCAD (9): Sweep(2)、Loft(1)、PolarPattern(1)、LinearPattern(1)、Mirror(1)、Shell(1)、Draft(1)、Export(1)
+  - Registration (2): batch description、timeout 验证
+
+### Testing:
+- `tests/test_advanced_modeling.py`: 25/25 passed
+- 核心回归测试：209/209 passed（test_hierarchical_plan + test_stability + test_closed_chain_solver + test_mobile_base + test_mass_properties + test_advanced_modeling）
+- 全量测试中 2 个已知的 pre-existing 失败（API rate limit + config 默认值断言），与本次改动无关
+
+### Notes:
+- sweep 的 makePipeShell 是 FreeCAD Part API 的标准方法，helix 路径用 makeHelix 生成
+- loft 的 makeLoft 接受 wire 列表，solid=True 生成实体，solid=False 生成壳体
+- polar_pattern 和 linear_pattern 通过 copy+transform+fuse 组合实现
+- mirror 使用 Part.Shape.mirror() 方法，指定镜像平面的法向量
+- shell 使用 makeThickness()，传入要移除的面列表和壁厚
+- draft 使用 makeDraftShape()，对指定面施加拔模角
+- 后续 Task 53（零件库扩展）可利用高级操作生成轮子、轮毂等复杂标准件
+- 后续 Task 56（FreeCAD 草图建模）可与 sweep/loft 配合实现更复杂的参数化建模
+
+---
+
 ## 2026-06-05 - Task 48: 稳定性分析工具 — 质心/支撑多边形/Force-Angle/ZMP
 
 ### What was done:
