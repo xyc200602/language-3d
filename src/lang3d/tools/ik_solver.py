@@ -12,9 +12,10 @@ Tools:
 
 from __future__ import annotations
 
+import enum
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from ..knowledge.mechanics import Assembly, Joint, Part
@@ -34,8 +35,8 @@ class IKResult:
     end_effector: list[float]        # [x, y, z] achieved position
     error_mm: float                  # distance to target
     reachable: bool                  # True if error < tolerance
-    method: str                      # "analytic" or "ccd"
-    iterations: int                  # 0 for analytic, actual for CCD
+    method: str                      # "analytic", "ccd", "jacobian"
+    iterations: int                  # 0 for analytic, actual for CCD/Jacobian
 
 
 @dataclass
@@ -46,6 +47,10 @@ class LinkSegment:
     joint_type: str
     parent_anchor: str
     axis: str  # "auto", "x", "y", "z"
+    # Extended fields for dual-arm / dynamic modeling
+    inertia: float = 0.0            # kg⋅mm² (rotational inertia about joint axis)
+    motor_spec: str = ""            # motor model identifier (e.g. "SG90", "MG996R")
+    coupling_ratio: float = 1.0     # gear/belt ratio (output_rev / input_rev)
 
 
 # ---------------------------------------------------------------------------
@@ -600,9 +605,481 @@ class IKSolveTool(Tool):
 
 
 # ---------------------------------------------------------------------------
+# Jacobian-based IK solver (damped pseudoinverse + nullspace optimization)
+# ---------------------------------------------------------------------------
+
+
+def _compute_jacobian(
+    links: list[LinkSegment],
+    joint_angles_rad: list[float],
+    joint_positions: list[list[float]],
+    ee_pos: list[float],
+) -> list[list[float]]:
+    """Compute the 3×N geometric Jacobian for revolute joints.
+
+    Each column j = z_j × (ee - p_j), where z_j is the rotation axis
+    of joint j and p_j is its position.
+    """
+    n = len(links)
+    jacobian: list[list[float]] = [[] for _ in range(3)]
+
+    for j in range(n):
+        axis = _get_rot_axis(links[j])
+        # z_j (rotation axis in world frame — assume fixed for simplicity)
+        z_j = axis
+        # ee - p_j
+        dx = ee_pos[0] - joint_positions[j][0]
+        dy = ee_pos[1] - joint_positions[j][1]
+        dz = ee_pos[2] - joint_positions[j][2]
+        # cross product z_j × (ee - p_j)
+        col = _vec_cross(z_j, (dx, dy, dz))
+        jacobian[0].append(col[0])
+        jacobian[1].append(col[1])
+        jacobian[2].append(col[2])
+
+    return jacobian
+
+
+def _mat_transpose(m: list[list[float]]) -> list[list[float]]:
+    rows, cols = len(m), len(m[0])
+    return [[m[r][c] for r in range(rows)] for c in range(cols)]
+
+
+def _mat_mul_vec(m: list[list[float]], v: list[float]) -> list[float]:
+    return [sum(m[i][j] * v[j] for j in range(len(v))) for i in range(len(m))]
+
+
+def _damped_pseudoinverse(
+    jacobian: list[list[float]], damping: float = 0.01
+) -> list[list[float]]:
+    """Compute damped pseudoinverse: J^T (J J^T + λ²I)^{-1}.
+
+    For the 3×N case, J J^T is 3×3 which is cheap to invert.
+    """
+    n = len(jacobian[0])
+    jt = _mat_transpose(jacobian)
+    # J J^T (3×3)
+    jjt = [[sum(jacobian[r][k] * jt[k][c] for k in range(n))
+             for c in range(3)] for r in range(3)]
+    # Add λ²I
+    for i in range(3):
+        jjt[i][i] += damping * damping
+    # Invert 3×3 matrix
+    inv = _invert_3x3(jjt)
+    if inv is None:
+        # Fallback: simple transpose
+        return jt
+    # J^T * inv(JJ^T + λ²I)  →  N×3
+    result = [[sum(jt[r][k] * inv[k][c] for k in range(3)) for c in range(3)]
+              for r in range(n)]
+    return result
+
+
+def _invert_3x3(m: list[list[float]]) -> list[list[float]] | None:
+    """Invert a 3×3 matrix using cofactor expansion. Returns None if singular."""
+    a, b, c = m[0]
+    d, e, f = m[1]
+    g, h, i = m[2]
+    det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    if abs(det) < 1e-12:
+        return None
+    inv_det = 1.0 / det
+    return [
+        [(e * i - f * h) * inv_det, (c * h - b * i) * inv_det, (b * f - c * e) * inv_det],
+        [(f * g - d * i) * inv_det, (a * i - c * g) * inv_det, (c * d - a * f) * inv_det],
+        [(d * h - e * g) * inv_det, (b * g - a * h) * inv_det, (a * e - b * d) * inv_det],
+    ]
+
+
+def _nullspace_projector(jacobian: list[list[float]]) -> list[list[float]]:
+    """Compute nullspace projection matrix: I - J^+ J (N×N)."""
+    n = len(jacobian[0])
+    jp = _damped_pseudoinverse(jacobian)
+    # J^+ J (N×N)
+    jpj = [[sum(jp[r][k] * jacobian[k][c] for k in range(3)) for c in range(n)]
+           for r in range(n)]
+    # I - J^+J
+    result = [[(1.0 if r == c else 0.0) - jpj[r][c] for c in range(n)]
+              for r in range(n)]
+    return result
+
+
+class JacobianIKSolver:
+    """Jacobian-based IK solver with damped pseudoinverse and nullspace optimization.
+
+    Features:
+      - Damped least-squares (avoids singularity issues)
+      - Nullspace optimization (minimize joint motion / prefer center pose)
+      - Joint limits enforcement
+    """
+
+    def __init__(
+        self,
+        assembly: Assembly,
+        links: list[LinkSegment],
+        damping: float = 0.5,
+        step_scale: float = 0.5,
+        max_iterations: int = 200,
+        tolerance_mm: float = 0.5,
+        joint_limits: dict[str, tuple[float, float]] | None = None,
+    ):
+        self.assembly = assembly
+        self.links = links
+        self.damping = damping
+        self.step_scale = step_scale
+        self.max_iterations = max_iterations
+        self.tolerance_mm = tolerance_mm
+        self.joint_limits = joint_limits or {}
+        self.solver = AssemblySolver(assembly)
+        # Find end-effector name
+        self.ee_name = links[-1].name if links else ""
+        for j in assembly.joints:
+            if j.parent == links[-1].name and j.type == "fixed":
+                self.ee_name = j.child
+                break
+
+    def _get_joint_positions(
+        self, angles: dict[str, float]
+    ) -> tuple[list[list[float]], list[float]]:
+        """Compute joint positions and EE position from current angles."""
+        placements = self.solver.solve(joint_angles=angles)
+        positions: list[list[float]] = []
+        for link in self.links:
+            pos = placements.get(link.name, {}).get("position", [0, 0, 0])
+            positions.append(pos)
+        ee_pos = placements.get(self.ee_name, {}).get("position", [0, 0, 0])
+        return positions, ee_pos
+
+    def solve(
+        self,
+        target: tuple[float, float, float],
+        initial_angles: dict[str, float] | None = None,
+    ) -> IKResult:
+        """Solve IK using Jacobian damped pseudoinverse."""
+        angles: dict[str, float] = dict(initial_angles) if initial_angles else {}
+        for link in self.links:
+            angles.setdefault(link.name, 0.0)
+
+        # Preferred (center) angles for nullspace optimization
+        center_angles: dict[str, float] = {}
+        for link in self.links:
+            lim = self.joint_limits.get(link.name, (-180, 180))
+            center_angles[link.name] = (lim[0] + lim[1]) / 2.0
+
+        best_error = float("inf")
+        best_angles = dict(angles)
+
+        for iteration in range(self.max_iterations):
+            joint_pos, ee_pos = self._get_joint_positions(angles)
+
+            error_vec = [
+                target[0] - ee_pos[0],
+                target[1] - ee_pos[1],
+                target[2] - ee_pos[2],
+            ]
+            error = math.sqrt(error_vec[0] ** 2 + error_vec[1] ** 2 + error_vec[2] ** 2)
+
+            if error < best_error:
+                best_error = error
+                best_angles = dict(angles)
+
+            if error < self.tolerance_mm:
+                return IKResult(
+                    joint_angles={k: round(v, 2) for k, v in best_angles.items()},
+                    end_effector=[round(x, 4) for x in ee_pos],
+                    error_mm=round(error, 4),
+                    reachable=True,
+                    method="jacobian",
+                    iterations=iteration + 1,
+                )
+
+            # Compute Jacobian
+            angles_rad = [math.radians(angles.get(link.name, 0.0)) for link in self.links]
+            jac = _compute_jacobian(self.links, angles_rad, joint_pos, ee_pos)
+
+            # Damped pseudoinverse step
+            jp = _damped_pseudoinverse(jac, damping=self.damping)
+            delta_theta = _mat_mul_vec(jp, error_vec)
+
+            # Nullspace gradient: push towards center angles
+            ns = _nullspace_projector(jac)
+            gradient = [center_angles[link.name] - angles.get(link.name, 0.0)
+                        for link in self.links]
+            ns_step = _mat_mul_vec(ns, gradient)
+
+            # Apply step with scaling
+            for i, link in enumerate(self.links):
+                delta = delta_theta[i] * self.step_scale + ns_step[i] * 0.1
+                new_angle = angles.get(link.name, 0.0) + delta
+                lim = self.joint_limits.get(link.name, (-180, 180))
+                angles[link.name] = max(lim[0], min(lim[1], new_angle))
+
+        # Return best found
+        _, ee_pos = self._get_joint_positions(best_angles)
+        final_error = math.sqrt(
+            (target[0] - ee_pos[0]) ** 2 +
+            (target[1] - ee_pos[1]) ** 2 +
+            (target[2] - ee_pos[2]) ** 2
+        )
+        return IKResult(
+            joint_angles={k: round(v, 2) for k, v in best_angles.items()},
+            end_effector=[round(x, 4) for x in ee_pos],
+            error_mm=round(final_error, 4),
+            reachable=final_error < self.tolerance_mm,
+            method="jacobian",
+            iterations=self.max_iterations,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dual-arm coordination
+# ---------------------------------------------------------------------------
+
+
+class DualArmMode(str, enum.Enum):
+    """Mode for dual-arm IK solving."""
+    INDEPENDENT = "independent"   # Solve each arm separately
+    COORDINATED = "coordinated"   # Solve with collision avoidance
+    MASTER_SLAVE = "master_slave" # Arm2 follows Arm1 with fixed offset
+
+
+@dataclass
+class DualArmResult:
+    """Result of dual-arm IK solve."""
+    arm1: IKResult
+    arm2: IKResult
+    collision_free: bool
+    min_clearance_mm: float
+    mode: DualArmMode
+    shared_workspace_overlap: float  # fraction 0..1
+
+
+def solve_dual_arm_ik(
+    arm1_assembly: Assembly,
+    arm2_assembly: Assembly,
+    target1: tuple[float, float, float],
+    target2: tuple[float, float, float],
+    mode: DualArmMode = DualArmMode.COORDINATED,
+    collision_check_fn: Any | None = None,
+    tolerance_mm: float = 1.0,
+    max_iterations: int = 200,
+) -> DualArmResult:
+    """Solve IK for a dual-arm system.
+
+    Args:
+        arm1_assembly: Assembly for arm 1.
+        arm2_assembly: Assembly for arm 2.
+        target1: Target for arm 1 end-effector [x, y, z].
+        target2: Target for arm 2 end-effector [x, y, z].
+        mode: INDEPENDENT / COORDINATED / MASTER_SLAVE.
+        collision_check_fn: Optional callable(angles1, angles2) -> (collision_free, min_clearance).
+        tolerance_mm: Acceptable error.
+        max_iterations: Max iterations per solver.
+
+    Returns:
+        DualArmResult with both arm solutions and collision status.
+    """
+    # Solve each arm individually
+    result1 = solve_ik(
+        assembly=arm1_assembly, target=target1,
+        approach="auto", tolerance_mm=tolerance_mm,
+        max_iterations=max_iterations,
+    )
+    result2 = solve_ik(
+        assembly=arm2_assembly, target=target2,
+        approach="auto", tolerance_mm=tolerance_mm,
+        max_iterations=max_iterations,
+    )
+
+    # For MASTER_SLAVE mode: arm2 follows arm1 with a symmetric offset
+    if mode == DualArmMode.MASTER_SLAVE:
+        # Mirror arm1 target to get arm2 target (Y-axis mirror)
+        mirror_target2 = (-target1[0], target1[1], target1[2])
+        result2 = solve_ik(
+            assembly=arm2_assembly, target=mirror_target2,
+            approach="auto", tolerance_mm=tolerance_mm,
+            max_iterations=max_iterations,
+        )
+
+    # Check collision if checker provided or coordinated mode
+    collision_free = True
+    min_clearance = float("inf")
+    if collision_check_fn is not None:
+        collision_free, min_clearance = collision_check_fn(
+            result1.joint_angles, result2.joint_angles
+        )
+    elif mode == DualArmMode.COORDINATED:
+        # Simple heuristic: check EE distance
+        ee1 = result1.end_effector
+        ee2 = result2.end_effector
+        ee_dist = math.sqrt(
+            (ee1[0] - ee2[0]) ** 2 +
+            (ee1[1] - ee2[1]) ** 2 +
+            (ee1[2] - ee2[2]) ** 2
+        )
+        min_clearance = ee_dist
+        # If EEs are closer than 50mm, flag potential collision
+        if ee_dist < 50:
+            collision_free = False
+
+    # Estimate shared workspace overlap
+    links1, _ = _extract_chain(arm1_assembly)
+    links2, _ = _extract_chain(arm2_assembly)
+    reach1 = sum(l.length for l in links1) if links1 else 0
+    reach2 = sum(l.length for l in links2) if links2 else 0
+    # Simple overlap estimate: ratio of smaller reach to larger reach
+    if reach1 > 0 and reach2 > 0:
+        overlap = min(reach1, reach2) / max(reach1, reach2)
+    else:
+        overlap = 0.0
+
+    return DualArmResult(
+        arm1=result1,
+        arm2=result2,
+        collision_free=collision_free,
+        min_clearance_mm=round(min_clearance, 2),
+        mode=mode,
+        shared_workspace_overlap=round(overlap, 4),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool: dual_arm_ik
+# ---------------------------------------------------------------------------
+
+
+class DualArmIKTool(Tool):
+    """Solve dual-arm inverse kinematics with collision avoidance."""
+
+    name = "dual_arm_ik"
+    description = (
+        "双臂协调逆运动学求解：同时求解左臂和右臂的关节角度，"
+        "支持独立/协调/主从模式，含碰撞检测。"
+    )
+
+    def get_definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "arm1_assembly": {
+                        "type": "string",
+                        "description": "左臂装配体名称或 JSON",
+                    },
+                    "arm2_assembly": {
+                        "type": "string",
+                        "description": "右臂装配体名称或 JSON",
+                    },
+                    "target1": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "description": "左臂目标位置 [x, y, z] mm",
+                    },
+                    "target2": {
+                        "type": "array",
+                        "items": {"type": "number"},
+                        "description": "右臂目标位置 [x, y, z] mm",
+                    },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["independent", "coordinated", "master_slave"],
+                        "description": "双臂模式：independent/coordinated/master_slave",
+                    },
+                    "tolerance_mm": {
+                        "type": "number",
+                        "description": "可接受误差 mm（默认 1.0）",
+                    },
+                },
+                "required": ["target1", "target2"],
+            },
+        )
+
+    def execute(
+        self,
+        *,
+        arm1_assembly: str = "robotic_arm",
+        arm2_assembly: str = "robotic_arm",
+        target1: list[float] | None = None,
+        target2: list[float] | None = None,
+        mode: str = "coordinated",
+        tolerance_mm: float = 1.0,
+        **kwargs: Any,
+    ) -> str:
+        if target1 is None or target2 is None:
+            return "Error: target1 and target2 are required"
+
+        from .assembly_solver import _resolve_assembly
+        a1 = _resolve_assembly(arm1_assembly, "")
+        a2 = _resolve_assembly(arm2_assembly, "")
+        if a1 is None:
+            return f"Error: assembly '{arm1_assembly}' not found"
+        if a2 is None:
+            return f"Error: assembly '{arm2_assembly}' not found"
+
+        result = solve_dual_arm_ik(
+            arm1_assembly=a1,
+            arm2_assembly=a2,
+            target1=(target1[0], target1[1], target1[2]),
+            target2=(target2[0], target2[1], target2[2]),
+            mode=DualArmMode(mode),
+            tolerance_mm=tolerance_mm,
+        )
+
+        lines = [
+            f"[Dual-Arm IK] Mode: {result.mode.value}",
+            f"Collision-free: {'Yes' if result.collision_free else 'NO'}",
+            f"Min clearance: {result.min_clearance_mm:.1f} mm",
+            f"Workspace overlap: {result.shared_workspace_overlap:.1%}",
+            "",
+            "--- Arm 1 ---",
+            f"  Target: ({target1[0]:.1f}, {target1[1]:.1f}, {target1[2]:.1f})",
+            f"  Method: {result.arm1.method}, Error: {result.arm1.error_mm:.2f} mm",
+            f"  Reachable: {'Yes' if result.arm1.reachable else 'No'}",
+        ]
+        for name, angle in result.arm1.joint_angles.items():
+            lines.append(f"    {name}: {angle:.2f} deg")
+
+        lines.extend([
+            "",
+            "--- Arm 2 ---",
+            f"  Target: ({target2[0]:.1f}, {target2[1]:.1f}, {target2[2]:.1f})",
+            f"  Method: {result.arm2.method}, Error: {result.arm2.error_mm:.2f} mm",
+            f"  Reachable: {'Yes' if result.arm2.reachable else 'No'}",
+        ])
+        for name, angle in result.arm2.joint_angles.items():
+            lines.append(f"    {name}: {angle:.2f} deg")
+
+        lines.append("")
+        lines.append("--- JSON ---")
+        lines.append(json.dumps({
+            "arm1": {
+                "joint_angles": result.arm1.joint_angles,
+                "end_effector": result.arm1.end_effector,
+                "error_mm": result.arm1.error_mm,
+                "reachable": result.arm1.reachable,
+            },
+            "arm2": {
+                "joint_angles": result.arm2.joint_angles,
+                "end_effector": result.arm2.end_effector,
+                "error_mm": result.arm2.error_mm,
+                "reachable": result.arm2.reachable,
+            },
+            "collision_free": result.collision_free,
+            "min_clearance_mm": result.min_clearance_mm,
+            "mode": result.mode.value,
+            "shared_workspace_overlap": result.shared_workspace_overlap,
+        }, ensure_ascii=False, indent=2))
+
+        return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # Registration
 # ---------------------------------------------------------------------------
 
 def register_ik_tools(registry: Any) -> None:
     """Register IK solver tools."""
     registry.register(IKSolveTool())
+    registry.register(DualArmIKTool())

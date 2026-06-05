@@ -4,6 +4,48 @@
 
 ---
 
+## 2026-06-05 - Task 49: 双臂协调 — 集中式 IK + 碰撞检测 + 工作空间分析
+
+### What was done:
+- **修改 tools/ik_solver.py** — 大幅扩展：
+  - `LinkSegment` 新增 `inertia`(惯性)、`motor_spec`(电机规格)、`coupling_ratio`(传动比) 字段
+  - `JacobianIKSolver` 类：阻尼伪逆 Jacobian + 零空间优化（最小化关节运动/趋向中心位姿）
+    - `_compute_jacobian()`：3×N 几何 Jacobian（z_j × (ee - p_j)）
+    - `_damped_pseudoinverse()`：J^T(JJ^T + λ²I)^{-1}，3×3 矩阵求逆
+    - `_nullspace_projector()`：I - J^+J，零空间投影推关节趋向中心
+  - `DualArmMode` 枚举：INDEPENDENT（独立）、COORDINATED（协调+碰撞检测）、MASTER_SLAVE（主从镜像）
+  - `solve_dual_arm_ik()`：双臂 IK 协调求解，返回 `DualArmResult`
+  - `DualArmIKTool`：Agent 工具，支持双臂协调 IK 查询
+- **新建 tools/collision.py** — 完整碰撞检测工具集：
+  - `Capsule` 数据类（线段 + 半径）
+  - `build_capsule_model(links, positions)`：从臂段构建胶囊体模型
+  - `capsule_distance(a, b)`：两胶囊最短距离（线段最近点迭代法）
+  - `gjk_distance(a, b)`：GJK 风格距离算法（基于 capsule_distance）
+  - `check_self_collision(arm1, arm2, safety_margin)`：自碰撞+臂间碰撞检测
+  - `CollisionCheckTool`：Agent 工具，接受胶囊体 JSON
+- **新建 tools/workspace.py** — 工作空间分析：
+  - `compute_workspace(assembly, n_samples)`：Monte Carlo 采样前向运动学
+  - `compute_shared_workspace(arm1, arm2)`：双臂共享工作空间体素化重叠分析
+  - `WorkspaceAnalysisTool`：Agent 工具，支持 single/dual 模式
+- **修改 agent/core.py** — 注册 collision + workspace 工具；系统提示词增加双臂协调工具文档
+- **编写 tests/test_dual_arm_ik.py** — 37个测试覆盖：
+  - LinkSegment(2)、JacobianIKSolver(3)、DualArmMode(1)、solve_dual_arm_ik(5)、DualArmIKTool(2)
+  - Capsule(2)、build_capsule_model(2)、capsule_distance(3)、gjk_distance(1)、check_self_collision(3)、CollisionCheckTool(2)
+  - compute_workspace(3)、compute_shared_workspace(2)、WorkspaceAnalysisTool(2)
+  - Registration(4)
+
+### Testing:
+- `tests/test_dual_arm_ik.py`: 37/37 passed
+- 核心回归测试：1416/1416 passed（排除 API/配置相关 pre-existing 失败）
+
+### Notes:
+- JacobianIKSolver 使用阻尼伪逆避免奇异性，零空间优化推关节趋向中心角
+- DualArmMode.COORDINATED 使用末端执行器距离作为碰撞启发式（<50mm 标记碰撞）
+- 更精确的碰撞检测需配合 collision_check 工具的胶囊体模型
+- 工作空间分析使用体素化（grid_size=10mm）计算重叠率
+- 后续 Task 50（电机固件）可利用 LinkSegment.motor_spec 字段生成 PID 控制代码
+- 后续 Task 57（复杂机器人 E2E）可验证双臂协调+碰撞检测的完整流程
+
 ## 2026-06-05 - Task 52: FreeCAD 高级建模 — 扫掠/放样/阵列/镜像/抽壳/拔模
 
 ### What was done:

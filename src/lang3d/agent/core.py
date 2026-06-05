@@ -59,6 +59,20 @@ cad_verify 验证策略：
 - part_assemble + assembly_definition：自动定位组装
 - ik_solve(target)：求解逆运动学，得到各关节角度
 
+双臂协调工具：
+- dual_arm_ik(arm1, arm2, target1, target2, mode)：双臂协调逆运动学求解
+  - mode=independent：两臂独立求解
+  - mode=coordinated：协调求解+碰撞检测（推荐）
+  - mode=master_slave：从臂镜像跟随主臂
+- collision_check(arm1_capsules, arm2_capsules, safety_margin)：胶囊体碰撞检测
+  - 使用 Capsule(线段+半径) 简化模型 + GJK 距离算法
+  - safety_margin 默认 10mm，低于此距离触发碰撞警告
+- workspace_analysis(assembly, mode, n_samples)：工作空间分析
+  - mode=single：单臂可达范围 Monte Carlo 采样
+  - mode=dual：双臂共享工作区域重叠分析
+  - 返回 bounds、max_reach、overlap_ratio
+- 双臂设计工作流：workspace_analysis → dual_arm_ik(coordinated) → collision_check → 稳定性验证
+
 切片工作流：slice_model → slice_analyze → slice_vlm_analyze
 - slice_model(stl_path)：STL → G-code 切片（支持打印机/材料/质量预设）
 - slice_analyze(gcode_path)：解析 G-code 获取打印统计（时间/材料/成本）
@@ -232,6 +246,20 @@ class Agent:
         try:
             from ..tools.ik_solver import register_ik_tools
             register_ik_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register collision detection tools (capsule + GJK)
+        try:
+            from ..tools.collision import register_collision_tools
+            register_collision_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register workspace analysis tools (Monte Carlo sampling)
+        try:
+            from ..tools.workspace import register_workspace_tools
+            register_workspace_tools(self.tools)
         except Exception:
             pass
 

@@ -672,7 +672,7 @@
       "编写 tests/test_dual_arm_ik.py — Jacobian 求解、双臂协调、碰撞检测、工作空间分析测试（~30 个）"
     ],
     "priority": 49,
-    "passes": false
+    "passes": true
   },
   {
     "id": 50,
