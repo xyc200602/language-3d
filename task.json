@@ -838,5 +838,79 @@
     ],
     "priority": 58,
     "passes": false
+  },
+  {
+    "id": 59,
+    "title": "工程包导出工具 — ExportPackageTool + /export CLI 命令",
+    "description": "将 export_complex_robot.py 的一次性脚本升级为正式工具：ExportPackageTool（Tool 子类），注册到 Agent 工具表，支持 /export CLI 命令。E2E 测试从 42 个断言改为「调一次 export → 验证目录文件齐全」。",
+    "steps": [
+      "新建 tools/export_package.py — ExportPackageTool(Tool) 类，get_definition() 返回 ToolDefinition（assembly_name, output_dir, components, actuator_ids, controller），execute() 运行 12 步 pipeline 写入磁盘",
+      "修改 tools/export_package.py — register_export_package_tools(registry) 函数",
+      "修改 agent/core.py — Agent.__init__ 新增 register_export_package_tools(self.tools) try/except 注册块",
+      "修改 agent/core.py — AGENT_SYSTEM_PROMPT 新增 export_package 工具说明（参数、工作流）",
+      "修改 cli.py — 新增 /export <assembly_name> [output_dir] 命令，调用 ExportPackageTool",
+      "修改 cli.py — print_help() 新增 /export 说明",
+      "新建 tests/test_export_package.py — 测试 ExportPackageTool.execute() 输出目录结构正确（68+ 文件）、design_report.json 完整、各组件可选导出、错误处理",
+      "验证全量测试无回归"
+    ],
+    "priority": 59,
+    "passes": false
+  },
+  {
+    "id": 60,
+    "title": "E2E 测试重构 — 从 42 断言改为工程包完整性验证",
+    "description": "重写 test_complex_robot_e2e.py，从 42 个模块级断言改为：调用 ExportPackageTool 一次 → 验证输出目录下文件齐全、内容正确。旧测试保留为回归基础，新测试验证用户可见的产出。",
+    "steps": [
+      "重写 tests/test_complex_robot_e2e.py — 新增 TestExportPackageE2E 类，fixture 调用 ExportPackageTool.execute(output_dir=tmpdir)",
+      "测试 — 输出目录结构存在（freecad_scripts/, firmware/, ros2_package/, subsystems/）",
+      "测试 — 41 个 FreeCAD 脚本存在且包含 import FreeCAD",
+      "测试 — ROS2 包结构完整（package.xml, CMakeLists.txt, urdf/, launch/）",
+      "测试 — design_report.json 包含 total_parts>=41, urdf_links>=41, cable_count>=4, peak_power>0",
+      "测试 — BOM、装配指南、接线图、走线报告、功耗报告、稳定性报告均为非空 Markdown",
+      "测试 — 固件文件存在（robot_arm.ino, ik_solver.h, servo_driver.h, dc_motor_driver.h/.cpp, odometry.cpp）",
+      "测试 — subsystems/ 目录下 5 个 JSON 文件（chassis/arm_left/arm_right/ipc/sensor_tower）",
+      "保留原有 42 个断言测试（不删除，作为回归基础）",
+      "验证全量测试无回归"
+    ],
+    "priority": 60,
+    "passes": false
+  },
+  {
+    "id": 61,
+    "title": "Pipeline 性能优化 — 共享上下文 + 批量 FreeCAD + LLM 缓存",
+    "description": "基于性能分析结果，优化 E2E pipeline 执行速度。三大优化：1) AssemblyContext 共享中间结果（消除 5+ 次冗余遍历）；2) FreeCAD 批量操作（41 次子进程 → 1 次）；3) LLM 响应缓存（减少 30-50% API 调用）。",
+    "steps": [
+      "新建 tools/pipeline_context.py — AssemblyContext 类（part_index, joint_tree, positions, mass_cache, solved 标志），一次计算共享给所有下游模块",
+      "修改 export_package.py — 使用 AssemblyContext 替代各模块独立遍历（solver.solve() → context.positions, compute_assembly_mass → context.mass）",
+      "修改 freecad.py — fc_batch 支持 multi_doc 模式：单次 _build_script() 接受多零件 ops 列表，减少子进程调用",
+      "修改 export_package.py — 41 零件 FreeCAD 脚本改为单次批量 _build_script(all_ops) 生成",
+      "修改 models/retry.py — 新增 AdaptiveRetryHandler：读取 API 响应 rate-limit headers，自适应调整延迟；新增 circuit breaker（连续 5 次失败则跳过）",
+      "新建 models/cache.py — SemanticCache 类（prompt hash → response，TTL=1h），缓存重复 LLM 调用（零件库查询、标准参数生成）",
+      "修改 models/glm.py — chat() 调用前检查 SemanticCache，命中则直接返回",
+      "修改 agent/core.py — agent loop 中对相同/相似工具调用结果做短期缓存",
+      "编写 tests/test_pipeline_context.py — 验证 AssemblyContext 正确共享、缓存命中、批量 FreeCAD",
+      "编写 tests/test_semantic_cache.py — 验证缓存命中率、TTL 过期、容量限制",
+      "对比优化前后 export_package 执行时间（目标：提升 3x+）",
+      "验证全量测试无回归"
+    ],
+    "priority": 61,
+    "passes": false
+  },
+  {
+    "id": 62,
+    "title": "FreeCAD 3D 可视化 — 装配体一键渲染 + 截图预览",
+    "description": "将 build_robot_3d.py 的装配体可视化脚本集成为标准功能：从 Assembly + solved positions → FreeCAD FCStd + STL + PNG 截图。支持按子系统着色、爆炸图、多视角截图。",
+    "steps": [
+      "修改 tools/freecad.py — 新增 build_assembly_script(assembly, positions) 函数，生成完整装配体 FreeCAD 脚本（多零件定位 + 子系统着色）",
+      "修改 tools/freecad.py — 新增 render_assembly 工具：调用 FreeCAD 生成 FCStd + STL + PNG 截图",
+      "修改 agent/core.py — 注册 render_assembly 工具，AGENT_SYSTEM_PROMPT 新增说明",
+      "修改 export_package.py — 新增 render 步骤：调用 build_assembly_script 生成 FCStd + STL + preview.png",
+      "新增 build_exploded_view() 函数 — 按 subsystem 偏移生成爆炸图",
+      "新增多视角截图 — 正视/侧视/俯视/等轴测 4 视角自动截图",
+      "编写 tests/test_assembly_render.py — 验证 FCStd/STL/PNG 文件生成（需 FreeCAD 环境，标记 @pytest.mark.freecad）",
+      "验证全量测试无回归"
+    ],
+    "priority": 62,
+    "passes": false
   }
 ]

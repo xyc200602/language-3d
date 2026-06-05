@@ -4,6 +4,43 @@
 
 ---
 
+## 2026-06-05 - Phase I 规划：工程包导出 + 性能优化 + 3D 可视化
+
+### 深度研究结论
+
+#### 1. E2E 应直接产出工程包
+- 当前 test_complex_robot_e2e.py 是 42 个独立模块断言，不是真正的 E2E
+- export_complex_robot.py 才是真正的 pipeline（12 步 → 68 文件输出）
+- 建议：升级为 ExportPackageTool + /export CLI + 重写 E2E 测试
+
+#### 2. 性能瓶颈分析
+- **HIGH**: 41 次 FreeCAD 子进程调用（每次 ~2s → 共 ~82s），应批量化为 1 次
+- **HIGH**: 5+ 次冗余装配树遍历（solver/mass/urdf/bom/cable 各遍历一次），应共享 AssemblyContext
+- **HIGH**: 无 LLM 响应缓存，重复查询浪费 API 调用，应加 SemanticCache
+- **MEDIUM**: 无 rate-limit 自适应退避，429 错误后固定指数退避
+- **MEDIUM**: planner 无批量验证，多步计划逐个 LLM 调用
+
+#### 3. 3D 可视化
+- FreeCAD 1.1 已安装（`C:\Users\xyc\AppData\Local\Programs\FreeCAD 1.1\bin\freecadcmd.exe`）
+- 已成功生成 robot_assembly.FCStd (31KB) + robot_assembly.stl (217KB)
+- 已用 FreeCAD GUI 打开预览
+
+### 新增任务 (Task 59-62)
+
+| Task | 标题 | 依赖 |
+|------|------|------|
+| 59 | 工程包导出工具 ExportPackageTool + /export CLI | 58 |
+| 60 | E2E 测试重构 — 工程包完整性验证 | 59 |
+| 61 | Pipeline 性能优化 — 共享上下文 + 批量 FreeCAD + LLM 缓存 | 59 |
+| 62 | FreeCAD 3D 可视化 — 装配体渲染 + 截图 | 59 |
+
+### 已生成的工程包
+- 位置：`C:\Users\xyc\Desktop\complex_robot_4w_dual_arm\`
+- 文件：68 个（README + BOM + URDF + 固件 + 走线 + 功耗 + 稳定性 + 41 FreeCAD 脚本 + ROS2 包）
+- 3D 文件：robot_assembly.FCStd + robot_assembly.stl
+
+---
+
 ## 2026-06-05 - 可行性报告 Phase E-H 完成总结
 
 ### 总体完成情况
