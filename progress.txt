@@ -25,14 +25,33 @@
 - 已成功生成 robot_assembly.FCStd (31KB) + robot_assembly.stl (217KB)
 - 已用 FreeCAD GUI 打开预览
 
-### 新增任务 (Task 59-62)
+### 新增任务 (Task 59-64)
 
-| Task | 标题 | 依赖 |
-|------|------|------|
-| 59 | 工程包导出工具 ExportPackageTool + /export CLI | 58 |
-| 60 | E2E 测试重构 — 工程包完整性验证 | 59 |
-| 61 | Pipeline 性能优化 — 共享上下文 + 批量 FreeCAD + LLM 缓存 | 59 |
-| 62 | FreeCAD 3D 可视化 — 装配体渲染 + 截图 | 59 |
+| Task | 标题 | 优先级 | 依赖 |
+|------|------|--------|------|
+| 63 | 装配求解器定位修复 — 兄弟零件自动分布 | **最高** | 无 |
+| 64 | 装配 VLM 视觉验证闭环 | 高 | 63 |
+| 59 | 工程包导出工具 ExportPackageTool + /export CLI | 中 | 58 |
+| 60 | E2E 测试重构 — 工程包完整性验证 | 中 | 59 |
+| 61 | Pipeline 性能优化 — 共享上下文 + 批量 FreeCAD + LLM 缓存 | 中 | 59 |
+| 62 | FreeCAD 3D 可视化 — 装配体渲染 + 截图 | 低 | 59 |
+
+### 装配求解器问题分析
+
+**根因**: `_compute_child_transform()` 只计算 anchor 面的中心点，不处理同面多子零件的水平分布。
+- 4 轮全部在 base_plate bottom 面中心 (0, 0, -Z)
+- 4 铜柱全部在 base_plate top 面中心 (0, 0, +Z)
+- 双臂全部在 top_plate top 面中心 (0, 0, +Z)
+- 结果：41 零件堆成一根竖直棍子
+
+**修复方案**: 新增 `_face_extent_for_part`、`_tangent_vectors_for_anchor`、`_compute_distribution_offset` 三个函数，按 `(parent, parent_anchor)` 分组子零件，根据数量自动选择分布模式（2→line, 3-4→grid 四角, 5+→circle）。单子零件行为不变，向后兼容。
+
+### VLM 装配验证分析
+
+**现状**: VLM 只验证单个零件几何（cad_verify），从未验证整体装配布局。
+**方案**: 新增 AssemblyVisualVerifier → 多角度截图 → VLM 分析 → 检测垂直堆叠等问题 → 自动修正 offset → 重新验证（最多 3 轮）。
+**复用**: cad_verify 的多角度截图、JSON 解析、置信度投票机制。
+**预计**: 每轮验证 ~30s，3 轮 ~90s，token 成本可忽略。
 
 ### 已生成的工程包
 - 位置：`C:\Users\xyc\Desktop\complex_robot_4w_dual_arm\`

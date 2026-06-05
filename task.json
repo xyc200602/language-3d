@@ -912,5 +912,46 @@
     ],
     "priority": 62,
     "passes": false
+  },
+  {
+    "id": 63,
+    "title": "装配求解器定位修复 — 兄弟零件自动分布（grid/line/circle）",
+    "description": "AssemblySolver 的核心缺陷：当同一父零件同一 anchor 面有多个子零件时（如 4 轮→底板 bottom），所有子零件堆在同一坐标。需要实现自动分布逻辑：按 (parent, parent_anchor) 分组，根据子零件数量自动选择 grid/line/circle 分布模式，利用父零件面尺寸计算横向偏移。",
+    "steps": [
+      "修改 assembly_solver.py — 新增 _face_extent_for_part(part, anchor) 函数，返回面的 (width, depth) 尺寸（如 base_plate anchor=top → (300, 200)）",
+      "修改 assembly_solver.py — 新增 _tangent_vectors_for_anchor(anchor) 函数，返回面的两个切线方向向量",
+      "修改 assembly_solver.py — 新增 _compute_distribution_offset(child_index, total, face_extent, tangents) 函数，实现 grid(4角)、line(2分)、circle(5+) 三种分布模式",
+      "修改 assembly_solver.py solve() — 新增 children_groups: dict[(parent, anchor), list] 分组，跟踪每组子零件的索引",
+      "修改 assembly_solver.py _compute_child_transform() — 新增 child_index/total_children 参数，在 anchor offset 后叠加分布偏移",
+      "修改 assembly_solver.py — 确保向后兼容：单子零件 total_children=1 时 lateral_offset=(0,0,0) 不变",
+      "编写 tests/test_solver_distribution.py — 测试 2 子零件 line 分布、4 子零件 grid 分布、5+ 子零件 circle 分布",
+      "编写 tests/test_solver_distribution.py — 测试圆柱零件（diameter）、混合 anchor、显式 offset 叠加、旋转父零件",
+      "更新 tests/test_complex_robot_e2e.py — 新增 test_wheels_distributed、test_standoffs_distributed、test_dual_arms_separated",
+      "重新生成 3D 装配体（build_robot_3d.py），验证机器人视觉正确性",
+      "验证全量测试无回归"
+    ],
+    "priority": 63,
+    "passes": false
+  },
+  {
+    "id": 64,
+    "title": "装配 VLM 视觉验证闭环 — AssemblyVisualVerifier",
+    "description": "新增装配体级别的 VLM 视觉验证闭环：求解装配 → FreeCAD GUI 渲染 → 多角度截图 → VLM 分析布局 → 检测问题（垂直堆叠/横向缺失/平衡问题）→ 自动修正 → 重新验证（最多 3 轮）。复用现有 cad_verify 多角度截图、_parse_verification_json、auto-fix 基础设施。",
+    "steps": [
+      "新建 agent/assembly_visual_verifier.py — AssemblyVisualVerifier 类：verify_assembly_visual() 主入口",
+      "新建 agent/assembly_visual_verifier.py — LayoutProblem/AssemblyVisualVerificationResult 数据类",
+      "新建 agent/assembly_visual_verifier.py — _capture_assembly_screenshots() 多角度截图（isometric/front/top）",
+      "新建 agent/assembly_visual_verifier.py — _build_assembly_prompt() 装配级 VLM 验证提示词（检测 vertical_stacking/missing_lateral/poor_balance/topology_error）",
+      "新建 agent/assembly_visual_verifier.py — _parse_layout_problems() 解析 VLM JSON 输出为 LayoutProblem 列表",
+      "新建 agent/assembly_visual_verifier.py — _generate_corrections() 将问题转为 solver offset 修正",
+      "新建 agent/assembly_visual_verifier.py — 闭环循环：verify → parse → correct → re-solve → re-verify（max 3 轮）",
+      "新建 tools/assembly_vlm.py — AssemblyVLMSolveTool(Tool) 公共接口（assembly_name, expected_layout, max_iterations）",
+      "修改 agent/core.py — 注册 assembly_vlm_tools，AGENT_SYSTEM_PROMPT 新增装配视觉验证说明",
+      "编写 tests/test_assembly_visual_verifier.py — mock VLM 测试问题检测、修正生成、迭代收敛",
+      "编写 tests/test_assembly_vlm_e2e.py — 真实 VLM 测试（标记 @pytest.mark.e2e），验证 41 零件机器人闭环",
+      "验证全量测试无回归"
+    ],
+    "priority": 64,
+    "passes": false
   }
 ]
