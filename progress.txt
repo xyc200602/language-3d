@@ -4,7 +4,34 @@
 
 ---
 
-## 2026-06-05 - Task 55: 电缆走线规划工具
+## 2026-06-05 - Task 56: FreeCAD 草图建模 — Sketch + Extrude/Revolve/Pocket 工作流
+
+### What was done:
+- **修改 tools/freecad.py** — `_build_script()` 新增 4 个草图操作：
+  - `create_sketch`：创建 2D 草图，支持 6 种元素类型：
+    - point（点）、line（线段）、circle（圆）、arc（圆弧）、rectangle（矩形）、polygon（正多边形）
+    - 参数：name, plane(XY/XZ/YZ), offset, elements([dict(type, ...)])
+  - `extrude_sketch`：草图拉伸为 3D 实体
+    - 参数：sketch, height, direction(x/y/z), midplane(对称拉伸), reverse(反向)
+  - `revolve_sketch`：草图旋转为实体（轴/套筒/手轮）
+    - 参数：sketch, axis(x/y/z), angle(度), base(旋转轴基点)
+  - `pocket`：草图挖槽（减材操作）
+    - 参数：sketch, target(目标实体), depth, through_all(贯穿), direction, reverse
+- **修改 agent/core.py** — AGENT_SYSTEM_PROMPT 增加草图建模指导文档：
+  - 何时用体素+布尔 vs 何时用草图+拉伸
+  - 每个操作的参数说明
+- **编写 tests/test_sketch_modeling.py** — 26个测试覆盖：
+  - CreateSketch(12)、ExtrudeSketch(4)、RevolveSketch(4)、Pocket(4)、ScriptQuality(2)
+
+### Testing:
+- `tests/test_sketch_modeling.py`: 26/26 passed
+- 全量回归测试：1615/1615 passed
+
+### Notes:
+- 草图操作生成 FreeCAD Sketcher Python API 代码
+- polygon 元素在生成脚本中使用 math.cos/sin 循环创建正 N 边形
+- 矩形由 4 条 LineSegment 组成
+- pocket 操作支持指定 target 或自动使用最后一个实体
 
 ### What was done:
 - **新建 tools/cable_routing.py** — 完整电缆走线规划系统：

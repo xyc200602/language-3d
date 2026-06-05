@@ -104,6 +104,11 @@ cad_verify 验证策略：
 - mirror：镜像特征（右臂=左臂镜像）。参数：object, plane(XY/YZ/XZ)
 - shell：抽壳（盒子/容器/外壳）。参数：object, thickness, faces_to_remove(list)
 - draft：拔模斜度（注塑/3D打印脱模）。参数：object, angle(度), direction, faces(list)
+- create_sketch：创建 2D 草图（电机支架/传感器座/外壳轮廓）。参数：name, plane(XY/XZ/YZ), elements([dict(type,...)]) — type 可选 point/line/circle/arc/rectangle/polygon
+- extrude_sketch：草图拉伸为 3D 实体。参数：sketch, height, direction(x/y/z), midplane, reverse
+- revolve_sketch：草图旋转为实体（轴/套筒/手轮）。参数：sketch, axis(x/y/z), angle(度), base
+- pocket：草图挖槽（减材操作/减重孔/走线槽）。参数：sketch, target, depth, through_all, direction
+何时用草图 vs 体素：简单零件用 make_box/cylinder + boolean；复杂轮廓（L型/多边形/弧形）用 create_sketch + extrude_sketch
 FreeCAD 子进程超时已从 60s 提升至 300s 以支持复杂操作。
 
 工具优先级：fc_batch > fc_menu > gui_*。仿真用 fea_run/fea_vlm_analyze，CFD 用 cfd_run/cfd_vlm_analyze，运动用 motion_sim 等。

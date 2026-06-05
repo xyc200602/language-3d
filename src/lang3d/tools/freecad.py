@@ -684,6 +684,180 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("obj.Shape = _draft_result")
             lines.append("doc.recompute()")
 
+        # ---------------------------------------------------------------
+        # Sketch-based modeling operations
+        # ---------------------------------------------------------------
+
+        elif op_type == "create_sketch":
+            # Create a 2D sketch from points/lines/arcs/circles
+            name = op.get("name", "Sketch")
+            elements = op.get("elements", [])
+            plane = op.get("plane", "XY")  # XY, XZ, YZ
+            offset = op.get("offset", 0.0)
+            lines.append("import Sketcher")
+            lines.append(f'_sketch_obj = doc.addObject("Sketcher::SketchObject", "{name}")')
+            # Set sketch plane
+            if plane == "XZ":
+                lines.append("_sketch_obj.AttachmentSupport = [doc.getObject('Origin'), 'XZ_Plane']")
+            elif plane == "YZ":
+                lines.append("_sketch_obj.AttachmentSupport = [doc.getObject('Origin'), 'YZ_Plane']")
+            else:
+                lines.append("_sketch_obj.AttachmentSupport = [doc.getObject('Origin'), 'XY_Plane']")
+            if offset != 0.0:
+                lines.append(f"_sketch_obj.AttachmentOffset = App.Placement(App.Vector(0,0,{offset}), App.Vector(0,0,1), 0)")
+            # Add sketch elements
+            for idx_el, el in enumerate(elements):
+                etype = el.get("type", "")
+                if etype == "point":
+                    px, py = el.get("x", 0), el.get("y", 0)
+                    lines.append(f"_sketch_obj.addGeometry(Part.Point(App.Vector({px},{py},0)), False)")
+                elif etype == "line":
+                    x1, y1 = el.get("x1", 0), el.get("y1", 0)
+                    x2, y2 = el.get("x2", 0), el.get("y2", 0)
+                    lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({x1},{y1},0), App.Vector({x2},{y2},0)), False)")
+                elif etype == "circle":
+                    cx, cy = el.get("cx", 0), el.get("cy", 0)
+                    r = el.get("radius", 5)
+                    lines.append(f"_sketch_obj.addGeometry(Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}), False)")
+                elif etype == "arc":
+                    cx, cy = el.get("cx", 0), el.get("cy", 0)
+                    r = el.get("radius", 5)
+                    a1 = el.get("start_angle", 0)
+                    a2 = el.get("end_angle", 360)
+                    lines.append(f"_sketch_obj.addGeometry(Part.ArcOfCircle(Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}), {a1}, {a2}), False)")
+                elif etype == "rectangle":
+                    rx, ry = el.get("x", 0), el.get("y", 0)
+                    rw, rh = el.get("width", 10), el.get("height", 10)
+                    lines.append(f"# Rectangle at ({rx},{ry}) {rw}x{rh}")
+                    lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx},{ry},0), App.Vector({rx + rw},{ry},0)), False)")
+                    lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx + rw},{ry},0), App.Vector({rx + rw},{ry + rh},0)), False)")
+                    lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx + rw},{ry + rh},0), App.Vector({rx},{ry + rh},0)), False)")
+                    lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx},{ry + rh},0), App.Vector({rx},{ry},0)), False)")
+                elif etype == "polygon":
+                    cx, cy = el.get("cx", 0), el.get("cy", 0)
+                    r = el.get("radius", 10)
+                    n = el.get("sides", 6)
+                    lines.append(f"import math")
+                    lines.append(f"for _pi in range({n}):")
+                    lines.append(f"    _a1 = 2 * math.pi * _pi / {n}")
+                    lines.append(f"    _a2 = 2 * math.pi * (_pi + 1) / {n}")
+                    lines.append(f"    _p1 = App.Vector({cx} + {r} * math.cos(_a1), {cy} + {r} * math.sin(_a1), 0)")
+                    lines.append(f"    _p2 = App.Vector({cx} + {r} * math.cos(_a2), {cy} + {r} * math.sin(_a2), 0)")
+                    lines.append(f"    _sketch_obj.addGeometry(Part.LineSegment(_p1, _p2), False)")
+            lines.append("doc.recompute()")
+            lines.append(f'print("Sketch created: {name}")')
+
+        elif op_type == "extrude_sketch":
+            # Extrude a sketch into a 3D solid
+            sketch_name = op.get("sketch", "Sketch")
+            height = op.get("height", 10.0)
+            result_name = op.get("name", "Extrusion")
+            direction = op.get("direction", "z")  # x, y, z
+            midplane = op.get("midplane", False)
+            reverse = op.get("reverse", False)
+            # Direction vector
+            if direction == "x":
+                dx, dy, dz = 1, 0, 0
+            elif direction == "y":
+                dx, dy, dz = 0, 1, 0
+            else:
+                dx, dy, dz = 0, 0, 1
+            if reverse:
+                dx, dy, dz = -dx, -dy, -dz
+            lines.append(f"_sketch_ref = doc.getObject('{sketch_name}')")
+            lines.append("if _sketch_ref is None:")
+            lines.append(f"    raise RuntimeError('Sketch {sketch_name} not found')")
+            lines.append("_sketch_shape = _sketch_ref.Shape")
+            lines.append("_sketch_wires = _sketch_shape.Wires")
+            lines.append("if len(_sketch_wires) == 0:")
+            lines.append("    # Try to get Face from sketch")
+            lines.append("    _sketch_faces = _sketch_shape.Faces")
+            lines.append("    if len(_sketch_faces) > 0:")
+            lines.append("        _sketch_wires = [_sketch_faces[0].OuterWire]")
+            lines.append(f"_extrude_dir = App.Vector({dx}, {dy}, {dz})")
+            lines.append(f"_extrude_h = {height}")
+            if midplane:
+                lines.append(f"_extrude_h = _extrude_h / 2.0")
+                lines.append("_extrude_shape = _sketch_shape.extrude(_extrude_dir * _extrude_h)")
+                lines.append("_extrude_shape2 = _sketch_shape.extrude(_extrude_dir * -_extrude_h)")
+                lines.append("_extrude_result = _extrude_shape.fuse(_extrude_shape2)")
+            else:
+                lines.append("_extrude_result = _sketch_shape.extrude(_extrude_dir * _extrude_h)")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _extrude_result")
+            lines.append("doc.recompute()")
+            lines.append(f'print("Extruded sketch {sketch_name} -> {result_name}, height={height}")')
+
+        elif op_type == "revolve_sketch":
+            # Revolve a sketch around an axis to create a solid of revolution
+            sketch_name = op.get("sketch", "Sketch")
+            result_name = op.get("name", "Revolution")
+            axis = op.get("axis", "z")  # x, y, z
+            angle = op.get("angle", 360.0)  # degrees
+            base_pt = op.get("base", [0, 0, 0])
+            if axis == "x":
+                ax_vec = "App.Vector(1, 0, 0)"
+            elif axis == "y":
+                ax_vec = "App.Vector(0, 1, 0)"
+            else:
+                ax_vec = "App.Vector(0, 0, 1)"
+            lines.append(f"_sketch_ref = doc.getObject('{sketch_name}')")
+            lines.append("if _sketch_ref is None:")
+            lines.append(f"    raise RuntimeError('Sketch {sketch_name} not found')")
+            lines.append("_sketch_shape = _sketch_ref.Shape")
+            lines.append(f"_rev_base = App.Vector({base_pt[0]}, {base_pt[1]}, {base_pt[2]})")
+            lines.append(f"_rev_axis = {ax_vec}")
+            lines.append(f"_rev_angle = {angle}")
+            lines.append("_rev_result = _sketch_shape.revolve(_rev_base, _rev_axis, _rev_angle)")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _rev_result")
+            lines.append("doc.recompute()")
+            lines.append(f'print(f"Revolved sketch → {result_name}, angle={angle}")')
+
+        elif op_type == "pocket":
+            # Cut a pocket (pocket) from a solid using a sketch profile
+            sketch_name = op.get("sketch", "Sketch")
+            target = op.get("target", "")  # target solid object name
+            depth = op.get("depth", 5.0)
+            through_all = op.get("through_all", False)
+            result_name = op.get("name", "PocketResult")
+            direction = op.get("direction", "z")
+            reverse = op.get("reverse", False)
+            if direction == "x":
+                dx, dy, dz = 1, 0, 0
+            elif direction == "y":
+                dx, dy, dz = 0, 1, 0
+            else:
+                dx, dy, dz = 0, 0, 1
+            if reverse:
+                dx, dy, dz = -dx, -dy, -dz
+            lines.append(f"_sketch_ref = doc.getObject('{sketch_name}')")
+            lines.append("if _sketch_ref is None:")
+            lines.append(f"    raise RuntimeError('Sketch {sketch_name} not found')")
+            lines.append("_pocket_profile = _sketch_ref.Shape")
+            lines.append(f"_pocket_dir = App.Vector({dx}, {dy}, {dz})")
+            if through_all:
+                lines.append("_pocket_depth = 10000  # large value for through-all")
+            else:
+                lines.append(f"_pocket_depth = {depth}")
+            lines.append("_pocket_tool = _pocket_profile.extrude(_pocket_dir * _pocket_depth)")
+            if target:
+                lines.append(f"_target_ref = doc.getObject('{target}')")
+                lines.append("if _target_ref is None:")
+                lines.append(f"    raise RuntimeError('Target {target} not found')")
+                lines.append("_target_shape = _target_ref.Shape")
+            else:
+                lines.append("# Use last created solid as target")
+                lines.append("_solids = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids]")
+                lines.append("if not _solids:")
+                lines.append("    raise RuntimeError('No solid found to cut pocket into')")
+                lines.append("_target_shape = _solids[-1].Shape")
+            lines.append("_pocket_result = _target_shape.cut(_pocket_tool)")
+            lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
+            lines.append("obj.Shape = _pocket_result")
+            lines.append("doc.recompute()")
+            lines.append(f'print("Pocket cut: depth={depth}, through_all={through_all}")')
+
         lines.append("")
 
     return "\n".join(lines)
