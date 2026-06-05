@@ -338,11 +338,13 @@ class AssemblySolver:
 
         # Group children by (parent, parent_anchor) to compute sibling distribution
         # Key: (parent_name, parent_anchor) → list of child indices in children_of
+        # Joints with no_distribute=True are excluded from auto-distribution
         sibling_groups: dict[tuple[str, str], list[int]] = {}
         for parent_name, child_list in children_of.items():
             for idx, (joint, _) in enumerate(child_list):
-                key = (parent_name, joint.parent_anchor)
-                sibling_groups.setdefault(key, []).append(idx)
+                if not joint.no_distribute:
+                    key = (parent_name, joint.parent_anchor)
+                    sibling_groups.setdefault(key, []).append(idx)
 
         # Find root: a part that is never a child
         child_set = {j.child for j in self._joints}
@@ -383,10 +385,14 @@ class AssemblySolver:
                     continue
 
                 # Find this child's index within its sibling group
-                group_key = (part_name, joint.parent_anchor)
-                group_indices = sibling_groups.get(group_key, [local_idx])
-                sibling_index = group_indices.index(local_idx) if local_idx in group_indices else 0
-                total_siblings = len(group_indices)
+                if joint.no_distribute:
+                    # Skip auto-distribution for this child
+                    sibling_index, total_siblings = 0, 1
+                else:
+                    group_key = (part_name, joint.parent_anchor)
+                    group_indices = sibling_groups.get(group_key, [local_idx])
+                    sibling_index = group_indices.index(local_idx) if local_idx in group_indices else 0
+                    total_siblings = len(group_indices)
 
                 child_pos, child_rot = self._compute_child_transform(
                     parent_part=parent_part,

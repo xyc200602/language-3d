@@ -132,6 +132,8 @@ class Joint:
     # Rotation axis for revolute joints (overrides parent_anchor inference)
     # "auto" = infer from parent_anchor, "x"/"y"/"z" = explicit axis
     axis: str = "auto"
+    # If True, skip sibling auto-distribution for this joint (child placed at anchor center)
+    no_distribute: bool = False
 
 
 @dataclass
