@@ -8,6 +8,7 @@ from pathlib import Path
 from lang3d.agent.assembly_verifier import (
     AssemblyVerifier,
     AssemblyVerificationResult,
+    CollisionCheck,
     FitCheck,
     PartCheck,
 )
@@ -173,3 +174,34 @@ class TestFullVerification:
         assert "3-DOF Robotic Arm" in report
         assert "零件检查" in report
         assert "配合检查" in report
+
+
+# --- Task 63: Collision check tests ---
+
+class TestCollisionCheck:
+    """Test collision check integration in AssemblyVerifier (Task 63)."""
+
+    def test_verify_without_placements_no_collision(self, tmp_path):
+        """verify_assembly without placements should not run collision checks."""
+        verifier = AssemblyVerifier()
+        result = verifier.verify_assembly(ROBOTIC_ARM_ASSEMBLY, tmp_path)
+        assert result.collision_checks == []
+        assert result.collision_free is True
+
+    def test_verify_with_placements_runs_collision(self, tmp_path):
+        """verify_assembly with placements should populate collision_checks."""
+        from lang3d.tools.assembly_solver import AssemblySolver
+        solver = AssemblySolver(ROBOTIC_ARM_ASSEMBLY)
+        placements = solver.solve()
+
+        verifier = AssemblyVerifier()
+        result = verifier.verify_assembly(
+            ROBOTIC_ARM_ASSEMBLY, tmp_path, placements=placements,
+        )
+        # Should have collision checks populated
+        assert isinstance(result.collision_checks, list)
+        assert len(result.collision_checks) > 0
+        assert isinstance(result.collision_free, bool)
+        # Report should contain collision section
+        report = AssemblyVerifier.generate_assembly_report(result)
+        assert "碰撞检查" in report

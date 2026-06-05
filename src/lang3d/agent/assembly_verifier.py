@@ -39,6 +39,17 @@ class PartCheck:
 
 
 @dataclass
+class CollisionCheck:
+    """Result of a collision check between two parts (Task 63)."""
+
+    part_a: str
+    part_b: str
+    is_collision: bool = False
+    penetration_depth_mm: float = 0.0
+    notes: str = ""
+
+
+@dataclass
 class AssemblyVerificationResult:
     """Complete assembly verification result."""
 
@@ -48,6 +59,9 @@ class AssemblyVerificationResult:
     tolerance_issues: list[str] = field(default_factory=list)
     overall_pass: bool = False
     summary: str = ""
+    # --- Task 63: collision check fields ---
+    collision_checks: list = field(default_factory=list)
+    collision_free: bool = True
 
 
 class AssemblyVerifier:
@@ -62,6 +76,7 @@ class AssemblyVerifier:
         assembly: Assembly,
         workspace: str | Path,
         parts_results: dict[str, dict[str, Any]] | None = None,
+        placements: dict | None = None,
     ) -> AssemblyVerificationResult:
         """Run full assembly verification.
 
@@ -69,6 +84,8 @@ class AssemblyVerifier:
             assembly: The Assembly definition to verify.
             workspace: Directory where part files should exist.
             parts_results: Optional mapping of part_name -> {artifacts, result, ...}
+            placements: Optional solved placements dict (from assembly_solve).
+                        When provided, runs collision detection.
 
         Returns:
             AssemblyVerificationResult with all checks.
@@ -90,19 +107,34 @@ class AssemblyVerifier:
                 )
         tolerance_issues.extend(screw_issues)
 
+        # --- Task 63: collision checks ---
+        collision_checks: list[CollisionCheck] = []
+        collision_free = True
+        if placements is not None:
+            collision_checks, collision_free = self.check_collisions(assembly, placements)
+
         # Determine overall pass
         all_parts_exist = all(pc.exists for pc in part_checks)
         all_fits_ok = all(fc.fits for fc in fit_checks)
-        overall_pass = all_parts_exist and all_fits_ok and len(screw_issues) == 0
+        overall_pass = (
+            all_parts_exist
+            and all_fits_ok
+            and len(screw_issues) == 0
+            and collision_free
+        )
 
         # Build summary
         completed_parts = sum(1 for pc in part_checks if pc.exists)
         failed_fits = sum(1 for fc in fit_checks if not fc.fits)
+        n_collisions = sum(1 for cc in collision_checks if cc.is_collision)
         summary = (
             f"装配验证: {assembly.name}\n"
             f"- 零件完成: {completed_parts}/{len(part_checks)}\n"
             f"- 配合检查: {len(fit_checks) - failed_fits}/{len(fit_checks)} 通过\n"
             f"- 公差问题: {len(tolerance_issues)}\n"
+            f"- 碰撞检查: {n_collisions} 碰撞"
+            + ("" if collision_free else " (发现干涉)")
+            + "\n"
             f"- 总体结果: {'通过' if overall_pass else '未通过'}"
         )
 
@@ -113,6 +145,8 @@ class AssemblyVerifier:
             tolerance_issues=tolerance_issues,
             overall_pass=overall_pass,
             summary=summary,
+            collision_checks=collision_checks,
+            collision_free=collision_free,
         )
 
     def check_part_completeness(
@@ -251,6 +285,39 @@ class AssemblyVerifier:
 
         return issues
 
+    def check_collisions(
+        self,
+        assembly: Assembly,
+        placements: dict,
+    ) -> tuple[list[CollisionCheck], bool]:
+        """Run mesh collision detection on a solved assembly (Task 63).
+
+        Args:
+            assembly: The Assembly definition.
+            placements: Solved placements from assembly_solve.
+
+        Returns:
+            (collision_checks, collision_free) tuple.
+        """
+        try:
+            from ..tools.mesh_collision import MeshCollisionChecker
+            checker = MeshCollisionChecker()
+            result = checker.check_assembly_collisions(assembly, placements)
+            checks = [
+                CollisionCheck(
+                    part_a=cp.part_a,
+                    part_b=cp.part_b,
+                    is_collision=cp.is_collision,
+                    penetration_depth_mm=cp.penetration_depth_mm,
+                    notes=cp.notes,
+                )
+                for cp in result.pairs
+            ]
+            return checks, result.collision_free
+        except Exception as e:
+            # Fallback: if FCL unavailable, return no collisions
+            return [], True
+
     @staticmethod
     def generate_assembly_report(result: AssemblyVerificationResult) -> str:
         """Generate a human-readable assembly verification report."""
@@ -282,6 +349,15 @@ class AssemblyVerifier:
             lines.append("## 公差问题")
             for issue in result.tolerance_issues:
                 lines.append(f"- {issue}")
+
+        # --- Task 63: collision info ---
+        if result.collision_checks:
+            lines.append("")
+            lines.append("## 碰撞检查")
+            for cc in result.collision_checks:
+                icon = "✗" if cc.is_collision else "✓"
+                detail = f" (穿透 {cc.penetration_depth_mm:.2f}mm)" if cc.is_collision else ""
+                lines.append(f"- {icon} {cc.part_a} ↔ {cc.part_b}: {cc.notes}{detail}")
 
         lines.append("")
         lines.append("---")

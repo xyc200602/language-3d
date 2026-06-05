@@ -58,6 +58,7 @@ cad_verify 验证策略：
 - assembly_solve：自动计算每个零件的全局位置
 - part_assemble + assembly_definition：自动定位组装
 - ik_solve(target)：求解逆运动学，得到各关节角度
+- mesh_collision_check：网格碰撞检测（trimesh + FCL），检查零件间干涉和穿透
 
 双臂协调工具：
 - dual_arm_ik(arm1, arm2, target1, target2, mode)：双臂协调逆运动学求解
@@ -289,6 +290,13 @@ class Agent:
         try:
             from ..tools.collision import register_collision_tools
             register_collision_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register mesh collision tools (trimesh + FCL)
+        try:
+            from ..tools.mesh_collision import register_mesh_collision_tools
+            register_mesh_collision_tools(self.tools)
         except Exception:
             pass
 

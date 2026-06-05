@@ -40,6 +40,7 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "assembly": [
         "assembly_solve",
         "ik_solve",
+        "mesh_collision_check",
     ],
     "slicing": [
         "slice_model", "slice_analyze", "slice_preview_layers", "slice_vlm_analyze",

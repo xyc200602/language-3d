@@ -640,3 +640,51 @@ class TestEdgeCases:
         offset = _anchor_offset_for_part(part, "custom_unknown")
         # Falls through to (0,0,0) since "custom_unknown" not in ANCHOR_DIM_KEYS
         assert offset == (0, 0, 0)
+
+
+# ============================================================================
+# Test: Joint new fields (Task 63)
+# ============================================================================
+
+class TestJointNewFields:
+    """Test Joint dataclass Task 63 constraint model fields."""
+
+    def test_default_new_fields_are_none_or_empty(self):
+        j = Joint("fixed", "a", "b")
+        assert j.parent_attachment is None
+        assert j.child_attachment is None
+        assert j.parent_normal is None
+        assert j.child_normal is None
+        assert j.constraint_type == ""
+        assert j.constraint_distance == 0.0
+        assert j.constraint_angle_deg == 0.0
+
+    def test_custom_constraint_fields(self):
+        j = Joint(
+            "fixed", "a", "b",
+            parent_attachment=(10, 20, 30),
+            child_attachment=(5, 0, -10),
+            parent_normal=(0, 0, 1),
+            child_normal=(0, 0, -1),
+            constraint_type="distance",
+            constraint_distance=5.0,
+            constraint_angle_deg=45.0,
+        )
+        assert j.parent_attachment == (10, 20, 30)
+        assert j.child_attachment == (5, 0, -10)
+        assert j.parent_normal == (0, 0, 1)
+        assert j.child_normal == (0, 0, -1)
+        assert j.constraint_type == "distance"
+        assert j.constraint_distance == 5.0
+        assert j.constraint_angle_deg == 45.0
+
+    def test_backward_compatible_with_existing_joints(self):
+        """Old-style Joint construction still works identically."""
+        j1 = Joint("revolute", "base", "arm", (-90, 90), "elbow",
+                   parent_anchor="top", child_anchor="bottom", axis="z")
+        assert j1.parent_anchor == "top"
+        assert j1.child_anchor == "bottom"
+        assert j1.axis == "z"
+        # New fields have defaults
+        assert j1.parent_attachment is None
+        assert j1.constraint_type == ""

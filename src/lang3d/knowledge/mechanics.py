@@ -117,6 +117,15 @@ class Part:
 
 
 @dataclass
+class AttachmentPoint:
+    """A precise 3D attachment point with position and normal vector."""
+
+    position: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    name: str = ""
+
+
+@dataclass
 class Joint:
     """A joint connecting two parts."""
 
@@ -134,6 +143,14 @@ class Joint:
     axis: str = "auto"
     # If True, skip sibling auto-distribution for this joint (child placed at anchor center)
     no_distribute: bool = False
+    # --- Task 63: 约束模型字段 ---
+    parent_attachment: tuple | None = None   # 精确 3D 附着点（覆盖 parent_anchor）
+    child_attachment: tuple | None = None    # 精确 3D 附着点（覆盖 child_anchor）
+    parent_normal: tuple | None = None      # 附着点法向量
+    child_normal: tuple | None = None       # 附着点法向量
+    constraint_type: str = ""               # "coincident"/"concentric"/"distance"/"angle"/"parallel"
+    constraint_distance: float = 0.0        # distance 约束参数（mm）
+    constraint_angle_deg: float = 0.0       # angle 约束参数（度）
 
 
 @dataclass

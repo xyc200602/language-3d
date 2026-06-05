@@ -4,6 +4,131 @@
 
 ---
 
+## 2026-06-06 - Task 63: 装配求解器重写 — 数据模型 + 约束转换器 + 碰撞检测 + 验证集成
+
+### What was done:
+- **Phase A: 数据模型扩展** (`knowledge/mechanics.py`)
+  - 新增 `AttachmentPoint` dataclass（position + normal + name）
+  - `Joint` dataclass 新增 7 个可选字段：parent_attachment, child_attachment, parent_normal, child_normal, constraint_type, constraint_distance, constraint_angle_deg
+  - 全部有默认值，完全向后兼容
+- **Phase A: 约束转换器** (`tools/constraint_solver.py`)
+  - 新增 `convert_legacy_joint()` 函数：旧 anchor-name Joint → 新 AttachmentPoint 格式
+  - 修改 `_solve_child()` 使用 `convert_legacy_joint()` 替代直接读 `joint.parent_anchor`
+  - 旧式 Joint 转换结果与现有行为完全一致
+- **Phase B: 碰撞检测** (`tools/mesh_collision.py`, ~230 行)
+  - `MeshCollisionChecker`: trimesh 包围盒 + FCL 碰撞检测
+  - `CollisionPair` / `CollisionResult` dataclass
+  - `MeshCollisionTool(Tool)`: Agent 工具，调用 AssemblySolver + MeshCollisionChecker
+  - `register_mesh_collision_tools()`: 注册函数（try/except 保护）
+  - 支持 skip_adjacent（跳过相邻零件）、穿透深度、碰撞报告
+- **Phase B: 注册到 Agent**
+  - `tools/base.py`: assembly 类别新增 `mesh_collision_check`
+  - `agent/core.py`: 新增 mesh_collision_tools 注册块 + 系统提示词说明
+- **Phase C: 验证集成** (`agent/assembly_verifier.py`)
+  - 新增 `CollisionCheck` dataclass（part_a, part_b, is_collision, penetration_depth_mm）
+  - `AssemblyVerificationResult` 新增 `collision_checks` + `collision_free` 字段
+  - `verify_assembly()` 新增 `placements` 可选参数（None 时跳过碰撞检查）
+  - `check_collisions()` 方法：调用 MeshCollisionChecker
+  - `generate_assembly_report()` 输出包含碰撞检查信息
+- **测试**：92 个测试全部通过（含 16 个新增测试）
+
+### Testing:
+- `test_assembly_solver.py`: 47 通过（+3 新增 TestJointNewFields）
+- `test_constraint_solver.py`: 18 通过（+4 新增 TestConstraintConverter）
+- `test_mesh_collision.py`: 12 通过（新建：mesh 创建、碰撞检测、工具注册/执行、集成）
+- `test_assembly_verifier_unit.py`: 10 通过（+2 新增 TestCollisionCheck）
+- `test_assembly_render_verify.py`: 4 通过（新建：装配碰撞集成测试）
+- `test_solver_distribution.py`: 32 通过（无回归）
+- `test_closed_chain_solver.py`: 20 通过（无回归）
+- `test_e2e_assembly.py`: 15 通过（无回归）
+- 总计 171 个测试，0 失败
+
+### Notes:
+- python-fcl 0.7.0.11 已安装在 Python 3.12 环境
+- FCL API 使用 CollisionObject 封装 BVHModel + Transform，collide(o1, o2, req, res) 四参数调用
+- ROBOTIC_ARM_ASSEMBLY 的 servo_holder 未在关节树中，导致 solver 将其放置在原点与 base_plate 重叠，这是现有行为
+- collision.py (capsule GJK) 未修改，与 mesh_collision.py 并行共存
+
+---
+
+## 2026-06-05 - ConstraintSolver 原型完成 (py_slvs/SolveSpace)
+
+### What was done:
+- **FreeCAD Assembly3 API 可行性研究完成**：报告存于 `docs/freecad_assembly3_feasibility.md`
+  - 结论：FreeCAD Assembly3 不能 headless 使用（深度绑定 FreeCADGui）
+  - 推荐路径：py_slvs（pip install py-slvs，预编译 wheel，Windows 兼容）
+- **ConstraintSolver 原型实现**：`src/lang3d/tools/constraint_solver.py`
+  - 基于 SolveSpace 约束求解引擎（与 FreeCAD Assembly3 相同引擎）
+  - 架构：每个零件一个自由 3D 点（中心）+ 一个法向（朝向）
+  - 关节映射：Fixed→点重合+法向同向, Revolute→点重合+法向同向
+  - 兄弟零件自动分布：2个→线性, 3-4个→2x2网格, 5+个→圆形
+  - 向后兼容 API：`constraint_solve()` 与现有 `assembly_solve()` 接口一致
+- **14 个测试全部通过**：
+  - TestQuaternion (3): identity, 90deg_z, roundtrip
+  - TestPartGeometry (5): box/cyl dimensions, anchor top/bottom/left
+  - TestConstraintSolverBasic (4): py_slvs import, two_parts_fixed, three_parts_stacked, four_children_grid
+  - TestConstraintSolveAPI (2): compatible format, joint angles
+- **数值验证通过**：
+  - 三层堆叠：base=0, standoff=17.5, top_plate=34.0（正确）
+  - 四子网格：4个支座在 base 上方 z≈13.5，4个不同 XY 位置（正确分布）
+- **无回归**：44/44 现有 assembly_solver 测试通过
+
+### Debug 过程中解决的关键问题:
+1. `py_slvs` 实体句柄是 `int` 类型，不是带 `.h` 属性的对象
+2. `s.Failed` 是 tuple 属性（不是方法），`s.Dof` 也是属性
+3. 初始架构（每零件 6 个自由锚点）DOF 过多 → 改为每零件 1 个中心点 + 锚点解析计算
+4. `python-solvespace` Windows 编译失败 → 切换到 `py-slvs`（预编译 wheel）
+
+### 已知限制（后续优化）:
+- DOF 值偏高（距离约束只约束距离不约束方向）→ 需要更多约束类型
+- 旋转目前恒为 identity → 需要从求解的法向量读取
+- 仅支持树形装配 → 不支持闭环机构
+
+### Notes:
+- Task 63 原型阶段完成，可进入完整实现阶段
+- 下一步：碰撞检测 (trimesh + python-fcl)、更丰富的约束类型、VLM 反馈闭环
+
+---
+
+## 2026-06-05 - Task 63 回退 + 项目全面审查 + Solver 深度研究
+
+### What was done:
+- **Task 63 passes 回退为 false**：虽然 123 个测试全部通过、代码功能（分布/旋转/对齐）已实现，但视觉验证结果显示机器人仍有碰撞/零件漂浮等问题。ad-hoc 修补不能算通过。
+- **项目全面阅读**：完整通读 120+ Python 文件，覆盖 Knowledge/Models/Agent/Tools/Web 五层架构
+- **Task 58 步骤更新**：新增"拆分 2091 行单 HTML 文件为多文件架构"步骤
+- **Solver 深度研究完成**：搜索 2024-2026 年相关论文和方案，完整报告存于 `docs/solver_research_2025.md`
+
+### Solver 研究核心结论:
+- **P1（最高优先级）**：Post-solve 碰撞检测 via `trimesh` + `python-fcl`（50-100 行代码，解决 80%+ 碰撞问题）
+- **P2**：更丰富的关节/约束模型（从 6 面 anchor → 共享坐标系 + DOF，参考 ArtiCAD）
+- **P3**：VLM 视觉反馈闭环（参考 CADCodeVerify ICLR 2025：渲染→VLM验证→修正→循环）
+- **P4**：物理稳定性检查（PyBullet 质心投影 + 扰动分析，参考 Blox-Net CoRL 2024）
+- **P5**：空间占据推理（trimesh BVH / voxel grid）
+- **P6**：完整约束方程求解器（Newton-Raphson 约束图，或直接用 FreeCAD Assembly3/SolveSpace）
+
+### 最相关论文:
+- **AADvark (2025)**: JSON 定义→FreeCAD 约束求解，架构最接近我们
+- **Blox-Net (CoRL 2024)**: LLM 提议→物理验证→VLM 评估→迭代
+- **CADCodeVerify (ICLR 2025)**: 渲染→VLM 验证→修正→循环，最重要的模式
+
+### 目标架构:
+```
+LLM 提议装配 (JSON)
+  → Solver 计算位置（当前 BFS + 更丰富的约束）
+  → 碰撞检测器验证（trimesh + python-fcl）
+  → 物理模拟检查稳定性（PyBullet，可选）
+  → 渲染器生成多角度视图
+  → VLM 验证视觉正确性
+  → 如有问题：反馈 → LLM 修正 → 循环
+```
+
+### Notes:
+- Task 58 待路线讨论完成后开始
+- Task 58 首步：将 index.html 拆分为模块化结构（js/app.js, js/viewer.js, js/tabs/*.js）
+- 下一步需要讨论：从 P1 开始逐步实施，还是一次性规划更多？
+
+---
+
 ## 2026-06-06 - Task 63: 装配求解器定位修复 — 兄弟零件自动分布
 
 ### What was done:
