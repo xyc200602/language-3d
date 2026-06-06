@@ -25,6 +25,7 @@ Public API:
 from __future__ import annotations
 
 import json
+import logging
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -36,8 +37,11 @@ from ..knowledge.mechanics import (
     compute_assembly_mass,
 )
 from ..models.base import ToolDefinition
+from .assembly_solver import AssemblySolver
 from .base import Tool
 from .pipeline_context import AssemblyContext
+
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -95,12 +99,17 @@ def build_complex_robot() -> Assembly:
     ]
     parts.extend(chassis_parts)
 
+    # Standoffs from base_plate top face, distributed to 4 corners
     for s in ["fl", "fr", "rl", "rr"]:
         joints.append(Joint("fixed", "base_plate", f"standoff_{s}",
                             parent_anchor="top", child_anchor="bottom"))
-    for s in ["fl", "fr", "rl", "rr"]:
-        joints.append(Joint("fixed", f"standoff_{s}", "top_plate",
-                            parent_anchor="top", child_anchor="bottom"))
+
+    # top_plate is placed directly above base_plate center, on top of standoffs
+    # Height = base_plate(5) + standoff(50) = 55mm above base center
+    joints.append(Joint("fixed", "base_plate", "top_plate",
+                        parent_anchor="top", child_anchor="bottom",
+                        offset=(0, 0, 50), no_distribute=True))
+
     for s in ["fl", "fr", "rl", "rr"]:
         joints.append(Joint("fixed", "base_plate", f"motor_{s}",
                             parent_anchor="bottom", child_anchor="top"))
@@ -110,9 +119,8 @@ def build_complex_robot() -> Assembly:
         joints.append(Joint("fixed", f"motor_{s}", f"encoder_{s}",
                             parent_anchor="right", child_anchor="bottom"))
     joints.append(Joint("fixed", "base_plate", "battery_box",
-                        parent_anchor="top", child_anchor="bottom", offset=(0, 0, 5)))
-    joints.append(Joint("fixed", "top_plate", "motor_driver_board",
-                        parent_anchor="top", child_anchor="bottom"))
+                        parent_anchor="top", child_anchor="bottom",
+                        offset=(0, 0, 5), no_distribute=True))
 
     # ---- IPC ----
     ipc_parts = [
@@ -124,14 +132,23 @@ def build_complex_robot() -> Assembly:
              dimensions=dict(diameter=40, height=10)),
     ]
     parts.extend(ipc_parts)
+    # IPC centered on top_plate (explicit offset, no auto-distribute)
     joints.append(Joint("fixed", "top_plate", "ipc_bracket",
-                        parent_anchor="top", child_anchor="bottom"))
+                        parent_anchor="top", child_anchor="bottom",
+                        offset=(0, 0, 0), no_distribute=True))
     joints.append(Joint("fixed", "ipc_bracket", "ipc_body",
                         parent_anchor="top", child_anchor="bottom"))
     joints.append(Joint("fixed", "ipc_body", "ipc_fan",
                         parent_anchor="top", child_anchor="bottom"))
 
+    # Motor driver board centered on top_plate
+    joints.append(Joint("fixed", "top_plate", "motor_driver_board",
+                        parent_anchor="top", child_anchor="bottom",
+                        offset=(0, 60, 0), no_distribute=True))
+
     # ---- Left arm & Right arm ----
+    # Arms placed symmetrically: left arm at Y=-70, right arm at Y=+70
+    arm_offsets = {"arm_l": (0, -70, 0), "arm_r": (0, 70, 0)}
     for side, prefix in [("左", "arm_l"), ("右", "arm_r")]:
         arm_parts = [
             Part(f"{prefix}_base", "joint", f"{side}臂底座旋转关节",
@@ -150,9 +167,12 @@ def build_complex_robot() -> Assembly:
                  dimensions=dict(length=60, width=30, height=20)),
         ]
         parts.extend(arm_parts)
+        arm_offset = arm_offsets[prefix]
         joints.extend([
             Joint("revolute", "top_plate", f"{prefix}_base", (-180, 180),
-                  f"{side}臂旋转", axis="z", parent_anchor="top", child_anchor="bottom"),
+                  f"{side}臂旋转", axis="z",
+                  parent_anchor="top", child_anchor="bottom",
+                  offset=arm_offset, no_distribute=True),
             Joint("revolute", f"{prefix}_base", f"{prefix}_shoulder", (-90, 90),
                   f"{side}肩俯仰", axis="y", parent_anchor="top", child_anchor="bottom"),
             Joint("fixed", f"{prefix}_shoulder", f"{prefix}_upper_link",
@@ -168,6 +188,7 @@ def build_complex_robot() -> Assembly:
         ])
 
     # ---- Sensor tower ----
+    # Placed at rear center of top_plate
     sensor_parts = [
         Part("sensor_tower_post", "structural", "传感器塔立柱",
              dimensions=dict(diameter=20, height=120)),
@@ -181,7 +202,8 @@ def build_complex_robot() -> Assembly:
     parts.extend(sensor_parts)
     joints.extend([
         Joint("fixed", "top_plate", "sensor_tower_post",
-              parent_anchor="top", child_anchor="bottom"),
+              parent_anchor="top", child_anchor="bottom",
+              offset=(-100, 0, 0), no_distribute=True),
         Joint("fixed", "sensor_tower_post", "imu_mount",
               parent_anchor="top", child_anchor="bottom"),
         Joint("fixed", "sensor_tower_post", "lidar_mount",
@@ -309,6 +331,52 @@ def export_engineering_package(
 
     # ---- Step 1: Solve assembly positions ----
     positions = ctx.ensure_positions()
+
+    # ---- Step 1b: VLM visual verification ----
+    # Try to run closed-loop VLM verification: render → VLM check → fix → re-solve
+    vlm_result = None
+    try:
+        from ..models.glm import GLMBackend
+        import os as _os
+
+        api_key = _os.environ.get("GLM_API_KEY", "")
+        base_url = _os.environ.get(
+            "GLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"
+        )
+        vision_model = _os.environ.get("VISION_MODEL", "GLM-4V-Plus")
+
+        if api_key:
+            vlm_backend = GLMBackend(
+                api_key=api_key,
+                base_url=base_url,
+                vision_model=vision_model,
+            )
+            from ..agent.assembly_visual_verifier import verify_assembly_visual
+
+            vlm_result = verify_assembly_visual(
+                assembly=assembly,
+                positions=positions,
+                model_backend=vlm_backend,
+                expected_layout=(
+                    "4-wheeled differential mobile robot with: "
+                    "rectangular chassis at origin, 4 wheels at corners, "
+                    "dual 3-DOF arms symmetrically on left (Y=-70) and right (Y=+70), "
+                    "IPC centered on top, sensor tower at rear"
+                ),
+                max_iterations=2,
+                detail_level="detailed",
+            )
+            # If corrections were applied, re-solve positions
+            if vlm_result.corrections_applied and not vlm_result.passed:
+                from ..agent.assembly_visual_verifier import apply_corrections
+                corrected_assembly = apply_corrections(assembly, vlm_result.corrections_applied)
+                solver = AssemblySolver(corrected_assembly)
+                positions = solver.solve()
+                assembly = corrected_assembly
+                ctx = AssemblyContext(assembly=assembly)
+                positions = ctx.ensure_positions()
+    except Exception as e:
+        logger.warning("VLM verification skipped: %s", e)
 
     # ---- Step 2: Compute mass properties ----
     mass_result = ctx.ensure_mass()

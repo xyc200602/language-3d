@@ -75,12 +75,28 @@ class AssemblyVLMSolveTool(Tool):
         solver = AssemblySolver(assembly)
         positions = solver.solve()
 
-        # Get model backend
+        # Get model backend — prefer direct GLMBackend with config from env
         model_backend = None
         try:
-            from ..models.router import ModelRouter, TaskType
-            router = ModelRouter()
-            model_backend = router.get_backend(TaskType.VISION)
+            import os
+            from ..models.glm import GLMBackend
+
+            api_key = os.environ.get("GLM_API_KEY", "")
+            base_url = os.environ.get(
+                "GLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"
+            )
+            # Use GLM-4V-Plus for assembly verification (best accuracy, 2048 tokens)
+            # or GLM-4.6V-Flash for detailed analysis (16384 tokens)
+            vision_model = os.environ.get("VISION_MODEL", "GLM-4V-Plus")
+            if detail_level in ("detailed", "maximum"):
+                vision_model = "GLM-4.6V-Flash"
+
+            if api_key:
+                model_backend = GLMBackend(
+                    api_key=api_key,
+                    base_url=base_url,
+                    vision_model=vision_model,
+                )
         except Exception:
             pass  # Will use heuristic verification
 

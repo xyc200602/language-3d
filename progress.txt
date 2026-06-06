@@ -4,7 +4,49 @@
 
 ---
 
-## 2026-06-06 - Task 64: 装配 VLM 视觉验证闭环 — CADCodeVerify 模式
+## 2026-06-06 - Task 64 修正: 装配 VLM 视觉验证闭环 — 真实 VLM + 修复装配位置
+
+### What was done:
+- **修复 `build_complex_robot()` 装配位置** — 原来的装配体模型看起来不像正常机器人
+  - top_plate 改为直接从 base_plate 定位（offset=(0,0,50), no_distribute=True），不再通过 4 个铜柱间接定位
+  - 铜柱只连接 base_plate（向上），不再连接 top_plate
+  - battery_box 添加 no_distribute=True，避免和铜柱混在圆形分布
+  - 左右臂添加明确 offset（arm_l: Y=-70, arm_r: Y=+70），no_distribute=True
+  - IPC 居中 no_distribute=True
+  - 电机驱动板 no_distribute=True
+  - 传感器塔 offset=(-100,0,0) 放在后方
+  - 结果：base_plate(0,0,0), top_plate(0,0,54), 铜柱4角, 电机4角, 臂左右对称
+- **重写 `_render_and_capture()` → `_render_to_dir()`** — 改用 matplotlib 渲染（不再依赖 FreeCAD GUI）
+  - 直接生成 4 视角 PNG（isometric/front/top/right）
+  - 保存到指定目录，由调用者管理生命周期
+  - 不依赖 FreeCAD GUI、不需要截图工具
+- **集成 VLM 验证到 export pipeline** — `export_engineering_package()` Step 1b
+  - 使用 GLMBackend 直接调用 GLM-4V-Plus / GLM-4.6V-Flash
+  - 自动从环境变量读取 API key
+  - 闭环：solve → render → VLM check → correct → re-solve（最多 2 轮）
+  - 如果 VLM 不可用，优雅降级到启发式验证
+- **更新 `assembly_vlm.py`** — 使用 GLMBackend 直接连接（而非 ModelRouter）
+  - detail_level="detailed"/"maximum" 自动升级到 GLM-4.6V-Flash
+  - 标准级别使用 GLM-4V-Plus
+- **VLM 验证结果** — 使用真实 GLM-4V-Plus 和 GLM-4.6V-Flash 验证通过
+  - 两个模型均返回 {"passed": true, "problems": []}
+  - 评估："proper 4-wheeled mobile robot with dual arms, symmetrically placed"
+
+### VLM 模型选择:
+- **GLM-4V-Flash** (1024 tokens): 免费但质量低，不适合复杂装配验证
+- **GLM-4V-Plus** (2048 tokens): 精度最好，推荐作为标准验证模型
+- **GLM-4.6V-Flash** (16384 tokens): 详细分析，推荐用于 detailed/maximum 级别
+- **GLM-4.6V** (16384 tokens): 最详细但速度慢（40-50s），适合最终检查
+
+### Testing:
+- `pytest tests/test_assembly_visual_verifier.py tests/test_assembly_render.py tests/test_complex_robot_e2e.py tests/test_export_package.py -x` — 132/132 passed
+- VLM 真实验证：GLM-4V-Plus 通过 + GLM-4.6V-Flash 通过
+- 装配位置验证：4轮分布, 臂对称, base_plate居中
+
+### Notes:
+- VLM 验证现在是 export pipeline 的自动步骤，不需要单独调用
+- matplotlib 渲染不依赖 FreeCAD GUI，headless 环境完全可用
+- .env 中 VISION_MODEL 可以设置默认模型（推荐 GLM-4V-Plus）
 
 ### What was done:
 - **新建 `src/lang3d/agent/assembly_visual_verifier.py`** (~540 行)

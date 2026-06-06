@@ -312,27 +312,37 @@ def verify_assembly_visual(
 
         if model_backend is not None:
             try:
-                # Try to render and capture screenshots
-                screenshots = _render_and_capture(
-                    current_assembly, current_positions,
-                )
-                if screenshots:
-                    # Send each screenshot to VLM
-                    all_responses = []
-                    for ss_path in screenshots:
-                        resp = model_backend.vision(
-                            ss_path,
-                            prompt,
-                            max_tokens=4096 if detail_level == "detailed" else 2048,
-                        )
-                        all_responses.append(resp)
-                    vlm_response = "\n\n---\n\n".join(all_responses)
-                else:
-                    # No screenshots, use text-only analysis
-                    vlm_response = model_backend.vision(
-                        "",  # Empty image path will fail; just use prompt
-                        prompt,
+                # Render assembly screenshots using matplotlib
+                # Use a persistent temp dir that lives until after VLM calls
+                render_tmpdir = tempfile.mkdtemp(prefix="vlm_verify_")
+                try:
+                    screenshots = _render_to_dir(
+                        current_assembly, current_positions, render_tmpdir,
                     )
+                    if screenshots:
+                        # Send the isometric view to VLM (most informative)
+                        # If detailed, also send front and top views
+                        views_to_check = [screenshots[0]]  # isometric
+                        if detail_level in ("detailed", "maximum") and len(screenshots) >= 3:
+                            views_to_check = screenshots[:3]  # iso + front + top
+
+                        all_responses = []
+                        for ss_path in views_to_check:
+                            resp = model_backend.vision(
+                                ss_path,
+                                prompt,
+                                max_tokens=4096 if detail_level == "detailed" else 2048,
+                            )
+                            all_responses.append(resp)
+                        vlm_response = "\n\n---\n\n".join(all_responses)
+                    else:
+                        # No screenshots — fall back to heuristic
+                        logger.warning("No screenshots generated, using heuristic verification")
+                        vlm_response = _heuristic_verification(current_assembly, current_positions)
+                finally:
+                    # Clean up temp files
+                    import shutil
+                    shutil.rmtree(render_tmpdir, ignore_errors=True)
             except Exception as e:
                 logger.warning("VLM verification failed: %s", e)
                 vlm_response = f'{{"passed": false, "problems": [], "overall_assessment": "VLM error: {e}"}}'
@@ -393,92 +403,120 @@ def verify_assembly_visual(
     )
 
 
-def _render_and_capture(
+def _render_to_dir(
     assembly: Assembly,
     positions: dict[str, dict],
+    output_dir: str,
 ) -> list[str]:
-    """Render assembly in FreeCAD GUI and capture multi-angle screenshots.
+    """Render assembly using matplotlib and save multi-angle screenshots.
 
-    Returns list of screenshot file paths.
+    Uses matplotlib (no FreeCAD GUI required) for headless rendering.
+    Saves PNGs to output_dir. Returns list of screenshot file paths.
     """
     screenshots: list[str] = []
 
     try:
-        from ..tools.freecad import (
-            FCOpenGUITool,
-            FCSetCameraTool,
-            build_assembly_script,
-            _shape_type_for_part,
-            _subsystem_for_part,
-            _run_freecad_script,
-        )
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+        import numpy as np
 
-        # Build and execute assembly render script
-        parts_info = [
-            {
-                "name": p.name,
-                "shape_type": _shape_type_for_part(p),
-                "dimensions": p.dimensions,
-                "subsystem": _subsystem_for_part(p.name),
-            }
-            for p in assembly.parts
+        # Subsystem colors (RGBA)
+        _SUBSYS_COLORS = {
+            "arm_left": (0.85, 0.30, 0.20, 0.8),
+            "arm_right": (0.20, 0.75, 0.30, 0.8),
+            "ipc": (0.75, 0.55, 0.10, 0.8),
+            "sensor_tower": (0.60, 0.20, 0.75, 0.8),
+        }
+
+        def _get_subsystem(name: str) -> str:
+            if name.startswith("arm_l_"): return "arm_left"
+            if name.startswith("arm_r_"): return "arm_right"
+            if "ipc" in name: return "ipc"
+            if name.startswith(("sensor_", "imu_", "lidar_", "camera_")): return "sensor_tower"
+            return "chassis"
+
+        def _box_faces(l, w, h, pos):
+            x, y, z = pos
+            v = np.array([
+                [x-l/2,y-w/2,z],[x+l/2,y-w/2,z],[x+l/2,y+w/2,z],[x-l/2,y+w/2,z],
+                [x-l/2,y-w/2,z+h],[x+l/2,y-w/2,z+h],[x+l/2,y+w/2,z+h],[x-l/2,y+w/2,z+h],
+            ])
+            return [
+                [v[0],v[1],v[2],v[3]], [v[4],v[5],v[6],v[7]],
+                [v[0],v[1],v[5],v[4]], [v[2],v[3],v[7],v[6]],
+                [v[0],v[3],v[7],v[4]], [v[1],v[2],v[6],v[5]],
+            ]
+
+        def _cyl_faces(r, h, pos, n=12):
+            x, y, z = pos
+            bottom, top = [], []
+            for i in range(n):
+                a = 2*np.pi*i/n
+                bx, by = x+r*np.cos(a), y+r*np.sin(a)
+                bottom.append([bx,by,z])
+                top.append([bx,by,z+h])
+            faces = []
+            for i in range(n):
+                j = (i+1) % n
+                faces.append([bottom[i],bottom[j],top[j],top[i]])
+            faces.append(bottom)
+            faces.append(top)
+            return faces
+
+        def _render_view(ax, elev, azim, title):
+            ax.cla()
+            ax.set_title(title, fontsize=14, fontweight='bold')
+            for p in assembly.parts:
+                dims = p.dimensions
+                pos = positions.get(p.name, {}).get("position", [0,0,0])
+                sub = _get_subsystem(p.name)
+                color = _SUBSYS_COLORS.get(sub, (0.20, 0.40, 0.80, 0.7))
+
+                if "diameter" in dims or "outer_diameter" in dims:
+                    r = dims.get("diameter", dims.get("outer_diameter", 10)) / 2
+                    h = dims.get("height", 10)
+                    faces = _cyl_faces(r, h, pos)
+                else:
+                    l = dims.get("length", 10)
+                    w = dims.get("width", 10)
+                    h = dims.get("height", 10)
+                    faces = _box_faces(l, w, h, pos)
+
+                poly = Poly3DCollection(faces, alpha=0.75)
+                poly.set_facecolor(color[:3])
+                poly.set_edgecolor((0.2, 0.2, 0.2, 0.3))
+                poly.set_linewidth(0.3)
+                ax.add_collection3d(poly)
+
+            ax.view_init(elev=elev, azim=azim)
+            ax.set_xlim(-200, 200)
+            ax.set_ylim(-150, 150)
+            ax.set_zlim(-80, 280)
+            ax.set_xlabel('X (mm)')
+            ax.set_ylabel('Y (mm)')
+            ax.set_zlabel('Z (mm)')
+
+        views = [
+            (25, 45, "isometric"),
+            (0, 0, "front"),
+            (90, 0, "top"),
+            (0, 270, "right"),
         ]
 
-        with tempfile.TemporaryDirectory() as tmpdir:
-            render_path = Path(tmpdir) / "assembly"
-            script = build_assembly_script(
-                assembly_parts=parts_info,
-                positions=positions,
-                output_path=str(render_path),
-            )
-            _run_freecad_script(script, timeout=120)
-
-            fcstd_path = render_path.with_suffix(".FCStd")
-            if not fcstd_path.exists():
-                return screenshots
-
-            # Open in GUI and capture screenshots
-            open_tool = FCOpenGUITool()
-            open_tool.execute(file_path=str(fcstd_path), wait_seconds=3)
-
-            import time
-            time.sleep(2)
-
-            from ..tools.screen import _find_windows_by_title
-            windows = _find_windows_by_title("FreeCAD")
-            if not windows:
-                return screenshots
-
-            # Capture screenshots from multiple angles
-            camera_tool = FCSetCameraTool()
-            try:
-                from ..tools.screen import ScreenCaptureTool
-                capture_tool = ScreenCaptureTool()
-
-                for view_name in ["isometric", "front", "top", "right"]:
-                    try:
-                        camera_tool.execute(
-                            file_path=str(fcstd_path),
-                            view=view_name,
-                        )
-                        time.sleep(2)
-                        # Capture screenshot
-                        screenshot_path = str(Path(tmpdir) / f"assembly_{view_name}.png")
-                        capture_tool.execute(
-                            region="fullscreen",
-                            save_path=screenshot_path,
-                        )
-                        if Path(screenshot_path).exists():
-                            screenshots.append(screenshot_path)
-                    except Exception:
-                        continue
-            finally:
-                # Close FreeCAD
-                from ..tools.freecad import FCCloseGUITool
-                FCCloseGUITool().execute()
+        for elev, azim, vname in views:
+            fig = plt.figure(figsize=(10, 8))
+            ax = fig.add_subplot(111, projection='3d')
+            _render_view(ax, elev, azim, f"Assembly - {vname.title()} View")
+            img_path = str(Path(output_dir) / f"assembly_{vname}.png")
+            fig.savefig(img_path, dpi=100, bbox_inches='tight', facecolor='white')
+            plt.close(fig)
+            if Path(img_path).exists():
+                    screenshots.append(img_path)
 
     except Exception as e:
-        logger.warning("Render and capture failed: %s", e)
+        logger.warning("Matplotlib render failed: %s", e)
 
     return screenshots
 
