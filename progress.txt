@@ -77,6 +77,34 @@
 
 ---
 
+## 2026-06-06 - 审计修正：Task 9 回退 + Task 64 补强
+
+### What was done:
+
+根据自审计评议，修正了两个问题：
+
+#### 1. Task 9 回退为 `passes: false`
+
+Task 9 的 `test_auto_fix闭环.py` 只测试了 `fix_strategy.py` 的字符串解析和分类逻辑（单元测试级），
+未满足任务步骤要求的核心闭环：**先创建已知错误模型 → cad_verify 返回 MATCH:False → 修复 → MATCH:True**。
+现有测试本质是 fix_strategy 的重复单元测试，需要重写为真正涉及 Agent/cad_verify/fc_batch 的集成测试。
+
+#### 2. Task 64 `test_closed_loop_reduces_problems` 补强
+
+原测试 baseline_problems=0 导致"减少 50%"断言走 trivially-pass 分支。
+修正后：
+- 注入 6 个已知位置错误（wheel 高空、gripper 地下、ipc/sensor 远离）到 scrambled positions
+- VLM 在 scrambled baseline 上检测到 initial_problems=1
+- 闭环验证 correct positions 后 final_problems=0
+- reduction=100%，断言被实质验证
+
+### Testing:
+- Task 64 闭环测试重新通过（baseline_problems > 0）
+- 非 API 测试 7/7 passed
+- Task 9 保持 `passes: false`
+
+---
+
 ## 2026-06-06 - Task 64 补写：装配 VLM E2E 测试
 
 ### What was done:

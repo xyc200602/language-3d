@@ -2,10 +2,10 @@
   "total_parts": 41,
   "total_joints": 40,
   "total_rounds": 1,
-  "initial_problems": 0,
+  "initial_problems": 1,
   "final_problems": 0,
   "problem_reduction_pct": 100.0,
   "final_passed": true,
   "rounds": [],
-  "elapsed_seconds": 164.4
+  "elapsed_seconds": 194.9
 }

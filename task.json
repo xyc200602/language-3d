@@ -37,7 +37,7 @@
       "[缺失] 需要重写 test_auto_fix.py：先创建已知错误模型→验证cad_verify返回MATCH:False→验证修复后MATCH:True，断言修复闭环真正生效"
     ],
     "priority": 9,
-    "passes": true
+    "passes": false
   },
   {
     "id": 10,
