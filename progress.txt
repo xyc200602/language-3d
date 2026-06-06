@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-06-06 - Task 64: 装配 VLM 视觉验证闭环 — CADCodeVerify 模式
+
+### What was done:
+- **新建 `src/lang3d/agent/assembly_visual_verifier.py`** (~540 行)
+  - `ProblemType` / `Severity` 枚举、`LayoutProblem` / `AssemblyVisualVerificationResult` 数据类
+  - `_build_assembly_prompt()`：CADCodeVerify 模式装配级 VLM 提示词
+  - `_parse_layout_problems()`：解析 VLM JSON 为 LayoutProblem 列表
+  - `_generate_constraint_corrections()`：视觉问题 → 约束修正（offset/angle/add_joint）
+  - `apply_corrections()`：将修正应用到装配体（深拷贝不修改原对象）
+  - `verify_assembly_visual()`：主入口，闭环循环（最多 3 轮）
+  - `_render_and_capture()`：FreeCAD GUI 渲染 + 多角度截图
+  - `_heuristic_verification()`：无 VLM 时的启发式检查（浮动/碰撞/极端位置）
+- **新建 `src/lang3d/tools/assembly_vlm.py`** (~110 行)
+  - `AssemblyVLMSolveTool`：面向 Agent 的公共接口
+  - 支持 assembly_name, expected_layout, max_iterations, detail_level 参数
+- **修改 `src/lang3d/tools/base.py`**
+  - TOOL_CATEGORIES["assembly"] 新增 "assembly_vlm_solve"
+- **修改 `src/lang3d/agent/core.py`**
+  - 注册 AssemblyVLMSolveTool
+  - AGENT_SYSTEM_PROMPT 新增装配视觉验证说明
+- **新建 `tests/test_assembly_visual_verifier.py`** — 23 个测试
+  - TestParseLayoutProblems (6)、TestBuildPrompt (2)、TestGenerateCorrections (3)
+  - TestApplyCorrections (3)、TestHeuristicVerification (3)、TestVerifyAssemblyVisual (4)
+  - TestAssemblyVLMSolveTool (2)
+
+### Testing:
+- `pytest tests/test_assembly_visual_verifier.py -v` — 23/23 passed
+
+### Notes:
+- 闭环循环：render → VLM verify → parse → correct → re-solve（最多 3 轮）
+- 无 VLM 后端时自动降级为启发式验证（检查浮动零件、碰撞、极端位置）
+- 修正以深拷贝方式应用，不修改原始装配体
+
+---
+
 ## 2026-06-06 - Task 62: FreeCAD 3D 可视化 — 装配体一键渲染 + 截图预览
 
 ### What was done:

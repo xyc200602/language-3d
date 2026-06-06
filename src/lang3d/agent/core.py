@@ -56,6 +56,10 @@ cad_verify 验证策略：
 装配工作流：
 - 定义 Assembly（parts + joints），设置 parent_anchor/child_anchor/axis
 - assembly_solve：自动计算每个零件的全局位置
+- assembly_vlm_solve：装配视觉验证闭环（solve → render → VLM → fix → re-solve，最多 3 轮）
+  - 检测碰撞、悬空、错误朝向、不合理布局
+  - 自动修正约束并重新求解
+  - 适合 10+ 零件复杂装配的质量验证
 - part_assemble + assembly_definition：自动定位组装
 - ik_solve(target)：求解逆运动学，得到各关节角度
 - mesh_collision_check：网格碰撞检测（trimesh + FCL），检查零件间干涉和穿透
@@ -282,6 +286,13 @@ class Agent:
         try:
             from ..tools.assembly_solver import register_assembly_solver_tools
             register_assembly_solver_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register assembly VLM verification tools
+        try:
+            from ..tools.assembly_vlm import AssemblyVLMSolveTool
+            self.tools.register(AssemblyVLMSolveTool())
         except Exception:
             pass
 
