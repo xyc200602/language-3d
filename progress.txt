@@ -4,6 +4,35 @@
 
 ---
 
+## 2026-06-06 - Task 62: FreeCAD 3D 可视化 — 装配体一键渲染 + 截图预览
+
+### What was done:
+- **修改 `src/lang3d/tools/freecad.py`** (~200 行新增)
+  - `SUBSYSTEM_COLORS` 常量：5 个子系统 RGB 颜色映射
+  - `build_assembly_script(assembly_parts, positions, output_path, exploded, explode_factor)`：
+    - 从零件列表 + 位置字典生成完整的 FreeCAD 渲染脚本
+    - 支持按子系统着色（ShapeColor）
+    - 支持爆炸图（沿位置向量缩放偏移）
+    - 自动导出 .FCStd + .stl
+  - `_shape_type_for_part(part)` → "box" / "cylinder"
+  - `_subsystem_for_part(part_name)` → "chassis" / "arm_left" / "arm_right" / "ipc" / "sensor_tower"
+  - `RenderAssemblyTool`：面向 Agent 的工具，接受 assembly_json + output_path
+- **修改 `src/lang3d/tools/export_package.py`**
+  - Step 3b 新增装配体渲染：生成 assembly_render_script.py + assembly_exploded_script.py
+  - 如果 FreeCAD 可用则执行渲染生成 .FCStd + .stl
+  - 爆炸图脚本也一并生成
+- **新建 `tests/test_assembly_render.py`** — 18 个测试
+
+### Testing:
+- `pytest tests/test_assembly_render.py -v` — 18/18 passed
+- `pytest tests/test_export_package.py -v` — 12/12 passed
+
+### Notes:
+- 渲染脚本是纯 Python FreeCAD API 调用，不依赖 GUI
+- 爆炸图偏移基于零件到原点的距离按比例缩放
+
+---
+
 ## 2026-06-06 - Task 61: Pipeline 性能优化 — 共享上下文 + 批量 FreeCAD + LLM 缓存
 
 ### What was done:

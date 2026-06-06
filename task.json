@@ -912,7 +912,7 @@
       "验证全量测试无回归"
     ],
     "priority": 62,
-    "passes": false
+    "passes": true
   },
   {
     "id": 63,

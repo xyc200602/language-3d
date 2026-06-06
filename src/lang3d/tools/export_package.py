@@ -335,6 +335,51 @@ def export_engineering_package(
         script_path.write_text(script, encoding="utf-8")
         generated_files.append(str(script_path))
 
+    # ---- Step 3b: Render assembly ----
+    from .freecad import (
+        build_assembly_script,
+        _shape_type_for_part,
+        _subsystem_for_part,
+        _run_freecad_script,
+    )
+    assembly_parts_info = []
+    for p in assembly.parts:
+        assembly_parts_info.append({
+            "name": p.name,
+            "shape_type": _shape_type_for_part(p),
+            "dimensions": p.dimensions,
+            "subsystem": _subsystem_for_part(p.name),
+        })
+    render_path = output_dir / "assembly"
+    assembly_script = build_assembly_script(
+        assembly_parts=assembly_parts_info,
+        positions=positions,
+        output_path=str(render_path),
+    )
+    (output_dir / "assembly_render_script.py").write_text(assembly_script, encoding="utf-8")
+    generated_files.append(str(output_dir / "assembly_render_script.py"))
+    # Execute the render if FreeCAD is available
+    try:
+        from .freecad import _find_freecad_python
+        if _find_freecad_python():
+            _run_freecad_script(assembly_script, timeout=300)
+            if render_path.with_suffix(".FCStd").exists():
+                generated_files.append(str(render_path.with_suffix(".FCStd")))
+            if render_path.with_suffix(".stl").exists():
+                generated_files.append(str(render_path.with_suffix(".stl")))
+    except Exception:
+        pass  # FreeCAD rendering is optional; skip if not available
+
+    # Exploded view
+    exploded_script = build_assembly_script(
+        assembly_parts=assembly_parts_info,
+        positions=positions,
+        output_path=str(output_dir / "assembly_exploded"),
+        exploded=True,
+    )
+    (output_dir / "assembly_exploded_script.py").write_text(exploded_script, encoding="utf-8")
+    generated_files.append(str(output_dir / "assembly_exploded_script.py"))
+
     # ---- Step 4: Generate URDF + ROS2 package ----
     from .urdf_export import AssemblyToURDF, ROS2PackageBuilder
     converter = AssemblyToURDF(assembly)

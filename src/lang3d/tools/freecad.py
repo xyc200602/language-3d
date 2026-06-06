@@ -15,6 +15,7 @@ Installation:
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
@@ -948,6 +949,128 @@ def _build_batch_script(all_ops: list[list[dict]]) -> str:
     return "\n".join(header + parts_lines)
 
 
+# --- Assembly rendering ---
+
+
+# Subsystem color map (name → (r, g, b) floats 0-1)
+SUBSYSTEM_COLORS: dict[str, tuple[float, float, float]] = {
+    "chassis": (0.2, 0.4, 0.8),       # blue
+    "arm_left": (0.8, 0.3, 0.2),      # red-orange
+    "arm_right": (0.2, 0.7, 0.3),     # green
+    "ipc": (0.7, 0.5, 0.1),           # gold
+    "sensor_tower": (0.6, 0.2, 0.7),  # purple
+}
+
+
+def build_assembly_script(
+    assembly_parts: list[dict],
+    positions: dict[str, dict],
+    output_path: str = "",
+    exploded: bool = False,
+    explode_factor: float = 1.5,
+) -> str:
+    """Build a FreeCAD script that renders a full assembly with positioned parts.
+
+    Args:
+        assembly_parts: List of dicts with keys: name, shape_type, dimensions, subsystem
+        positions: Dict mapping part_name → {"position": [x,y,z], "rotation": [rx,ry,rz]}
+        output_path: If set, save FCStd and export STL/STEP here
+        exploded: If True, offset parts along their position vector for exploded view
+        explode_factor: Distance multiplier for exploded view
+
+    Returns:
+        FreeCAD Python script text.
+    """
+    lines = [
+        "import FreeCAD",
+        "import Part",
+        "import Mesh",
+        "import math",
+        "",
+        'doc = FreeCAD.newDocument("Assembly")',
+        "",
+    ]
+
+    for i, part_info in enumerate(assembly_parts):
+        name = part_info["name"]
+        shape_type = part_info.get("shape_type", "box")
+        dims = part_info.get("dimensions", {})
+        subsystem = part_info.get("subsystem", "")
+
+        pos_data = positions.get(name, {})
+        pos = pos_data.get("position", [0, 0, 0])
+
+        if exploded:
+            # Offset along position vector from center
+            dist = math.sqrt(pos[0]**2 + pos[1]**2 + pos[2]**2)
+            if dist > 0:
+                scale = 1.0 + (explode_factor - 1.0) * min(dist / 200.0, 1.0)
+                pos = [pos[0] * scale, pos[1] * scale, pos[2] * scale]
+
+        # Create shape
+        if shape_type == "cylinder" or "diameter" in dims or "outer_diameter" in dims:
+            r = dims.get("diameter", dims.get("outer_diameter", 10)) / 2
+            h = dims.get("height", 10)
+            lines.append(f"_shape = Part.makeCylinder({r}, {h})")
+        elif shape_type == "box" or ("length" in dims and "width" in dims):
+            l = dims.get("length", 10)
+            w = dims.get("width", 10)
+            h = dims.get("height", 10)
+            lines.append(f"_shape = Part.makeBox({l}, {w}, {h})")
+        else:
+            r = dims.get("diameter", 10) / 2
+            h = dims.get("height", 10)
+            lines.append(f"_shape = Part.makeCylinder({r}, {h})")
+
+        # Translate to position
+        lines.append(f"_shape.translate(FreeCAD.Vector({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}))")
+
+        # Add to document
+        lines.append(f'_obj = doc.addObject("Part::Feature", "{name}")')
+        lines.append("_obj.Shape = _shape")
+
+        # Apply subsystem color
+        color = SUBSYSTEM_COLORS.get(subsystem, (0.7, 0.7, 0.7))
+        lines.append(f"_obj.ViewObject.ShapeColor = ({color[0]}, {color[1]}, {color[2]})")
+        lines.append("doc.recompute()")
+        lines.append("")
+
+    # Save and export
+    if output_path:
+        out = output_path.replace("\\", "\\\\")
+        lines.append(f'doc.saveAs(r"{out}.FCStd")')
+        lines.append(f'_all_objs = [o for o in doc.Objects if hasattr(o, "Shape")]')
+        lines.append(f'Mesh.export(_all_objs, r"{out}.stl")')
+        lines.append("print(f'Assembly saved and exported')")
+
+    lines.append("print(f'Assembly: {len(doc.Objects)} objects created')")
+
+    return "\n".join(lines)
+
+
+def _shape_type_for_part(part: "Part") -> str:
+    """Determine shape type from part dimensions."""
+    dims = part.dimensions
+    if "diameter" in dims or "outer_diameter" in dims:
+        return "cylinder"
+    if "length" in dims and "width" in dims:
+        return "box"
+    return "cylinder"
+
+
+def _subsystem_for_part(part_name: str) -> str:
+    """Infer subsystem from part name."""
+    if part_name.startswith("arm_l_"):
+        return "arm_left"
+    if part_name.startswith("arm_r_"):
+        return "arm_right"
+    if "ipc" in part_name:
+        return "ipc"
+    if part_name.startswith(("sensor_", "imu_", "lidar_", "camera_")):
+        return "sensor_tower"
+    return "chassis"
+
+
 def _execute_operations(operations: list[dict]) -> str:
     """Execute a sequence of FreeCAD operations and return the output."""
     script = _build_script(operations)
@@ -1832,6 +1955,101 @@ class FCSetCameraTool(Tool):
         return f"[Camera changed to '{view}']\n{result}"
 
 
+class RenderAssemblyTool(Tool):
+    """Render a full assembly in FreeCAD with subsystem-colored parts.
+
+    Generates a single FCStd file + STL with all parts positioned according
+    to solved assembly positions. Supports exploded view and multi-view output.
+    """
+
+    name = "render_assembly"
+    description = (
+        "Render a full assembly in FreeCAD with all parts positioned and colored by subsystem. "
+        "Generates FCStd + STL files. Supports exploded view. "
+        "Requires assembly_json with parts and positions."
+    )
+
+    def get_definition(self) -> ToolDefinition:
+        return ToolDefinition(
+            name=self.name,
+            description=self.description,
+            parameters={
+                "type": "object",
+                "properties": {
+                    "assembly_json": {
+                        "type": "string",
+                        "description": "JSON string with 'parts' (list of part dicts with name, dimensions) and 'positions' (dict of name→position)",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Output file path prefix (without extension). Generates .FCStd and .stl",
+                    },
+                    "exploded": {
+                        "type": "boolean",
+                        "description": "Generate exploded view (parts spread out from center)",
+                    },
+                    "explode_factor": {
+                        "type": "number",
+                        "description": "Explode distance multiplier (default: 1.5)",
+                    },
+                },
+                "required": ["assembly_json", "output_path"],
+            },
+        )
+
+    def execute(self, *, assembly_json: str, output_path: str, exploded: bool = False,
+                explode_factor: float = 1.5, **kwargs: Any) -> str:
+        try:
+            data = json.loads(assembly_json)
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid JSON: {e}"
+
+        parts = data.get("parts", [])
+        positions = data.get("positions", {})
+
+        if not parts or not positions:
+            return "Error: assembly_json must contain 'parts' and 'positions'"
+
+        # Prepare part info list
+        assembly_parts = []
+        for p in parts:
+            pname = p.get("name", f"part_{len(assembly_parts)}")
+            dims = p.get("dimensions", {})
+            assembly_parts.append({
+                "name": pname,
+                "shape_type": "cylinder" if ("diameter" in dims or "outer_diameter" in dims) else "box",
+                "dimensions": dims,
+                "subsystem": _subsystem_for_part(pname),
+            })
+
+        # Ensure output directory exists
+        Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+
+        script = build_assembly_script(
+            assembly_parts=assembly_parts,
+            positions=positions,
+            output_path=output_path,
+            exploded=exploded,
+            explode_factor=explode_factor,
+        )
+
+        try:
+            result = _run_freecad_script(script, timeout=300)
+            fcstd_path = Path(f"{output_path}.FCStd")
+            stl_path = Path(f"{output_path}.stl")
+            info_lines = [
+                "Assembly rendered successfully",
+                f"Parts: {len(assembly_parts)}",
+                f"FCStd: {fcstd_path} ({'exists' if fcstd_path.exists() else 'not found'})",
+                f"STL: {stl_path} ({'exists' if stl_path.exists() else 'not found'})",
+            ]
+            if exploded:
+                info_lines.append(f"Exploded view (factor={explode_factor})")
+            return "\n".join(info_lines)
+        except RuntimeError as e:
+            return f"Error rendering assembly: {e}"
+
+
 def register_freecad_tools(registry: Any) -> None:
     """Register all FreeCAD tools."""
     tools = [
@@ -1858,6 +2076,7 @@ def register_freecad_tools(registry: Any) -> None:
         FCOpenGUITool(),
         FCCloseGUITool(),
         FCSetCameraTool(),
+        RenderAssemblyTool(),
     ]
     for tool in tools:
         registry.register(tool)
