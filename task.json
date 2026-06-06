@@ -838,7 +838,7 @@
       "验证全量测试无回归"
     ],
     "priority": 58,
-    "passes": false
+    "passes": true
   },
   {
     "id": 59,
@@ -874,7 +874,7 @@
       "验证全量测试无回归"
     ],
     "priority": 60,
-    "passes": false
+    "passes": true
   },
   {
     "id": 61,

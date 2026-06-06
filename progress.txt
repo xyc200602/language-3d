@@ -4,6 +4,31 @@
 
 ---
 
+## 2026-06-06 - Task 60: E2E 测试重构 — 从 42 断言改为工程包完整性验证
+
+### What was done:
+- **修改 `tests/test_complex_robot_e2e.py`**
+  - 新增 `export_result` module-scoped fixture：调用 `ExportPackageTool.execute()` 一次，返回 output_dir
+  - 新增 `TestExportPackageE2E` 类（32 个测试方法）：
+    - 目录结构验证（5 个）：freecad_scripts/, firmware/, ros2_package/, subsystems/, output_dir
+    - FreeCAD 脚本验证（2 个）：>=41 个脚本 + 全部包含 `import FreeCAD`
+    - ROS2 包结构验证（4 个）：package.xml, CMakeLists.txt, urdf/, launch/
+    - design_report.json 验证（5 个）：total_parts>=41, urdf_links>=41, cable_count>=4, peak_power>0
+    - Markdown 报告验证（6 个）：bom/assembly_guide/wiring_diagram/cable_routing/power_report/stability_report 均非空
+    - 固件文件验证（5 个）：robot_arm.ino, ik_solver.h, servo_driver.h, dc_motor_driver.h/.cpp, odometry.cpp
+    - 子系统 JSON 验证（5 个）：chassis/arm_left/arm_right/ipc/sensor_tower.json 全部存在且 part_count>0
+  - 保留原有 9 个测试类 47 个测试方法不变（回归基础）
+
+### Testing:
+- `pytest tests/test_complex_robot_e2e.py -v` — 79/79 passed (47 原有 + 32 新增)
+- `pytest tests/ -k 'not e2e_reliability and not vlm_accuracy and not freecad_gui'` — 1851/1853 passed（2 个预存失败：test_agent_real_flow 需 FreeCAD、test_config_extended 断言值不匹配）
+
+### Notes:
+- export_result fixture 使用 `tmp_path_factory.mktemp()` 保证每次运行独立
+- 所有 TestExportPackageE2E 测试共享同一个 ExportPackageTool.execute() 调用，无重复计算
+
+---
+
 ## 2026-06-06 - Task 59: 工程包导出工具 — ExportPackageTool + /export CLI 命令
 
 ### What was done:
@@ -33,7 +58,7 @@
 - 原脚本 export_complex_robot.py 保留未删除（作为参考）
 - ExportPackageTool 默认装配体为 complex_robot，也可通过 assembly_json 传入自定义装配体
 - ROS2 包结构：ROS2PackageBuilder.write() 在指定目录内创建以包名命名的子目录
-
+# 2026-06-06 - Task 63: 装配求解器重写 — 数据模型 + 约束转换器 + 碰撞检测 + 验证集成
 ### What was done:
 - **Phase A: 数据模型扩展** (`knowledge/mechanics.py`)
   - 新增 `AttachmentPoint` dataclass（position + normal + name）

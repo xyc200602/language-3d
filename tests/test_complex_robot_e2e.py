@@ -759,3 +759,196 @@ class TestFullPipelineMetrics:
         assert report["urdf_links"] >= 41
         assert report["cable_count"] >= 4
         assert report["peak_power_w"] > 0
+
+
+# ============================================================================
+# Stage 10: Export Package E2E — single-call completeness verification
+# ============================================================================
+
+
+@pytest.fixture(scope="module")
+def export_result(tmp_path_factory):
+    """Call ExportPackageTool.execute() once and return (output_dir, result_dict)."""
+    from lang3d.tools.export_package import ExportPackageTool
+
+    output_dir = tmp_path_factory.mktemp("export_e2e")
+    tool = ExportPackageTool()
+    tool.execute(
+        assembly_name="complex_robot",
+        output_dir=str(output_dir),
+    )
+    return output_dir
+
+
+class TestExportPackageE2E:
+    """Verify the full engineering package output by calling ExportPackageTool once.
+
+    This complements the 42 module-level assertions above by testing the
+    user-facing export pipeline end-to-end.
+    """
+
+    # ---- Directory structure ----
+
+    def test_output_directory_exists(self, export_result):
+        assert export_result.is_dir()
+
+    def test_freecad_scripts_dir(self, export_result):
+        assert (export_result / "freecad_scripts").is_dir()
+
+    def test_firmware_dir(self, export_result):
+        assert (export_result / "firmware").is_dir()
+
+    def test_ros2_package_dir(self, export_result):
+        assert (export_result / "ros2_package").is_dir()
+
+    def test_subsystems_dir(self, export_result):
+        assert (export_result / "subsystems").is_dir()
+
+    # ---- FreeCAD scripts ----
+
+    def test_freecad_script_count(self, export_result):
+        fc_dir = export_result / "freecad_scripts"
+        py_files = list(fc_dir.glob("*.py"))
+        assert len(py_files) >= 41
+
+    def test_freecad_scripts_contain_import(self, export_result):
+        fc_dir = export_result / "freecad_scripts"
+        for script in fc_dir.glob("*.py"):
+            content = script.read_text(encoding="utf-8")
+            assert "import FreeCAD" in content, f"{script.name} missing import FreeCAD"
+
+    # ---- ROS2 package ----
+
+    def test_ros2_package_xml(self, export_result):
+        ros2_root = export_result / "ros2_package"
+        pkg_dirs = [d for d in ros2_root.iterdir() if d.is_dir()]
+        assert len(pkg_dirs) >= 1
+        pkg_dir = pkg_dirs[0]
+        assert (pkg_dir / "package.xml").exists()
+
+    def test_ros2_cmake(self, export_result):
+        ros2_root = export_result / "ros2_package"
+        pkg_dir = [d for d in ros2_root.iterdir() if d.is_dir()][0]
+        assert (pkg_dir / "CMakeLists.txt").exists()
+
+    def test_ros2_urdf_dir(self, export_result):
+        ros2_root = export_result / "ros2_package"
+        pkg_dir = [d for d in ros2_root.iterdir() if d.is_dir()][0]
+        assert (pkg_dir / "urdf").is_dir()
+
+    def test_ros2_launch_dir(self, export_result):
+        ros2_root = export_result / "ros2_package"
+        pkg_dir = [d for d in ros2_root.iterdir() if d.is_dir()][0]
+        assert (pkg_dir / "launch").is_dir()
+
+    # ---- design_report.json ----
+
+    def test_design_report_exists(self, export_result):
+        assert (export_result / "design_report.json").exists()
+
+    def test_design_report_total_parts(self, export_result):
+        report = json.loads(
+            (export_result / "design_report.json").read_text(encoding="utf-8")
+        )
+        assert report["total_parts"] >= 41
+
+    def test_design_report_urdf_links(self, export_result):
+        report = json.loads(
+            (export_result / "design_report.json").read_text(encoding="utf-8")
+        )
+        assert report["urdf_links"] >= 41
+
+    def test_design_report_cable_count(self, export_result):
+        report = json.loads(
+            (export_result / "design_report.json").read_text(encoding="utf-8")
+        )
+        assert report["cable_count"] >= 4
+
+    def test_design_report_peak_power(self, export_result):
+        report = json.loads(
+            (export_result / "design_report.json").read_text(encoding="utf-8")
+        )
+        assert report["peak_power_w"] > 0
+
+    # ---- Markdown reports ----
+
+    def test_bom_nonempty(self, export_result):
+        path = export_result / "bom.md"
+        assert path.exists()
+        assert len(path.read_text(encoding="utf-8")) > 0
+
+    def test_assembly_guide_nonempty(self, export_result):
+        path = export_result / "assembly_guide.md"
+        assert path.exists()
+        assert len(path.read_text(encoding="utf-8")) > 0
+
+    def test_wiring_diagram_nonempty(self, export_result):
+        path = export_result / "wiring_diagram.md"
+        assert path.exists()
+        assert len(path.read_text(encoding="utf-8")) > 0
+
+    def test_cable_routing_report_nonempty(self, export_result):
+        path = export_result / "cable_routing_report.md"
+        assert path.exists()
+        assert len(path.read_text(encoding="utf-8")) > 0
+
+    def test_power_report_nonempty(self, export_result):
+        path = export_result / "power_report.md"
+        assert path.exists()
+        assert len(path.read_text(encoding="utf-8")) > 0
+
+    def test_stability_report_nonempty(self, export_result):
+        path = export_result / "stability_report.md"
+        assert path.exists()
+        assert len(path.read_text(encoding="utf-8")) > 0
+
+    # ---- Firmware files ----
+
+    def test_firmware_robot_arm_ino(self, export_result):
+        assert (export_result / "firmware" / "robot_arm.ino").exists()
+
+    def test_firmware_ik_solver(self, export_result):
+        assert (export_result / "firmware" / "ik_solver.h").exists()
+
+    def test_firmware_servo_driver(self, export_result):
+        assert (export_result / "firmware" / "servo_driver.h").exists()
+
+    def test_firmware_dc_motor_driver(self, export_result):
+        fw = export_result / "firmware"
+        assert (fw / "dc_motor_driver.h").exists()
+        assert (fw / "dc_motor_driver.cpp").exists()
+
+    def test_firmware_odometry(self, export_result):
+        assert (export_result / "firmware" / "odometry.cpp").exists()
+
+    # ---- Subsystem JSON files ----
+
+    def test_subsystem_chassis(self, export_result):
+        path = export_result / "subsystems" / "chassis.json"
+        assert path.exists()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["part_count"] > 0
+
+    def test_subsystem_arm_left(self, export_result):
+        path = export_result / "subsystems" / "arm_left.json"
+        assert path.exists()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["part_count"] > 0
+
+    def test_subsystem_arm_right(self, export_result):
+        path = export_result / "subsystems" / "arm_right.json"
+        assert path.exists()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["part_count"] > 0
+
+    def test_subsystem_ipc(self, export_result):
+        path = export_result / "subsystems" / "ipc.json"
+        assert path.exists()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["part_count"] > 0
+
+    def test_subsystem_sensor_tower(self, export_result):
+        path = export_result / "subsystems" / "sensor_tower.json"
+        assert path.exists()
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["part_count"] > 0
