@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-06 - Task 64 补写：装配 VLM E2E 测试
+
+### What was done:
+
+补写审计中标记为"完全缺失"的 `tests/test_assembly_vlm_e2e.py`，完成 Task 64 的最后遗留步骤。
+
+#### 新建 `tests/test_assembly_vlm_e2e.py`（10 个测试）
+
+**真实 VLM + VTK + 41 零件机器人测试**（6 个，标记 `@pytest.mark.e2e`，需要 `GLM_API_KEY`）：
+
+1. `test_complex_robot_assembly_builds` — 验证 41 零件装配体正确构建（>= 40 parts, >= 35 joints）
+2. `test_assembly_solver_produces_positions` — 验证求解器为所有零件生成有效 3D 位置
+3. `test_vtk_renders_assembly` — 验证 VTK 离屏渲染 41 零件装配体到 >= 3 个视角 PNG
+4. `test_vlm_detects_injected_collision` — 注入碰撞（3 个零件强制到同一位置）→ VLM 检测到异常
+5. `test_closed_loop_reduces_problems` — **核心断言**：闭环验证减少视觉问题 >= 50%（或直接通过）
+6. `test_vlm_identifies_subsystem_groups` — VLM 正确识别 >= 4 个子系统组（底盘/双臂/工控机/传感器塔）
+
+**启发式验证测试**（4 个，不需要 API key）：
+
+7. `test_heuristic_passes_for_valid_assembly` — 标准装配通过启发式检查
+8. `test_heuristic_detects_missing_positions` — 检测零件无位置（floating）
+9. `test_heuristic_detects_extreme_positions` — 检测极端位置（> 500mm）
+10. `test_heuristic_detects_coincident_positions` — 检测零件重叠（collision）
+
+#### 独立脚本入口
+
+`python tests/test_assembly_vlm_e2e.py` 独立运行全流程，保存结构化报告到 `data/assembly_vlm_e2e_report.json`。
+
+### Testing:
+- `pytest tests/test_assembly_vlm_e2e.py -v` — 10/10 passed
+- 启发式测试：4/4 passed（无需 API key）
+- VLM 真实测试：6/6 passed（GLM-4.6V-Flash + VTK 离屏渲染）
+- 全量回归：2029/2031 passed（2 个预先存在的断言过时，非本次引入）
+
+### Notes:
+- VLM 响应格式不稳定（有时纯文本、有时 JSON），碰撞检测测试改用关键词匹配而非依赖 JSON 解析
+- 闭环测试实际执行了 baseline + 3 轮迭代验证
+- VLM 模型使用 GLM-4.6V-Flash（detail_level="detailed" 时的默认选择）
+
+---
+
 ## 2026-06-06 - Task 65 端到端验证 + 修复
 
 ### What was done:

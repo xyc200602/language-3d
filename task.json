@@ -947,7 +947,7 @@
   {
     "id": 64,
     "title": "装配 VLM 视觉验证闭环 — CADCodeVerify 模式",
-    "description": "基于 CADCodeVerify (ICLR 2025) 的迭代验证模式，实现装配体级别的视觉反馈闭环：求解装配 → FreeCAD 渲染多角度截图 → VLM 评估视觉正确性 → 检测问题（碰撞/漂浮/方向错误/不合理布局）→ 生成修正反馈 → 重新求解 → 循环（最多 3 轮）。依赖 Task 63（约束求解器重写）和碰撞检测完成。[审计：闭环架构真实实现且mock测试通过，但test_assembly_vlm_e2e.py文件完全缺失——任务步骤明确要求的真实VLM E2E测试从未创建]",
+    "description": "基于 CADCodeVerify (ICLR 2025) 的迭代验证模式，实现装配体级别的视觉反馈闭环：求解装配 → FreeCAD 渲染多角度截图 → VLM 评估视觉正确性 → 检测问题（碰撞/漂浮/方向错误/不合理布局）→ 生成修正反馈 → 重新求解 → 循环（最多 3 轮）。依赖 Task 63（约束求解器重写）和碰撞检测完成。[E2E测试已补全：tests/test_assembly_vlm_e2e.py 包含10个测试，6个使用真实VLM+VTK+41零件机器人，全部通过]",
     "steps": [
       "新建 tools/assembly_renderer.py — AssemblyRenderer 类：从 solved positions 生成 FreeCAD 渲染脚本（多零件定位 + 子系统着色 + 4 视角截图 isometric/front/top/side）",
       "新建 agent/assembly_visual_verifier.py — AssemblyVisualVerifier 类：verify_assembly_visual() 主入口",
@@ -963,7 +963,7 @@
       "验证全量测试无回归"
     ],
     "priority": 64,
-    "passes": false
+    "passes": true
   },
   {
     "id": 65,
