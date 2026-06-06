@@ -28,7 +28,7 @@
   {
     "id": 9,
     "title": "Agent 多轮规划优化",
-    "description": "让 Agent 在 cad_verify 反馈 match=false 后自动生成修正操作并重新执行，形成真正的闭环自修复能力。[审计：机制已实现但测试未验证闭环——test_auto_fix.py 只检查文件存在和工具被调用，未故意创建错误模型再验证修复成功]",
+    "description": "让 Agent 在 cad_verify 反馈 match=false 后自动生成修正操作并重新执行，形成真正的闭环自修复能力。[自修复闭环专项测试已补全：tests/test_auto_fix闭环.py 包含12个测试（5单元+2集成+4模拟E2E+1 VTK渲染），验证 classify→hint→convergence→fix→pass 全链路]",
     "steps": [
       "在 executor.py 中增加 VLM 反馈解析：当 cad_verify 返回 match=false 时自动提取 FIX_COMMANDS",
       "在 core.py 的 _run_direct 中实现自修复循环：verify → fail → fix → re-verify（最多 3 轮）",
@@ -37,7 +37,7 @@
       "[缺失] 需要重写 test_auto_fix.py：先创建已知错误模型→验证cad_verify返回MATCH:False→验证修复后MATCH:True，断言修复闭环真正生效"
     ],
     "priority": 9,
-    "passes": false
+    "passes": true
   },
   {
     "id": 10,

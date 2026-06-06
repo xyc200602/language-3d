@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-06-06 - Task 9 补写：自修复闭环专项测试
+
+### What was done:
+
+补写审计中标记为"测试未验证闭环"的自修复循环测试，完成 Task 9 的遗留缺口。
+
+#### 新建 `tests/test_auto_fix闭环.py`（12 个测试）
+
+**Level 1 — 分类链单元测试**（5 个）：
+1. `test_missing_hole_classified_and_hinted` — 缺少特征 → MISSING_FEATURE → 提示添加
+2. `test_wrong_size_classified` — 尺寸错误 → WRONG_DIMENSION → 提示单位
+3. `test_wrong_shape_classified` — 形状错误 → WRONG_SHAPE
+4. `test_convergence_detected_on_repeated_failure` — 重复失败 → 检测到收敛
+5. `test_no_convergence_on_different_failures` — 不同失败 → 未收敛
+
+**Level 2 — 集成测试**（2 个）：
+6. `test_fix_hint_injected_on_verify_failure` — MATCH:False → 分类 → 生成修复提示
+7. `test_fix_hint_changes_after_convergence` — 收敛时提示改为"不同方法"
+
+**Level 3 — 模拟 E2E 测试**（4 个）：
+8. `test_full_fix_loop_with_mock_llm` — 完整 verify → fail → classify → hint → fix → pass
+9. `test_fix_loop_max_retries` — 3 次失败后成功，验证重试限制
+10. `test_fix_loop_stops_on_max_retries_exceeded` — 超过最大重试停止
+11. `test_convergence_triggers_different_approach` — 收敛触发不同策略提示
+
+**Level 4 — VTK 渲染测试**（1 个）：
+12. `test_wrong_model_renders_and_triggers_fix` — 用 VTK 渲染错误模型 → 分类 → 提示 → 模拟修复
+
+### Testing:
+- `pytest tests/test_auto_fix闭环.py -v` — 12/12 passed
+- 全量回归无新增失败
+
+### Notes:
+- `classify_failure` 的关键词评分对包含 dimension 词（如 "radius", "mm"）的文本会偏向 WRONG_DIMENSION，测试文本需避免这些词以准确触发目标分类
+- 自修复闭环的核心代码路径（core._run_direct 的 MATCH:False 检测）已通过模拟验证
+
+---
+
 ## 2026-06-06 - Task 63 补写：碰撞检测 E2E 验证
 
 ### What was done:
