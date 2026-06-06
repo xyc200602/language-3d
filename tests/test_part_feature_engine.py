@@ -270,8 +270,7 @@ class TestOperationGeneration:
                  dimensions=dict(length=150, width=40, height=30))
         types = self._op_types(p)
         assert "make_box" in types
-        assert "create_sketch" in types
-        assert "pocket" in types
+        assert "boolean" in types  # cable channel via box + boolean cut
         assert "fillet" in types
 
     def test_battery_box_uses_inner_box(self):

@@ -857,7 +857,12 @@ def _add_keyway(
 def _add_cable_channel(
     ops: list[dict], body: str, name: str, d: dict, ch: dict, sn: _StepNamer,
 ) -> str:
-    """Add a cable routing channel (sketch + pocket).  Returns new body name."""
+    """Add a cable routing channel (make_box + boolean cut).
+
+    Uses make_box positioned at the channel location + boolean cut instead of
+    sketch + pocket, because FreeCAD's pocket operation fails on complex
+    boolean-cut geometry.
+    """
     cw = ch["width"]
     ch_h = ch["height"]
     l = d["length"]
@@ -866,34 +871,21 @@ def _add_cable_channel(
     start = ch["start_offset"]
     end = ch["end_offset"]
 
-    sketch_name = sn.tool("chsk")
-    pocket_name = sn.tool("pocket")
-
-    # Create sketch on XY plane offset to top surface
+    # Create a box for the channel volume
+    tool_name = sn.tool("chbox")
     ops.append({
-        "type": "create_sketch",
-        "name": sketch_name,
-        "plane": "XY",
-        "offset": h,  # top surface
-        "elements": [
-            {
-                "type": "rectangle",
-                "x": start,
-                "y": (w - cw) / 2,
-                "width": end - start,
-                "height": cw,
-            }
-        ],
+        "type": "make_box",
+        "length": end - start,
+        "width": cw,
+        "height": ch_h,
+        "name": tool_name,
     })
-    # Pocket cut downward — creates new document object
+    # Position: centered on Y, cut into top surface
     ops.append({
-        "type": "pocket",
-        "sketch": sketch_name,
-        "target": body,
-        "depth": ch_h,
-        "reverse": True,
-        "name": pocket_name,
+        "type": "move",
+        "object": tool_name,
+        "dx": start,
+        "dy": (w - cw) / 2,
+        "dz": h - ch_h,  # top-aligned
     })
-    ops.append({"type": "delete_object", "object": body})
-    ops.append({"type": "delete_object", "object": sketch_name})
-    return pocket_name
+    return _bool_cut(ops, body, tool_name, sn)

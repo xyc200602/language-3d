@@ -17,6 +17,7 @@
 - 操作顺序：基元 → shell → 空心 → 安装孔 → 轴孔 → 轴承座 → 键槽 → 走线通道 → 圆角 → 倒角 → 导出STL
 - 电池盒用内盒布尔切割（shell 在复杂几何上失败）
 - 键槽用 make_box + move + boolean cut（sketch 方式在 FreeCAD 中失败）
+- 走线通道用 make_box + move + boolean cut（sketch+pocket 方式在 FreeCAD 中失败）
 
 #### 2. 自动化 FreeCAD 批量验证器 (`src/lang3d/tools/part_validator.py`)
 - `validate_part()` — 单零件验证：生成脚本 → FreeCAD 执行 → STL 检查 → 自动简化重试
@@ -25,21 +26,24 @@
 - VLM 视觉验证集成（可选）：VTK 离屏渲染 → VLM 分析 → 结构匹配
 - `BatchValidationReport` — 结构化报告，支持 JSON 序列化
 
-#### 3. FreeCAD 端到端验证结果 — 41/41 (100%) 通过
-- **Level 0 (完整工程特征)**: 29 个零件 — 安装孔、轴孔、轴承座、壳体、键槽等全部保留
+#### 3. export_package.py pipeline 集成 FreeCAD 验证
+- `export_engineering_package()` 在 Step 3a 调用 `validate_all_parts()` 实际执行 FreeCAD
+- 验证成功的零件 STL 保存到 `stl_parts/` 目录
+- 需要简化的零件：简化后的 ops 替换原脚本，保存的是可执行版本
+- 验证报告保存为 `part_validation_report.json`
+
+#### 4. FreeCAD 端到端验证结果 — 41/41 (100%) 通过
+- **Level 0 (完整工程特征)**: 33 个零件 — 安装孔、轴孔、轴承座、壳体、键槽、走线通道等全部保留
   - 板类 (base_plate, top_plate): plate_with_holes + 倒角
   - 电机 (motor_*): make_box + 4 角安装孔 + 轴孔 + 倒角
   - 轮子 (wheel_*): cylinder_with_hole + 键槽
-  - 关节 (arm_base, arm_shoulder): cylinder_with_hole + 轴承座 + 极坐标安装孔 + shell
+  - 关节 (arm_base, arm_shoulder): cylinder_with_hole + 轴承座 + 极坐标安装孔 + shell + fillet
+  - 连杆 (arm_upper_link): make_box + 两端安装孔 + 走线通道 + fillet
+  - 夹爪 (gripper): make_box + 底部安装孔 + 走线通道 + 倒角
   - 电池盒: 内盒布尔切割 + 网格安装孔
-- **Level 1 (无圆角)**: 6 个零件 — arm_elbow/wrist + ipc_bracket + camera_bracket
+- **Level 1 (无圆角)**: 8 个零件 — arm_elbow/wrist/forearm + ipc_bracket + camera_bracket
   - 圆角在 shelled cylinder + holes 的复杂拓扑上失败，自动降级
-- **Level 3 (无圆角/倒角/走线通道)**: 6 个零件 — arm links + grippers
-  - pocket 操作在复杂布尔几何上失败，自动降级到无走线通道
-
-#### 4. export_package.py 修改
-- `_freecad_ops_for_part()` 委托给 `part_feature_engine.generate_ops()`
-- pipeline 其余代码不变
+  - 仍保留：安装孔、轴孔、轴承座、壳体、走线通道
 
 ### Testing:
 - `pytest tests/test_part_feature_engine.py -v` — 57/57 passed
@@ -51,10 +55,10 @@
 ### Notes:
 - 41 个零件全部通过 FreeCAD 实际执行验证（不再只是生成脚本检查字符串）
 - 自动简化闭环：零件在完整特征失败时自动降级，无需人工介入
-- 电池盒/键槽/轴承座等之前手动调试 5-6 轮的问题现在自动解决
+- 走线通道从 sketch+pocket 改为 make_box+boolean cut 后，arm_link/gripper 从 level 3 升级到 level 0
 - arm_elbow/wrist 的圆角失败是 FreeCAD makeFillet 在 shelled+holed 几何上的已知限制
-- arm link 的走线通道失败是 FreeCAD pocket 操作在非平面拓扑上的限制
-- Level 1-3 降级的零件仍保留主要工程特征（孔、轴承座、壳体），只是缺少表面修饰
+- Level 1 降级的零件仍保留主要工程特征（孔、轴承座、壳体、走线通道），只缺圆角
+- pipeline 保存的脚本是经过 FreeCAD 验证的版本（简化后的），而非会失败的完整特征版本
 
 ---
 

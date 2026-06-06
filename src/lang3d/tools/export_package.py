@@ -380,6 +380,62 @@ def export_engineering_package(
         script_path.write_text(script, encoding="utf-8")
         generated_files.append(str(script_path))
 
+    # ---- Step 3a: Validate parts via FreeCAD execution ----
+    stl_dir = output_dir / "stl_parts"
+    stl_dir.mkdir(parents=True, exist_ok=True)
+    validation_report_path = output_dir / "part_validation_report.json"
+
+    try:
+        from .freecad import _find_freecad_python
+        if _find_freecad_python():
+            from .part_validator import validate_all_parts
+            logger.info("Running FreeCAD validation for %d parts", len(assembly.parts))
+            validation_report = validate_all_parts(
+                assembly.parts, str(stl_dir), timeout=60,
+            )
+            # Save validation report
+            validation_report_path.write_text(
+                json.dumps(validation_report.to_dict(), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            generated_files.append(str(validation_report_path))
+
+            # Replace full-feature ops with simplified ops for parts that needed it
+            simplified_count = 0
+            for r in validation_report.results:
+                if r.simplification_level > 0 and r.passed:
+                    part_obj = next(p for p in assembly.parts if p.name == r.part_name)
+                    from .part_validator import _simplify_config
+                    from .part_feature_engine import infer_features, generate_ops as _gen
+                    cfg = infer_features(part_obj)
+                    cfg_simple = _simplify_config(cfg, r.simplification_level)
+                    simplified_ops = _gen(part_obj, config=cfg_simple)
+                    # Fix workspace placeholder
+                    for op in simplified_ops:
+                        if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
+                            op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
+                    # Replace in all_part_ops
+                    idx = next(i for i, p in enumerate(assembly.parts) if p.name == r.part_name)
+                    all_part_ops[idx] = simplified_ops
+                    # Rewrite the script with simplified ops
+                    script = _build_script(simplified_ops)
+                    script_path = fc_dir / f"{r.part_name}.py"
+                    script_path.write_text(script, encoding="utf-8")
+                    simplified_count += 1
+                    logger.info(
+                        "Part '%s' simplified to level %d (%s)",
+                        r.part_name, r.simplification_level, r.simplification_note,
+                    )
+            if simplified_count > 0:
+                logger.info("%d parts were simplified for FreeCAD compatibility", simplified_count)
+            logger.info(
+                "Part validation: %d/%d passed (%.0f%%)",
+                validation_report.passed, validation_report.total_parts,
+                validation_report.pass_rate * 100,
+            )
+    except Exception as e:
+        logger.warning("FreeCAD part validation skipped: %s", e)
+
     # ---- Step 3b: Render assembly ----
     from .freecad import (
         build_assembly_script,
