@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-06 - Task 61: Pipeline 性能优化 — 共享上下文 + 批量 FreeCAD + LLM 缓存
+
+### What was done:
+- **新建 `src/lang3d/tools/pipeline_context.py`** (~65 行)
+  - `AssemblyContext` dataclass：共享 positions/mass_result/subsystems 中间结果
+  - `ensure_positions()` / `ensure_mass()` / `ensure_subsystems()`：惰性计算 + 缓存
+  - `get_com()`：便捷获取质心
+- **新建 `src/lang3d/models/cache.py`** (~150 行)
+  - `SemanticCache` 类：LRU 缓存，TTL 过期，容量限制，命中率统计
+  - `make_key()`：基于 messages + tools + model + temperature 的确定性哈希
+  - `get_cache()` 全局单例
+- **修改 `src/lang3d/models/retry.py`**
+  - 新增 `AdaptiveRetryHandler` 类：自适应延迟（读取 Retry-After headers + 20% 安全裕度）+ 熔断器模式（连续 5 次失败后打开，冷却后半开探测）
+  - `record_success()` / `record_failure()` / `is_available()` / `get_adaptive_delay()` / `call()`
+- **修改 `src/lang3d/models/glm.py`**
+  - `chat()` 方法新增缓存检查：temperature < 0.01 时查 SemanticCache，命中直接返回
+  - 缓存未命中时正常调用 API，结果存入缓存
+- **修改 `src/lang3d/tools/export_package.py`**
+  - `export_engineering_package()` 使用 `AssemblyContext` 替代独立计算
+  - Step 1 (positions) → `ctx.ensure_positions()`
+  - Step 2 (mass) → `ctx.ensure_mass()`
+  - Step 12 (subsystems) → `ctx.ensure_subsystems()`
+  - Step 3 (FreeCAD scripts) 改为预构建所有零件 ops 列表，workspace 占位符替换
+- **修改 `src/lang3d/tools/freecad.py`**
+  - 新增 `_build_batch_script(all_ops)` 函数：将多零件操作列表合并为单个 FreeCAD 脚本，避免 41 次子进程调用
+  - 每个零件创建文档后关闭释放内存
+- **新建 `tests/test_pipeline_context.py`** — 8 个测试
+- **新建 `tests/test_semantic_cache.py`** — 18 个测试
+
+### Testing:
+- `pytest tests/test_pipeline_context.py tests/test_semantic_cache.py -v` — 26/26 passed
+- `pytest tests/test_export_package.py tests/test_complex_robot_e2e.py -v` — 91/91 passed
+- `pytest tests/ -k 'not e2e_reliability and not vlm_accuracy and not freecad_gui'` — 1877/1879 passed（2 个预存失败）
+
+### Notes:
+- LLM 缓存仅对 temperature=0 的请求启用（确定性输出），默认 TTL=1h，max_entries=256
+- AdaptiveRetryHandler 的熔断器冷却时间为 max_delay×2（上限 120s）
+- _build_batch_script 目前用于脚本生成，实际执行仍为逐个运行（FreeCAD 子进程模式）
+
+---
+
 ## 2026-06-06 - Task 60: E2E 测试重构 — 从 42 断言改为工程包完整性验证
 
 ### What was done:

@@ -37,6 +37,7 @@ from ..knowledge.mechanics import (
 )
 from ..models.base import ToolDefinition
 from .base import Tool
+from .pipeline_context import AssemblyContext
 
 
 # ============================================================================
@@ -303,21 +304,33 @@ def export_engineering_package(
     output_dir = Path(output_dir)
     generated_files: list[str] = []
 
+    # ---- Create shared context ----
+    ctx = AssemblyContext(assembly=assembly)
+
     # ---- Step 1: Solve assembly positions ----
-    from .assembly_solver import AssemblySolver
-    solver = AssemblySolver(assembly)
-    positions = solver.solve()
+    positions = ctx.ensure_positions()
 
     # ---- Step 2: Compute mass properties ----
-    mass_result = compute_assembly_mass(assembly)
+    mass_result = ctx.ensure_mass()
 
     # ---- Step 3: Generate FreeCAD scripts ----
-    from .freecad import _build_script
+    from .freecad import _build_script, _build_batch_script
     fc_dir = output_dir / "freecad_scripts"
     fc_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build all part operation lists
+    all_part_ops = []
     for part in assembly.parts:
         ops = _freecad_ops_for_part(part)
-        script = _build_script(ops)
+        # Replace workspace placeholder with actual path
+        for op in ops:
+            if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
+                op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
+        all_part_ops.append(ops)
+
+    # Write individual scripts (for user reference and debugging)
+    for i, part in enumerate(assembly.parts):
+        script = _build_script(all_part_ops[i])
         script_path = fc_dir / f"{part.name}.py"
         script_path.write_text(script, encoding="utf-8")
         generated_files.append(str(script_path))
@@ -487,7 +500,7 @@ def export_engineering_package(
     generated_files.append(str(output_dir / "stability_report.md"))
 
     # ---- Step 12: Design report JSON + README + subsystem JSONs ----
-    subsystems = _build_subsystems(assembly, positions)
+    subsystems = ctx.ensure_subsystems()
 
     # Subsystem JSON files
     ss_dir = output_dir / "subsystems"

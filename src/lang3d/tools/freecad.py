@@ -863,6 +863,91 @@ def _build_script(operations: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_batch_script(all_ops: list[list[dict]]) -> str:
+    """Build a single FreeCAD script that processes multiple parts.
+
+    Each element of *all_ops* is a list of operations for one part.
+    All parts are created in the same FreeCAD session, which avoids
+    the overhead of spawning 41 separate subprocesses.
+
+    Returns the combined script text.
+    """
+    header = [
+        "import FreeCAD",
+        "import Part",
+        "import Mesh",
+        "import json",
+        "import sys",
+        "import os",
+        "",
+    ]
+    parts_lines: list[str] = []
+    for part_ops in all_ops:
+        part_lines: list[str] = []
+        for op in part_ops:
+            op_type = op["type"]
+            part_lines.append(f"# Operation: {op_type}")
+
+            if op_type == "new_doc":
+                name = op.get("name", "Unnamed")
+                part_lines.append(f'doc = FreeCAD.newDocument("{name}")')
+
+            elif op_type == "make_box":
+                l, w, h = op["length"], op["width"], op["height"]
+                name = op.get("name", "Box")
+                part_lines.append(f'box = Part.makeBox({l}, {w}, {h})')
+                part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
+                part_lines.append("obj.Shape = box")
+                part_lines.append("doc.recompute()")
+
+            elif op_type == "make_cylinder":
+                r, h = op["radius"], op["height"]
+                name = op.get("name", "Cylinder")
+                part_lines.append(f'cyl = Part.makeCylinder({r}, {h})')
+                part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
+                part_lines.append("obj.Shape = cyl")
+                part_lines.append("doc.recompute()")
+
+            elif op_type == "make_sphere":
+                r = op["radius"]
+                name = op.get("name", "Sphere")
+                part_lines.append(f'sphere = Part.makeSphere({r})')
+                part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
+                part_lines.append("obj.Shape = sphere")
+                part_lines.append("doc.recompute()")
+
+            elif op_type == "export_stl":
+                path = op["path"]
+                name = op.get("name", "")
+                part_lines.append(f"_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]")
+                part_lines.append(f'Mesh.export(_export_list, r"{path}")')
+                part_lines.append(f'print(f"Exported: {path}")')
+
+            # For other op types, fall back to _build_script
+            else:
+                # Generate via _build_script and extract just the body lines
+                single_script = _build_script([op])
+                # Skip the header imports
+                body_lines = []
+                for line in single_script.split("\n"):
+                    stripped = line.strip()
+                    if stripped.startswith("import "):
+                        continue
+                    if stripped:
+                        body_lines.append(line)
+                part_lines.extend(body_lines)
+
+            part_lines.append("")
+
+        # Close document after each part to free memory
+        part_lines.append("FreeCAD.closeDocument(FreeCAD.ActiveDocument.Name)")
+        part_lines.append("")
+
+        parts_lines.extend(part_lines)
+
+    return "\n".join(header + parts_lines)
+
+
 def _execute_operations(operations: list[dict]) -> str:
     """Execute a sequence of FreeCAD operations and return the output."""
     script = _build_script(operations)

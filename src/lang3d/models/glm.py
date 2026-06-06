@@ -8,6 +8,7 @@ from typing import Any
 from openai import OpenAI
 
 from .base import Message, ModelBackend, ModelResponse, ToolCall, ToolDefinition
+from .cache import SemanticCache, get_cache
 from .retry import RetryConfig, call_with_retry
 
 
@@ -84,6 +85,21 @@ class GLMBackend(ModelBackend):
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
 
+        # Check cache for deterministic requests (temperature=0)
+        cache = get_cache()
+        cache_key = None
+        if temperature < 0.01:
+            cache_key = SemanticCache.make_key(
+                api_messages,
+                kwargs.get("tools"),
+                model=self.model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            cached = cache.get(cache_key)
+            if cached is not None:
+                return cached
+
         response = call_with_retry(
             self.client.chat.completions.create,
             **kwargs,
@@ -104,7 +120,7 @@ class GLMBackend(ModelBackend):
                     )
                 )
 
-        return ModelResponse(
+        result = ModelResponse(
             content=content,
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "",
@@ -113,6 +129,12 @@ class GLMBackend(ModelBackend):
                 "output_tokens": response.usage.completion_tokens if response.usage else 0,
             },
         )
+
+        # Store in cache if this was a deterministic request
+        if cache_key is not None:
+            cache.put(cache_key, result)
+
+        return result
 
     # Vision models with their max_tokens caps and preferred endpoint.
     # 4.6V models need the standard API; 4V models work on Coding Plan.

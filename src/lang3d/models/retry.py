@@ -143,3 +143,90 @@ def call_with_retry(
 
     # Should not reach here, but satisfy type checker
     raise last_exc  # type: ignore[misc]
+
+
+@dataclass
+class AdaptiveRetryHandler:
+    """Adaptive retry handler with circuit breaker pattern.
+
+    Reads rate-limit headers from API responses to adjust delays dynamically.
+    After consecutive failures above a threshold, opens the circuit breaker
+    to prevent wasting time on doomed requests.
+    """
+
+    config: RetryConfig = field(default_factory=RetryConfig)
+    consecutive_failures: int = 0
+    circuit_breaker_threshold: int = 5
+    circuit_open: bool = False
+    _last_failure_time: float = 0.0
+
+    def record_success(self) -> None:
+        """Reset failure counter on success."""
+        self.consecutive_failures = 0
+        self.circuit_open = False
+
+    def record_failure(self, exc: BaseException | None = None) -> None:
+        """Record a failure and check circuit breaker threshold."""
+        self.consecutive_failures += 1
+        self._last_failure_time = time.time()
+        if self.consecutive_failures >= self.circuit_breaker_threshold:
+            self.circuit_open = True
+            logger.warning(
+                "Circuit breaker opened after %d consecutive failures",
+                self.consecutive_failures,
+            )
+
+    def is_available(self) -> bool:
+        """Check if the circuit breaker allows requests."""
+        if not self.circuit_open:
+            return True
+        # Half-open: allow one probe after a cooldown
+        cooldown = min(self.config.max_delay * 2, 120.0)
+        if time.time() - self._last_failure_time > cooldown:
+            logger.info("Circuit breaker half-open, allowing probe request")
+            return True
+        return False
+
+    def get_adaptive_delay(self, attempt: int, exc: BaseException | None = None) -> float:
+        """Compute delay with adaptive adjustment based on rate-limit headers."""
+        if exc is not None:
+            retry_after = _extract_retry_after(exc)
+            if retry_after is not None:
+                return min(retry_after * 1.2, self.config.max_delay)  # 20% safety margin
+
+        delay = self.config.base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+        return min(delay, self.config.max_delay)
+
+    def call(self, fn: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+        """Call *fn* with adaptive retry and circuit breaker."""
+        if not self.is_available():
+            raise RuntimeError(
+                f"Circuit breaker open ({self.consecutive_failures} consecutive failures). "
+                f"Retry after cooldown."
+            )
+
+        last_exc: BaseException | None = None
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                result = fn(*args, **kwargs)
+                self.record_success()
+                return result
+            except BaseException as exc:
+                last_exc = exc
+                self.record_failure(exc)
+                if attempt >= self.config.max_retries or not _is_retryable_error(exc, self.config):
+                    raise
+                if not self.is_available():
+                    raise RuntimeError("Circuit breaker tripped during retry") from exc
+
+                delay = self.get_adaptive_delay(attempt, exc)
+                logger.warning(
+                    "Adaptive retry %d/%d after %.1fs: %s",
+                    attempt + 1,
+                    self.config.max_retries,
+                    delay,
+                    type(exc).__name__,
+                )
+                time.sleep(delay)
+
+        raise last_exc  # type: ignore[misc]
