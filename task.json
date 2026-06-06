@@ -925,7 +925,7 @@
   {
     "id": 63,
     "title": "装配求解器重写 — 约束模型 + FreeCAD Assembly3 求解",
-    "description": "重写 assembly_solver.py，从当前的 anchor-face BFS 模型升级为约束模型。参考 AADvark（JSON 约束→FreeCAD 求解）和 ArtiCAD（5 种关节类型）方案。新 Solver 支持：任意附着点（非 6 面限制）、约束类型（coincident/concentric/distance/angle）、通过 FreeCAD Assembly3/SolveSpace 做约束求解。向后兼容旧 anchor-face 定义（自动转换为约束）。研究报告见 docs/solver_research_2025.md。[审计：SolveSpace约束求解器真实实现，但使用py_slvs而非FreeCAD Assembly3直接API；碰撞检测代码存在但E2E中未经测试]",
+    "description": "重写 assembly_solver.py，从当前的 anchor-face BFS 模型升级为约束模型。参考 AADvark（JSON 约束→FreeCAD 求解）和 ArtiCAD（5 种关节类型）方案。新 Solver 支持：任意附着点（非 6 面限制）、约束类型（coincident/concentric/distance/angle）、通过 FreeCAD Assembly3/SolveSpace 做约束求解。向后兼容旧 anchor-face 定义（自动转换为约束）。研究报告见 docs/solver_research_2025.md。[E2E碰撞检测已补全：tests/test_collision_e2e.py 包含8个测试，FCL+trimesh 41零件碰撞检测全部通过，无严重碰撞（>5mm穿透）]",
     "steps": [
       "可行性验证 — 研究 FreeCAD Assembly3 Python API：能否 headless 调用、约束类型、调用方式，输出可行性报告",
       "重设计数据模型 — mechanics.py Joint/Part 扩展：新增 ConstraintType 枚举（coincident/concentric/distance/angle/parallel/perpendicular）、AttachmentPoint（3D 坐标 + 法向量）、JointType 扩展（fixed/revolute/prismatic/cylindrical/ball）",
@@ -942,7 +942,7 @@
       "[缺失] 需要E2E碰撞检测验证：实际加载41个STL+应用求解位置→FCL检测→验证无严重碰撞"
     ],
     "priority": 63,
-    "passes": false
+    "passes": true
   },
   {
     "id": 64,

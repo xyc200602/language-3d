@@ -1,0 +1,81 @@
+{
+  "total_parts": 41,
+  "total_pairs": 780,
+  "collision_free": false,
+  "total_collisions": 12,
+  "severe_collisions": 0,
+  "collision_details": [
+    {
+      "part_a": "base_plate",
+      "part_b": "wheel_fl",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "base_plate",
+      "part_b": "wheel_fr",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "base_plate",
+      "part_b": "wheel_rl",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "base_plate",
+      "part_b": "wheel_rr",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "top_plate",
+      "part_b": "standoff_fl",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "top_plate",
+      "part_b": "standoff_fr",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "top_plate",
+      "part_b": "standoff_rl",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "top_plate",
+      "part_b": "standoff_rr",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "motor_driver_board",
+      "part_b": "ipc_bracket",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "ipc_bracket",
+      "part_b": "arm_l_base",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "ipc_bracket",
+      "part_b": "arm_r_base",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "lidar_mount",
+      "part_b": "camera_bracket",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    }
+  ]
+}

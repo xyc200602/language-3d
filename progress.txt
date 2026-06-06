@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-06-06 - Task 63 补写：碰撞检测 E2E 验证
+
+### What was done:
+
+补写审计中标记为"E2E未经测试"的碰撞检测验证，完成 Task 63 的最后遗留步骤。
+
+#### 新建 `tests/test_collision_e2e.py`（8 个测试）
+
+全部基于 FCL + trimesh 的真实碰撞检测，不需要 API key：
+
+1. `test_solver_produces_all_positions` — 求解器为 41 零件生成有效位置
+2. `test_collision_check_runs_on_full_robot` — FCL 在 41 零件装配体上成功运行（>= 100 对检查）
+3. `test_no_severe_collisions_in_standard_assembly` — **核心断言**：标准装配无严重碰撞（穿透 > 5mm），保存详细报告
+4. `test_injected_collision_detected` — 注入碰撞（2 零件强制到同一位置）→ FCL 正确检测
+5. `test_no_collision_for_well_separated_parts` — 远距离零件无碰撞
+6. `test_collision_check_without_skip_adjacent` — 不跳过相邻零件时检查更多对
+7. `test_mesh_collision_tool_execution` — MeshCollisionTool Agent 工具执行成功
+8. `test_assembly_verifier_collision_integration` — AssemblyVerifier 集成碰撞检测
+
+#### 碰撞检测结果
+
+- 41 零件 × skip_adjacent=True → 检查数百对
+- **无严重碰撞**（穿透 > 5mm）：0 起
+- 报告保存到 `data/collision_e2e_report.json`
+
+### Testing:
+- `pytest tests/test_collision_e2e.py -v` — 8/8 passed
+- 全量回归无新增失败
+
+### Notes:
+- 使用 trimesh 包围盒（box approximation）而非真实 STL 几何，这是 MeshCollisionChecker 的当前设计
+- python-fcl 0.7.0.11 + trimesh 4.12.2 均已安装
+
+---
+
 ## 2026-06-06 - Task 64 补写：装配 VLM E2E 测试
 
 ### What was done:
