@@ -4,6 +4,71 @@
 
 ---
 
+## 2026-06-06 - 全面审计 + VTK 离屏渲染重写 + task.json 幻觉修正
+
+### What was done:
+
+#### 1. 全面代码审计
+- 对全部 60 个 task (ID 7-64) 逐个对照代码库进行真伪验证
+- 深度审查了视觉验证链路：verifier.py → reflector.py → CADVerifyTool → assembly_visual_verifier.py
+- 深度审查了零件质量：export_package.py 的 _freecad_ops_for_part() 只生成 3 种几何原语
+- 发现截图方案有 8 个致命缺陷（最小化窗口、遮挡、多显示器、DPI、timing、架构矛盾等）
+- 发现测试质量严重不足：VLM 测试只检查 `is not None`，UNKNOWN 视为成功，失败不报错
+
+#### 2. task.json AI 幻觉修正（10 个任务从 true 改为 false）
+- Task 9 (Agent 多轮规划优化)：自动修复闭环未真正测试
+- Task 10 (机械臂装配验证)：VLM 验证是 best-effort 不强制
+- Task 16 (Agent 真实建模流程验证)：自修复闭环未测试
+- Task 19 (Phase 5 E2E)：MATCH:True 是经验性非保证
+- Task 26 (端到端可靠性验证)：UNKNOWN 视为成功，失败不报错
+- Task 30 (端到端装配流程测试)：只验证数学位置不验证物理配合
+- Task 35 (BOM 物料清单)：铝件用 PLA 价格、成本不准确
+- Task 56 (FreeCAD 草图建模)：只生成脚本不执行验证
+- Task 63 (装配求解器重写)：碰撞检测 E2E 未测试
+- Task 64 (装配 VLM 视觉验证)：test_assembly_vlm_e2e.py 文件完全缺失
+
+#### 3. 新增 2 个任务
+- Task 65 (生产级零件建模)：从几何原语升级为工程特征零件（安装孔、配合面、壁厚等）
+- Task 66 (生产级装配验证)：配合面贴合、螺栓对齐、公差链、干涉检查
+
+#### 4. 新建 VTK 离屏渲染器 (`src/lang3d/tools/vtk_renderer.py`)
+- `VTKOffscreenRenderer` 类：完全离屏、无窗口、无 timing
+- `load_stl()` — 加载真实 STL mesh（Phong 着色）
+- `add_box()` / `add_cylinder()` — 从尺寸数据近似
+- `add_axes()` / `add_floor_grid()` — 辅助视觉元素
+- `render_to_file()` / `render_all_views()` — 批量渲染 4 角度 PNG
+- `render_stl_multi_angle()` / `render_assembly_from_positions()` — 便捷函数
+- 使用 VTK `SetOffScreenRendering(1)`，不需要显示器、不需要 GPU、不需要窗口
+
+#### 5. 重写 CADVerifyTool (`src/lang3d/tools/vlm.py`)
+- 删除全部 `ctypes.windll.user32`、`SetForegroundWindow`、`time.sleep`、`ImageGrab.grab`
+- 删除 `_set_camera_macro()`（headless subprocess 控制 GUI 的矛盾方案）
+- 新流程：解析 STL 路径 → VTK 离屏渲染 4 角度 PNG → 发送 VLM 分析 → 置信度投票聚合
+- 新参数：`stl_path` 替代 `window_title`
+
+#### 6. 重写装配体渲染 (`src/lang3d/agent/assembly_visual_verifier.py`)
+- `_render_to_dir()` 改为 VTK 优先策略
+- 支持 STL 文件加载（真实 mesh 优于尺寸近似）
+- matplotlib 降级保留（VTK 不可用时）
+
+#### 7. 新建 VTK 渲染器测试 (`tests/test_vtk_renderer.py`)
+- 26 个测试：基本渲染、多角度、STL 加载、便捷函数、视角预设、颜色、网格、分辨率
+- 全部通过
+
+### Testing:
+- `pytest tests/test_vtk_renderer.py -v` — 26/26 passed
+- `pytest [核心测试] -q` — 389/389 passed，0 回归
+- VTK 离屏渲染已在本机验证（VTK 9.3.1, Windows 11）
+
+### Notes:
+- **截图方案被彻底替换**：不再依赖 SetForegroundWindow + ImageGrab.grab + time.sleep
+- **零新依赖**：VTK 9.3.1 已安装，trimesh 4.12.2 已安装
+- **最大剩余差距**：零件质量（Task 65）— 所有 41 个导出零件仍是几何原语（box/cylinder），无安装孔、无配合面、无壁厚
+- 旧 GUI 工具（fc_open_gui, fc_close_gui, FCSetCameraTool）保留但不再用于验证流程
+- PLAN.md 中有完整的技术方案文档
+
+---
+
 ## 2026-06-06 - Task 64 修正: 装配 VLM 视觉验证闭环 — 真实 VLM + 修复装配位置
 
 ### What was done:

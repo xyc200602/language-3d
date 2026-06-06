@@ -143,6 +143,9 @@ class Joint:
     axis: str = "auto"
     # If True, skip sibling auto-distribution for this joint (child placed at anchor center)
     no_distribute: bool = False
+    # Group tag for sibling distribution: joints with same (parent, parent_anchor, distribution_group)
+    # are distributed together. Empty string = legacy behavior (group with all same-anchor siblings).
+    distribution_group: str = ""
     # --- Task 63: 约束模型字段 ---
     parent_attachment: tuple | None = None   # 精确 3D 附着点（覆盖 parent_anchor）
     child_attachment: tuple | None = None    # 精确 3D 附着点（覆盖 child_anchor）

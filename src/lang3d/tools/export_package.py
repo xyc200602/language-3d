@@ -132,22 +132,25 @@ def build_complex_robot() -> Assembly:
              dimensions=dict(diameter=40, height=10)),
     ]
     parts.extend(ipc_parts)
-    # IPC centered on top_plate (explicit offset, no auto-distribute)
+    # IPC centered on top_plate (own distribution group, no auto-distribute with arms)
     joints.append(Joint("fixed", "top_plate", "ipc_bracket",
                         parent_anchor="top", child_anchor="bottom",
-                        offset=(0, 0, 0), no_distribute=True))
+                        offset=(0, 0, 0), distribution_group="ipc"))
     joints.append(Joint("fixed", "ipc_bracket", "ipc_body",
                         parent_anchor="top", child_anchor="bottom"))
     joints.append(Joint("fixed", "ipc_body", "ipc_fan",
                         parent_anchor="top", child_anchor="bottom"))
 
-    # Motor driver board centered on top_plate
+    # Motor driver board on top_plate, offset forward
     joints.append(Joint("fixed", "top_plate", "motor_driver_board",
                         parent_anchor="top", child_anchor="bottom",
-                        offset=(0, 60, 0), no_distribute=True))
+                        offset=(0, 60, 0), distribution_group="driver"))
 
     # ---- Left arm & Right arm ----
-    # Arms placed symmetrically: left arm at Y=-70, right arm at Y=+70
+    # Arms use distribution_group="arms" so they form their own 2-element sibling
+    # group on top_plate's top face.  The solver's line-distribution spreads them
+    # along X (tangent1 of the top face).  We keep explicit offsets to shift them
+    # symmetrically along Y instead (left arm at Y=-70, right arm at Y=+70).
     arm_offsets = {"arm_l": (0, -70, 0), "arm_r": (0, 70, 0)}
     for side, prefix in [("左", "arm_l"), ("右", "arm_r")]:
         arm_parts = [
@@ -172,7 +175,7 @@ def build_complex_robot() -> Assembly:
             Joint("revolute", "top_plate", f"{prefix}_base", (-180, 180),
                   f"{side}臂旋转", axis="z",
                   parent_anchor="top", child_anchor="bottom",
-                  offset=arm_offset, no_distribute=True),
+                  offset=arm_offset, distribution_group="arms"),
             Joint("revolute", f"{prefix}_base", f"{prefix}_shoulder", (-90, 90),
                   f"{side}肩俯仰", axis="y", parent_anchor="top", child_anchor="bottom"),
             Joint("fixed", f"{prefix}_shoulder", f"{prefix}_upper_link",
@@ -203,7 +206,7 @@ def build_complex_robot() -> Assembly:
     joints.extend([
         Joint("fixed", "top_plate", "sensor_tower_post",
               parent_anchor="top", child_anchor="bottom",
-              offset=(-100, 0, 0), no_distribute=True),
+              offset=(-100, 0, 0), distribution_group="sensor_tower"),
         Joint("fixed", "sensor_tower_post", "imu_mount",
               parent_anchor="top", child_anchor="bottom"),
         Joint("fixed", "sensor_tower_post", "lidar_mount",
@@ -363,7 +366,7 @@ def export_engineering_package(
                     "dual 3-DOF arms symmetrically on left (Y=-70) and right (Y=+70), "
                     "IPC centered on top, sensor tower at rear"
                 ),
-                max_iterations=2,
+                max_iterations=3,
                 detail_level="detailed",
             )
             # If corrections were applied, re-solve positions

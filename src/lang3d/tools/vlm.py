@@ -362,13 +362,18 @@ class WindowAnalyzeTool(Tool):
 
 
 class CADVerifyTool(Tool):
-    """Capture a CAD window and verify the 3D model matches expectations."""
+    """Verify a 3D model against expectations using VTK offscreen rendering + VLM.
+
+    No GUI needed, no screenshots, no window management.
+    Renders the model from multiple camera angles using VTK offscreen rendering,
+    then sends the renders to a VLM for structural analysis.
+    """
 
     name = "cad_verify"
     description = (
-        "Capture the CAD software window and verify if the 3D model matches the expected design. "
-        "Returns structured verification result. Uses a detailed vision model for thorough analysis. "
-        "Supports multi-angle verification for higher accuracy."
+        "Verify if a 3D model (STL/FCStd file) matches the expected design. "
+        "Uses VTK offscreen rendering for deterministic multi-angle views, "
+        "then a VLM for structural analysis. No GUI or screenshot needed."
     )
 
     def __init__(self, router: ModelRouter, screenshot_dir: str = "") -> None:
@@ -386,9 +391,9 @@ class CADVerifyTool(Tool):
                         "type": "string",
                         "description": "Description of the expected 3D model (shape, dimensions, features)",
                     },
-                    "window_title": {
+                    "stl_path": {
                         "type": "string",
-                        "description": "CAD window title (default: 'FreeCAD')",
+                        "description": "Path to the STL file to verify. If omitted, searches workspace for the most recent STL.",
                     },
                     "detail": {
                         "type": "string",
@@ -398,7 +403,7 @@ class CADVerifyTool(Tool):
                         "type": "string",
                         "description": (
                             "Camera angles for multi-view verification, comma-separated "
-                            "(e.g. 'isometric,front,top'). Empty for single view."
+                            "(e.g. 'isometric,front,top'). Default: 'isometric,front,top,right'."
                         ),
                     },
                 },
@@ -410,106 +415,140 @@ class CADVerifyTool(Tool):
         self,
         *,
         expected: str,
-        window_title: str = "FreeCAD",
+        stl_path: str = "",
         detail: str = "detailed",
-        angles: str = "isometric,front,top",
+        angles: str = "isometric,front,top,right",
         **kwargs: Any,
     ) -> str:
         try:
-            import ctypes
-            import ctypes.wintypes
-
-            from PIL import ImageGrab
-
-            from .screen import _find_windows_by_title
-
-            matches = _find_windows_by_title(window_title)
-            if not matches:
-                return f"Error: No window found matching '{window_title}'. Is the CAD software open?"
-
-            user32 = ctypes.windll.user32
-            screen_w = user32.GetSystemMetrics(0)
-            screen_h = user32.GetSystemMetrics(1)
-
-            # Sort matches: prefer windows with document names (contain ".FCStd"
-            # or similar) over generic "FreeCAD" windows.
-            def _window_priority(item: tuple) -> tuple:
-                _hwnd, title = item
-                has_doc = (".fcstd" in title.lower() or ".stp" in title.lower()
-                          or "[unnamed]" in title.lower())
-                return (0 if has_doc else 1, title)
-
-            matches = sorted(matches, key=_window_priority)
-
-            # Find a window with valid dimensions
-            for hwnd, full_title in matches:
-                rect = ctypes.wintypes.RECT()
-                user32.GetWindowRect(hwnd, ctypes.byref(rect))
-                left = max(0, rect.left)
-                top = max(0, rect.top)
-                right = min(screen_w, rect.right)
-                bottom = min(screen_h, rect.bottom)
-                if right - left < 10 or bottom - top < 10:
-                    continue
-
-                user32.SetForegroundWindow(hwnd)
-                time.sleep(0.5)
-
-                # Parse requested angles
-                angle_list = [a.strip() for a in angles.split(",") if a.strip()] if angles else []
-
-                if angle_list:
-                    return self._verify_multi_angle(
-                        expected=expected,
-                        angle_list=angle_list,
-                        hwnd=hwnd,
-                        left=left,
-                        top=top,
-                        right=right,
-                        bottom=bottom,
-                        full_title=full_title,
-                        detail=detail,
-                    )
-
-                # Single-angle (original behaviour)
-                save_dir = Path(self.screenshot_dir)
-                save_dir.mkdir(parents=True, exist_ok=True)
-                filepath = save_dir / f"cad_verify_{int(time.time())}.png"
-
-                img = ImageGrab.grab(bbox=(left, top, right, bottom))
-                img.save(str(filepath))
-
-                verify_prompt = self._build_verify_prompt(expected)
-                vd = _parse_detail(detail)
-                result = self.router.vision(str(filepath), verify_prompt, detail=vd)
-
-                # Try to parse structured JSON from VLM response
-                parsed = _parse_verification_json(result)
-
+            # Resolve STL path
+            resolved = self._resolve_stl(stl_path)
+            if not resolved:
                 return (
-                    f"[CAD Verification - Window: '{full_title}']\n"
-                    f"MATCH: {parsed['match']}\n"
-                    f"OBSERVED: {parsed['observed']}\n"
-                    f"DIFFERENCES: {parsed['differences']}\n"
-                    f"SUGGESTION: {parsed['suggestion']}\n"
-                    f"FIX_COMMANDS: {parsed['fix_commands']}\n"
-                    f"\n--- Raw VLM output ---\n{result}"
+                    "Error: No STL file found. Use fc_batch export_stl first, "
+                    "or provide stl_path parameter."
                 )
 
-            return f"Error: All matching windows for '{window_title}' have invalid dimensions"
+            # Parse angles
+            angle_list = [a.strip() for a in angles.split(",") if a.strip()] if angles else ["isometric"]
+
+            # Render multi-angle PNGs via VTK offscreen
+            png_paths = self._render_views(resolved, angle_list)
+
+            # Send to VLM and aggregate
+            verify_prompt = self._build_verify_prompt(expected)
+            vd = _parse_detail(detail)
+
+            angle_results: list[dict[str, Any]] = []
+            for angle, png_path in zip(angle_list, png_paths):
+                vlm_result = self.router.vision(png_path, verify_prompt, detail=vd)
+                parsed = _parse_verification_json(vlm_result)
+                parsed["angle"] = angle
+                parsed["confidence"] = parsed.get("confidence", "medium")
+                parsed["raw"] = vlm_result
+                angle_results.append(parsed)
+
+            # Aggregate via confidence-weighted voting
+            if len(angle_results) == 1:
+                final_match = angle_results[0]["match"]
+                ar0 = angle_results[0]
+                return (
+                    f"[CAD Verification - VTK Offscreen]\n"
+                    f"MATCH: {final_match}\n"
+                    f"OBSERVED: {ar0['observed']}\n"
+                    f"DIFFERENCES: {ar0['differences']}\n"
+                    f"SUGGESTION: {ar0['suggestion']}\n"
+                    f"FIX_COMMANDS: {ar0['fix_commands']}\n"
+                    f"\n--- Raw VLM output ---\n{ar0['raw']}"
+                )
+
+            final_match = _aggregate_angle_results(angle_results)
+
+            # Build multi-angle output
+            lines = ["[CAD Verification (Multi-Angle) - VTK Offscreen]"]
+            lines.append(f"FINAL MATCH: {final_match}")
+            lines.append(f"STL: {resolved}")
+            lines.append(f"Angles verified: {len(angle_results)}")
+            lines.append("")
+            for ar in angle_results:
+                match_str = "MATCH" if ar["match"] else "MISMATCH"
+                lines.append(
+                    f"  [{ar['angle'].upper()}] {match_str} "
+                    f"(confidence: {ar.get('confidence', 'medium')})"
+                )
+                lines.append(f"    Observed: {ar['observed'][:120]}")
+                if ar["differences"] != "None":
+                    lines.append(f"    Differences: {ar['differences'][:120]}")
+
+            # Include the most detailed raw output
+            best = max(angle_results, key=lambda a: len(a.get("raw", "")))
+            lines.append("")
+            lines.append(f"--- Raw VLM output (from {best['angle']}) ---")
+            lines.append(best["raw"])
+
+            return "\n".join(lines)
+
         except Exception as e:
             return f"Error: {e}"
 
     # ------------------------------------------------------------------
-    # Multi-angle verification helpers
+    # Helpers
     # ------------------------------------------------------------------
+
+    def _resolve_stl(self, stl_path: str) -> str | None:
+        """Find the STL file to verify."""
+        if stl_path and os.path.isfile(stl_path):
+            return os.path.abspath(stl_path)
+
+        # Search screenshot_dir and workspace for recent STL files
+        search_dirs = [self.screenshot_dir]
+        from ..config import load_config
+        try:
+            cfg = load_config()
+            search_dirs.append(cfg.agent.workspace)
+        except Exception:
+            pass
+
+        best_path: str | None = None
+        best_mtime = 0.0
+        for d in search_dirs:
+            if not d or not os.path.isdir(d):
+                continue
+            for f in os.listdir(d):
+                if f.lower().endswith(".stl") and not f.lower().endswith(".preview.stl"):
+                    fp = os.path.join(d, f)
+                    mtime = os.path.getmtime(fp)
+                    if mtime > best_mtime:
+                        best_mtime = mtime
+                        best_path = fp
+        return best_path
+
+    def _render_views(self, stl_path: str, angle_list: list[str]) -> list[str]:
+        """Render STL from multiple angles using VTK offscreen."""
+        from .vtk_renderer import VTKOffscreenRenderer, VIEW_PRESETS
+
+        save_dir = Path(self.screenshot_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        renderer = VTKOffscreenRenderer(width=1200, height=900)
+        renderer.load_stl(stl_path)
+        renderer.add_axes(length=25)
+
+        # Validate angles against presets, fallback to isometric
+        valid_angles = [a for a in angle_list if a in VIEW_PRESETS]
+        if not valid_angles:
+            valid_angles = ["isometric"]
+
+        return renderer.render_all_views(
+            str(save_dir), views=valid_angles, prefix=f"cad_verify_{int(time.time())}"
+        )
 
     @staticmethod
     def _build_verify_prompt(expected: str) -> str:
-        """Build the verification prompt with lenient matching instructions."""
+        """Build the verification prompt."""
         return (
             "You are a 3D CAD model verification expert.\n\n"
-            "Step 1: Describe what you see in the 3D viewport (shape, dimensions, features). "
+            "Step 1: Describe what you see in the 3D render (shape, dimensions, features). "
             "Focus on topological features: shape types, number of holes/slots/bosses, "
             "overall proportions. Ignore viewing angle, lighting, or rendering artifacts.\n"
             "Step 2: Compare with the expected model description below. "
@@ -524,101 +563,12 @@ class CADVerifyTool(Tool):
             '"suggestion": "fix suggestion or null", '
             '"fix_commands": "fc_batch operations or null", '
             '"confidence": "high/medium/low"}\n\n'
-            "CRITICAL MATCHING RULES:\n"
+            "MATCHING RULES:\n"
             "- Be GENEROUS with matching. Only report mismatch if the shape/structure is clearly different.\n"
             "- Minor visual differences (viewing angle, lighting, edge rendering) should still match=true.\n"
             "- If the topology matches (same number of features, same shape types), report match=true.\n"
             "- Use null instead of \"None\" for empty fields."
         )
-
-    def _verify_multi_angle(
-        self,
-        *,
-        expected: str,
-        angle_list: list[str],
-        hwnd: int,
-        left: int,
-        top: int,
-        right: int,
-        bottom: int,
-        full_title: str,
-        detail: str,
-    ) -> str:
-        """Run verification from multiple camera angles and aggregate results."""
-        from PIL import ImageGrab
-
-        from .freecad import VIEW_METHODS
-
-        save_dir = Path(self.screenshot_dir)
-        save_dir.mkdir(parents=True, exist_ok=True)
-        verify_prompt = self._build_verify_prompt(expected)
-        vd = _parse_detail(detail)
-
-        angle_results: list[dict[str, Any]] = []
-
-        for angle in angle_list:
-            # Switch camera via FreeCAD macro
-            view_method = VIEW_METHODS.get(angle)
-            if view_method:
-                try:
-                    self._set_camera_macro(view_method)
-                except Exception:
-                    pass
-
-            # Bring window to foreground and wait for view update
-            import ctypes
-            ctypes.windll.user32.SetForegroundWindow(hwnd)
-            time.sleep(1.0)
-
-            filepath = save_dir / f"cad_verify_{angle}_{int(time.time())}.png"
-            img = ImageGrab.grab(bbox=(left, top, right, bottom))
-            img.save(str(filepath))
-
-            result = self.router.vision(str(filepath), verify_prompt, detail=vd)
-            parsed = _parse_verification_json(result)
-            parsed["angle"] = angle
-            parsed["confidence"] = parsed.get("confidence", "medium")
-            angle_results.append(parsed)
-
-        # Aggregate via confidence-weighted voting
-        final_match = _aggregate_angle_results(angle_results)
-
-        # Build output
-        lines = [f"[CAD Verification (Multi-Angle) - Window: '{full_title}']"]
-        lines.append(f"FINAL MATCH: {final_match}")
-        lines.append(f"Angles verified: {len(angle_results)}")
-        lines.append("")
-        for ar in angle_results:
-            match_str = "MATCH" if ar["match"] else "MISMATCH"
-            lines.append(
-                f"  [{ar['angle'].upper()}] {match_str} "
-                f"(confidence: {ar.get('confidence', 'medium')})"
-            )
-            lines.append(f"    Observed: {ar['observed'][:120]}")
-            if ar["differences"] != "None":
-                lines.append(f"    Differences: {ar['differences'][:120]}")
-        lines.append("")
-        lines.append("--- Per-angle raw output ---")
-        for ar in angle_results:
-            lines.append(f"[{ar['angle']}] match={ar['match']}, confidence={ar.get('confidence', 'medium')}")
-
-        return "\n".join(lines)
-
-    @staticmethod
-    def _set_camera_macro(view_method: str) -> None:
-        """Execute a FreeCAD macro to switch the camera view."""
-        from .freecad import _run_freecad_script
-
-        script = f"""
-import FreeCAD, FreeCADGui
-doc = FreeCAD.ActiveDocument
-if doc:
-    v = FreeCADGui.activeDocument().activeView()
-    if v:
-        v.{view_method}()
-        FreeCADGui.SendMsgToActiveView('ViewFit')
-"""
-        _run_freecad_script(script, timeout=10)
 
 
 def _parse_elements_json(raw: str) -> list[dict[str, Any]]:

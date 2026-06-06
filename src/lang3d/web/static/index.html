@@ -226,6 +226,30 @@
         .print-analysis .analysis-value { color: #eee; font-weight: 600; }
         .print-analysis .issue-item { color: #ff9800; font-size: 11px; padding: 2px 0; }
         .print-analysis .pass-item { color: #4caf50; font-size: 11px; }
+
+        /* Design Tab */
+        .design-ss-card { background: #1a1a2e; border-radius: 6px; padding: 10px 12px; margin: 4px 0; cursor: pointer; border-left: 4px solid #0f3460; transition: all 0.15s; display: flex; justify-content: space-between; align-items: center; }
+        .design-ss-card:hover { background: #222; }
+        .design-ss-card.active { background: #0f3460; border-left-color: #00d2ff; }
+        .design-ss-card .ss-name { font-weight: 600; font-size: 13px; color: #eee; }
+        .design-ss-card .ss-meta { font-size: 11px; color: #888; margin-top: 2px; }
+        .design-ss-card .ss-status { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .ss-status-completed { background: #4caf50; }
+        .ss-status-pending { background: #555; }
+        .design-dash-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; border-bottom: 1px solid #1a1a2e; }
+        .design-dash-label { color: #888; }
+        .design-dash-value { color: #eee; font-weight: 600; }
+        .design-dash-value.risk-low { color: #4caf50; }
+        .design-dash-value.risk-medium { color: #ff9800; }
+        .design-dash-value.risk-high { color: #f44336; }
+        .design-progress-bar { width: 100%; height: 8px; background: #1a1a2e; border-radius: 4px; overflow: hidden; margin: 4px 0; }
+        .design-progress-fill { height: 100%; background: linear-gradient(90deg, #00d2ff, #4caf50); transition: width 0.4s; }
+        .tree-node { padding-left: 16px; font-size: 12px; }
+        .tree-node-root { padding-left: 0; }
+        .tree-toggle { cursor: pointer; user-select: none; color: #00d2ff; }
+        .tree-toggle:hover { text-decoration: underline; }
+        .tree-joint-type { font-size: 10px; color: #555; margin-left: 4px; }
+        .tree-part-name { color: #aaa; }
     </style>
 </head>
 <body>
@@ -259,6 +283,7 @@
         <div class="tab" data-tab="agents">Agents</div>
         <div class="tab" data-tab="parts">Part Library</div>
         <div class="tab" data-tab="slicing">Slicing</div>
+        <div class="tab" data-tab="design">Design</div>
     </div>
 
     <div class="container">
@@ -583,6 +608,46 @@
                 </div>
             </div>
         </div>
+
+        <!-- Design Tab -->
+        <div class="tab-panel" id="panel-design">
+            <div class="overview-grid">
+                <!-- Left top: subsystem cards -->
+                <div class="panel">
+                    <div class="panel-header">Subsystems <span class="count" id="design-ss-count">0</span></div>
+                    <div class="panel-body scroll-y" id="design-subsystems" style="max-height: 350px;">
+                        <div class="empty">Loading...</div>
+                    </div>
+                </div>
+                <!-- Right top: dashboard -->
+                <div class="panel">
+                    <div class="panel-header">Design Dashboard</div>
+                    <div class="panel-body" id="design-dashboard">
+                        <div class="empty">Loading...</div>
+                    </div>
+                </div>
+                <!-- Left bottom: assembly tree -->
+                <div class="panel">
+                    <div class="panel-header">Assembly Tree</div>
+                    <div class="panel-body scroll-y" id="design-tree" style="max-height: 350px;">
+                        <div class="empty">Loading...</div>
+                    </div>
+                </div>
+                <!-- Right bottom: 3D multi-model preview -->
+                <div class="panel">
+                    <div class="panel-header">
+                        3D Assembly Preview
+                        <div class="panel-actions">
+                            <button id="design-reset-view">Reset View</button>
+                            <span class="viewer-info" id="design-viewer-info">Loading...</span>
+                        </div>
+                    </div>
+                    <div class="panel-body" style="padding: 0; min-height: 350px;">
+                        <div id="design-viewer-container" style="min-height: 350px; background: #0a0a1a; border-radius: 0 0 8px 8px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </div>
 
     <div class="img-overlay" id="img-overlay">
@@ -693,6 +758,7 @@
             if (tab.dataset.tab === 'history') loadSessions();
             if (tab.dataset.tab === 'parts' && partsTemplates.length === 0) loadPartsCatalog('', '');
             if (tab.dataset.tab === 'slicing') loadSlicingStlList();
+            if (tab.dataset.tab === 'design') loadDesignTab();
         });
     });
 
@@ -1917,6 +1983,225 @@
         ws.onerror = () => ws.close();
     }
     connectWS();
+
+    // =====================================================================
+    // Design Tab
+    // =====================================================================
+    let designViewerRenderer, designViewerScene, designViewerCamera, designViewerControls, designViewerAnimId;
+    let designLoaded = false;
+    const SUBSYSTEM_COLORS = {
+        chassis: '#00d2ff',
+        arm_left: '#ff6b6b',
+        arm_right: '#ffd93d',
+        ipc: '#6bcb77',
+        sensor_tower: '#a855f7',
+    };
+
+    function classifySubsystem(name) {
+        if (name.startsWith('arm_l_')) return 'arm_left';
+        if (name.startsWith('arm_r_')) return 'arm_right';
+        if (name.includes('ipc')) return 'ipc';
+        if (name.includes('sensor') || name.includes('lidar') || name.includes('camera') || name.includes('imu')) return 'sensor_tower';
+        return 'chassis';
+    }
+
+    function initDesignViewer() {
+        if (designViewerRenderer) return;
+        if (!window.THREE) return;
+        const container = document.getElementById('design-viewer-container');
+        const w = container.clientWidth || 600;
+        const h = Math.max(350, container.clientHeight);
+        designViewerScene = new THREE.Scene();
+        designViewerScene.background = new THREE.Color(0x0a0a1a);
+        designViewerCamera = new THREE.PerspectiveCamera(50, w / h, 0.1, 10000);
+        designViewerCamera.position.set(200, 200, 400);
+        designViewerRenderer = new THREE.WebGLRenderer({ antialias: true });
+        designViewerRenderer.setSize(w, h);
+        designViewerRenderer.setPixelRatio(window.devicePixelRatio);
+        container.appendChild(designViewerRenderer.domElement);
+        designViewerControls = new window.OrbitControls(designViewerCamera, designViewerRenderer.domElement);
+        designViewerControls.enableDamping = true;
+        designViewerScene.add(new THREE.AmbientLight(0xffffff, 0.6));
+        const dir = new THREE.DirectionalLight(0xffffff, 0.8);
+        dir.position.set(1, 1, 1);
+        designViewerScene.add(dir);
+        const grid = new THREE.GridHelper(500, 20, 0x303060, 0x202040);
+        designViewerScene.add(grid);
+        function animateDesign() {
+            designViewerAnimId = requestAnimationFrame(animateDesign);
+            if (designViewerControls) designViewerControls.update();
+            if (designViewerRenderer) designViewerRenderer.render(designViewerScene, designViewerCamera);
+        }
+        animateDesign();
+    }
+
+    document.getElementById('design-reset-view').addEventListener('click', () => {
+        if (designViewerCamera) {
+            designViewerCamera.position.set(200, 200, 400);
+            designViewerControls.target.set(0, 0, 0);
+            designViewerControls.update();
+        }
+    });
+
+    function renderDesignSubsystems(hierarchy) {
+        const container = document.getElementById('design-subsystems');
+        document.getElementById('design-ss-count').textContent = hierarchy.subsystems.length;
+        container.innerHTML = hierarchy.subsystems.map(ss => {
+            const color = SUBSYSTEM_COLORS[ss.name] || '#0f3460';
+            return `<div class="design-ss-card" data-ss="${escapeHtml(ss.name)}" style="border-left-color: ${color};">
+                <div>
+                    <div class="ss-name">${escapeHtml(ss.name)}</div>
+                    <div class="ss-meta">${ss.part_count} parts</div>
+                </div>
+                <span class="ss-status ss-status-${ss.status}"></span>
+            </div>`;
+        }).join('');
+        // Click to highlight subsystem in 3D
+        container.querySelectorAll('.design-ss-card').forEach(card => {
+            card.addEventListener('click', () => {
+                container.querySelectorAll('.design-ss-card').forEach(c => c.classList.remove('active'));
+                card.classList.add('active');
+                highlightSubsystem(card.dataset.ss);
+            });
+        });
+    }
+
+    function highlightSubsystem(ssName) {
+        if (!designViewerScene) return;
+        designViewerScene.traverse(obj => {
+            if (obj.isMesh && obj.userData.subsystem !== undefined) {
+                const isMatch = obj.userData.subsystem === ssName;
+                obj.material.opacity = isMatch ? 1.0 : 0.15;
+                obj.material.transparent = true;
+            }
+        });
+    }
+
+    function renderDesignDashboard(hierarchy, stability, powerBudget) {
+        const container = document.getElementById('design-dashboard');
+        const totalParts = hierarchy.total_parts;
+        const ssCompleted = hierarchy.subsystems.filter(s => s.status === 'completed').length;
+        const riskLevel = (stability.tip_over_risk || {}).risk_level || 'unknown';
+        const riskClass = riskLevel === 'low' ? 'risk-low' : riskLevel === 'medium' ? 'risk-medium' : 'risk-high';
+        const pct = Math.round((ssCompleted / hierarchy.subsystems.length) * 100);
+
+        container.innerHTML = `
+            <div style="margin-bottom: 8px;">
+                <div style="display: flex; justify-content: space-between; font-size: 12px; color: #888;">
+                    <span>Subsystem Progress</span>
+                    <span>${ssCompleted}/${hierarchy.subsystems.length}</span>
+                </div>
+                <div class="design-progress-bar"><div class="design-progress-fill" style="width: ${pct}%"></div></div>
+            </div>
+            <div class="design-dash-row"><span class="design-dash-label">Total Parts</span><span class="design-dash-value">${totalParts}</span></div>
+            <div class="design-dash-row"><span class="design-dash-label">Total Joints</span><span class="design-dash-value">${hierarchy.total_joints}</span></div>
+            <div class="design-dash-row"><span class="design-dash-label">Total Mass</span><span class="design-dash-value">${(stability.total_mass_kg || 0).toFixed(2)} kg</span></div>
+            <div class="design-dash-row"><span class="design-dash-label">Peak Power</span><span class="design-dash-value">${(powerBudget.peak_power_w || 0).toFixed(1)} W</span></div>
+            <div class="design-dash-row"><span class="design-dash-label">Avg Power</span><span class="design-dash-value">${(powerBudget.avg_power_w || 0).toFixed(1)} W</span></div>
+            <div class="design-dash-row"><span class="design-dash-label">Stability Risk</span><span class="design-dash-value ${riskClass}">${riskLevel.toUpperCase()}</span></div>
+            <div class="design-dash-row"><span class="design-dash-label">Stability Margin</span><span class="design-dash-value">${((stability.static_stability || {}).margin_mm || 0).toFixed(1)} mm</span></div>
+        `;
+    }
+
+    function renderAssemblyTree(tree) {
+        const container = document.getElementById('design-tree');
+        function renderNode(node, depth) {
+            const cls = depth === 0 ? 'tree-node-root' : 'tree-node';
+            const jt = node.joint_type ? `<span class="tree-joint-type">[${node.joint_type}]</span>` : '';
+            let html = `<div class="${cls}"><span class="tree-part-name">${escapeHtml(node.name)}</span>${jt}</div>`;
+            if (node.children) {
+                for (const child of node.children) {
+                    html += renderNode(child, depth + 1);
+                }
+            }
+            return html;
+        }
+        container.innerHTML = renderNode(tree, 0);
+    }
+
+    async function loadDesignModels(hierarchy) {
+        initDesignViewer();
+        if (!designViewerRenderer) return;
+        const infoEl = document.getElementById('design-viewer-info');
+        infoEl.textContent = 'Loading models...';
+
+        try {
+            const res = await fetch('/api/models');
+            const data = await res.json();
+            const models = (data.models || []).filter(m => m.previewable && !m.empty);
+            if (models.length === 0) {
+                infoEl.textContent = 'No STL files to preview';
+                return;
+            }
+
+            const loader = new window.STLLoader();
+            let loaded = 0;
+            for (const model of models) {
+                try {
+                    const ss = classifySubsystem(model.name);
+                    const color = SUBSYSTEM_COLORS[ss] || '#00d2ff';
+                    const fileUrl = `/api/file?path=${encodeURIComponent(model.rel_path)}`;
+                    const geo = await loader.loadAsync(fileUrl);
+                    const mat = new THREE.MeshPhongMaterial({
+                        color: new THREE.Color(color),
+                        flatShading: true,
+                        transparent: true,
+                        opacity: 1.0,
+                    });
+                    const mesh = new THREE.Mesh(geo, mat);
+                    mesh.userData.subsystem = ss;
+                    mesh.userData.partName = model.name;
+                    designViewerScene.add(mesh);
+                    loaded++;
+                } catch (e) {
+                    // Skip models that fail to load
+                }
+            }
+            infoEl.textContent = `${loaded} models loaded`;
+        } catch (e) {
+            infoEl.textContent = 'Load error: ' + e.message;
+        }
+    }
+
+    async function loadDesignTab() {
+        if (designLoaded) return;
+        designLoaded = true;
+
+        const ssContainer = document.getElementById('design-subsystems');
+        const dashContainer = document.getElementById('design-dashboard');
+        const treeContainer = document.getElementById('design-tree');
+
+        try {
+            // Fetch all data in parallel
+            const [hierarchyRes, treeRes, stabilityRes, powerRes] = await Promise.all([
+                fetch('/api/design/hierarchy'),
+                fetch('/api/design/assembly-tree'),
+                fetch('/api/design/stability'),
+                fetch('/api/design/power-budget'),
+            ]);
+
+            const hierarchy = await hierarchyRes.json();
+            const treeData = await treeRes.json();
+            const stability = await stabilityRes.json();
+            const powerBudget = await powerRes.json();
+
+            if (hierarchy.error) { ssContainer.innerHTML = `<div class="empty">Error: ${escapeHtml(hierarchy.error)}</div>`; return; }
+            if (stability.error) { dashContainer.innerHTML = `<div class="empty">Error: ${escapeHtml(stability.error)}</div>`; }
+            if (powerBudget.error) { dashContainer.innerHTML = `<div class="empty">Error: ${escapeHtml(powerBudget.error)}</div>`; }
+
+            renderDesignSubsystems(hierarchy);
+            renderDesignDashboard(hierarchy, stability, powerBudget);
+            if (treeData.tree) renderAssemblyTree(treeData.tree);
+            else treeContainer.innerHTML = '<div class="empty">No tree data</div>';
+
+            // Load 3D models
+            loadDesignModels(hierarchy);
+        } catch (e) {
+            ssContainer.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+            dashContainer.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+            treeContainer.innerHTML = `<div class="empty">Error: ${escapeHtml(e.message)}</div>`;
+        }
+    }
 
     // Fallback polling
     setInterval(async () => {

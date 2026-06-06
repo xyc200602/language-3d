@@ -28,28 +28,30 @@
   {
     "id": 9,
     "title": "Agent 多轮规划优化",
-    "description": "让 Agent 在 cad_verify 反馈 match=false 后自动生成修正操作并重新执行，形成真正的闭环自修复能力。",
+    "description": "让 Agent 在 cad_verify 反馈 match=false 后自动生成修正操作并重新执行，形成真正的闭环自修复能力。[审计：机制已实现但测试未验证闭环——test_auto_fix.py 只检查文件存在和工具被调用，未故意创建错误模型再验证修复成功]",
     "steps": [
       "在 executor.py 中增加 VLM 反馈解析：当 cad_verify 返回 match=false 时自动提取 FIX_COMMANDS",
       "在 core.py 的 _run_direct 中实现自修复循环：verify → fail → fix → re-verify（最多 3 轮）",
       "优化 reflector.py 的 VLM 反馈驱动逻辑：根据 differences 生成具体 fc_batch 修正操作",
-      "编写 test_auto_fix.py：故意创建错误模型 → Agent 自动检测差异 → 修正 → 验证通过"
+      "编写 test_auto_fix.py：故意创建错误模型 → Agent 自动检测差异 → 修正 → 验证通过",
+      "[缺失] 需要重写 test_auto_fix.py：先创建已知错误模型→验证cad_verify返回MATCH:False→验证修复后MATCH:True，断言修复闭环真正生效"
     ],
     "priority": 9,
-    "passes": true
+    "passes": false
   },
   {
     "id": 10,
     "title": "机械臂装配验证",
-    "description": "用 VLM 逐个观察机械臂 8 个零件的 3D 模型，验证尺寸、特征、装配兼容性。",
+    "description": "用 VLM 逐个观察机械臂 8 个零件的 3D 模型，验证尺寸、特征、装配兼容性。[审计：8零件建模真实，VLM验证代码存在但测试中VLM匹配是best-effort不强制通过，测试不要求VLM返回MATCH才pass]",
     "steps": [
       "批量建模：fc_batch 创建全部 8 个零件，每个都用 cad_verify 验证",
       "装配检查：用 fc_batch 将零件按装配关系移动到正确位置，截图验证",
       "编写 test_assembly_verify.py：8 零件建模 + VLM 验证 + 装配检查",
-      "记录哪些零件的哪些特征 VLM 能/不能识别"
+      "记录哪些零件的哪些特征 VLM 能/不能识别",
+      "[缺失] VLM验证结果必须是强制性断言（assert match==True），而非best-effort"
     ],
     "priority": 10,
-    "passes": true
+    "passes": false
   },
   {
     "id": 11,
@@ -126,17 +128,18 @@
   {
     "id": 16,
     "title": "Agent 真实建模流程验证",
-    "description": "用真实 Agent.run_task() 执行一个完整的建模任务（如 L型支架），验证 Planner → Executor → Verifier 闭环。",
+    "description": "用真实 Agent.run_task() 执行一个完整的建模任务（如 L型支架），验证 Planner → Executor → Verifier 闭环。[审计：测试有skipif保护，验证闭环未测试——没有故意创建错误模型验证自修复的场景]",
     "steps": [
       "编写 Agent 集成测试：构造完整建模任务",
       "验证 Planner 能生成正确的建模步骤",
       "验证 Executor 能调用 fc_batch 建模并保存",
       "验证 VLM cad_verify 能识别模型特征",
       "验证自修复闭环（模型错误 → 检测 → 修正 → 再验证）",
-      "修复发现的问题"
+      "修复发现的问题",
+      "[缺失] 需要增加自修复闭环的专项测试：注入已知错误→验证检测→验证修复→验证通过"
     ],
     "priority": 16,
-    "passes": true
+    "passes": false
   },
   {
     "id": 17,
@@ -169,7 +172,7 @@
   {
     "id": 19,
     "title": "Phase 5: 真实工程案例端到端跑通",
-    "description": "修复 Windows GBK 编码崩溃、FreeCAD GUI 显示问题（Welcome Screen、ViewObject 不可见、宏缩进错误、多实例堆积），确保工程案例从 Agent 建模到 VLM 验证的完整流程能稳定运行。",
+    "description": "修复 Windows GBK 编码崩溃、FreeCAD GUI 显示问题（Welcome Screen、ViewObject 不可见、宏缩进错误、多实例堆积），确保工程案例从 Agent 建模到 VLM 验证的完整流程能稳定运行。[审计：Bug修复真实完成，但cad_verify MATCH:True的声明是经验性结果非测试保证]",
     "steps": [
       "修复 Agent callback UnicodeEncodeError（core.py/executor.py 包裹 try/except）",
       "修复所有 subprocess.run 的 GBK 编码（6 个文件添加 encoding='utf-8'）",
@@ -178,10 +181,11 @@
       "抑制 FreeCAD Welcome Screen（headless 参数 + XML user.cfg 修改 ShowOnStartup=0）",
       "抑制 Document Recovery 对话框（清理缓存目录）",
       "修复多实例窗口堆积（fc_open_gui 先关旧窗口，fc_close_gui 关所有窗口）",
-      "验证 L-bracket 端到端测试（fc_batch → save → fc_open_gui → cad_verify MATCH:True）"
+      "验证 L-bracket 端到端测试（fc_batch → save → fc_open_gui → cad_verify MATCH:True）",
+      "[缺失] 需要在有FreeCAD+API的环境中实际运行并确认MATCH:True，并写入自动化测试"
     ],
     "priority": 19,
-    "passes": true
+    "passes": false
   },
   {
     "id": 20,
@@ -299,7 +303,7 @@
   {
     "id": 26,
     "title": "端到端可靠性验证 — 8 梯度案例 + VLM 准确率实测 + 结构化报告",
-    "description": "设计 8 个梯度案例（Level 1-4）批量跑主链路'自然语言→3D模型→VLM验证'，记录结构化指标（成功率、耗时、重试次数），实测 VLM 验证准确率（standard vs detailed vs multi_angle），暴露主链路真实瓶颈。",
+    "description": "设计 8 个梯度案例（Level 1-4）批量跑主链路'自然语言→3D模型→VLM验证'，记录结构化指标（成功率、耗时、重试次数），实测 VLM 验证准确率（standard vs detailed vs multi_angle），暴露主链路真实瓶颈。[审计：8案例结构真实，但测试断言只检查file_created不检查VLM结果，verify_result=UNKNOWN也视为成功，sys.exit(0)即使全失败也不报错]",
     "steps": [
       "新建 tests/test_e2e_reliability.py — 8 梯度案例定义（正方体/圆柱体/带孔平板/L支架/悬臂支架/阶梯轴/法兰联轴器/轴承座）",
       "实现 CaseResult dataclass + run_single_case() + run_all_cases() + print_report() + save_results_json()",
@@ -308,10 +312,11 @@
       "执行 Level 1-4 全部测试：8/8 (100%) 文件创建成功，6/8 (75%) VLM 验证通过",
       "VLM 准确率测试：detail=standard 无法检测工程特征，detail=detailed 推荐",
       "结果保存 data/e2e_report.json + data/vlm_accuracy_report.json",
-      "全量回归 614/614 tests 通过"
+      "全量回归 614/614 tests 通过",
+      "[缺失] verify_result必须区分MATCH/MISMATCH/UNKNOWN，UNKNOWN不应视为成功；失败时sys.exit(1)让CI能捕获"
     ],
     "priority": 26,
-    "passes": true
+    "passes": false
   },
   {
     "id": 27,
@@ -357,16 +362,17 @@
   {
     "id": 30,
     "title": "端到端装配流程测试",
-    "description": "设计 3 个端到端装配测试案例（法兰连接/机械臂/移动底盘），验证从需求到完整装配的全流程",
+    "description": "设计 3 个端到端装配测试案例（法兰连接/机械臂/移动底盘），验证从需求到完整装配的全流程。[审计：只验证了求解器位置数学（assert z>0），未调用FreeCAD创建真实零件，未验证物理配合/干涉/螺栓对齐]",
     "steps": [
       "新建 tests/test_e2e_assembly.py — 3 个装配测试案例",
       "测试 1: 两段管道法兰连接（2 零件 + 1 装配）",
       "测试 2: 3-DOF 机械臂（8 零件 + 装配 + IK 验证）",
       "测试 3: 4 轮差速底盘（10 零件）",
-      "记录结构化指标到 data/e2e_assembly_report.json"
+      "记录结构化指标到 data/e2e_assembly_report.json",
+      "[缺失] 需要用FreeCAD实际创建零件+装配→碰撞检测→配合面验证，不能只验证位置数学"
     ],
     "priority": 30,
-    "passes": true
+    "passes": false
   },
   {
     "id": 31,
@@ -426,7 +432,7 @@
   {
     "id": 35,
     "title": "BOM 物料清单自动生成",
-    "description": "自动生成物料清单（零件+标准件+电子件+成本估算）",
+    "description": "自动生成物料清单（零件+标准件+电子件+成本估算）。[审计：BOM结构完整但成本计算粗糙——铝件用PLA价格、标准件价格是猜测值、电子件价格硬编码、零件无quantity字段无法表示相同零件多件]",
     "steps": [
       "新建 tools/bom_gen.py — gen_bom() 工具",
       "零件清单（名称、数量、材料、尺寸、3D打印参数）",
@@ -434,10 +440,11 @@
       "电子件清单（舵机型号、控制器、传感器）",
       "成本估算",
       "修改 agent/core.py — 注册 BOM 工具",
-      "新建 tests/test_bom_gen.py"
+      "新建 tests/test_bom_gen.py",
+      "[缺失] 需要按材料类型（PLA/ABS/铝/钢）分别计算成本而非全部用PLA；相同零件需合并数量"
     ],
     "priority": 35,
-    "passes": true
+    "passes": false
   },
   {
     "id": 36,
@@ -786,7 +793,7 @@
   {
     "id": 56,
     "title": "FreeCAD 草图建模 — Sketch + Extrude/Revolve 工作流",
-    "description": "当前只支持基本体素（box/cylinder/sphere/cone）+ 布尔运算。很多机器人零件（电机支架、传感器座、外壳）无法用体素组合高效表达。需要增加 2D 草图→3D 特征的工作流（sketch + extrude/revolve/cut），参考 Text2CAD 和 CAD-Llama 的参数化建模方案。",
+    "description": "当前只支持基本体素（box/cylinder/sphere/cone）+ 布尔运算。很多机器人零件（电机支架、传感器座、外壳）无法用体素组合高效表达。需要增加 2D 草图→3D 特征的工作流（sketch + extrude/revolve/cut），参考 Text2CAD 和 CAD-Llama 的参数化建模方案。[审计：脚本生成代码存在，但测试只验证了脚本包含正确的API字符串，从未通过FreeCAD实际执行验证3D结果]",
     "steps": [
       "修改 tools/freecad.py — _build_script() 新增 create_sketch 操作：points/lines/arcs/circles/constraints → 2D 草图",
       "修改 tools/freecad.py — _build_script() 新增 extrude_sketch 操作：sketch + height/direction → 拉伸体",
@@ -795,10 +802,11 @@
       "修改 tools/freecad.py — _build_script() 新增 sketch_with_dimensions：支持参数化草图（长度/角度/半径变量化）",
       "修改 agent/core.py — AGENT_SYSTEM_PROMPT 增加草图建模指导：何时用体素+布尔、何时用草图+拉伸",
       "新建 tests/test_sketch_modeling.py — 草图创建、拉伸、旋转、挖槽、参数化草图测试（~15 个）",
-      "验证全量测试无回归"
+      "验证全量测试无回归",
+      "[缺失] 需要在有FreeCAD的环境中实际执行草图脚本验证3D几何正确性"
     ],
     "priority": 56,
-    "passes": true
+    "passes": false
   },
   {
     "id": 57,
@@ -917,7 +925,7 @@
   {
     "id": 63,
     "title": "装配求解器重写 — 约束模型 + FreeCAD Assembly3 求解",
-    "description": "重写 assembly_solver.py，从当前的 anchor-face BFS 模型升级为约束模型。参考 AADvark（JSON 约束→FreeCAD 求解）和 ArtiCAD（5 种关节类型）方案。新 Solver 支持：任意附着点（非 6 面限制）、约束类型（coincident/concentric/distance/angle）、通过 FreeCAD Assembly3/SolveSpace 做约束求解。向后兼容旧 anchor-face 定义（自动转换为约束）。研究报告见 docs/solver_research_2025.md。",
+    "description": "重写 assembly_solver.py，从当前的 anchor-face BFS 模型升级为约束模型。参考 AADvark（JSON 约束→FreeCAD 求解）和 ArtiCAD（5 种关节类型）方案。新 Solver 支持：任意附着点（非 6 面限制）、约束类型（coincident/concentric/distance/angle）、通过 FreeCAD Assembly3/SolveSpace 做约束求解。向后兼容旧 anchor-face 定义（自动转换为约束）。研究报告见 docs/solver_research_2025.md。[审计：SolveSpace约束求解器真实实现，但使用py_slvs而非FreeCAD Assembly3直接API；碰撞检测代码存在但E2E中未经测试]",
     "steps": [
       "可行性验证 — 研究 FreeCAD Assembly3 Python API：能否 headless 调用、约束类型、调用方式，输出可行性报告",
       "重设计数据模型 — mechanics.py Joint/Part 扩展：新增 ConstraintType 枚举（coincident/concentric/distance/angle/parallel/perpendicular）、AttachmentPoint（3D 坐标 + 法向量）、JointType 扩展（fixed/revolute/prismatic/cylindrical/ball）",
@@ -930,15 +938,16 @@
       "向后兼容测试 — 确保 123 个现有测试全部通过（旧 anchor-face 定义自动转换为新约束）",
       "新约束模型测试 — 新建 tests/test_constraint_solver.py：约束类型测试、FreeCAD Assembly3 调用测试、碰撞检测测试（~20 个）",
       "重新生成 3D 装配体（build_robot_3d.py），验证 41 零件机器人视觉正确性（无严重碰撞）",
-      "验证全量测试无回归"
+      "验证全量测试无回归",
+      "[缺失] 需要E2E碰撞检测验证：实际加载41个STL+应用求解位置→FCL检测→验证无严重碰撞"
     ],
     "priority": 63,
-    "passes": true
+    "passes": false
   },
   {
     "id": 64,
     "title": "装配 VLM 视觉验证闭环 — CADCodeVerify 模式",
-    "description": "基于 CADCodeVerify (ICLR 2025) 的迭代验证模式，实现装配体级别的视觉反馈闭环：求解装配 → FreeCAD 渲染多角度截图 → VLM 评估视觉正确性 → 检测问题（碰撞/漂浮/方向错误/不合理布局）→ 生成修正反馈 → 重新求解 → 循环（最多 3 轮）。依赖 Task 63（约束求解器重写）和碰撞检测完成。",
+    "description": "基于 CADCodeVerify (ICLR 2025) 的迭代验证模式，实现装配体级别的视觉反馈闭环：求解装配 → FreeCAD 渲染多角度截图 → VLM 评估视觉正确性 → 检测问题（碰撞/漂浮/方向错误/不合理布局）→ 生成修正反馈 → 重新求解 → 循环（最多 3 轮）。依赖 Task 63（约束求解器重写）和碰撞检测完成。[审计：闭环架构真实实现且mock测试通过，但test_assembly_vlm_e2e.py文件完全缺失——任务步骤明确要求的真实VLM E2E测试从未创建]",
     "steps": [
       "新建 tools/assembly_renderer.py — AssemblyRenderer 类：从 solved positions 生成 FreeCAD 渲染脚本（多零件定位 + 子系统着色 + 4 视角截图 isometric/front/top/side）",
       "新建 agent/assembly_visual_verifier.py — AssemblyVisualVerifier 类：verify_assembly_visual() 主入口",
@@ -950,10 +959,46 @@
       "新建 tools/assembly_vlm.py — AssemblyVLMSolveTool(Tool) 公共接口（assembly_name, expected_layout, max_iterations, detail_level）",
       "修改 agent/core.py — 注册 assembly_vlm_tools，AGENT_SYSTEM_PROMPT 新增装配视觉验证说明（何时触发、如何解读结果）",
       "编写 tests/test_assembly_visual_verifier.py — mock VLM 测试问题检测、修正生成、迭代收敛、3 轮后终止",
-      "编写 tests/test_assembly_vlm_e2e.py — 真实 VLM 测试（标记 @pytest.mark.e2e），验证 41 零件机器人闭环至少减少 50% 视觉问题",
+      "[缺失] 编写 tests/test_assembly_vlm_e2e.py — 真实 VLM 测试（标记 @pytest.mark.e2e），验证 41 零件机器人闭环至少减少 50% 视觉问题。此文件从未创建。",
       "验证全量测试无回归"
     ],
     "priority": 64,
-    "passes": true
+    "passes": false
+  },
+  {
+    "id": 65,
+    "title": "生产级零件建模 — 从几何原语升级为工程特征零件",
+    "description": "当前 export_package.py 的 _freecad_ops_for_part() 只生成 3 种几何原语（box/cylinder/sphere），41 个导出零件全部无安装孔、无倒角、无配合面、无壁厚、无螺纹。这是系统从'概念设计'到'生产级'的最大差距。需要实现一个零件特征引擎，为每个零件自动添加工程特征。",
+    "steps": [
+      "新建 src/lang3d/tools/part_feature_engine.py — PartFeatureEngine 类：根据零件类型+尺寸+装配角色自动生成工程特征操作列表",
+      "实现 _add_mounting_holes(part, fastener_spec) — 根据零件尺寸自动计算安装孔位置（角落/边缘/中心线）+ 孔径（M3/M4/M5/M6）+ 沉头/倒角",
+      "实现 _add_bearing_seat(part, bearing_spec) — 轴承座/关节壳体零件自动添加轴承安装槽（内孔+台阶+挡圈槽）",
+      "实现 _add_shaft_bore(part, shaft_spec) — 电机/轮子零件添加轴孔（含键槽或D切面）",
+      "实现 _add_wall_thickness(part) — 壳体类零件（joint_housing等）从实心改为空心（内腔+壁厚参数化）",
+      "实现 _add_fillets_chamfers(part) — 所有零件添加标准倒角（装配引导C0.5）+ 应力集中圆角（R1-3）",
+      "实现 _add_cable_channel(part) — 连杆类零件添加内部走线通道",
+      "修改 export_package.py — _freecad_ops_for_part() 调用 PartFeatureEngine 替代当前的 make_box/make_cylinder",
+      "修改 fc_batch LLM prompt — 引导Agent使用高级特征（create_sketch + extrude_sketch + pocket + fillet）而非基本体素",
+      "编写 tests/test_part_feature_engine.py — 每种特征的参数化测试（孔位置精度、壁厚合理性、配合尺寸校验）",
+      "在有FreeCAD环境中实际执行生成脚本，验证41个零件STL的几何质量（体积合理性、无自交、有实际特征）"
+    ],
+    "priority": 65,
+    "passes": false
+  },
+  {
+    "id": 66,
+    "title": "生产级装配验证 — 配合面/螺栓对齐/公差/干涉检查",
+    "description": "当前装配验证只检查文件存在和求解器位置数值。生产级装配需要验证：配合面实际贴合（不是bounding box中心对齐）、螺栓孔跨零件对齐、公差链分析、实际几何干涉检查。",
+    "steps": [
+      "修改 assembly_verifier.py — 新增 check_mating_surfaces()：加载两个相邻零件STL，检查配合面法向量平行且距离在公差范围内",
+      "修改 assembly_verifier.py — 新增 check_bolt_hole_alignment()：提取两个零件的孔中心坐标列表，验证跨零件孔位一一对应（位置偏差<0.5mm）",
+      "修改 assembly_verifier.py — 新增 check_tolerance_chain()：沿装配链累积公差，验证末端执行器位置误差在可接受范围",
+      "修改 assembly_verifier.py — 强化 check_collisions()：确保FCL库可用时必须运行碰撞检测，不可静默跳过；结果必须包含穿透深度和分离向量",
+      "修改 assembly_verifier.py — 新增 check_assembly_sequence()：验证零件可以按定义的顺序实际装配（无工具不可达、无干涉阻挡）",
+      "编写 tests/test_production_assembly_verify.py — 使用有工程特征的零件测试配合面贴合、螺栓对齐、公差链",
+      "修改 Task 42 production_check.py — 集成新的装配验证检查项"
+    ],
+    "priority": 66,
+    "passes": false
   }
 ]

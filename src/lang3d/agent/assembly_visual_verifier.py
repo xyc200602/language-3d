@@ -43,6 +43,9 @@ class LayoutProblem:
     description: str
     affected_parts: list[str] = field(default_factory=list)
     suggestion: str = ""
+    # Structured correction detail returned by VLM (or heuristic).
+    # Keys vary by correction type (see apply_corrections).
+    correction: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -60,6 +63,7 @@ def _build_assembly_prompt(
     assembly: Assembly,
     expected_layout: str = "",
     screenshot_paths: list[str] | None = None,
+    positions: dict[str, dict] | None = None,
 ) -> str:
     """Build the VLM prompt for assembly-level verification.
 
@@ -90,6 +94,14 @@ def _build_assembly_prompt(
         f"Joints:\n{joints_summary}\n\n"
     )
 
+    # Include current positions so the VLM can propose precise corrections
+    if positions:
+        pos_lines = []
+        for name, pdata in positions.items():
+            pos = pdata.get("position", [0, 0, 0])
+            pos_lines.append(f"  {name}: ({pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f})")
+        prompt += "Current solved positions (mm):\n" + "\n".join(pos_lines) + "\n\n"
+
     if expected_layout:
         prompt += f"Expected layout: {expected_layout}\n\n"
 
@@ -100,8 +112,18 @@ def _build_assembly_prompt(
         '"severity": "high|medium|low", '
         '"description": "...", '
         '"affected_parts": ["part1", "part2"], '
-        '"suggestion": "..."}], '
+        '"suggestion": "...", '
+        '"correction": {"type": "reposition|distribution_group", '
+        '"joint_child": "part_name", '
+        '"delta_xyz": [dx, dy, dz], '
+        '"distribution_group": "group_name"}}], '
         '"overall_assessment": "..."}\n'
+        '\n'
+        'For "correction" use one of:\n'
+        '  - reposition: {"type": "reposition", "joint_child": "<child part>", '
+        '"delta_xyz": [dx_mm, dy_mm, dz_mm]}  — large position adjustment\n'
+        '  - distribution_group: {"type": "distribution_group", "joint_child": "<child part>", '
+        '"distribution_group": "<group>"}  — assign to a new sibling group\n'
     )
     return prompt
 
@@ -146,6 +168,7 @@ def _parse_layout_problems(vlm_response: str) -> list[LayoutProblem]:
                 description=rp.get("description", ""),
                 affected_parts=rp.get("affected_parts", []),
                 suggestion=rp.get("suggestion", ""),
+                correction=rp.get("correction", {}),
             ))
         except (ValueError, KeyError):
             continue
@@ -161,13 +184,35 @@ def _generate_constraint_corrections(
 
     Returns a list of correction dicts with keys:
     - joint_index: index in assembly.joints
-    - correction_type: "offset" | "angle" | "attachment"
+    - correction_type: "offset" | "angle" | "attachment" | "reposition" | "distribution_group"
     - value: the corrected value
     - reason: why this correction was made
     """
     corrections: list[dict[str, Any]] = []
 
     for problem in problems:
+        # --- VLM-suggested structured correction takes priority ---
+        vlm_corr = problem.correction
+        if vlm_corr and vlm_corr.get("type") in ("reposition", "distribution_group"):
+            target_part = vlm_corr.get("joint_child", "")
+            if not target_part and problem.affected_parts:
+                target_part = problem.affected_parts[0]
+            for i, joint in enumerate(assembly.joints):
+                if joint.child == target_part:
+                    entry: dict[str, Any] = {
+                        "joint_index": i,
+                        "correction_type": vlm_corr["type"],
+                        "reason": f"{problem.problem_type.value}: {problem.description}",
+                    }
+                    if vlm_corr["type"] == "reposition":
+                        entry["delta_xyz"] = vlm_corr.get("delta_xyz", [0, 0, 0])
+                    elif vlm_corr["type"] == "distribution_group":
+                        entry["distribution_group"] = vlm_corr.get("distribution_group", "")
+                    corrections.append(entry)
+                    break
+            continue  # skip heuristic for this problem
+
+        # --- Heuristic fallback ---
         if problem.problem_type == ProblemType.COLLISION:
             # Move parts apart by adjusting offset
             for part_name in problem.affected_parts:
@@ -244,6 +289,22 @@ def apply_corrections(
                         joint.angle = corr["value"]
                     else:
                         joint.angle = corr["value"]
+                elif ctype == "reposition":
+                    # Large position correction via delta_xyz applied to offset
+                    current_offset = joint.offset or (0, 0, 0)
+                    dx, dy, dz = corr.get("delta_xyz", [0, 0, 0])
+                    joint.offset = (
+                        current_offset[0] + dx,
+                        current_offset[1] + dy,
+                        current_offset[2] + dz,
+                    )
+                elif ctype == "distribution_group":
+                    # Assign the joint to a new sibling group
+                    joint.distribution_group = corr.get("distribution_group", "")
+                    # If this joint was previously excluded from distribution,
+                    # re-enable it so the new group takes effect.
+                    if joint.no_distribute:
+                        joint.no_distribute = False
         elif corr.get("correction_type") == "add_joint":
             # Add a fixed joint for floating parts
             part_name = corr["part_name"]
@@ -303,8 +364,11 @@ def verify_assembly_visual(
     for round_num in range(1, max_iterations + 1):
         logger.info("Assembly visual verification round %d/%d", round_num, max_iterations)
 
-        # Build prompt
-        prompt = _build_assembly_prompt(current_assembly, expected_layout)
+        # Build prompt (include current positions so VLM can propose precise fixes)
+        prompt = _build_assembly_prompt(
+            current_assembly, expected_layout,
+            positions=current_positions,
+        )
 
         # Attempt VLM verification if backend is available
         vlm_response = ""
@@ -408,11 +472,87 @@ def _render_to_dir(
     positions: dict[str, dict],
     output_dir: str,
 ) -> list[str]:
-    """Render assembly using matplotlib and save multi-angle screenshots.
+    """Render assembly using VTK offscreen (primary) or matplotlib (fallback).
 
-    Uses matplotlib (no FreeCAD GUI required) for headless rendering.
+    Tries VTK first for high-quality Phong-shaded renders with real STL
+    geometry when available. Falls back to matplotlib if VTK is not installed.
     Saves PNGs to output_dir. Returns list of screenshot file paths.
     """
+    # --- Try VTK first (high quality, headless, deterministic) ---
+    try:
+        return _render_vtk(assembly, positions, output_dir)
+    except ImportError:
+        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("VTK render failed, falling back to matplotlib: %s", e)
+
+    # --- Fallback: matplotlib (crude but always works) ---
+    return _render_matplotlib(assembly, positions, output_dir)
+
+
+def _render_vtk(
+    assembly: Assembly,
+    positions: dict[str, dict],
+    output_dir: str,
+) -> list[str]:
+    """Render assembly using VTK offscreen rendering."""
+    import os
+    from ..tools.vtk_renderer import (
+        VTKOffscreenRenderer, SUBSYSTEM_COLORS, _default_color,
+    )
+
+    renderer = VTKOffscreenRenderer(width=1200, height=900)
+
+    # Subsystem detection
+    def _get_subsystem(name: str) -> str:
+        if name.startswith("arm_l_"): return "arm_left"
+        if name.startswith("arm_r_"): return "arm_right"
+        if "ipc" in name: return "ipc"
+        if name.startswith(("sensor_", "imu_", "lidar_", "camera_")): return "sensor_tower"
+        return "chassis"
+
+    for idx, p in enumerate(assembly.parts):
+        dims = p.dimensions
+        pos_data = positions.get(p.name, {})
+        pos = pos_data.get("position", [0, 0, 0])
+        subsystem = _get_subsystem(p.name)
+        color = SUBSYSTEM_COLORS.get(subsystem, _default_color(idx))
+
+        # Try loading real STL if available
+        stl_loaded = False
+        for candidate_dir in (os.environ.get("LANG3D_WORKSPACE", ""), getattr(assembly, "_stl_dir", "")):
+            if not candidate_dir:
+                continue
+            stl_path = os.path.join(candidate_dir, f"{p.name}.stl")
+            if os.path.isfile(stl_path):
+                renderer.load_stl(stl_path, color=color, position=tuple(pos))
+                stl_loaded = True
+                break
+
+        # Fallback to dimension-based approximation
+        if not stl_loaded:
+            if "diameter" in dims or "outer_diameter" in dims:
+                r = dims.get("diameter", dims.get("outer_diameter", 10)) / 2
+                h = dims.get("height", dims.get("length", 10))
+                renderer.add_cylinder(radius=r, height=h, color=color, position=tuple(pos))
+            else:
+                l = dims.get("length", 10)
+                w = dims.get("width", 10)
+                h = dims.get("height", dims.get("thickness", 5))
+                renderer.add_box(length=l, width=w, height=h, color=color, position=tuple(pos))
+
+    renderer.add_axes(length=25)
+    os.makedirs(output_dir, exist_ok=True)
+    return renderer.render_all_views(output_dir, prefix="assembly")
+
+
+def _render_matplotlib(
+    assembly: Assembly,
+    positions: dict[str, dict],
+    output_dir: str,
+) -> list[str]:
+    """Render assembly using matplotlib (crude fallback)."""
     screenshots: list[str] = []
 
     try:
