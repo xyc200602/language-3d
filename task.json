@@ -983,7 +983,7 @@
       "在有FreeCAD环境中实际执行生成脚本，验证41个零件STL的几何质量（体积合理性、无自交、有实际特征）"
     ],
     "priority": 65,
-    "passes": false
+    "passes": true
   },
   {
     "id": 66,

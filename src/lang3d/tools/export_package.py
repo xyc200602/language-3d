@@ -229,35 +229,9 @@ def build_complex_robot() -> Assembly:
 
 
 def _freecad_ops_for_part(part: Part) -> list[dict]:
-    """Generate FreeCAD operation list for a single part."""
-    ops = [{"type": "new_doc", "name": part.name}]
-    d = part.dimensions
-
-    if "outer_diameter" in d:
-        ops.append({"type": "make_cylinder",
-                     "radius": d["outer_diameter"] / 2,
-                     "height": d["height"],
-                     "name": part.name})
-    elif "diameter" in d and "length" not in d:
-        ops.append({"type": "make_cylinder",
-                     "radius": d["diameter"] / 2,
-                     "height": d["height"],
-                     "name": part.name})
-    elif "length" in d and "width" in d:
-        ops.append({"type": "make_box",
-                     "length": d["length"],
-                     "width": d["width"],
-                     "height": d["height"],
-                     "name": part.name})
-    else:
-        ops.append({"type": "make_cylinder",
-                     "radius": 10,
-                     "height": d.get("height", 10),
-                     "name": part.name})
-
-    ops.append({"type": "export_stl", "name": part.name,
-                 "path": f"{{WORKSPACE}}/{part.name}.stl"})
-    return ops
+    """Generate FreeCAD operation list for a single part with engineering features."""
+    from .part_feature_engine import generate_ops
+    return generate_ops(part)
 
 
 # ============================================================================

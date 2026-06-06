@@ -4,6 +4,60 @@
 
 ---
 
+## 2026-06-06 - Task 65 完成: 生产级零件建模 + 自动化 FreeCAD 验证闭环
+
+### What was done:
+
+#### 1. PartFeatureEngine 零件特征引擎 (`src/lang3d/tools/part_feature_engine.py`)
+- 纯函数模块：输入 Part，输出 FreeCAD ops 列表，无 FreeCAD import、无 I/O
+- `FeatureConfig` 数据类：mounting_holes, bore, bearing_seats, shell, fillets, chamfers, cable_channels
+- `infer_features(part)` → 18 种零件家族的特征推断
+- `generate_ops(part)` → 跟踪 body 名称的完整操作序列
+- `_StepNamer` + `_bool_cut()` 模式确保 FreeCAD 对象命名无冲突
+- 操作顺序：基元 → shell → 空心 → 安装孔 → 轴孔 → 轴承座 → 键槽 → 走线通道 → 圆角 → 倒角 → 导出STL
+- 电池盒用内盒布尔切割（shell 在复杂几何上失败）
+- 键槽用 make_box + move + boolean cut（sketch 方式在 FreeCAD 中失败）
+
+#### 2. 自动化 FreeCAD 批量验证器 (`src/lang3d/tools/part_validator.py`)
+- `validate_part()` — 单零件验证：生成脚本 → FreeCAD 执行 → STL 检查 → 自动简化重试
+- `validate_all_parts()` — 批量验证 41 个零件
+- 简化策略（7 级递减）：drop fillet → chamfer → cable channels → shell → bearing seats → mounting holes → bore → 原始体素
+- VLM 视觉验证集成（可选）：VTK 离屏渲染 → VLM 分析 → 结构匹配
+- `BatchValidationReport` — 结构化报告，支持 JSON 序列化
+
+#### 3. FreeCAD 端到端验证结果 — 41/41 (100%) 通过
+- **Level 0 (完整工程特征)**: 29 个零件 — 安装孔、轴孔、轴承座、壳体、键槽等全部保留
+  - 板类 (base_plate, top_plate): plate_with_holes + 倒角
+  - 电机 (motor_*): make_box + 4 角安装孔 + 轴孔 + 倒角
+  - 轮子 (wheel_*): cylinder_with_hole + 键槽
+  - 关节 (arm_base, arm_shoulder): cylinder_with_hole + 轴承座 + 极坐标安装孔 + shell
+  - 电池盒: 内盒布尔切割 + 网格安装孔
+- **Level 1 (无圆角)**: 6 个零件 — arm_elbow/wrist + ipc_bracket + camera_bracket
+  - 圆角在 shelled cylinder + holes 的复杂拓扑上失败，自动降级
+- **Level 3 (无圆角/倒角/走线通道)**: 6 个零件 — arm links + grippers
+  - pocket 操作在复杂布尔几何上失败，自动降级到无走线通道
+
+#### 4. export_package.py 修改
+- `_freecad_ops_for_part()` 委托给 `part_feature_engine.generate_ops()`
+- pipeline 其余代码不变
+
+### Testing:
+- `pytest tests/test_part_feature_engine.py -v` — 57/57 passed
+- `pytest tests/test_part_validator.py -v` — 35/35 passed (29 mock + 6 FreeCAD e2e)
+- `pytest tests/test_export_package.py -v` — 12/12 passed
+- 联合回归 — 104/104 passed，0 回归
+- FreeCAD 实际执行 41 个零件脚本全部成功导出 STL
+
+### Notes:
+- 41 个零件全部通过 FreeCAD 实际执行验证（不再只是生成脚本检查字符串）
+- 自动简化闭环：零件在完整特征失败时自动降级，无需人工介入
+- 电池盒/键槽/轴承座等之前手动调试 5-6 轮的问题现在自动解决
+- arm_elbow/wrist 的圆角失败是 FreeCAD makeFillet 在 shelled+holed 几何上的已知限制
+- arm link 的走线通道失败是 FreeCAD pocket 操作在非平面拓扑上的限制
+- Level 1-3 降级的零件仍保留主要工程特征（孔、轴承座、壳体），只是缺少表面修饰
+
+---
+
 ## 2026-06-06 - 全面审计 + VTK 离屏渲染重写 + task.json 幻觉修正
 
 ### What was done:

@@ -697,13 +697,13 @@ def _build_script(operations: list[dict]) -> str:
             offset = op.get("offset", 0.0)
             lines.append("import Sketcher")
             lines.append(f'_sketch_obj = doc.addObject("Sketcher::SketchObject", "{name}")')
-            # Set sketch plane
+            # Set sketch plane — AttachmentSupport expects [(obj, (sub,))]
             if plane == "XZ":
-                lines.append("_sketch_obj.AttachmentSupport = [doc.getObject('Origin'), 'XZ_Plane']")
+                lines.append("_sketch_obj.AttachmentSupport = [(doc.getObject('Origin'), ('XZ_Plane',))]")
             elif plane == "YZ":
-                lines.append("_sketch_obj.AttachmentSupport = [doc.getObject('Origin'), 'YZ_Plane']")
+                lines.append("_sketch_obj.AttachmentSupport = [(doc.getObject('Origin'), ('YZ_Plane',))]")
             else:
-                lines.append("_sketch_obj.AttachmentSupport = [doc.getObject('Origin'), 'XY_Plane']")
+                lines.append("_sketch_obj.AttachmentSupport = [(doc.getObject('Origin'), ('XY_Plane',))]")
             if offset != 0.0:
                 lines.append(f"_sketch_obj.AttachmentOffset = App.Placement(App.Vector(0,0,{offset}), App.Vector(0,0,1), 0)")
             # Add sketch elements
