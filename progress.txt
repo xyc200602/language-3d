@@ -4,6 +4,45 @@
 
 ---
 
+## 2026-06-08 - Task 80: 生产级装配验证 — 配合面/螺栓对齐/干涉检查强化
+
+### What was done:
+- 修改 `src/lang3d/agent/assembly_verifier.py` — 从文件存在性检查升级为几何正确性验证
+  - 新增 `MatingSurfaceCheck` 数据类：配合面法向偏差（°）+ 面距离（mm）
+  - 新增 `BoltHoleAlignmentCheck` 数据类：跨零件螺栓孔对齐检查
+  - 新增 `ToleranceChainCheck` 数据类：公差链累积分析结果
+  - 新增 `AssemblySequenceCheck` 数据类：装配序列可行性
+  - 新增 `VerificationItem` 数据类：结构化验证项（pass/fail + 详细数据）
+  - `check_mating_surfaces()`: 检查配合面法向量平行（<1°）+ 距离（<0.1mm）
+  - `check_bolt_hole_alignment()`: 检查跨零件螺栓孔一一对应（偏差<0.5mm）
+  - `check_tolerance_chain()`: 沿装配链累积公差（调用 tolerance_analysis.py）
+  - `check_assembly_sequence()`: 验证零件可按定义顺序装配
+  - `check_collisions()` 强化: FCL 不可用时返回 fcl_available=False 而非静默跳过
+  - `verify_assembly()` 更新: 集成所有新检查，生成结构化验证报告
+  - `generate_assembly_report()` 更新: 包含所有新检查节
+  - 辅助方法: `_anchor_normal()`, `_anchor_offset()`
+  - `AssemblyVerificationResult` 新增字段: mating_surface_checks, bolt_alignment_checks,
+    tolerance_chain_checks, sequence_checks, verification_items, fcl_available
+- 依赖 Task 76 (MountingInterface) + Task 77 (MatingConstraint) + Task 79 (tolerance)
+
+### Testing:
+- 新建 tests/test_production_assembly_verify.py — 22 个测试
+  - TestMatingSurfaceCheck (4): 无位置默认OK、重合面零距离、分离面失败、缺失零件
+  - TestBoltHoleAlignmentCheck (3): 非螺栓跳过、无孔默认OK、显式孔对齐
+  - TestCollisionCheckEnhanced (3): 无位置无碰撞、FCL标志返回、结果含FCL字段
+  - TestToleranceChainCheck (4): 零允许空、正常计算、小允许失败、大允许通过
+  - TestAssemblySequenceCheck (3): 有效序列、循环依赖、无关节空
+  - TestVerificationItems (2): 结构化项、分类覆盖
+  - TestFullVerificationIntegration (3): 机械臂+公差、报告完整节、字段完整性
+- 回归测试 137 passed, 0 failed
+
+### Notes:
+- `check_collisions()` 现在返回 3-tuple (checks, free, fcl_available)
+- `verify_assembly()` 新增 allowed_tolerance_total 参数
+- 报告现在包含 6 个检查节：零件/配合/碰撞/配合面/螺栓对齐/公差链/序列
+
+---
+
 ## 2026-06-08 - Task 79: 公差体系基础 — ISO 配合等级与公差累积分析
 
 ### What was done:
