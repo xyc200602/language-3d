@@ -13,8 +13,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from ..knowledge.mechanics import Part
+
+if TYPE_CHECKING:
+    from ..knowledge.mechanics import Joint
 
 
 # ============================================================================
@@ -50,8 +54,14 @@ _JOINT_BEARING_MAP: dict[str, tuple[float, float, float]] = {
 
 
 def _classify(name: str) -> str:
-    """Return a broad part family from the part name."""
+    """Return a broad part family from the part name.
+
+    Uses exact matches first, then broad keyword patterns so LLM-generated
+    assemblies with non-standard naming still get engineering features.
+    """
     n = name.lower()
+
+    # --- Exact / prefix matches (original) ---
     if n in ("base_plate", "top_plate"):
         return "plate"
     if n.startswith("standoff_"):
@@ -78,12 +88,35 @@ def _classify(name: str) -> str:
         return "sensor_tower_post"
     if n in ("imu_mount", "lidar_mount"):
         return "sensor_mount"
-    # Arm joints
+
+    # --- Arm joints: arm_[lr]_joint OR *_joint with actuator category ---
     if re.match(r"arm_[lr]_(base|shoulder|elbow|wrist)", n):
         return "arm_joint"
-    # Arm links
+    # Generic joint name patterns (shoulder_joint, elbow_joint, *_rot_joint, etc.)
+    if "joint" in n and not n.startswith("arm_link"):
+        return "arm_joint"
+
+    # --- Arm links: arm_[lr]_(upper_link|forearm) OR generic link patterns ---
     if re.match(r"arm_[lr]_(upper_link|forearm)", n):
         return "arm_link"
+    # Generic link name patterns (arm_link_*, *_link_*, link_*)
+    if re.search(r"(arm_link|_link$|link_)", n):
+        return "arm_link"
+
+    # --- End effector / gripper ---
+    if "end_effector" in n or "effector" in n:
+        return "gripper"
+
+    # --- Broad keyword fallbacks ---
+    if "plate" in n:
+        return "plate"
+    if "bracket" in n:
+        return "bracket"
+    if "post" in n and ("sensor" in n or "tower" in n):
+        return "sensor_tower_post"
+    if "mount" in n and ("sensor" in n or "imu" in n or "lidar" in n or "camera" in n):
+        return "sensor_mount"
+
     return "unknown"
 
 
@@ -225,6 +258,7 @@ def infer_features(part: Part) -> FeatureConfig:
 
     elif family == "pcb":
         l, w = d["length"], d["width"]
+        h = d.get("height", d.get("thickness", 5))
         margin_pcb = min(l, w) * 0.08
         cfg.mounting_holes = [
             {
@@ -236,6 +270,23 @@ def infer_features(part: Part) -> FeatureConfig:
             }
         ]
         cfg.chamfers = [{"size_mm": 0.5}]
+        # Add ventilation slots for enclosure-type PCBs (ipc_body, cpu_box)
+        if "body" in name.lower() or "box" in name.lower() or "cpu" in name.lower():
+            cfg.cable_channels = [
+                {
+                    "width": min(l * 0.3, 40),
+                    "height": h * 0.4,
+                    "start_offset": l * 0.1,
+                    "end_offset": l * 0.3,
+                },
+                {
+                    "width": min(l * 0.3, 40),
+                    "height": h * 0.4,
+                    "start_offset": l * 0.7,
+                    "end_offset": l * 0.9,
+                },
+            ]
+            cfg.fillets = [{"radius_mm": 1.5}]
 
     elif family == "bracket":
         l, w, h = d["length"], d["width"], d["height"]
@@ -263,6 +314,38 @@ def infer_features(part: Part) -> FeatureConfig:
 
     elif family == "sensor_tower_post":
         cfg.bore = {"diameter_mm": 5.0, "through": True}
+        # Add mounting holes at base — use polar for cylindrical, grid for box
+        if "length" in d and "width" in d:
+            # Box-shaped post
+            cfg.mounting_holes = [
+                {
+                    "diameter_mm": 3.0,
+                    "pattern": "grid",
+                    "count_x": 2,
+                    "count_y": 2,
+                    "margin": min(d["length"], d["width"]) * 0.15,
+                }
+            ]
+            cfg.cable_channels = [
+                {
+                    "width": 6,
+                    "height": 4,
+                    "start_offset": d["length"] * 0.1,
+                    "end_offset": d["length"] * 0.9,
+                }
+            ]
+        elif "diameter" in d or "outer_diameter" in d:
+            # Cylindrical post — polar mounting holes
+            od = d.get("outer_diameter", d.get("diameter", 15))
+            cfg.mounting_holes = [
+                {
+                    "diameter_mm": 3.0,
+                    "pattern": "polar",
+                    "count": 4,
+                    "pitch_radius": od / 2 * 0.7,
+                }
+            ]
+        cfg.chamfers = [{"size_mm": 0.5}]
 
     elif family == "sensor_mount":
         # imu_mount is box-shaped, lidar_mount is cylindrical
@@ -290,7 +373,42 @@ def infer_features(part: Part) -> FeatureConfig:
                 }
             ]
 
-    # "unknown" → empty config → fallback primitives
+    # "unknown" → infer from category + shape
+    if family == "unknown":
+        # Category-based fallback: give structural parts at least fillets
+        cat = getattr(part, "category", "")
+        if cat == "actuator":
+            # Actuator-shaped box → treat like motor
+            if "length" in d and "width" in d:
+                margin_unk = min(d["length"], d["width"]) * 0.1
+                cfg.mounting_holes = [{
+                    "diameter_mm": 3.0,
+                    "pattern": "grid",
+                    "count_x": 2,
+                    "count_y": 2,
+                    "margin": margin_unk,
+                }]
+                cfg.bore = {"diameter_mm": 3.0, "through": True}
+            cfg.chamfers = [{"size_mm": 0.5}]
+        elif cat in ("structural", "mechanical"):
+            # Structural link → fillets and mounting holes
+            l = d.get("length", 0)
+            w = d.get("width", 0)
+            h = d.get("height", d.get("thickness", 0))
+            if l > 0 and w > 0:
+                cfg.mounting_holes = [{
+                    "diameter_mm": 4.0,
+                    "pattern": "two_ends",
+                }]
+                cfg.fillets = [{"radius_mm": min(l, w, h) * 0.1 if h > 0 else 2.0}]
+        elif cat == "sensor":
+            cfg.mounting_holes = [{
+                "diameter_mm": 3.0,
+                "pattern": "grid",
+                "count_x": 2,
+                "count_y": 2,
+                "margin": min(d.get("length", 20), d.get("width", 20)) * 0.1,
+            }]
 
     return cfg
 
@@ -351,10 +469,18 @@ class _StepNamer:
         return f"{self._base}_{tag}{self._counter}"
 
 
-def generate_ops(part: Part, config: FeatureConfig | None = None) -> list[dict]:
+def generate_ops(
+    part: Part,
+    config: FeatureConfig | None = None,
+    joints: list[Joint] | None = None,
+) -> list[dict]:
     """Return a list of FreeCAD operation dicts for *part*.
 
     If *config* is ``None`` it is inferred via :func:`infer_features`.
+
+    If *joints* is provided, connection features (bolt holes, bearing seats,
+    etc.) are generated from ``Joint.connection`` metadata and merged into
+    the ops list before the final export.
 
     The function tracks the **current body name** through every operation
     that creates a new document object (``boolean``, ``shell``, ``pocket``).
@@ -369,6 +495,24 @@ def generate_ops(part: Part, config: FeatureConfig | None = None) -> list[dict]:
     ops: list[dict] = [{"type": "new_doc", "name": name}]
     family = _classify(name)
     sn = _StepNamer(name)
+
+    # --- Specialized geometry for arm parts (C-channel links,
+    #     servo-mount joints, parallel-jaw gripper) ---
+    if family == "arm_link":
+        ops.extend(_arm_link_ops(name, d))
+        ops.append({"type": "export_stl", "object": f"{name}_final",
+                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
+        return ops
+    if family == "arm_joint":
+        ops.extend(_arm_joint_ops(name, d))
+        ops.append({"type": "export_stl", "object": f"{name}_final",
+                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
+        return ops
+    if family == "gripper":
+        ops.extend(_gripper_ops(name, d))
+        ops.append({"type": "export_stl", "object": f"{name}_final",
+                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
+        return ops
 
     # ``body`` tracks the internal name of the current main solid.
     body = name
@@ -413,7 +557,7 @@ def generate_ops(part: Part, config: FeatureConfig | None = None) -> list[dict]:
         ops.append({
             "type": "make_cylinder",
             "radius": _cyl_radius(d),
-            "height": d["height"],
+            "height": d.get("height", d.get("length", 10)),
             "name": body,
         })
     elif "length" in d and "width" in d:
@@ -421,7 +565,7 @@ def generate_ops(part: Part, config: FeatureConfig | None = None) -> list[dict]:
             "type": "make_box",
             "length": d["length"],
             "width": d["width"],
-            "height": d["height"],
+            "height": d.get("height", d.get("thickness", 5)),
             "name": body,
         })
     else:
@@ -534,7 +678,39 @@ def generate_ops(part: Part, config: FeatureConfig | None = None) -> list[dict]:
         })
 
     # ------------------------------------------------------------------
-    # 10. Export STL — only the final body
+    # 10. Connection features — from Joint.connection metadata
+    # ------------------------------------------------------------------
+    if joints:
+        from .connection_features import (
+            ConnectionFeatureEngine,
+            merge_connection_ops,
+        )
+        from ..knowledge.mechanics import Joint as JointType
+
+        engine = ConnectionFeatureEngine()
+        for joint in joints:
+            if joint.connection is None or joint.connection.features_generated:
+                continue
+            # Check if this joint involves the current part
+            if joint.parent != name and joint.child != name:
+                continue
+            anchor = joint.parent_anchor if joint.parent == name else joint.child_anchor
+            result = engine.generate_features(
+                structural_part=part,
+                connection=joint.connection,
+                anchor=anchor,
+            )
+            if result.ops:
+                ops = merge_connection_ops(ops, result.ops, body)
+                # Track body name changes from merge
+                for op in reversed(ops):
+                    if op.get("type") == "boolean" and op.get("operation") == "cut":
+                        body = op.get("result_name", body)
+                        break
+            joint.connection.features_generated = True
+
+    # ------------------------------------------------------------------
+    # 11. Export STL — only the final body
     # ------------------------------------------------------------------
     ops.append({
         "type": "export_stl",
@@ -630,8 +806,8 @@ def _add_grid_boolean_cuts(
     nx = hole.get("count_x", 2)
     ny = hole.get("count_y", 2)
     margin = hole.get("margin", 10)
-    l = d["length"]
-    w = d["width"]
+    l = d.get("length") or d.get("diameter", 20)
+    w = d.get("width") or d.get("diameter", 20)
     h = d["height"]
 
     sx = (l - 2 * margin) / max(nx - 1, 1) if nx > 1 else 0
@@ -889,3 +1065,224 @@ def _add_cable_channel(
         "dz": h - ch_h,  # top-aligned
     })
     return _bool_cut(ops, body, tool_name, sn)
+
+
+# ============================================================================
+# Specialized arm part generators — complex geometry via raw_script
+# ============================================================================
+
+
+def _arm_link_ops(name: str, d: dict) -> list[dict]:
+    """C-channel link with U-profile, servo-mount flanges at both ends.
+
+    Generates a realistic arm link that looks like a C-beam:
+    - Main body: C-channel cross-section extruded along length
+    - Both ends: servo mounting ears with M3 holes
+    - Lightening pocket in the center web
+    """
+    length = d.get("length", 100)
+    width = d.get("width", 25)
+    height = d.get("height", 15)
+
+    script = f'''
+import FreeCAD, Part
+
+L, W, H = {length}, {width}, {height}
+web_t = max(3.0, W * 0.15)
+flange_w = (W - web_t) / 2
+
+# --- Build C-channel profile via boolean fuse ---
+# Top flange
+top = Part.makeBox(L, flange_w, web_t)
+top.translate(FreeCAD.Vector(0, 0, H - web_t))
+# Bottom flange
+bot = Part.makeBox(L, flange_w, web_t)
+# Web (vertical center)
+web = Part.makeBox(L, web_t, H)
+web.translate(FreeCAD.Vector(0, flange_w, 0))
+
+body = top.fuse(bot).fuse(web)
+
+# --- Lightening pocket ---
+pocket_l = L * 0.45
+pocket_h = max(H - 2*web_t - 4, 2)
+pocket = Part.makeBox(pocket_l, web_t, pocket_h)
+pocket.translate(FreeCAD.Vector((L - pocket_l)/2, flange_w, web_t + 2))
+body = body.cut(pocket)
+
+# --- M3 mounting holes at both ends ---
+for x_pos in [L * 0.1, L * 0.9]:
+    for y_off in [flange_w * 0.5]:
+        h_cyl = Part.makeCylinder(1.5, H + 2)
+        h_cyl.translate(FreeCAD.Vector(x_pos, y_off, -1))
+        body = body.cut(h_cyl)
+
+# --- Mounting tabs at ends (L-brackets) ---
+tab_h = 8
+tab_w = 4
+for x_pos in [0, L - tab_w]:
+    tab = Part.makeBox(tab_w, tab_w, H + tab_h)
+    tab.translate(FreeCAD.Vector(x_pos, 0, 0))
+    body = body.fuse(tab)
+
+# --- Fillet small edges ---
+try:
+    body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < W * 0.6][:40])
+except Exception:
+    pass
+
+obj = doc.addObject("Part::Feature", "{name}_final")
+obj.Shape = body
+doc.recompute()
+'''
+    return [{"type": "raw_script", "script": script}]
+
+
+def _arm_joint_ops(name: str, d: dict) -> list[dict]:
+    """Servo motor joint with flange mount, output shaft, and wire slot.
+
+    Generates a realistic servo housing:
+    - Main body: cylinder with mounting flange disc
+    - Center shaft bore with D-cut
+    - 4x mounting holes on flange
+    - Wire exit slot on side
+    - Top bearing lip
+    """
+    od = d.get("diameter", d.get("outer_diameter", 40))
+    h = d.get("height", 30)
+    shaft_r = 3.0
+
+    script = f'''
+import FreeCAD, Part, math
+
+od, h = {od}, {h}
+shaft_r = {shaft_r}
+flange_r = od / 2 + od * 0.25
+flange_h = max(4.0, h * 0.12)
+
+# --- Main cylinder ---
+body = Part.makeCylinder(od/2, h)
+
+# --- Bottom flange disc ---
+flange = Part.makeCylinder(flange_r, flange_h)
+body = body.fuse(flange)
+
+# --- Center shaft bore ---
+shaft = Part.makeCylinder(shaft_r, h + flange_h + 2)
+shaft.translate(FreeCAD.Vector(0, 0, -1))
+body = body.cut(shaft)
+
+# --- D-cut on shaft (flat) ---
+d_flat = Part.makeBox(shaft_r * 1.2, od, h + flange_h + 2)
+d_flat.translate(FreeCAD.Vector(-shaft_r*0.2, -od/2, -1))
+body = body.cut(d_flat)
+
+# --- 4x M3 mounting holes on flange ---
+for i in range(4):
+    angle = math.radians(45 + i * 90)
+    x = flange_r * 0.75 * math.cos(angle)
+    y = flange_r * 0.75 * math.sin(angle)
+    h_cyl = Part.makeCylinder(1.5, flange_h + 2)
+    h_cyl.translate(FreeCAD.Vector(x, y, -1))
+    body = body.cut(h_cyl)
+
+# --- Wire exit slot (side notch) ---
+slot = Part.makeBox(6, od/2 + 2, 4)
+slot.translate(FreeCAD.Vector(-3, -1, h * 0.3))
+body = body.cut(slot)
+
+# --- Top bearing lip (ring) ---
+lip = Part.makeCylinder(od/2 + 2, 3)
+lip.translate(FreeCAD.Vector(0, 0, h - 3))
+lip_bore = Part.makeCylinder(od/2 - 2, 5)
+lip_bore.translate(FreeCAD.Vector(0, 0, h - 4))
+lip = lip.cut(lip_bore)
+body = body.fuse(lip)
+
+# --- Fillet ---
+try:
+    body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < od * 0.3][:30])
+except Exception:
+    pass
+
+obj = doc.addObject("Part::Feature", "{name}_final")
+obj.Shape = body
+doc.recompute()
+'''
+    return [{"type": "raw_script", "script": script}]
+
+
+def _gripper_ops(name: str, d: dict) -> list[dict]:
+    """Parallel-jaw gripper with two fingers and servo cavity.
+
+    Generates a realistic end-effector:
+    - Base block with servo mounting cavity
+    - Two parallel fingers with wider tips
+    - Spring slot between fingers
+    - Mounting holes on base
+    """
+    length = d.get("length", 50)
+    width = d.get("width", 30)
+    height = d.get("height", 15)
+
+    script = f'''
+import FreeCAD, Part, math
+
+L, W, H = {length}, {width}, {height}
+finger_w = max(5.0, W * 0.15)
+finger_l = L * 0.6
+gap = max(8.0, W * 0.25)
+base_l = L * 0.4
+tip_extra = finger_w * 0.5
+
+# --- Base block ---
+base = Part.makeBox(base_l, W, H)
+
+# --- Servo cavity ---
+cavity = Part.makeBox(base_l - 4, W * 0.5, H - 4)
+cavity.translate(FreeCAD.Vector(2, W*0.25, 2))
+base = base.cut(cavity)
+
+# --- Left finger ---
+lf = Part.makeBox(finger_l, finger_w, H)
+lf.translate(FreeCAD.Vector(base_l, (W - gap)/2 - finger_w, 0))
+# Wider tip
+ltip = Part.makeBox(finger_l * 0.15, finger_w + tip_extra, H)
+ltip.translate(FreeCAD.Vector(base_l + finger_l * 0.85,
+              (W - gap)/2 - finger_w - tip_extra/2, 0))
+lf = lf.fuse(ltip)
+
+# --- Right finger ---
+rf = Part.makeBox(finger_l, finger_w, H)
+rf.translate(FreeCAD.Vector(base_l, (W + gap)/2, 0))
+# Wider tip
+rtip = Part.makeBox(finger_l * 0.15, finger_w + tip_extra, H)
+rtip.translate(FreeCAD.Vector(base_l + finger_l * 0.85,
+              (W + gap)/2 - tip_extra/2, 0))
+rf = rf.fuse(rtip)
+
+# --- Spring slot ---
+slot = Part.makeBox(finger_l * 0.35, gap - 2, H * 0.4)
+slot.translate(FreeCAD.Vector(base_l + finger_l*0.3, (W - gap + 2)/2 + gap - 1, H*0.3))
+
+# --- Assemble ---
+body = base.fuse(lf).fuse(rf).cut(slot)
+
+# --- M3 mounting holes ---
+for x_off in [base_l * 0.3, base_l * 0.7]:
+    for y_off in [W * 0.15, W * 0.85]:
+        h_cyl = Part.makeCylinder(1.5, H + 2)
+        h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
+        body = body.cut(h_cyl)
+
+# --- Chamfer finger tips ---
+try:
+    body = body.makeChamfer(0.5, [_e for _e in body.Edges if _e.Length < finger_w * 2][:30])
+except Exception:
+    pass
+
+obj = doc.addObject("Part::Feature", "{name}_final")
+obj.Shape = body
+doc.recompute()
+'''
+    return [{"type": "raw_script", "script": script}]

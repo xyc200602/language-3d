@@ -67,6 +67,7 @@ from lang3d.knowledge.tolerance import (
 )
 from lang3d.tools.assembly_solver import AssemblySolver
 from lang3d.tools.connection_features import ConnectionFeatureEngine
+from lang3d.tools.export_package import export_engineering_package
 from lang3d.tools.tolerance_analysis import (
     ToleranceStackup,
     analyze_assembly_chain,
@@ -816,3 +817,110 @@ class TestJSONExport:
         # 4 motors
         motors = [p for p in assembly.parts if p.name.startswith("motor_")]
         assert len(motors) == 4
+
+
+# ============================================================================
+# Test 10: Full engineering package export (E2E pipeline)
+# ============================================================================
+
+class TestFullEngineeringPackage:
+    """Run the complete export_engineering_package() pipeline.
+
+    This generates a full output directory with FreeCAD scripts, firmware,
+    URDF, BOM, assembly guide, wiring, cable routing, power, stability
+    reports, and subsystem decomposition.
+    """
+
+    @pytest.fixture(scope="class")
+    def export_dir(self, tmp_path_factory):
+        return tmp_path_factory.mktemp("dual_arm_robot_export")
+
+    @pytest.fixture(scope="class")
+    def export_result(self, export_dir):
+        assembly = _build_dual_arm_wheeled_robot()
+        result = export_engineering_package(
+            assembly=assembly,
+            output_dir=export_dir,
+            controller="esp32",
+        )
+        return result
+
+    def test_output_directory_exists(self, export_dir, export_result):
+        assert export_dir.exists()
+        assert export_dir.is_dir()
+
+    def test_freecad_scripts_generated(self, export_dir, export_result):
+        fc_dir = export_dir / "freecad_scripts"
+        assert fc_dir.exists()
+        scripts = list(fc_dir.glob("*.py"))
+        assert len(scripts) >= 30, f"Expected >=30 FreeCAD scripts, got {len(scripts)}"
+
+    def test_bom_generated(self, export_dir, export_result):
+        bom_path = export_dir / "bom.md"
+        assert bom_path.exists()
+        content = bom_path.read_text(encoding="utf-8")
+        assert "BOM" in content or "物料" in content or "零件" in content
+
+    def test_assembly_guide_generated(self, export_dir, export_result):
+        guide_path = export_dir / "assembly_guide.md"
+        assert guide_path.exists()
+
+    def test_wiring_diagram_generated(self, export_dir, export_result):
+        wiring_path = export_dir / "wiring_diagram.md"
+        assert wiring_path.exists()
+
+    def test_firmware_generated(self, export_dir, export_result):
+        fw_dir = export_dir / "firmware"
+        assert fw_dir.exists()
+        # Should have at least the .ino and some headers
+        fw_files = list(fw_dir.iterdir())
+        assert len(fw_files) >= 3, f"Expected >=3 firmware files, got {len(fw_files)}"
+
+    def test_design_report_json(self, export_dir, export_result):
+        report_path = export_dir / "design_report.json"
+        assert report_path.exists()
+        with open(report_path, encoding="utf-8") as f:
+            report = json.load(f)
+        assert report["total_parts"] >= 30
+
+    def test_stability_report(self, export_dir, export_result):
+        stability_path = export_dir / "stability_report.md"
+        assert stability_path.exists()
+
+    def test_power_report(self, export_dir, export_result):
+        power_path = export_dir / "power_report.md"
+        assert power_path.exists()
+
+    def test_urdf_generated(self, export_dir, export_result):
+        urdf_path = export_dir / "urdf.xml"
+        assert urdf_path.exists()
+        content = urdf_path.read_text(encoding="utf-8")
+        assert "<robot" in content
+        assert "</robot>" in content
+
+    def test_subsystem_jsons(self, export_dir, export_result):
+        ss_dir = export_dir / "subsystems"
+        assert ss_dir.exists()
+        json_files = list(ss_dir.glob("*.json"))
+        assert len(json_files) >= 3, f"Expected >=3 subsystem files, got {len(json_files)}"
+
+    def test_cable_routing_report(self, export_dir, export_result):
+        cable_path = export_dir / "cable_routing_report.md"
+        assert cable_path.exists()
+
+    def test_export_result_metrics(self, export_result):
+        assert "generated_files" in export_result
+        assert len(export_result["generated_files"]) >= 20
+
+    def test_ros2_package_structure(self, export_dir, export_result):
+        ros2_dir = export_dir / "ros2_package"
+        assert ros2_dir.exists()
+        # Find the package directory inside
+        pkg_dirs = [d for d in ros2_dir.iterdir() if d.is_dir()]
+        assert len(pkg_dirs) >= 1, "Expected at least one ROS2 package directory"
+        pkg = pkg_dirs[0]
+        assert (pkg / "package.xml").exists() or (pkg / "CMakeLists.txt").exists()
+
+    def test_total_file_count(self, export_dir, export_result):
+        all_files = [f for f in export_dir.rglob("*") if f.is_file()]
+        assert len(all_files) >= 40, f"Expected >=40 total files, got {len(all_files)}"
