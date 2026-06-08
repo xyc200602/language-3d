@@ -4,6 +4,49 @@
 
 ---
 
+## 2026-06-08 - Task 76: 零件接口标准化 — 功能件安装面统一定义
+
+### What was done:
+- 新增 `parts_catalog.py` 数据类: `BoltHole`, `AlignmentFeature`, `MountingInterface`
+- 扩展 `PartTemplate` 新增 `mounting_interface: MountingInterface | None = None` 字段
+- 录入 16 个功能件标准安装接口 (`MOUNTING_INTERFACES`):
+  - NEMA17: 4×Ø3.4mm 通孔 @±15.5mm 矩形 + Ø23mm 轴孔
+  - NEMA23: 4×Ø4.5mm 通孔 @±23.57mm 矩形 + Ø31mm 轴孔
+  - SG90 舵机: 2×Ø2.0mm 通孔 + 机身槽 11.8×22.2mm
+  - MG996R 舵机: 4×Ø2.8mm 通孔 + 机身槽 19.7×40.7mm
+  - DS3218 舵机: 4×Ø2.8mm 通孔 + 机身槽 20×40mm
+  - 608 轴承: 压配合 Ø22mm + 轴肩 Ø24mm
+  - 623 轴承: 压配合 Ø10mm + 轴肩 Ø12mm
+  - 625 轴承: 压配合 Ø16mm + 轴肩 Ø18mm
+  - RPLIDAR A1: 4×Ø3.0mm 通孔
+  - MPU6050: 4×Ø2.2mm 通孔
+  - ESP32-CAM: 4×Ø2.0mm 通孔
+  - AS5600 编码器: 4×Ø2.0mm 通孔 + Ø6mm 中心孔
+  - L298N 驱动: 4×Ø3.0mm 通孔
+  - Arduino Uno: 4×Ø3.0mm 通孔
+  - Arduino Nano: 2×Ø2.0mm 通孔
+  - ESP32 DevKit: 4×Ø2.0mm 通孔
+- 新增 `get_mounting_interface(part_id)` 查询函数
+- 新增 `auto_match_interface(structural_dims, interface, anchor, offset)` 自动在结构件上生成配合特征
+- 修改 `ConnectionFeatureEngine.generate_features()`:
+  - 新增 `functional_part_id` 参数
+  - 优先使用 `MountingInterface` 生成精确特征
+  - 回退到原有启发式规则（完全向后兼容）
+
+### Testing:
+- 新建 tests/test_mounting_interface.py — 40 个测试
+- 全部 574 个相关测试通过
+- 零回归（ConnectionFeatureEngine 向后兼容）
+
+### Notes:
+- MOUNTING_INTERFACES 与 PART_CATALOG 解耦 — 接口集中管理，通过 get_mounting_interface() 查询
+- ConnectionFeatureEngine 的 functional_part_id 参数是可选的，不影响现有调用方
+- 轴承压配合使用干涉量 0.04-0.05mm (ISO H7/p6 配合)
+- NEMA17 接口数据与 assembly_patterns.py 中的 nema17_mount 规则一致
+- 舵机接口含机身槽 (pocket)，确保结构件为舵机本体提供空间
+
+---
+
 ## 2026-06-08 - Task 75: 电子与传感器零件库
 
 ### What was done:

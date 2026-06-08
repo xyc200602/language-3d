@@ -28,6 +28,69 @@ class ParamDef:
 
 
 @dataclass
+class BoltHole:
+    """A single bolt/mounting hole definition in a mounting interface.
+
+    Position is relative to the part's local coordinate origin on the contact face.
+    Direction is the hole axis (normal to the face), unit vector.
+    """
+
+    x: float               # mm, position on face
+    y: float               # mm, position on face
+    diameter: float        # mm, through-hole or tapped diameter
+    depth: float = 0.0     # mm, 0 = through (all the way)
+    direction: tuple[float, float, float] = (0.0, 0.0, -1.0)  # hole axis direction
+    hole_type: str = "through_hole"  # "through_hole" | "threaded_hole" | "counterbore"
+
+
+@dataclass
+class AlignmentFeature:
+    """A non-bolt alignment feature: dowel pin, keyway, notch, etc."""
+
+    feature_type: str       # "dowel_pin" | "keyway" | "notch" | "d_cut" | "spline"
+    x: float = 0.0
+    y: float = 0.0
+    diameter: float = 0.0   # mm, for dowel/spline
+    width: float = 0.0      # mm, for keyway/notch
+    length: float = 0.0     # mm, for keyway/notch
+    depth: float = 0.0      # mm
+
+
+@dataclass
+class MountingInterface:
+    """Standardized mounting interface for a functional part.
+
+    Defines how this part attaches to a structural part, enabling
+    automatic generation of matching holes/features on the structural side.
+    """
+
+    # Interface classification
+    interface_type: str          # "through_hole" | "threaded_hole" | "press_fit" | "snap_fit" | "flange"
+    contact_face: str = "front" # "front" | "back" | "top" | "bottom" | "side"
+    contact_face_normal: tuple[float, float, float] = (0.0, 0.0, 1.0)
+
+    # Bolt holes on the contact face
+    holes: list[BoltHole] = field(default_factory=list)
+
+    # Center bore / shaft hole (for motors, bearings, etc.)
+    bore_diameter: float = 0.0      # mm, 0 = none
+    bore_depth: float = 0.0         # mm, 0 = through
+
+    # Body pocket dimensions (structural part needs to clear the functional part body)
+    pocket_width: float = 0.0       # mm
+    pocket_height: float = 0.0      # mm
+    pocket_depth: float = 0.0       # mm
+
+    # Alignment features
+    alignment_features: list[AlignmentFeature] = field(default_factory=list)
+
+    # Press-fit parameters (for bearings)
+    press_fit_interference: float = 0.0  # mm, positive = bore is smaller than OD
+    shoulder_diameter: float = 0.0       # mm, retaining lip OD
+    shoulder_depth: float = 0.0          # mm
+
+
+@dataclass
 class PartTemplate:
     """A parametric part template that can generate FreeCAD models."""
 
@@ -62,6 +125,9 @@ class PartTemplate:
     real_part: bool = False         # True if this is a real COTS (Commercial Off-The-Shelf) part
     manufacturer: str = ""          # e.g. "Tower Pro", "Pololu", "DFRobot"
     model_number: str = ""          # e.g. "SG90", "NEMA17-42BYGH", "JGB37-520"
+
+    # --- Task 76: Standardized mounting interface ---
+    mounting_interface: MountingInterface | None = None
 
 
 @dataclass
@@ -3890,6 +3956,333 @@ PART_CATALOG: dict[str, PartTemplate] = {
               "白色外壳，带锁扣防松脱。",
     ),
 }
+
+
+# ---------------------------------------------------------------------------
+# Task 76: Mounting interface definitions for all functional parts
+# ---------------------------------------------------------------------------
+
+MOUNTING_INTERFACES: dict[str, MountingInterface] = {
+    # ---- Stepper motors ----
+    "nema17_stepper": MountingInterface(
+        interface_type="through_hole",
+        contact_face="front",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-15.5, y=-15.5, diameter=3.4),
+            BoltHole(x=15.5, y=-15.5, diameter=3.4),
+            BoltHole(x=-15.5, y=15.5, diameter=3.4),
+            BoltHole(x=15.5, y=15.5, diameter=3.4),
+        ],
+        bore_diameter=23.0,
+        bore_depth=0.0,
+    ),
+    "nema23_stepper": MountingInterface(
+        interface_type="through_hole",
+        contact_face="front",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-23.57, y=-23.57, diameter=4.5),
+            BoltHole(x=23.57, y=-23.57, diameter=4.5),
+            BoltHole(x=-23.57, y=23.57, diameter=4.5),
+            BoltHole(x=23.57, y=23.57, diameter=4.5),
+        ],
+        bore_diameter=31.0,
+        bore_depth=0.0,
+    ),
+
+    # ---- Servos ----
+    "servo_sg90": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-27.5, y=0, diameter=2.0),
+            BoltHole(x=27.5, y=0, diameter=2.0),
+        ],
+        pocket_width=11.8,
+        pocket_height=22.2,
+        pocket_depth=8.0,
+    ),
+    "servo_mg996r": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-12.35, y=-9.9, diameter=2.8),
+            BoltHole(x=12.35, y=-9.9, diameter=2.8),
+            BoltHole(x=-12.35, y=9.9, diameter=2.8),
+            BoltHole(x=12.35, y=9.9, diameter=2.8),
+        ],
+        pocket_width=19.7,
+        pocket_height=40.7,
+        pocket_depth=10.0,
+    ),
+    "servo_ds3218": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-12.5, y=-10.0, diameter=2.8),
+            BoltHole(x=12.5, y=-10.0, diameter=2.8),
+            BoltHole(x=-12.5, y=10.0, diameter=2.8),
+            BoltHole(x=12.5, y=10.0, diameter=2.8),
+        ],
+        pocket_width=20.0,
+        pocket_height=40.0,
+        pocket_depth=10.0,
+    ),
+
+    # ---- Bearings ----
+    "bearing_608": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(0.0, 1.0, 0.0),
+        bore_diameter=22.0,
+        bore_depth=7.0,
+        press_fit_interference=0.05,
+        shoulder_diameter=24.0,
+        shoulder_depth=1.0,
+    ),
+    "bearing_623": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(0.0, 1.0, 0.0),
+        bore_diameter=10.0,
+        bore_depth=4.0,
+        press_fit_interference=0.04,
+        shoulder_diameter=12.0,
+        shoulder_depth=0.8,
+    ),
+    "bearing_625": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(0.0, 1.0, 0.0),
+        bore_diameter=16.0,
+        bore_depth=5.0,
+        press_fit_interference=0.04,
+        shoulder_diameter=18.0,
+        shoulder_depth=0.8,
+    ),
+
+    # ---- Sensors ----
+    "sensor_rplidar_a1": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-30, y=-30, diameter=3.0),
+            BoltHole(x=30, y=-30, diameter=3.0),
+            BoltHole(x=-30, y=30, diameter=3.0),
+            BoltHole(x=30, y=30, diameter=3.0),
+        ],
+    ),
+    "sensor_mpu6050": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-8, y=-5, diameter=2.2),
+            BoltHole(x=8, y=-5, diameter=2.2),
+            BoltHole(x=-8, y=5, diameter=2.2),
+            BoltHole(x=8, y=5, diameter=2.2),
+        ],
+    ),
+    "sensor_esp32_cam": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-15, y=-9, diameter=2.0),
+            BoltHole(x=15, y=-9, diameter=2.0),
+            BoltHole(x=-15, y=9, diameter=2.0),
+            BoltHole(x=15, y=9, diameter=2.0),
+        ],
+    ),
+    "encoder_as5600": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-7, y=-7, diameter=2.0),
+            BoltHole(x=7, y=-7, diameter=2.0),
+            BoltHole(x=-7, y=7, diameter=2.0),
+            BoltHole(x=7, y=7, diameter=2.0),
+        ],
+        bore_diameter=6.0,
+        bore_depth=0.0,
+    ),
+
+    # ---- Electronics ----
+    "driver_l298n": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-14.5, y=-14.5, diameter=3.0),
+            BoltHole(x=14.5, y=-14.5, diameter=3.0),
+            BoltHole(x=-14.5, y=14.5, diameter=3.0),
+            BoltHole(x=14.5, y=14.5, diameter=3.0),
+        ],
+    ),
+    "controller_arduino_uno": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-27.3, y=-20.7, diameter=3.0),
+            BoltHole(x=27.3, y=-20.7, diameter=3.0),
+            BoltHole(x=-27.3, y=20.7, diameter=3.0),
+            BoltHole(x=27.3, y=20.7, diameter=3.0),
+        ],
+    ),
+    "controller_arduino_nano": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-18.5, y=0, diameter=2.0),
+            BoltHole(x=18.5, y=0, diameter=2.0),
+        ],
+    ),
+    "controller_esp32_devkit": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-23.5, y=-10, diameter=2.0),
+            BoltHole(x=23.5, y=-10, diameter=2.0),
+            BoltHole(x=-23.5, y=10, diameter=2.0),
+            BoltHole(x=23.5, y=10, diameter=2.0),
+        ],
+    ),
+}
+
+
+def get_mounting_interface(part_id: str) -> MountingInterface | None:
+    """Get the mounting interface for a part by its catalog ID.
+
+    Returns the interface from MOUNTING_INTERFACES if defined,
+    otherwise falls back to the template's mounting_interface field.
+    """
+    if part_id in MOUNTING_INTERFACES:
+        return MOUNTING_INTERFACES[part_id]
+    t = PART_CATALOG.get(part_id)
+    if t and t.mounting_interface:
+        return t.mounting_interface
+    return None
+
+
+def auto_match_interface(
+    structural_dims: dict[str, float],
+    interface: MountingInterface,
+    anchor: str = "top",
+    offset_x: float = 0.0,
+    offset_y: float = 0.0,
+) -> list[dict]:
+    """Generate FreeCAD operation dicts to create matching features on a structural part.
+
+    Given a structural part's dimensions and a functional part's MountingInterface,
+    produces a list of operation dicts (hole cuts, bores, pockets) that can be
+    merged into the structural part's operation pipeline.
+
+    Args:
+        structural_dims: The structural part's key dimensions (e.g. length, width, height, thickness).
+        interface: The functional part's MountingInterface.
+        anchor: Which face of the structural part receives the features ("top", "bottom", "front", "back").
+        offset_x: Additional X offset from center.
+        offset_y: Additional Y offset from center.
+
+    Returns:
+        List of operation dicts for part_feature_engine.
+    """
+    ops: list[dict] = []
+    thickness = structural_dims.get("thickness", structural_dims.get("height", 10.0))
+
+    # Center offset for structural part face
+    cx = structural_dims.get("length", structural_dims.get("width", 50.0)) / 2.0
+    cy = structural_dims.get("width", structural_dims.get("length", 50.0)) / 2.0
+
+    # Determine Z position based on anchor
+    anchor_z_map = {
+        "top": thickness,
+        "bottom": 0.0,
+        "front": thickness,
+        "back": 0.0,
+    }
+    z_start = anchor_z_map.get(anchor, thickness)
+
+    # Generate bolt holes
+    for i, hole in enumerate(interface.holes):
+        hx = cx + hole.x + offset_x
+        hy = cy + hole.y + offset_y
+        ops.append({
+            "type": "cylinder",
+            "name": f"mount_hole_{i}",
+            "radius": hole.diameter / 2.0,
+            "height": hole.depth if hole.depth > 0 else thickness + 2.0,
+            "x": hx,
+            "y": hy,
+            "z": z_start - (thickness + 2.0) if anchor == "top" else 0.0,
+            "operation": "cut",
+        })
+
+    # Center bore (shaft clearance, bearing bore)
+    if interface.bore_diameter > 0:
+        bore_depth = interface.bore_depth if interface.bore_depth > 0 else thickness + 2.0
+        ops.append({
+            "type": "cylinder",
+            "name": "center_bore",
+            "radius": interface.bore_diameter / 2.0,
+            "height": bore_depth,
+            "x": cx + offset_x,
+            "y": cy + offset_y,
+            "z": z_start - bore_depth if anchor == "top" else 0.0,
+            "operation": "cut",
+        })
+
+    # Press-fit bore (bearings)
+    if interface.press_fit_interference > 0 and interface.bore_diameter > 0:
+        fit_bore_d = interface.bore_diameter - interface.press_fit_interference
+        bore_depth = interface.bore_depth if interface.bore_depth > 0 else thickness
+        ops.append({
+            "type": "cylinder",
+            "name": "press_fit_bore",
+            "radius": fit_bore_d / 2.0,
+            "height": bore_depth,
+            "x": cx + offset_x,
+            "y": cy + offset_y,
+            "z": 0.0,
+            "operation": "cut",
+        })
+        # Shoulder / retaining lip
+        if interface.shoulder_diameter > 0 and interface.shoulder_depth > 0:
+            ops.append({
+                "type": "cylinder",
+                "name": "shoulder",
+                "radius": interface.shoulder_diameter / 2.0,
+                "height": interface.shoulder_depth,
+                "x": cx + offset_x,
+                "y": cy + offset_y,
+                "z": bore_depth,
+                "operation": "cut",
+            })
+
+    # Body pocket (servo mounting, etc.)
+    if interface.pocket_width > 0 and interface.pocket_height > 0:
+        ops.append({
+            "type": "box",
+            "name": "body_pocket",
+            "width": interface.pocket_width,
+            "depth": interface.pocket_height,
+            "height": interface.pocket_depth if interface.pocket_depth > 0 else thickness,
+            "x": cx - interface.pocket_width / 2.0 + offset_x,
+            "y": cy - interface.pocket_height / 2.0 + offset_y,
+            "z": 0.0,
+            "operation": "cut",
+        })
+
+    return ops
 
 
 # ---------------------------------------------------------------------------
