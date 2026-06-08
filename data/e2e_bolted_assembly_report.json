@@ -1,0 +1,16 @@
+{
+  "assembly_name": "L-Bracket NEMA17 Assembly",
+  "overall_pass": true,
+  "collision_free": true,
+  "bolt_alignment": [
+    {
+      "aligned": true
+    }
+  ],
+  "mating_surfaces": [
+    {
+      "parallel_ok": true,
+      "distance_ok": true
+    }
+  ]
+}

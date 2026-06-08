@@ -4,6 +4,59 @@
 
 ---
 
+## 2026-06-08 - Task 82: 端到端装配验证 — L支架+NEMA17 螺栓连接全流程
+
+### What was done:
+- 新建 `tests/test_e2e_bolted_assembly.py` — 38 个端到端测试
+  - 验证 Task 71-80 的完整集成: L支架 + NEMA17 螺栓连接全流程
+  - **Step 1: MountingInterface 自动识别** (6 tests)
+    - NEMA17 接口存在性、4孔、31mm间距、Ø3.4mm孔径、Ø23mm轴间隙孔
+  - **Step 2: PartFeatureEngine 生成特征** (5 tests)
+    - 使用 functional_part_id="nema17_stepper" 生成精确匹配孔位
+    - 4× 圆柱切割操作(Ø3.4mm) + 中心轴间隙孔(Ø23mm)
+    - 紧固件模型操作(bolt/nut/washer)
+    - 无警告输出
+  - **Step 3: FastenerCatalog 选择紧固件** (7 tests)
+    - M3 螺栓: thread=3.0mm, head=Ø5.5mm, head_height=3mm
+    - M3 螺母、M3 垫圈规格
+    - 推荐螺栓长度(5mm grip → 8mm标准长度)
+    - 完整套件: bolt_length_mm + nut + washer + clearance_hole
+    - 确认 4 螺栓需求
+  - **Step 4: AssemblySolver 约束求解** (5 tests)
+    - 2 个位置结果(bracket + motor)
+    - L 支架在原点, NEMA17 在支架上方(top→bottom anchor)
+    - 电机 X-Y 居中于支架
+    - Z 轴: motor_z > bracket_z
+  - **Step 5: AssemblyVerifier 装配验证** (10 tests)
+    - 配合面检查: 法向偏差 <1° (anti-parallel normals)
+    - 螺栓孔对齐: aligned=True
+    - 装配序列: feasible=True
+    - 全验证结果结构: AssemblyVerificationResult 完整字段
+    - 碰撞检查: collision_free=True
+    - 结构化验证项: verification_items 全部存在
+  - **Step 6: 报告生成与导出** (5 tests)
+    - 中文报告: 装配验证报告 + 配合面检查 + 螺栓对齐
+    - JSON 报告导出: e2e_bolted_assembly_report.json
+    - 包含: placements, bolt_alignment, mating_surfaces, sequence_checks
+  - **完整集成测试** (1 test)
+    - Step 1→6 全流程: MountingInterface → FeatureEngine → FastenerCatalog →
+      AssemblySolver → AssemblyVerifier → Report
+- 报告导出到 `data/e2e_bolted_assembly_report.json`
+
+### Testing:
+- 38 个新测试全部通过
+- 回归测试 318 passed, 0 failed
+
+### Notes:
+- ops 类型是 "cylinder" (非 "hole"), operation="cut"
+- fastener_set 返回键名是 "bolt_length_mm" (非 "bolt_length")
+- 通过 parts_results 参数模拟零件生成结果(绕过 FreeCAD 文件检查)
+- L支架 60×60×5mm PLA, NEMA17 42.3×42.3×48mm Steel
+- 连接: fixed joint, parent_anchor="top", child_anchor="bottom"
+- 4×M3螺栓 + 4×M3螺母 + 4×M3垫圈
+
+---
+
 ## 2026-06-08 - Task 81: 开源机器人参考学习 — Thor/PAROL6 装配模式提取
 
 ### What was done:
