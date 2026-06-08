@@ -503,6 +503,62 @@ CONNECTION_PATTERNS: list[ConnectionPattern] = [
               "Bearing bore tolerance: -0.03 to -0.05mm interference.",
         source_projects=["thor", "parol6", "bcn3d_moveo"],
     ),
+
+    # Pattern 13: DYNAMIXEL XM430 servo to frame/bracket (body side)
+    ConnectionPattern(
+        name="dynamixel_xm430_to_frame_bolted",
+        parent_part_class="structural",
+        child_part_class="functional",
+        parent_part_type="bracket",
+        child_part_type="servo",
+        connection_method="bolted",
+        constraints=["coincident", "concentric"],
+        typical_bolt_size="M2.5",
+        typical_bolt_count=4,
+        typical_tolerance_mm=0.2,
+        notes="DYNAMIXEL XM430-W350 body mounting: 4× M2.5 bolts, "
+              "16×16mm hole spacing on 28×28mm mounting face. "
+              "Threaded holes in XM430 body, through holes in bracket/frame. "
+              "Used in OpenMANIPULATOR-X and ROBOTIS ecosystem. "
+              "FR12-H101/H104/S101/S102 frames use the same pattern.",
+        source_projects=["openmanipulator_x"],
+    ),
+
+    # Pattern 14: DYNAMIXEL XM430 horn to link/frame (output side)
+    ConnectionPattern(
+        name="dynamixel_xm430_horn_to_link_bolted",
+        parent_part_class="structural",
+        child_part_class="functional",
+        parent_part_type="link",
+        child_part_type="servo",
+        connection_method="bolted",
+        constraints=["concentric"],
+        typical_bolt_size="M2.5",
+        typical_bolt_count=4,
+        typical_tolerance_mm=0.2,
+        notes="DYNAMIXEL XM430 horn/flange mounting: 4× M2.5 bolts on ⌀16mm PCD. "
+              "Horn diameter ⌀22mm, output shaft ⌀6mm with D-cut. "
+              "Used to connect servo output to links, frames, or FR12 brackets.",
+        source_projects=["openmanipulator_x"],
+    ),
+
+    # Pattern 15: Bracket to bracket (structural-to-structural general)
+    ConnectionPattern(
+        name="bracket_to_bracket_bolted",
+        parent_part_class="structural",
+        child_part_class="structural",
+        parent_part_type="bracket",
+        child_part_type="bracket",
+        connection_method="bolted",
+        constraints=["coincident"],
+        typical_bolt_size="M3",
+        typical_bolt_count=4,
+        typical_tolerance_mm=0.2,
+        notes="General bracket-to-bracket connection. "
+              "Used when multiple brackets are stacked or combined "
+              "to form complex structural assemblies.",
+        source_projects=["bcn3d_moveo", "thor"],
+    ),
 ]
 
 
@@ -795,3 +851,217 @@ def generate_assembly_stats_summary() -> str:
         lines.append(f"    Source: {', '.join(p.source_projects)}")
 
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Connection recommendation — automatic ConnectionMethod inference
+# ---------------------------------------------------------------------------
+
+def _infer_bolt_size_from_hole_diameter(diameter_mm: float) -> str:
+    """Infer bolt specification from through-hole diameter.
+
+    Mapping based on ISO metric clearance hole conventions:
+    - 2.5~2.9mm → M2.5 (clearance for M2.5 bolt)
+    - 3.0~3.7mm → M3
+    - 4.0~4.9mm → M4
+    - 5.0~5.9mm → M5
+    - 6.0mm+    → M6
+    """
+    if diameter_mm < 2.5:
+        return "M2"
+    if diameter_mm < 3.0:
+        return "M2.5"
+    if diameter_mm < 4.0:
+        return "M3"
+    if diameter_mm < 5.0:
+        return "M4"
+    if diameter_mm < 6.0:
+        return "M5"
+    return "M6"
+
+
+# Category-to-part_type mapping for CONNECTION_PATTERNS matching.
+# Maps Part.category values to the part_type strings used in ConnectionPattern.
+_CATEGORY_TO_PART_TYPE: dict[str, list[str]] = {
+    "actuator": ["stepper_motor", "servo", "dc_motor", "motor"],
+    "structural": ["bracket", "plate", "housing", "frame", "link", "chassis_plate"],
+    "bearing": ["bearing"],
+    "sensor": ["sensor"],
+    "electronics": ["pcb", "electronics"],
+    "fastener": ["fastener"],
+    "mechanical": ["gear", "pulley", "wheel_hub", "coupling"],
+}
+
+
+def _match_category_to_pattern_type(part: "Part") -> str:
+    """Map a Part's category (and description keywords) to a ConnectionPattern part_type.
+
+    Uses description text matching for more specific type identification.
+    Falls back to the first mapping for the part's category.
+    """
+    from lang3d.knowledge.mechanics import Part
+
+    cat = part.category.lower()
+    desc = part.description.lower() if part.description else ""
+    name = part.name.lower()
+
+    # Keyword-based refinement
+    _KEYWORD_MAP: dict[str, str] = {
+        "nema17": "stepper_motor",
+        "nema23": "stepper_motor",
+        "stepper": "stepper_motor",
+        "dynamixel": "servo",
+        "xm430": "servo",
+        "servo": "servo",
+        "mg996r": "servo",
+        "sg90": "servo",
+        "dc motor": "dc_motor",
+        "bracket": "bracket",
+        "plate": "plate",
+        "housing": "housing",
+        "frame": "frame",
+        "link": "link",
+        "bearing": "bearing",
+        "608": "bearing",
+        "625": "bearing",
+        "wheel": "wheel_hub",
+        "gear": "gear",
+        "pulley": "pulley",
+        "sensor": "sensor",
+        "imu": "sensor",
+        "camera": "sensor",
+    }
+
+    combined = f"{name} {desc}"
+    for keyword, part_type in _KEYWORD_MAP.items():
+        if keyword in combined:
+            return part_type
+
+    # Fall back to category mapping
+    types = _CATEGORY_TO_PART_TYPE.get(cat, [])
+    return types[0] if types else cat
+
+
+def recommend_connection(
+    parent_part: "Part",
+    child_part: "Part",
+    joint: "Joint",
+) -> "ConnectionMethod":
+    """Recommend a physical connection method between two parts.
+
+    Decision chain (highest priority first):
+    1. If joint.connection is already specified, return it directly
+    2. If both parts have MountingInterface data (looked up from catalog),
+       infer connection method from interface types
+    3. Match against CONNECTION_PATTERNS by category/subcategory
+    4. Fall back to heuristic rules based on part categories
+
+    Returns a ConnectionMethod instance.
+    """
+    from lang3d.knowledge.mechanics import ConnectionMethod, Joint, Part
+    from lang3d.knowledge.parts_catalog import get_mounting_interface
+
+    # --- Layer 1: Explicit connection already set ---
+    if joint.connection is not None:
+        return joint.connection
+
+    # --- Layer 2: MountingInterface matching ---
+    parent_iface = get_mounting_interface(parent_part.name)
+    child_iface = get_mounting_interface(child_part.name)
+
+    if child_iface is not None:
+        iface_type = child_iface.interface_type
+
+        if iface_type in ("through_hole", "threaded_hole") and child_iface.holes:
+            # Bolted connection — infer bolt specs from hole data
+            bolt_size = _infer_bolt_size_from_hole_diameter(child_iface.holes[0].diameter)
+            bolt_count = len(child_iface.holes)
+            return ConnectionMethod(
+                type="bolted",
+                bolt_size=bolt_size,
+                bolt_count=bolt_count,
+            )
+
+        if iface_type == "press_fit":
+            interference = child_iface.press_fit_interference
+            if interference == 0.0:
+                interference = 0.04  # Default for bearings
+            return ConnectionMethod(
+                type="press_fit",
+                interference_mm=interference,
+            )
+
+        if iface_type == "snap_fit":
+            return ConnectionMethod(
+                type="snap_fit",
+                snap_count=child_iface.holes.__len__() or 2,
+            )
+
+    # Also check parent interface for bolted connections
+    if parent_iface is not None and parent_iface.interface_type in ("through_hole", "threaded_hole"):
+        if parent_iface.holes:
+            bolt_size = _infer_bolt_size_from_hole_diameter(parent_iface.holes[0].diameter)
+            bolt_count = len(parent_iface.holes)
+            return ConnectionMethod(
+                type="bolted",
+                bolt_size=bolt_size,
+                bolt_count=bolt_count,
+            )
+
+    # --- Layer 3: CONNECTION_PATTERNS matching ---
+    parent_type = _match_category_to_pattern_type(parent_part)
+    child_type = _match_category_to_pattern_type(child_part)
+
+    pattern = get_connection_pattern(parent_type, child_type)
+    if pattern is None:
+        # Try reversed lookup (parent/child might be swapped in patterns)
+        pattern = get_connection_pattern(child_type, parent_type)
+
+    if pattern is not None:
+        if pattern.connection_method == "bolted":
+            return ConnectionMethod(
+                type="bolted",
+                bolt_size=pattern.typical_bolt_size or "M3",
+                bolt_count=pattern.typical_bolt_count or 2,
+            )
+        if pattern.connection_method == "press_fit":
+            return ConnectionMethod(
+                type="press_fit",
+                interference_mm=pattern.typical_tolerance_mm,
+            )
+        # Other methods (gear_mesh, etc.)
+        return ConnectionMethod(type=pattern.connection_method)
+
+    # --- Layer 4: Category-based heuristic fallback ---
+    p_cat = parent_part.category.lower()
+    c_cat = child_part.category.lower()
+
+    # Structural + structural → bolted M3×4
+    if p_cat == "structural" and c_cat == "structural":
+        return ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=4)
+
+    # Structural + actuator → bolted M3×4
+    if (p_cat == "structural" and c_cat == "actuator") or \
+       (p_cat == "actuator" and c_cat == "structural"):
+        return ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=4)
+
+    # Structural + sensor → bolted M2.5×4
+    if (p_cat == "structural" and c_cat == "sensor") or \
+       (p_cat == "sensor" and c_cat == "structural"):
+        return ConnectionMethod(type="bolted", bolt_size="M2.5", bolt_count=4)
+
+    # Structural + electronics → bolted M2.5×4
+    if (p_cat == "structural" and c_cat == "electronics") or \
+       (p_cat == "electronics" and c_cat == "structural"):
+        return ConnectionMethod(type="bolted", bolt_size="M2.5", bolt_count=4)
+
+    # Bearing → press_fit
+    if c_cat == "bearing" or p_cat == "bearing":
+        return ConnectionMethod(type="press_fit", interference_mm=0.04)
+
+    # Prismatic joint with structural → bolted (sliding guide)
+    if joint.type == "prismatic":
+        return ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=4)
+
+    # Unknown fallback → bolted M3×2
+    return ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=2)
