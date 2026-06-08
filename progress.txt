@@ -4,6 +4,80 @@
 
 ---
 
+## 2026-06-08 - Task 81: 开源机器人参考学习 — Thor/PAROL6 装配模式提取
+
+### What was done:
+- 更新 `src/lang3d/knowledge/assembly_patterns.py` — Thor/PAROL6 深度分析
+  - **Thor 配置文件更新**: MG996R→NEMA17步进电机+GT2同步带, 25→55零件, 37个3D打印结构件
+    - 修正执行器: 6× NEMA17-42BYGH (非MG996R舵机)
+    - 传输方式: GT2同步带+3D打印齿轮 (belt_drive + gear_mesh)
+    - 关键尺寸: height_stretched_mm=625, payload_kg=0.75
+    - 连接分布: bolted 20, belt_drive 6, gear_mesh 6, press_fit 4, set_screw 6
+  - **新增 PAROL6 配置文件**: 6-DOF桌面机械臂
+    - 45零件: 30结构件(PLA/PETG) + 6 NEMA17 + 9紧固件/轴承
+    - GT2同步带驱动, MR105+608轴承, 分体式壳体设计
+    - Trinamic TMC2209静音驱动, reach=400mm
+  - **新增4个连接模式**:
+    - belt_drive_joint_assembly: 电机→壳体螺栓+GT2同步带 (Thor/PAROL6/MOVEO)
+    - gear_transmission_3d_printed: 3D打印齿轮减速 (Thor)
+    - belt_tensioner_slotted_mount: 开槽电机座同步带张紧 (Thor/PAROL6)
+    - joint_housing_bearing_seats: 双轴承座壳体 (Thor/PAROL6/MOVEO)
+  - **新增5个接口规则**:
+    - gt2_belt_drive_housing: 壳体含NEMA17安装孔+开槽+轴间隙孔
+    - mr105_bearing_seat: MR105(5×10×4mm)压装座, Φ9.96mm孔
+    - joint_housing_split: 分体式壳体含双608轴承座
+    - gt2_pulley_mount: GT2同步带轮安装(M3紧定螺钉)
+  - **更新统计数据**:
+    - 新增 belt_drive(6%), gear_mesh(2%) 到连接分布
+    - 新增 transmission_distribution: timing_belt 50%, direct 17%, 3d_gear 17%
+    - 新增 belt_drive_parameters: GT2 2mm节距, 16T电机轮, 减速比肩4:1肘3:1腕2:1
+    - M3螺栓占比升至65%, 结构件占比升至60%
+    - 新增 PETG, brass 到材料分布
+    - 新增 housing_split_bolts, motor_to_housing_belt 到螺栓计数
+  - 更新 NEMA17 pattern source_projects: +thor, +parol6
+  - 更新 bearing press_fit source_projects: +parol6
+
+- 更新 `src/lang3d/tools/assembly_generator.py` — 新增 PAROL6 few-shot 示例
+  - 新增 EXAMPLE_6DOF_BELT_DRIVE_ARM: 20零件, 19关节
+    - 6× NEMA17电机, 4× 轴承(MR105×3 + 608×1)
+    - 6自由度: base_yaw → shoulder_roll → elbow_roll → wrist_pitch → wrist_yaw → wrist_roll
+    - 螺栓连接: M3×4 on NEMA17 face
+    - 压装: MR105/608轴承
+    - 完整连通树验证
+  - 更新提示词逻辑: 6自由度请求使用PAROL6示例, 5自由度使用MOVEO示例
+
+- 新建 `data/reference/analysis_report.md` — Thor/PAROL6 详细分析报告
+  - Thor: 625mm高度, 750g负载, FreeCAD原生, GT2同步带+3D打印齿轮
+  - PAROL6: 400mm臂展, Trinamic静音驱动, 分体式壳体, MR105轴承
+  - 跨项目模式: M3螺栓65%, NEMA17标准安装, GT2同步带2mm节距
+  - 最佳实践: 开槽电机座, 分体壳体, 减速比分级, 双轴承座
+
+### Testing:
+- 新建 tests/test_reference_learning.py — 62 个测试
+  - TestThorProfile (9): 配置存在/DOF/步进电机/37零件/同步带/齿轮/关键尺寸/FreeCAD源/总零件数
+  - TestPAROL6Profile (9): 配置存在/DOF/步进电机/同步带/400mm臂展/30结构件/URL/PETG/Trinamic
+  - TestNewConnectionPatterns (7): 同步带模式存在/同步带关节/齿轮传输/张紧器/轴承座壳体/命名检查/总数≥12
+  - TestNewInterfaceRules (6): GT2壳体/MR105座/分体壳体/同步带轮/开槽/MR105孔径
+  - TestUpdatedStatistics (10): 同步带/齿轮/传输分布/同步带参数/M3占比/结构件比/新螺栓计数/PETG/brass/分布总和≈1
+  - TestPAROL6FewShotExample (10): JSON有效/20零件/19关节/6电机/4轴承/螺栓连接/压装/非零角度/NEMA17尺寸/连通树
+  - TestProfileHelpers (6): parol6在列表/thor在列表/总数≥5/统计含PAROL6/统计含Thor/统计含belt_drive
+  - TestCrossProjectConsistency (4): Thor+PAROL6共享同步带/三项目共享NEMA17/全部有连接方法/全部有执行器
+- 更新 tests/test_assembly_patterns.py — 修复 Thor 配置测试
+  - test_all_profiles_loaded: 4→5 profiles, 加入 parol6
+  - test_thor_profile: total_parts 25→55, MG996R→NEMA17, 新增 height_stretched_mm/payload_kg 检查
+- 回归测试 280 passed, 0 failed
+
+### Notes:
+- Thor 实际使用 NEMA17 步进电机 (非之前错误记录的 MG996R 舵机)
+- Thor 传输方式: GT2 同步带 + 3D 打印齿轮混合
+- PAROL6 全部使用同步带驱动 (无齿轮), Trinamic TMC2209 静音驱动
+- PAROL6 使用 MR105 (5×10×4mm) 小型轴承 (MOVEO 用 608)
+- 分体式壳体 (split clamshell) 是 PAROL6 独有设计, Thor 用整体式
+- 减速比经验: 肩 4:1, 肘 3:1, 腕 2:1 (力矩 vs 速度权衡)
+- GT2 同步带参数: 2mm 节距, 6mm 宽度, 16T 电机轮, M3 紧定螺钉固定
+
+---
+
 ## 2026-06-08 - Task 80: 生产级装配验证 — 配合面/螺栓对齐/干涉检查强化
 
 ### What was done:

@@ -1290,7 +1290,7 @@
       "编写 data/reference/analysis_report.md 分析报告"
     ],
     "priority": 81,
-    "passes": false
+    "passes": true
   },
   {
     "id": 82,
