@@ -437,7 +437,7 @@ class TestToolExecution:
     def test_part_list_execution(self):
         registry = self._make_registry()
         result = registry.execute("part_list")
-        assert "49" in result
+        assert "59" in result
         assert "fastener" in result
 
     def test_part_list_by_category(self):
@@ -467,6 +467,7 @@ class TestCategoryTree:
         expected_categories = {
             "fastener", "bearing", "actuator", "shaft", "gear",
             "transmission", "structural", "mobile_base", "mounting", "sensor",
+            "electronics",
         }
         assert set(CATEGORY_TREE.keys()) == expected_categories
 

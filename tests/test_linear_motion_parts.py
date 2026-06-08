@@ -36,7 +36,7 @@ class TestCatalogRegistration:
             assert pid in PART_CATALOG, f"Missing: {pid}"
 
     def test_total_catalog_size(self):
-        assert len(PART_CATALOG) == 49
+        assert len(PART_CATALOG) == 59
 
     def test_category_tree_updates(self):
         assert "linear_bearing" in CATEGORY_TREE["bearing"]

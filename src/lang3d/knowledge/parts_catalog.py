@@ -119,7 +119,8 @@ CATEGORY_TREE: dict[str, list[str]] = {
     "structural": ["bracket", "plate", "spring", "damper"],
     "mobile_base": ["wheel", "chassis", "motor_bracket", "hub"],
     "mounting": ["standoff", "battery_holder", "pcb_mount"],
-    "sensor": ["lidar", "imu", "camera"],
+    "sensor": ["lidar", "imu", "camera", "encoder", "limit_switch"],
+    "electronics": ["motor_driver", "controller", "power_module", "connector"],
 }
 
 
@@ -1970,6 +1971,329 @@ doc.recompute()
 
 
 # ---------------------------------------------------------------------------
+# Task 75: Electronics & sensor parts
+# ---------------------------------------------------------------------------
+
+# PCB-like part — generic helper used by several electronics templates
+_PCB_BOARD_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("pcb_board")
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+# Mounting holes
+margin = {hole_margin}
+hole_r = {hole_diameter}/2
+for x in [margin, {pcb_length} - margin]:
+    for y in [margin, {pcb_width} - margin]:
+        hole = Part.makeCylinder(hole_r, {pcb_thickness})
+        hole.translate(FreeCAD.Vector(x, y, 0))
+        pcb = pcb.cut(hole)
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# L298N Motor Driver
+_L298N_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("l298n_driver")
+# PCB board
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+# Heatsink (large aluminum block)
+hs = Part.makeBox({heatsink_length}, {heatsink_width}, {heatsink_height})
+hs.translate(FreeCAD.Vector(({pcb_length}-{heatsink_length})/2, ({pcb_width}-{heatsink_width})/2, {pcb_thickness}))
+hs_obj = doc.addObject("Part::Feature", "Heatsink")
+hs_obj.Shape = hs
+# Terminal blocks (2 sides)
+tb_w = 8
+tb_h = 10
+tb1 = Part.makeBox(tb_w, {pcb_width}*0.8, tb_h)
+tb1.translate(FreeCAD.Vector(3, {pcb_width}*0.1, {pcb_thickness}))
+tb1_obj = doc.addObject("Part::Feature", "TerminalBlock1")
+tb1_obj.Shape = tb1
+tb2 = Part.makeBox(tb_w, {pcb_width}*0.8, tb_h)
+tb2.translate(FreeCAD.Vector({pcb_length}-3-tb_w, {pcb_width}*0.1, {pcb_thickness}))
+tb2_obj = doc.addObject("Part::Feature", "TerminalBlock2")
+tb2_obj.Shape = tb2
+# Mounting holes
+for x in [7, {pcb_length}-7]:
+    for y in [7, {pcb_width}-7]:
+        hole = Part.makeCylinder(1.5, {pcb_thickness}+1)
+        hole.translate(FreeCAD.Vector(x, y, -0.5))
+        pcb = pcb.cut(hole)
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# TB6612FNG Motor Driver (small breakout)
+_TB6612FNG_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("tb6612fng_driver")
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+# Pin headers (2 rows)
+pin_h = 8
+pin_w = {pcb_width} * 0.9
+for x in [2, {pcb_length}-4]:
+    header = Part.makeBox(2, pin_w, pin_h)
+    header.translate(FreeCAD.Vector(x, ({pcb_width}-pin_w)/2, {pcb_thickness}))
+    header_obj = doc.addObject("Part::Feature", "PinHeader")
+    header_obj.Shape = header
+# IC chip
+chip = Part.makeBox(7, 7, 1.5)
+chip.translate(FreeCAD.Vector(({pcb_length}-7)/2, ({pcb_width}-7)/2, {pcb_thickness}))
+chip_obj = doc.addObject("Part::Feature", "IC")
+chip_obj.Shape = chip
+# Mounting holes
+for x in [3, {pcb_length}-3]:
+    for y in [3, {pcb_width}-3]:
+        hole = Part.makeCylinder(0.8, {pcb_thickness})
+        hole.translate(FreeCAD.Vector(x, y, 0))
+        pcb = pcb.cut(hole)
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# Arduino Uno
+_ARDUINO_UNO_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("arduino_uno")
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+# USB connector
+usb = Part.makeBox(13, 12, 6)
+usb.translate(FreeCAD.Vector(-1, ({pcb_width}-12)/2, {pcb_thickness}))
+usb_obj = doc.addObject("Part::Feature", "USB")
+usb_obj.Shape = usb
+# MCU chip
+chip = Part.makeBox(10, 10, 2)
+chip.translate(FreeCAD.Vector(({pcb_length}-10)/2, ({pcb_width}-10)/2, {pcb_thickness}))
+chip_obj = doc.addObject("Part::Feature", "MCU")
+chip_obj.Shape = chip
+# Pin headers (2 long sides)
+pin_h = 9
+for y_off in [3, {pcb_width}-5]:
+    header = Part.makeBox({pcb_length}-25, 2, pin_h)
+    header.translate(FreeCAD.Vector(15, y_off, {pcb_thickness}))
+    header_obj = doc.addObject("Part::Feature", "PinHeader")
+    header_obj.Shape = header
+# DC barrel jack
+jack = Part.makeCylinder(5, 10)
+jack.translate(FreeCAD.Vector(8, {pcb_width}/2, {pcb_thickness}))
+jack.rotate(FreeCAD.Vector(8, {pcb_width}/2, {pcb_thickness}), FreeCAD.Vector(0, 1, 0), 90)
+jack_obj = doc.addObject("Part::Feature", "DCJack")
+jack_obj.Shape = jack
+# Mounting holes
+for x in [14, {pcb_length}-14]:
+    for y in [6, {pcb_width}-6]:
+        hole = Part.makeCylinder(1.6, {pcb_thickness})
+        hole.translate(FreeCAD.Vector(x, y, 0))
+        pcb = pcb.cut(hole)
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# Arduino Nano
+_ARDUINO_NANO_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("arduino_nano")
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+# USB mini connector
+usb = Part.makeBox(8, 8, 3.5)
+usb.translate(FreeCAD.Vector(-1, ({pcb_width}-8)/2, {pcb_thickness}))
+usb_obj = doc.addObject("Part::Feature", "USB")
+usb_obj.Shape = usb
+# Pin headers (2 long sides)
+pin_h = 7
+for y_off in [1, {pcb_width}-3]:
+    header = Part.makeBox({pcb_length}-6, 2, pin_h)
+    header.translate(FreeCAD.Vector(3, y_off, {pcb_thickness}))
+    header_obj = doc.addObject("Part::Feature", "PinHeader")
+    header_obj.Shape = header
+# MCU chip
+chip = Part.makeBox(7, 7, 1.5)
+chip.translate(FreeCAD.Vector(({pcb_length}-7)/2, ({pcb_width}-7)/2, {pcb_thickness}))
+chip_obj = doc.addObject("Part::Feature", "MCU")
+chip_obj.Shape = chip
+# Mounting holes
+for x in [4, {pcb_length}-4]:
+    hole = Part.makeCylinder(0.8, {pcb_thickness})
+    hole.translate(FreeCAD.Vector(x, {pcb_width}/2, 0))
+    pcb = pcb.cut(hole)
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# ESP32 DevKit
+_ESP32_DEVKIT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("esp32_devkit")
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+# USB micro connector
+usb = Part.makeBox(9, 8, 3.5)
+usb.translate(FreeCAD.Vector(({pcb_length}-9)/2, -1, {pcb_thickness}))
+usb_obj = doc.addObject("Part::Feature", "USB")
+usb_obj.Shape = usb
+# ESP32 module (metal shield)
+shield = Part.makeBox(18, 20, 3)
+shield.translate(FreeCAD.Vector(({pcb_length}-18)/2, ({pcb_width}-20)/2, {pcb_thickness}))
+shield_obj = doc.addObject("Part::Feature", "ESP32Module")
+shield_obj.Shape = shield
+# Pin headers (2 long sides)
+pin_h = 7
+for x_off in [2, {pcb_length}-4]:
+    header = Part.makeBox(2, {pcb_width}-4, pin_h)
+    header.translate(FreeCAD.Vector(x_off, 2, {pcb_thickness}))
+    header_obj = doc.addObject("Part::Feature", "PinHeader")
+    header_obj.Shape = header
+# Mounting holes
+for x in [4, {pcb_length}-4]:
+    for y in [4, {pcb_width}-4]:
+        hole = Part.makeCylinder(0.8, {pcb_thickness})
+        hole.translate(FreeCAD.Vector(x, y, 0))
+        pcb = pcb.cut(hole)
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# AS5600 Magnetic Encoder
+_AS5600_ENCODER_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("as5600_encoder")
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+# IC chip (center)
+chip = Part.makeBox(5, 5, 1.2)
+chip.translate(FreeCAD.Vector(({pcb_length}-5)/2, ({pcb_width}-5)/2, {pcb_thickness}))
+chip_obj = doc.addObject("Part::Feature", "AS5600_IC")
+chip_obj.Shape = chip
+# Center hole for shaft
+center_hole = Part.makeCylinder({center_hole_diameter}/2, {pcb_thickness})
+center_hole.translate(FreeCAD.Vector({pcb_length}/2, {pcb_width}/2, 0))
+pcb = pcb.cut(center_hole)
+# Magnet (small cylinder above IC)
+magnet = Part.makeCylinder({magnet_diameter}/2, {magnet_height})
+magnet.translate(FreeCAD.Vector({pcb_length}/2, {pcb_width}/2, {pcb_thickness}+1))
+magnet_obj = doc.addObject("Part::Feature", "Magnet")
+magnet_obj.Shape = magnet
+# Pin headers
+pin_h = 6
+header = Part.makeBox(2, {pcb_width}*0.7, pin_h)
+header.translate(FreeCAD.Vector(2, {pcb_width}*0.15, {pcb_thickness}))
+header_obj = doc.addObject("Part::Feature", "PinHeader")
+header_obj.Shape = header
+# Mounting holes
+for x in [3, {pcb_length}-3]:
+    for y in [3, {pcb_width}-3]:
+        hole = Part.makeCylinder(0.8, {pcb_thickness})
+        hole.translate(FreeCAD.Vector(x, y, 0))
+        pcb = pcb.cut(hole)
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# Limit Switch (mechanical micro switch)
+_LIMIT_SWITCH_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("limit_switch")
+# Switch body
+body = Part.makeBox({body_length}, {body_width}, {body_height})
+body_obj = doc.addObject("Part::Feature", "Body")
+body_obj.Shape = body
+# Lever arm
+lever = Part.makeBox({lever_length}, 2, 1)
+lever.translate(FreeCAD.Vector({body_length}/2, {body_width}/2, {body_height}))
+lever_obj = doc.addObject("Part::Feature", "Lever")
+lever_obj.Shape = lever
+# Terminals (3 pins on bottom)
+pin_h = 5
+for x_off in [{body_length}*0.2, {body_length}*0.5, {body_length}*0.8]:
+    pin = Part.makeCylinder(0.5, pin_h)
+    pin.translate(FreeCAD.Vector(x_off, {body_width}/2, -pin_h))
+    pin_obj = doc.addObject("Part::Feature", "Pin")
+    pin_obj.Shape = pin
+# Mounting holes
+for x in [3, {body_length}-3]:
+    hole = Part.makeCylinder(1.2, {body_height})
+    hole.translate(FreeCAD.Vector(x, {body_width}/2, 0))
+    body = body.cut(hole)
+body_obj.Shape = body
+doc.recompute()
+"""
+
+# LM2596 Buck Converter
+_LM2596_BUCK_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("lm2596_buck")
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+# Inductor (large cylinder)
+inductor = Part.makeCylinder({inductor_diameter}/2, {inductor_height})
+inductor.translate(FreeCAD.Vector({pcb_length}*0.3, {pcb_width}/2, {pcb_thickness}))
+inductor_obj = doc.addObject("Part::Feature", "Inductor")
+inductor_obj.Shape = inductor
+# IC (small black rectangle)
+ic = Part.makeBox(7, 5, 2)
+ic.translate(FreeCAD.Vector({pcb_length}*0.6, ({pcb_width}-5)/2, {pcb_thickness}))
+ic_obj = doc.addObject("Part::Feature", "IC")
+ic_obj.Shape = ic
+# Potentiometer (adjustable voltage)
+pot = Part.makeCylinder(3, 2)
+pot.translate(FreeCAD.Vector({pcb_length}*0.75, {pcb_width}/2, {pcb_thickness}))
+pot_obj = doc.addObject("Part::Feature", "Potentiometer")
+pot_obj.Shape = pot
+# Pin headers (input + output)
+pin_h = 7
+for x in [5, {pcb_length}-7]:
+    header = Part.makeBox(2, 6, pin_h)
+    header.translate(FreeCAD.Vector(x, ({pcb_width}-6)/2, {pcb_thickness}))
+    header_obj = doc.addObject("Part::Feature", "PinHeader")
+    header_obj.Shape = header
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# XT60 Connector
+_XT60_CONNECTOR_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("xt60_connector")
+body = Part.makeCylinder({body_diameter}/2, {body_length})
+# Gold-plated contacts
+contact_r = {contact_diameter}/2
+contact1 = Part.makeCylinder(contact_r, {body_length}*1.1)
+contact1.translate(FreeCAD.Vector({body_diameter}*0.2, 0, -{body_length}*0.05))
+contact2 = Part.makeCylinder(contact_r, {body_length}*1.1)
+contact2.translate(FreeCAD.Vector(-{body_diameter}*0.2, 0, -{body_length}*0.05))
+body = body.cut(contact1).cut(contact2)
+obj = doc.addObject("Part::Feature", "XT60")
+obj.Shape = body
+doc.recompute()
+"""
+
+# JST-XH Connector (2-6 pin)
+_JST_XH_CONNECTOR_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("jst_xh_connector")
+n_pins = {num_pins}
+body_w = n_pins * 2.5 + 2
+body = Part.makeBox(body_w, {body_width}, {body_height})
+# Pin slots
+for i in range(n_pins):
+    x = 2.5 + i * 2.5
+    pin = Part.makeCylinder(0.5, {body_height}*1.3)
+    pin.translate(FreeCAD.Vector(x, {body_width}/2, -{body_height}*0.15))
+    pin_obj = doc.addObject("Part::Feature", "Pin_" + str(i))
+    pin_obj.Shape = pin
+obj = doc.addObject("Part::Feature", "JST_XH")
+obj.Shape = body
+doc.recompute()
+"""
+
+
+# ---------------------------------------------------------------------------
 # Standard parts catalog (25+ templates)
 # ---------------------------------------------------------------------------
 
@@ -3317,6 +3641,254 @@ PART_CATALOG: dict[str, PartTemplate] = {
         notes="液压阻尼器通过节流孔产生阻尼力。机器人常用型号行程25-100mm。"
               "两端环耳安装方式。缸体充氮气或液压油。",
     ),
+
+    # ---- Task 75: Electronics & sensor parts ----
+
+    "driver_l298n": PartTemplate(
+        id="driver_l298n",
+        name_en="L298N Motor Driver",
+        name_cn="L298N 电机驱动板",
+        category="electronics",
+        subcategory="motor_driver",
+        description="L298N 双H桥电机驱动板，驱动2路直流电机或1路步进电机，带散热片",
+        tags=["电机驱动", "L298N", "motor driver", "H-bridge", "双路", "driver"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="STMicroelectronics", model_number="L298N",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 43.0, 20, 80, 0.5, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 43.0, 20, 80, 0.5, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+            ParamDef("heatsink_length", "散热片长", "mm", 20.0, 5, 40, 0.5, fixed=True),
+            ParamDef("heatsink_width", "散热片宽", "mm", 15.0, 5, 30, 0.5, fixed=True),
+            ParamDef("heatsink_height", "散热片高", "mm", 10.0, 3, 20, 0.5, fixed=True),
+        ],
+        fc_script_template=_L298N_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 43.0, "pcb_width": 43.0, "pcb_thickness": 1.6,
+             "heatsink_length": 20.0, "heatsink_width": 15.0, "heatsink_height": 10.0},
+        ],
+        notes="逻辑电压5V，驱动电压5-35V，单路最大电流2A（峰值3A）。内置5V稳压输出。"
+              "板载散热片必须安装。4×M3安装孔。",
+    ),
+
+    "driver_tb6612fng": PartTemplate(
+        id="driver_tb6612fng",
+        name_cn="TB6612FNG 电机驱动模块",
+        name_en="TB6612FNG Motor Driver Breakout",
+        category="electronics",
+        subcategory="motor_driver",
+        description="TB6612FNG 小型双H桥电机驱动模块，体积小巧，适合微型机器人",
+        tags=["电机驱动", "TB6612FNG", "motor driver", "小型", "breakout"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Toshiba", model_number="TB6612FNG",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 20.0, 10, 40, 0.5, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 15.0, 8, 30, 0.5, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+        ],
+        fc_script_template=_TB6612FNG_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 20.0, "pcb_width": 15.0, "pcb_thickness": 1.6},
+        ],
+        notes="驱动电压2.5-13.5V，单路最大电流1.2A（峰值3.2A）。比L298N更小更高效。"
+              "需要PWM控制。无内置散热片。",
+    ),
+
+    "controller_arduino_uno": PartTemplate(
+        id="controller_arduino_uno",
+        name_cn="Arduino Uno 开发板",
+        name_en="Arduino Uno Rev3",
+        category="electronics",
+        subcategory="controller",
+        description="Arduino Uno Rev3 主控制器，ATmega328P，14路数字I/O+6路模拟输入",
+        tags=["Arduino", "Uno", "主控制器", "开发板", "microcontroller", "ATmega328P"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Arduino", model_number="Uno-Rev3",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 68.6, 30, 100, 0.1, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 53.4, 20, 80, 0.1, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+        ],
+        fc_script_template=_ARDUINO_UNO_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 68.6, "pcb_width": 53.4, "pcb_thickness": 1.6},
+        ],
+        notes="ATmega328P @ 16MHz。工作电压5V，输入电压7-12V。USB Type-B接口。"
+              "4个安装孔M3。尺寸68.6×53.4mm。",
+    ),
+
+    "controller_arduino_nano": PartTemplate(
+        id="controller_arduino_nano",
+        name_cn="Arduino Nano 开发板",
+        name_en="Arduino Nano",
+        category="electronics",
+        subcategory="controller",
+        description="Arduino Nano 小型开发板，ATmega328P，USB Mini-B，适合空间受限场景",
+        tags=["Arduino", "Nano", "小型", "开发板", "microcontroller", "紧凑"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Arduino", model_number="Nano",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 45.0, 20, 80, 0.1, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 18.0, 8, 40, 0.1, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+        ],
+        fc_script_template=_ARDUINO_NANO_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 45.0, "pcb_width": 18.0, "pcb_thickness": 1.6},
+        ],
+        notes="ATmega328P @ 16MHz。尺寸45×18mm。30针排针接口。USB Mini-B供电/下载。"
+              "适合嵌入小型机器人。",
+    ),
+
+    "controller_esp32_devkit": PartTemplate(
+        id="controller_esp32_devkit",
+        name_cn="ESP32 DevKit 开发板",
+        name_en="ESP32 DevKit V1",
+        category="electronics",
+        subcategory="controller",
+        description="ESP32 DevKit V1，双核Wi-Fi+BLE微控制器，适合IoT和机器人",
+        tags=["ESP32", "Wi-Fi", "BLE", "开发板", "IoT", "robot", "microcontroller"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Espressif", model_number="ESP32-DevKitC-V4",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 55.0, 25, 80, 0.5, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 28.0, 10, 50, 0.5, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+        ],
+        fc_script_template=_ESP32_DEVKIT_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 55.0, "pcb_width": 28.0, "pcb_thickness": 1.6},
+        ],
+        notes="ESP32-WROOM-32模组。双核240MHz，520KB SRAM，Wi-Fi 802.11 b/g/n，BLE 4.2。"
+              "38针排针接口。USB Micro-B。尺寸55×28mm。",
+    ),
+
+    "encoder_as5600": PartTemplate(
+        id="encoder_as5600",
+        name_cn="AS5600 磁编码器模块",
+        name_en="AS5600 Magnetic Encoder Module",
+        category="sensor",
+        subcategory="encoder",
+        description="AS5600 14-bit 磁编码器，I2C/PWM输出，用于关节角度检测、闭环控制",
+        tags=["编码器", "磁编码器", "AS5600", "角度", "encoder", "magnetic", "I2C"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="ams-OSRAM", model_number="AS5600",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 22.0, 10, 40, 0.5, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 22.0, 10, 40, 0.5, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+            ParamDef("center_hole_diameter", "中心孔径", "mm", 6.0, 2, 15, 0.5, fixed=True),
+            ParamDef("magnet_diameter", "磁铁直径", "mm", 6.0, 2, 10, 0.5, fixed=True),
+            ParamDef("magnet_height", "磁铁高度", "mm", 2.5, 1, 5, 0.5, fixed=True),
+        ],
+        fc_script_template=_AS5600_ENCODER_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 22.0, "pcb_width": 22.0, "pcb_thickness": 1.6,
+             "center_hole_diameter": 6.0, "magnet_diameter": 6.0, "magnet_height": 2.5},
+        ],
+        notes="14-bit分辨率（0.022°/step）。I2C地址0x36。内径6mm中孔，用于安装在轴端。"
+              "需配合径向磁化磁铁（直径6mm）使用。功耗约5mA@3.3V。",
+    ),
+
+    "limit_switch_kw12": PartTemplate(
+        id="limit_switch_kw12",
+        name_cn="KW12-3 微动限位开关",
+        name_en="KW12-3 Limit Switch (Micro Switch)",
+        category="sensor",
+        subcategory="limit_switch",
+        description="KW12-3 机械微动限位开关，用于机器人限位/零点检测",
+        tags=["限位开关", "微动开关", "limit switch", "micro switch", "KW12"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="KW12-3",
+        parameters=[
+            ParamDef("body_length", "本体长度", "mm", 20.0, 8, 40, 0.5, fixed=True),
+            ParamDef("body_width", "本体宽度", "mm", 6.5, 3, 15, 0.5, fixed=True),
+            ParamDef("body_height", "本体高度", "mm", 10.5, 5, 20, 0.5, fixed=True),
+            ParamDef("lever_length", "杠杆长度", "mm", 15.0, 5, 30, 0.5, fixed=True),
+        ],
+        fc_script_template=_LIMIT_SWITCH_SCRIPT,
+        standard_sizes=[
+            {"body_length": 20.0, "body_width": 6.5, "body_height": 10.5, "lever_length": 15.0},
+            {"body_length": 20.0, "body_width": 6.5, "body_height": 10.5, "lever_length": 25.0},
+        ],
+        notes="SPDT（单刀双掷），3引脚（COM/NC/NO）。额定电流5A@250VAC。"
+              "机械寿命100万次以上。杠杆长度有多种变体。",
+    ),
+
+    "power_lm2596_buck": PartTemplate(
+        id="power_lm2596_buck",
+        name_cn="LM2596 降压模块",
+        name_en="LM2596 Buck Converter Module",
+        category="electronics",
+        subcategory="power_module",
+        description="LM2596 可调降压模块，输入4-35V，输出1.5-30V可调，机器人电源常用",
+        tags=["降压模块", "LM2596", "buck converter", "电源", "power", "voltage regulator"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (Texas Instruments clone)", model_number="LM2596",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 43.0, 20, 80, 0.5, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 21.0, 10, 50, 0.5, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+            ParamDef("inductor_diameter", "电感直径", "mm", 15.0, 5, 30, 0.5, fixed=True),
+            ParamDef("inductor_height", "电感高度", "mm", 8.0, 3, 15, 0.5, fixed=True),
+        ],
+        fc_script_template=_LM2596_BUCK_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 43.0, "pcb_width": 21.0, "pcb_thickness": 1.6,
+             "inductor_diameter": 15.0, "inductor_height": 8.0},
+        ],
+        notes="输出电流最大3A（建议2A以内长期使用）。效率约80-90%。"
+              "蓝色可调电位器调输出电压。输入输出各2针（IN+/IN-/OUT+/OUT-）。",
+    ),
+
+    "connector_xt60": PartTemplate(
+        id="connector_xt60",
+        name_cn="XT60 电源连接器",
+        name_en="XT60 Power Connector",
+        category="electronics",
+        subcategory="connector",
+        description="XT60 电源连接器，无人机/机器人电池常用，额定电流60A",
+        tags=["连接器", "XT60", "电源", "connector", "battery", "power"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (AMASS clone)", model_number="XT60",
+        parameters=[
+            ParamDef("body_diameter", "本体直径", "mm", 12.0, 6, 20, 0.5, fixed=True),
+            ParamDef("body_length", "本体长度", "mm", 16.0, 8, 30, 0.5, fixed=True),
+            ParamDef("contact_diameter", "触点直径", "mm", 3.0, 1.5, 5, 0.5, fixed=True),
+        ],
+        fc_script_template=_XT60_CONNECTOR_SCRIPT,
+        standard_sizes=[
+            {"body_diameter": 12.0, "body_length": 16.0, "contact_diameter": 3.0},
+        ],
+        notes="额定电压600V，额定电流60A。镀金铜触点。阻燃PA材质。"
+              "公头接电池端（红线+，黑线-）。常用于无人机/AGV电池接口。",
+    ),
+
+    "connector_jst_xh": PartTemplate(
+        id="connector_jst_xh",
+        name_cn="JST-XH 连接器",
+        name_en="JST-XH Connector (2-6 pin)",
+        category="electronics",
+        subcategory="connector",
+        description="JST-XH 连接器，2-6针，信号/传感器接线常用",
+        tags=["连接器", "JST", "XH", "connector", "信号", "sensor"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="JST", model_number="XH",
+        parameters=[
+            ParamDef("num_pins", "针数", "", 4, 2, 6, 1, fixed=True),
+            ParamDef("body_width", "本体宽度", "mm", 5.0, 3, 8, 0.5, fixed=True),
+            ParamDef("body_height", "本体高度", "mm", 7.0, 4, 12, 0.5, fixed=True),
+        ],
+        fc_script_template=_JST_XH_CONNECTOR_SCRIPT,
+        standard_sizes=[
+            {"num_pins": 2, "body_width": 5.0, "body_height": 7.0},
+            {"num_pins": 3, "body_width": 5.0, "body_height": 7.0},
+            {"num_pins": 4, "body_width": 5.0, "body_height": 7.0},
+            {"num_pins": 6, "body_width": 5.0, "body_height": 7.0},
+        ],
+        notes="额定电压250V，额定电流3A。间距2.5mm。常用于传感器、舵机、限位开关接线。"
+              "白色外壳，带锁扣防松脱。",
+    ),
 }
 
 
@@ -3461,7 +4033,13 @@ _SUBSYSTEM_COMPAT: dict[str, list[str]] = {
                        "bldc_motor_5010", "bldc_motor_2208",
                        "compression_spring", "damper_shock_absorber"],
     "perception": ["sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam",
+                    "encoder_as5600", "limit_switch_kw12",
                     "mounting_plate", "l_bracket", "standoff_hex"],
+    "electronics": ["driver_l298n", "driver_tb6612fng",
+                      "controller_arduino_uno", "controller_arduino_nano",
+                      "controller_esp32_devkit",
+                      "power_lm2596_buck", "connector_xt60", "connector_jst_xh",
+                      "standoff_hex", "pcb_mount", "battery_holder_18650"],
 }
 
 # Dimension-based compatibility: maps parameter name patterns to matching parts

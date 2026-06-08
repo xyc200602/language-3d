@@ -4,6 +4,40 @@
 
 ---
 
+## 2026-06-08 - Task 75: 电子与传感器零件库
+
+### What was done:
+- 修改 `src/lang3d/knowledge/parts_catalog.py` — 新增 10 个电子/传感器零件模板
+  - L298N 电机驱动板 (driver_l298n): 含散热片+接线端子+安装孔建模
+  - TB6612FNG 小型电机驱动 (driver_tb6612fng): 含IC芯片+排针建模
+  - Arduino Uno Rev3 (controller_arduino_uno): 含USB+MCU+排针+DC插孔建模
+  - Arduino Nano (controller_arduino_nano): 含USB Mini-B+MCU+排针建模
+  - ESP32 DevKit (controller_esp32_devkit): 含ESP32模组+USB+排针建模
+  - AS5600 磁编码器 (encoder_as5600): 含中心轴孔+磁铁+IC建模，14-bit
+  - KW12-3 限位开关 (limit_switch_kw12): 含杠杆+3引脚+安装孔建模，2种杠杆长度
+  - LM2596 降压模块 (power_lm2596_buck): 含电感+IC+电位器+排针建模
+  - XT60 电源连接器 (connector_xt60): 含镀金触点建模，60A额定
+  - JST-XH 连接器 (connector_jst_xh): 2-6针可配置，含引脚建模
+- 新增 CATEGORY_TREE "electronics" 类别 (motor_driver/controller/power_module/connector)
+- 更新 sensor 子类别: 新增 encoder, limit_switch
+- 新增 _SUBSYSTEM_COMPAT "electronics" 和 "perception" 更新
+- 更新 test_part_library.py: 模板数 49→59, 新增 electronics 类别
+
+### Testing:
+- 新建 tests/test_electronics_parts.py — 68 个测试
+- 全部 570 个相关测试通过
+- 修复 3 个 test_part_library.py 兼容性断言
+- 零回归
+
+### Notes:
+- 所有 10 个新模板标记 part_class='functional', scalable=False
+- 电子件建模侧重 PCB+关键元器件 (USB/IC/排针/散热片) 的几何表达
+- AS5600 含中心轴孔 (6mm) 和磁铁，可直接用于关节闭环
+- 限位开关提供两种杠杆长度 (15mm/25mm) 标准尺寸
+- 零件库总数：59 个模板
+
+---
+
 ## 2026-06-08 - Task 74: 直线运动与高级执行器零件库
 
 ### What was done:
