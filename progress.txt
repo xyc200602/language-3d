@@ -4,6 +4,41 @@
 
 ---
 
+## 2026-06-08 - Task 74: 直线运动与高级执行器零件库
+
+### What was done:
+- 修改 `src/lang3d/knowledge/parts_catalog.py` — 新增 10 个零件模板
+  - LM8UU 直线轴承 (linear_bearing_lm8uu): 内径8/外径15/长24mm，简化+真实(钢珠)建模
+  - LM10UU 直线轴承 (linear_bearing_lm10uu): 内径10/外径19/长29mm
+  - LM12UU 直线轴承 (linear_bearing_lm12uu): 内径12/外径21/长30mm
+  - MGN12H 直线导轨 (linear_guide_mgn12h): 轨道+滑块，200/300/500mm三种长度
+  - T8 丝杠 (t8_leadscrew): Tr8×8/Tr8×4/Tr8×2三种导程，简化+真实梯形螺纹
+  - T8 法兰螺母 (t8_nut): 黄铜材质，4×M3法兰安装孔
+  - 5010 BLDC 外转子无刷电机 (bldc_motor_5010): 定子+转子+轴建模
+  - 2208 BLDC 无刷电机 (bldc_motor_2208): 小型版
+  - 压缩弹簧 (compression_spring): DIN 2098，参数化线径/外径/圈数/长度，螺旋扫掠
+  - 阻尼器/减震器 (damper_shock_absorber): 缸体+活塞杆+环耳安装
+- 更新 CATEGORY_TREE: bearing 新增 linear_bearing, shaft 新增 leadscrew, actuator 新增 bldc, structural 新增 spring/damper
+- 新增 "linear_motion" 子系统映射
+- 修改 format_fc_script(): 支持 leadscrew_detail 参数
+- 更新 test_part_library.py: 模板数 39→49, bearing count 3→7
+
+### Testing:
+- 新建 tests/test_linear_motion_parts.py — 86 个测试
+- 全部 502 个相关测试通过
+- 修复 3 个 test_part_library.py 兼容性断言
+- 零回归
+
+### Notes:
+- 所有 10 个新模板标记 part_class='functional', scalable=False
+- 直线轴承与光轴尺寸兼容性已验证 (LM8UU ↔ 8mm shaft)
+- 丝杠螺母与丝杠直径匹配 (T8 nut bore ↔ T8 screw diameter)
+- BLDC 电机建模区分外转子(5010)和小型(2208)两种规格
+- 弹簧使用 makeHelix + makePipe 螺旋扫掠，含降级处理
+- 零件库总数：49 个模板
+
+---
+
 ## 2026-06-08 - Task 73: 传动零件库 — 同步带/轮、联轴器、键槽
 
 ### What was done:

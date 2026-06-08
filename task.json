@@ -1147,7 +1147,7 @@
       "验证全量测试无回归"
     ],
     "priority": 74,
-    "passes": false
+    "passes": true
   },
   {
     "id": 75,

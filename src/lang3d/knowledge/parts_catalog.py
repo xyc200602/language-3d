@@ -108,12 +108,15 @@ class GeneratedPart:
 
 CATEGORY_TREE: dict[str, list[str]] = {
     "fastener": ["screw", "nut", "washer", "bolt"],
-    "bearing": ["ball_bearing"],
-    "actuator": ["servo", "stepper", "dc_motor"],
-    "shaft": ["linear", "coupling"],
+    "bearing": ["ball_bearing", "linear_bearing"],
+
+    "actuator": ["servo", "stepper", "dc_motor", "bldc"],
+
+    "shaft": ["linear", "coupling", "leadscrew"],
+
     "gear": ["spur"],
     "transmission": ["timing_pulley", "timing_belt", "rigid_coupling", "flexible_coupling"],
-    "structural": ["bracket", "plate"],
+    "structural": ["bracket", "plate", "spring", "damper"],
     "mobile_base": ["wheel", "chassis", "motor_bracket", "hub"],
     "mounting": ["standoff", "battery_holder", "pcb_mount"],
     "sensor": ["lidar", "imu", "camera"],
@@ -1671,6 +1674,302 @@ def recommend_key_length(shaft_diameter: float, required_length: float) -> float
 
 
 # ---------------------------------------------------------------------------
+# Task 74: Linear motion & advanced actuator parts
+# ---------------------------------------------------------------------------
+
+# Linear Ball Bearing (LM8UU type) — simplified
+_LINEAR_BEARING_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("linear_bearing")
+OD = {outer_diameter}
+ID = {inner_diameter}
+L = {length}
+# Outer cylinder
+outer = Part.makeCylinder(OD/2, L)
+inner_cut = Part.makeCylinder(ID/2, L)
+body = outer.cut(inner_cut)
+obj = doc.addObject("Part::Feature", "LinearBearing")
+obj.Shape = body
+doc.recompute()
+"""
+
+# Linear Ball Bearing — realistic (outer ring, inner groove, balls)
+_LINEAR_BEARING_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("linear_bearing_realistic")
+OD = {outer_diameter}
+ID = {inner_diameter}
+L = {length}
+n_balls = int({ball_count}) if int({ball_count}) > 0 else 4
+
+gap = (OD - ID) / 2.0
+ball_d = gap * 0.55
+pitch_r = (OD + ID) / 4.0
+# Outer ring
+outer_ring = Part.makeCylinder(OD/2, L)
+outer_bore = Part.makeCylinder(ID/2 + gap*0.35, L)
+outer_ring = outer_ring.cut(outer_bore)
+# Inner ring (thin sleeve)
+inner_od = ID/2 + gap*0.30
+inner_ring = Part.makeCylinder(inner_od, L)
+inner_bore = Part.makeCylinder(ID/2, L)
+inner_ring = inner_ring.cut(inner_bore)
+inner_obj = doc.addObject("Part::Feature", "InnerRing")
+inner_obj.Shape = inner_ring
+# Balls in 2-4 rows
+n_rows = max(2, n_balls // 6)
+balls_per_row = max(4, n_balls // n_rows)
+row_spacing = L / (n_rows + 1)
+ball_idx = 0
+for row in range(n_rows):
+    z = row_spacing * (row + 1)
+    for i in range(balls_per_row):
+        angle = 2 * math.pi * i / balls_per_row
+        x = pitch_r * math.cos(angle)
+        y = pitch_r * math.sin(angle)
+        ball = Part.makeSphere(ball_d/2)
+        ball.translate(FreeCAD.Vector(x, y, z))
+        ball_name = "Ball_" + str(ball_idx)
+        ball_obj = doc.addObject("Part::Feature", ball_name)
+        ball_obj.Shape = ball
+        ball_idx += 1
+outer_obj = doc.addObject("Part::Feature", "OuterRing")
+outer_obj.Shape = outer_ring
+doc.recompute()
+"""
+
+# MGN12 Linear Guide Rail — simplified
+_LINEAR_GUIDE_RAIL_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("linear_guide_rail")
+rl = {rail_length}
+rw = {rail_width}
+rh = {rail_height}
+# Rail body
+rail = Part.makeBox(rl, rw, rh)
+# Ball groove channels (2 grooves on top)
+groove_r = rw * 0.15
+for y_off in [rw*0.3, rw*0.7]:
+    groove = Part.makeCylinder(groove_r, rl)
+    groove.rotate(FreeCAD.Vector(0, y_off, rh), FreeCAD.Vector(1, 0, 0), 90)
+    rail = rail.cut(groove)
+# Mounting holes
+mh_r = {mounting_hole_diameter}/2
+spacing = {mounting_hole_pitch}
+n_holes = max(2, int(rl / spacing))
+for i in range(n_holes):
+    hx = spacing/2 + i * spacing
+    if hx > rl - spacing/2:
+        break
+    hole = Part.makeCylinder(mh_r, rh)
+    hole.translate(FreeCAD.Vector(hx, rw/2, 0))
+    rail = rail.cut(hole)
+obj = doc.addObject("Part::Feature", "Rail")
+obj.Shape = rail
+doc.recompute()
+"""
+
+# MGN12 Linear Guide Carriage (Slider) — simplified
+_LINEAR_GUIDE_CARRIAGE_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("linear_guide_carriage")
+cl = {carriage_length}
+cw = {carriage_width}
+ch = {carriage_height}
+rw = {rail_width}
+# Carriage body
+body = Part.makeBox(cl, cw, ch)
+# Mounting holes on top
+mh_r = {mounting_hole_diameter}/2
+mh_spacing = cl * 0.6
+for x in [cl*0.2, cl*0.8]:
+    for y in [cw*0.25, cw*0.75]:
+        hole = Part.makeCylinder(mh_r, ch*0.5)
+        hole.translate(FreeCAD.Vector(x, y, ch*0.5))
+        body = body.cut(hole)
+# Groove channels on bottom (matching rail)
+groove_r = rw * 0.15
+for y_off in [cw*0.3, cw*0.7]:
+    groove = Part.makeCylinder(groove_r, cl)
+    groove.rotate(FreeCAD.Vector(cl/2, y_off, 0), FreeCAD.Vector(0, 1, 0), 90)
+    groove.translate(FreeCAD.Vector(-cl/2, 0, groove_r*0.5))
+    body = body.cut(groove)
+obj = doc.addObject("Part::Feature", "Carriage")
+obj.Shape = body
+doc.recompute()
+"""
+
+# T8 Leadscrew — simplified cylinder
+_T8_LEADSCREW_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("t8_leadscrew")
+shaft = Part.makeCylinder({diameter}/2, {length})
+obj = doc.addObject("Part::Feature", "Leadscrew")
+obj.Shape = shaft
+doc.recompute()
+"""
+
+# T8 Leadscrew — realistic (trapezoidal thread)
+_T8_LEADSCREW_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("t8_leadscrew_realistic")
+d = {diameter}
+l = {length}
+lead = {lead}
+pitch = lead  # single start
+# Core shaft
+minor_r = d/2 - 1.0
+shaft = Part.makeCylinder(minor_r, l)
+# Trapezoidal thread via helical sweep
+try:
+    pitch_r = d/2 - 0.5
+    helix = Part.makeHelix(pitch, l, pitch_r)
+    thread_h = d/2 - minor_r
+    profile_pts = [
+        FreeCAD.Vector(0, 0, 0),
+        FreeCAD.Vector(thread_h, 0, pitch*0.15),
+        FreeCAD.Vector(thread_h*0.8, 0, pitch*0.35),
+        FreeCAD.Vector(0, 0, pitch*0.5),
+    ]
+    profile_wire = Part.makePolygon(profile_pts + [profile_pts[0]])
+    profile_face = Part.Face(profile_wire)
+    thread = profile_face.makePipe(helix)
+    result = shaft.fuse(thread)
+    obj = doc.addObject("Part::Feature", "Leadscrew")
+    obj.Shape = result
+except Exception:
+    obj = doc.addObject("Part::Feature", "Leadscrew")
+    obj.Shape = Part.makeCylinder(d/2, l)
+doc.recompute()
+"""
+
+# T8 Leadscrew Nut — simplified
+_T8_NUT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("t8_nut")
+od = {outer_diameter}
+l = {length}
+bore = {bore_diameter}
+body = Part.makeCylinder(od/2, l)
+hole = Part.makeCylinder(bore/2, l)
+body = body.cut(hole)
+# Flange (if applicable)
+flange_od = {flange_diameter}
+if flange_od > od:
+    flange = Part.makeCylinder(flange_od/2, {flange_thickness})
+    body = body.fuse(flange)
+    # Flange mounting holes
+    import math
+    for i in range(4):
+        angle = math.pi/2 * i + math.pi/4
+        hx = flange_od/2 * 0.7 * math.cos(angle)
+        hy = flange_od/2 * 0.7 * math.sin(angle)
+        fhole = Part.makeCylinder({flange_hole_diameter}/2, {flange_thickness})
+        fhole.translate(FreeCAD.Vector(hx, hy, 0))
+        body = body.cut(fhole)
+obj = doc.addObject("Part::Feature", "T8Nut")
+obj.Shape = body
+doc.recompute()
+"""
+
+# BLDC Motor (outrunner) — simplified
+_BLDC_MOTOR_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("bldc_motor")
+# Stator (inner, fixed)
+stator_od = {stator_outer_diameter}
+stator_id = {stator_inner_diameter}
+stator_l = {stator_length}
+stator_outer = Part.makeCylinder(stator_od/2, stator_l)
+stator_bore = Part.makeCylinder(stator_id/2, stator_l)
+stator = stator_outer.cut(stator_bore)
+stator_obj = doc.addObject("Part::Feature", "Stator")
+stator_obj.Shape = stator
+# Rotor (outer, rotating) — outrunner: rotor wraps around stator
+rotor_od = {rotor_outer_diameter}
+rotor_id = {rotor_inner_diameter}
+rotor_l = {rotor_length}
+rotor_outer = Part.makeCylinder(rotor_od/2, rotor_l)
+rotor_inner = Part.makeCylinder(rotor_id/2, rotor_l)
+rotor = rotor_outer.cut(rotor_inner)
+rotor.translate(FreeCAD.Vector(0, 0, -0.5))
+rotor_obj = doc.addObject("Part::Feature", "Rotor")
+rotor_obj.Shape = rotor
+# Shaft
+shaft = Part.makeCylinder({shaft_diameter}/2, {shaft_length})
+shaft.translate(FreeCAD.Vector(0, 0, -{shaft_length}+{stator_length}/2))
+shaft_obj = doc.addObject("Part::Feature", "Shaft")
+shaft_obj.Shape = shaft
+doc.recompute()
+"""
+
+# Compression Spring — parametric helix
+_COMPRESSION_SPRING_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("compression_spring")
+wire_r = {wire_diameter}/2
+coil_r = {outer_diameter}/2 - wire_r
+n_coils = {active_coils}
+free_length = {free_length}
+pitch = free_length / n_coils
+try:
+    # Helix path
+    helix = Part.makeHelix(pitch, free_length, coil_r)
+    # Wire cross-section (circle)
+    wire_circle = Part.makeCircle(wire_r)
+    wire_face = Part.Face(wire_circle)
+    wire_face.translate(FreeCAD.Vector(coil_r, 0, 0))
+    # Sweep wire along helix
+    spring = wire_face.makePipe(helix)
+    obj = doc.addObject("Part::Feature", "Spring")
+    obj.Shape = spring
+except Exception:
+    # Fallback: simplified cylinder representation
+    body = Part.makeCylinder({outer_diameter}/2, free_length)
+    inner = Part.makeCylinder({outer_diameter}/2 - {wire_diameter}, free_length)
+    body = body.cut(inner)
+    obj = doc.addObject("Part::Feature", "Spring")
+    obj.Shape = body
+doc.recompute()
+"""
+
+# Damper / Shock Absorber
+_DAMPER_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("damper")
+# Cylinder body
+cyl_od = {cylinder_diameter}
+cyl_l = {cylinder_length}
+cylinder = Part.makeCylinder(cyl_od/2, cyl_l)
+# Piston rod
+rod_d = {rod_diameter}
+rod_l = {rod_length}
+rod = Part.makeCylinder(rod_d/2, rod_l)
+rod.translate(FreeCAD.Vector(0, 0, cyl_l))
+# Eyelet / mount at top
+mount_r = {mount_diameter}/2
+mount = Part.makeCylinder(mount_r, {mount_thickness})
+mount.translate(FreeCAD.Vector(0, 0, cyl_l + rod_l))
+mount_hole = Part.makeCylinder({mount_hole_diameter}/2, {mount_thickness})
+mount = mount.cut(mount_hole)
+# Eyelet at bottom
+mount2 = Part.makeCylinder(mount_r, {mount_thickness})
+mount2.translate(FreeCAD.Vector(0, 0, -{mount_thickness}))
+mount2_hole = Part.makeCylinder({mount_hole_diameter}/2, {mount_thickness})
+mount2 = mount2.cut(mount2_hole)
+cyl_obj = doc.addObject("Part::Feature", "Cylinder")
+cyl_obj.Shape = cylinder
+rod_obj = doc.addObject("Part::Feature", "Rod")
+rod_obj.Shape = rod
+mt1_obj = doc.addObject("Part::Feature", "TopMount")
+mt1_obj.Shape = mount
+mt2_obj = doc.addObject("Part::Feature", "BottomMount")
+mt2_obj.Shape = mount2
+doc.recompute()
+"""
+
+
+# ---------------------------------------------------------------------------
 # Standard parts catalog (25+ templates)
 # ---------------------------------------------------------------------------
 
@@ -2715,6 +3014,309 @@ PART_CATALOG: dict[str, PartTemplate] = {
         ],
         notes="不锈钢波纹管提供高扭转刚性和零背隙。适用于伺服电机、编码器、精密传动。",
     ),
+
+    # ---- Task 74: Linear motion & advanced actuator parts ----
+
+    "linear_bearing_lm8uu": PartTemplate(
+        id="linear_bearing_lm8uu",
+        name_en="LM8UU Linear Ball Bearing",
+        name_cn="LM8UU 直线球轴承",
+        category="bearing",
+        subcategory="linear_bearing",
+        description="LM8UU 直线运动球轴承，用于 8mm 光轴上的直线往复运动，3D打印机/CNC最常用",
+        tags=["直线轴承", "LM8UU", "linear bearing", "ball bearing", "直线运动", "3D printer"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (MISUMI/THK clone)", model_number="LM8UU",
+        parameters=[
+            ParamDef("inner_diameter", "内径", "mm", 8.0, 4, 60, 0.1, fixed=True),
+            ParamDef("outer_diameter", "外径", "mm", 15.0, 8, 62, 0.1, fixed=True),
+            ParamDef("length", "长度", "mm", 24.0, 10, 80, 0.5, fixed=True),
+            ParamDef("ball_count", "滚珠数", "", 0, 0, 50, 1, fixed=True),
+            ParamDef("bearing_detail", "细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_LINEAR_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _LINEAR_BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"inner_diameter": 8.0, "outer_diameter": 15.0, "length": 24.0},
+        ],
+        notes="LM8UU是最常见的直线轴承。4~5列钢珠回路。外圈有微小间隙适应壳体。",
+    ),
+
+    "linear_bearing_lm10uu": PartTemplate(
+        id="linear_bearing_lm10uu",
+        name_en="LM10UU Linear Ball Bearing",
+        name_cn="LM10UU 直线球轴承",
+        category="bearing",
+        subcategory="linear_bearing",
+        description="LM10UU 直线运动球轴承，用于 10mm 光轴",
+        tags=["直线轴承", "LM10UU", "linear bearing", "ball bearing", "直线运动"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="LM10UU",
+        parameters=[
+            ParamDef("inner_diameter", "内径", "mm", 10.0, 4, 60, 0.1, fixed=True),
+            ParamDef("outer_diameter", "外径", "mm", 19.0, 8, 62, 0.1, fixed=True),
+            ParamDef("length", "长度", "mm", 29.0, 10, 80, 0.5, fixed=True),
+            ParamDef("ball_count", "滚珠数", "", 0, 0, 50, 1, fixed=True),
+            ParamDef("bearing_detail", "细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_LINEAR_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _LINEAR_BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"inner_diameter": 10.0, "outer_diameter": 19.0, "length": 29.0},
+        ],
+        notes="LM10UU用于10mm光轴。比LM8UU承载力更大。",
+    ),
+
+    "linear_bearing_lm12uu": PartTemplate(
+        id="linear_bearing_lm12uu",
+        name_en="LM12UU Linear Ball Bearing",
+        name_cn="LM12UU 直线球轴承",
+        category="bearing",
+        subcategory="linear_bearing",
+        description="LM12UU 直线运动球轴承，用于 12mm 光轴",
+        tags=["直线轴承", "LM12UU", "linear bearing", "ball bearing", "直线运动"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="LM12UU",
+        parameters=[
+            ParamDef("inner_diameter", "内径", "mm", 12.0, 4, 60, 0.1, fixed=True),
+            ParamDef("outer_diameter", "外径", "mm", 21.0, 8, 62, 0.1, fixed=True),
+            ParamDef("length", "长度", "mm", 30.0, 10, 80, 0.5, fixed=True),
+            ParamDef("ball_count", "滚珠数", "", 0, 0, 50, 1, fixed=True),
+            ParamDef("bearing_detail", "细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_LINEAR_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _LINEAR_BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"inner_diameter": 12.0, "outer_diameter": 21.0, "length": 30.0},
+        ],
+        notes="LM12UU用于12mm光轴。中载荷直线运动。",
+    ),
+
+    "linear_guide_mgn12h": PartTemplate(
+        id="linear_guide_mgn12h",
+        name_en="MGN12H Linear Guide (Rail + Carriage)",
+        name_cn="MGN12H 直线导轨（轨道+滑块）",
+        category="bearing",
+        subcategory="linear_bearing",
+        description="MGN12H 微型直线导轨，12mm轨宽，高载荷滑块，CNC/3D打印机/机械臂常用",
+        tags=["直线导轨", "MGN12", "linear guide", "rail", "carriage", "CNC", "3D printer"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (HIWIN/THK clone)", model_number="MGN12H",
+        parameters=[
+            ParamDef("rail_length", "轨道长度", "mm", 200.0, 50, 2000, 1, fixed=True),
+            ParamDef("rail_width", "轨道宽度", "mm", 12.0, 5, 30, 0.5, fixed=True),
+            ParamDef("rail_height", "轨道高度", "mm", 8.0, 3, 20, 0.5, fixed=True),
+            ParamDef("carriage_length", "滑块长度", "mm", 40.3, 15, 80, 0.1, fixed=True),
+            ParamDef("carriage_width", "滑块宽度", "mm", 27.0, 10, 50, 0.1, fixed=True),
+            ParamDef("carriage_height", "滑块高度", "mm", 10.0, 5, 25, 0.1, fixed=True),
+            ParamDef("mounting_hole_diameter", "安装孔直径", "mm", 3.5, 2, 8, 0.5, fixed=True),
+            ParamDef("mounting_hole_pitch", "安装孔距", "mm", 25.0, 10, 60, 0.5, fixed=True),
+        ],
+        fc_script_template=_LINEAR_GUIDE_RAIL_SCRIPT,
+        quality_levels=["simplified"],
+        standard_sizes=[
+            # MGN12H — 200mm rail
+            {"rail_length": 200, "rail_width": 12.0, "rail_height": 8.0,
+             "carriage_length": 40.3, "carriage_width": 27.0, "carriage_height": 10.0,
+             "mounting_hole_diameter": 3.5, "mounting_hole_pitch": 25.0},
+            # MGN12H — 300mm rail
+            {"rail_length": 300, "rail_width": 12.0, "rail_height": 8.0,
+             "carriage_length": 40.3, "carriage_width": 27.0, "carriage_height": 10.0,
+             "mounting_hole_diameter": 3.5, "mounting_hole_pitch": 25.0},
+            # MGN12H — 500mm rail
+            {"rail_length": 500, "rail_width": 12.0, "rail_height": 8.0,
+             "carriage_length": 40.3, "carriage_width": 27.0, "carriage_height": 10.0,
+             "mounting_hole_diameter": 3.5, "mounting_hole_pitch": 25.0},
+        ],
+        notes="MGN12H：H型高载荷滑块（4列钢珠）。额定动载荷1.67kN，静载荷2.56kN。"
+              "轨道安装孔距25mm。滑块安装孔M3×4。",
+    ),
+
+    "t8_leadscrew": PartTemplate(
+        id="t8_leadscrew",
+        name_en="T8 Leadscrew (Tr8×8)",
+        name_cn="T8 丝杠 (Tr8×8)",
+        category="shaft",
+        subcategory="leadscrew",
+        description="T8 梯形螺纹丝杠，导程 2/4/8mm，3D打印机/CNC Z轴最常用",
+        tags=["丝杠", "T8", "leadscrew", "梯形螺纹", "3D printer", "CNC"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="T8",
+        parameters=[
+            ParamDef("diameter", "直径", "mm", 8.0, 4, 20, 0.5, fixed=True),
+            ParamDef("length", "长度", "mm", 300.0, 50, 2000, 1, fixed=True),
+            ParamDef("lead", "导程", "mm", 8.0, 2, 20, 0.5, fixed=True),
+            ParamDef("leadscrew_detail", "细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_T8_LEADSCREW_SCRIPT,
+        fc_script_alternatives={"realistic": _T8_LEADSCREW_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            # Most common: Tr8×8 (lead 8mm, single start, pitch 8mm)
+            {"diameter": 8.0, "length": 300, "lead": 8.0},
+            {"diameter": 8.0, "length": 400, "lead": 8.0},
+            {"diameter": 8.0, "length": 500, "lead": 8.0},
+            # High resolution: Tr8×2 (lead 2mm, 4 starts, pitch 2mm)
+            {"diameter": 8.0, "length": 300, "lead": 2.0},
+            # Medium: Tr8×4
+            {"diameter": 8.0, "length": 300, "lead": 4.0},
+        ],
+        notes="T8丝杠是最常用的3D打印机Z轴丝杠。Tr8×8=导程8mm(单头)、Tr8×4=导程4mm(双头)、"
+              "Tr8×2=导程2mm(四头)。材料一般为SUS304不锈钢或S45C碳钢。",
+    ),
+
+    "t8_nut": PartTemplate(
+        id="t8_nut",
+        name_en="T8 Leadscrew Nut (Flange)",
+        name_cn="T8 丝杠螺母（法兰型）",
+        category="shaft",
+        subcategory="leadscrew",
+        description="T8 丝杠配套法兰螺母，黄铜/聚甲醛材质，4×M3法兰安装孔",
+        tags=["丝杠螺母", "T8", "leadscrew nut", "flange", "brass"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="T8-NUT-FLANGE",
+        parameters=[
+            ParamDef("outer_diameter", "外径", "mm", 14.0, 8, 30, 0.5, fixed=True),
+            ParamDef("bore_diameter", "螺纹孔径", "mm", 8.0, 4, 20, 0.5, fixed=True),
+            ParamDef("length", "长度", "mm", 15.0, 8, 30, 0.5, fixed=True),
+            ParamDef("flange_diameter", "法兰直径", "mm", 22.0, 10, 40, 0.5, fixed=True),
+            ParamDef("flange_thickness", "法兰厚度", "mm", 3.0, 1, 6, 0.5, fixed=True),
+            ParamDef("flange_hole_diameter", "法兰安装孔径", "mm", 3.4, 2, 6, 0.5, fixed=True),
+        ],
+        fc_script_template=_T8_NUT_SCRIPT,
+        standard_sizes=[
+            {"outer_diameter": 14.0, "bore_diameter": 8.0, "length": 15.0,
+             "flange_diameter": 22.0, "flange_thickness": 3.0, "flange_hole_diameter": 3.4},
+        ],
+        notes="黄铜材质最常见（耐磨）。法兰4×M3安装孔，孔距16mm×16mm方阵。"
+              "POM材质版本更静音但寿命较短。",
+    ),
+
+    "bldc_motor_5010": PartTemplate(
+        id="bldc_motor_5010",
+        name_en="5010 BLDC Motor (Outrunner)",
+        name_cn="5010 无刷电机（外转子）",
+        category="actuator",
+        subcategory="bldc",
+        description="5010 外转子无刷电机，常用于无人机推进、云台、小型机器人关节",
+        tags=["无刷电机", "BLDC", "5010", "外转子", "outrunner", "drone", "gimbal"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (SunnySky/T-Motor clone)", model_number="5010",
+        parameters=[
+            ParamDef("stator_outer_diameter", "定子外径", "mm", 27.0, 10, 60, 0.1, fixed=True),
+            ParamDef("stator_inner_diameter", "定子内径", "mm", 12.0, 4, 30, 0.1, fixed=True),
+            ParamDef("stator_length", "定子长度", "mm", 10.0, 5, 30, 0.1, fixed=True),
+            ParamDef("rotor_outer_diameter", "转子外径", "mm", 50.0, 20, 100, 0.1, fixed=True),
+            ParamDef("rotor_inner_diameter", "转子内径", "mm", 28.0, 10, 60, 0.1, fixed=True),
+            ParamDef("rotor_length", "转子长度", "mm", 12.0, 5, 30, 0.1, fixed=True),
+            ParamDef("shaft_diameter", "轴径", "mm", 5.0, 2, 10, 0.1, fixed=True),
+            ParamDef("shaft_length", "轴长", "mm", 25.0, 5, 50, 0.1, fixed=True),
+        ],
+        fc_script_template=_BLDC_MOTOR_SCRIPT,
+        standard_sizes=[
+            {"stator_outer_diameter": 27.0, "stator_inner_diameter": 12.0, "stator_length": 10.0,
+             "rotor_outer_diameter": 50.0, "rotor_inner_diameter": 28.0, "rotor_length": 12.0,
+             "shaft_diameter": 5.0, "shaft_length": 25.0},
+        ],
+        notes="5010外转子无刷电机。KV值约280-360。定子12槽14极。"
+              "用于无人机、云台稳定器。配ESC电调使用。",
+    ),
+
+    "bldc_motor_2208": PartTemplate(
+        id="bldc_motor_2208",
+        name_en="2208 BLDC Motor (Inrunner/Outrunner)",
+        name_cn="2208 无刷电机",
+        category="actuator",
+        subcategory="bldc",
+        description="2208 小型无刷电机，常用于小型无人机、舵机替换、小型机器人",
+        tags=["无刷电机", "BLDC", "2208", "小型", "drone", "micro robot"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="2208",
+        parameters=[
+            ParamDef("stator_outer_diameter", "定子外径", "mm", 13.0, 5, 30, 0.1, fixed=True),
+            ParamDef("stator_inner_diameter", "定子内径", "mm", 6.0, 2, 15, 0.1, fixed=True),
+            ParamDef("stator_length", "定子长度", "mm", 8.0, 3, 20, 0.1, fixed=True),
+            ParamDef("rotor_outer_diameter", "转子外径", "mm", 22.0, 10, 40, 0.1, fixed=True),
+            ParamDef("rotor_inner_diameter", "转子内径", "mm", 14.0, 5, 20, 0.1, fixed=True),
+            ParamDef("rotor_length", "转子长度", "mm", 10.0, 3, 20, 0.1, fixed=True),
+            ParamDef("shaft_diameter", "轴径", "mm", 3.0, 1, 6, 0.1, fixed=True),
+            ParamDef("shaft_length", "轴长", "mm", 15.0, 3, 30, 0.1, fixed=True),
+        ],
+        fc_script_template=_BLDC_MOTOR_SCRIPT,
+        standard_sizes=[
+            {"stator_outer_diameter": 13.0, "stator_inner_diameter": 6.0, "stator_length": 8.0,
+             "rotor_outer_diameter": 22.0, "rotor_inner_diameter": 14.0, "rotor_length": 10.0,
+             "shaft_diameter": 3.0, "shaft_length": 15.0},
+        ],
+        notes="2208小型无刷电机。KV值约1000-1500。用于小型无人机、小型机器人关节驱动。",
+    ),
+
+    "compression_spring": PartTemplate(
+        id="compression_spring",
+        name_en="Compression Spring (DIN 2098)",
+        name_cn="压缩弹簧 (DIN 2098)",
+        category="structural",
+        subcategory="spring",
+        description="圆柱压缩弹簧，参数化设计，线径/外径/自由长度/有效圈数可调",
+        tags=["弹簧", "压缩弹簧", "spring", "compression", "DIN 2098"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Custom",
+        parameters=[
+            ParamDef("wire_diameter", "线径", "mm", 1.0, 0.3, 5, 0.1, fixed=True),
+            ParamDef("outer_diameter", "外径", "mm", 10.0, 3, 60, 0.5, fixed=True),
+            ParamDef("free_length", "自由长度", "mm", 30.0, 5, 200, 1, fixed=True),
+            ParamDef("active_coils", "有效圈数", "", 6, 2, 20, 1, fixed=True),
+        ],
+        fc_script_template=_COMPRESSION_SPRING_SCRIPT,
+        standard_sizes=[
+            # Common 3D printer springs
+            {"wire_diameter": 1.0, "outer_diameter": 8.0, "free_length": 25.0, "active_coils": 6},
+            {"wire_diameter": 1.2, "outer_diameter": 10.0, "free_length": 30.0, "active_coils": 7},
+            {"wire_diameter": 1.5, "outer_diameter": 12.0, "free_length": 40.0, "active_coils": 8},
+            {"wire_diameter": 2.0, "outer_diameter": 15.0, "free_length": 50.0, "active_coils": 6},
+        ],
+        notes="弹簧常数k = Gd⁴/(8D³n)，G为剪切模量(钢丝≈79GPa)。"
+              "建模使用螺旋扫掠，若FreeCAD不支持则降级为空心圆柱。",
+    ),
+
+    "damper_shock_absorber": PartTemplate(
+        id="damper_shock_absorber",
+        name_en="Damper / Shock Absorber",
+        name_cn="阻尼器/减震器",
+        category="structural",
+        subcategory="damper",
+        description="液压/气压阻尼器，缸体+活塞杆+两端环耳，机器人悬挂/减震",
+        tags=["阻尼器", "减震器", "damper", "shock absorber", "悬挂", "机器人"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Custom",
+        parameters=[
+            ParamDef("cylinder_diameter", "缸体外径", "mm", 18.0, 8, 50, 0.5, fixed=True),
+            ParamDef("cylinder_length", "缸体长度", "mm", 60.0, 20, 200, 1, fixed=True),
+            ParamDef("rod_diameter", "活塞杆直径", "mm", 6.0, 3, 20, 0.5, fixed=True),
+            ParamDef("rod_length", "活塞杆长度", "mm", 50.0, 10, 150, 1, fixed=True),
+            ParamDef("mount_diameter", "安装环外径", "mm", 12.0, 5, 30, 0.5, fixed=True),
+            ParamDef("mount_thickness", "安装环厚度", "mm", 4.0, 2, 10, 0.5, fixed=True),
+            ParamDef("mount_hole_diameter", "安装孔径", "mm", 5.0, 2, 12, 0.5, fixed=True),
+        ],
+        fc_script_template=_DAMPER_SCRIPT,
+        standard_sizes=[
+            {"cylinder_diameter": 18.0, "cylinder_length": 60.0,
+             "rod_diameter": 6.0, "rod_length": 50.0,
+             "mount_diameter": 12.0, "mount_thickness": 4.0, "mount_hole_diameter": 5.0},
+            {"cylinder_diameter": 22.0, "cylinder_length": 80.0,
+             "rod_diameter": 8.0, "rod_length": 60.0,
+             "mount_diameter": 15.0, "mount_thickness": 5.0, "mount_hole_diameter": 6.0},
+        ],
+        notes="液压阻尼器通过节流孔产生阻尼力。机器人常用型号行程25-100mm。"
+              "两端环耳安装方式。缸体充氮气或液压油。",
+    ),
 }
 
 
@@ -2853,6 +3455,11 @@ _SUBSYSTEM_COMPAT: dict[str, list[str]] = {
                       "spider_coupling", "bellows_coupling",
                       "flexible_coupling", "nema17_stepper", "nema23_stepper",
                       "linear_shaft", "hub_adapter"],
+    "linear_motion": ["linear_bearing_lm8uu", "linear_bearing_lm10uu", "linear_bearing_lm12uu",
+                       "linear_guide_mgn12h", "t8_leadscrew", "t8_nut",
+                       "linear_shaft", "nema17_stepper", "nema23_stepper",
+                       "bldc_motor_5010", "bldc_motor_2208",
+                       "compression_spring", "damper_shock_absorber"],
     "perception": ["sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam",
                     "mounting_plate", "l_bracket", "standoff_hex"],
 }
@@ -2957,7 +3564,8 @@ def format_fc_script(template: PartTemplate, params: dict[str, Any]) -> str:
     detail = params.get(
         "thread_detail",
         params.get("tooth_detail", params.get("bearing_detail",
-                      params.get("pulley_detail", "simplified"))),
+                      params.get("pulley_detail",
+                        params.get("leadscrew_detail", "simplified")))),
     )
     # Select script: prefer alternative matching detail level
     script_template = template.fc_script_alternatives.get(detail, template.fc_script_template)

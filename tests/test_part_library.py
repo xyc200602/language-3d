@@ -134,7 +134,7 @@ class TestSearch:
     def test_search_category_bearing(self):
         from lang3d.knowledge.parts_catalog import search_parts
         results = search_parts(category="bearing")
-        assert len(results) == 3
+        assert len(results) == 7
 
     def test_search_category_actuator(self):
         from lang3d.knowledge.parts_catalog import search_parts
@@ -437,7 +437,7 @@ class TestToolExecution:
     def test_part_list_execution(self):
         registry = self._make_registry()
         result = registry.execute("part_list")
-        assert "39" in result
+        assert "49" in result
         assert "fastener" in result
 
     def test_part_list_by_category(self):
