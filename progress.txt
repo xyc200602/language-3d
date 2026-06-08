@@ -4,6 +4,44 @@
 
 ---
 
+## 2026-06-08 - Task 78: 装配特征自动匹配 — 零件+连接方式自动生成特征
+
+### What was done:
+- 新建 `src/lang3d/tools/assembly_matcher.py` — 装配特征自动匹配系统
+  - `FastenerSelection` 数据类：螺栓尺寸/长度、螺母/垫圈规格
+  - `AssemblyMatchResult` 数据类：完整匹配结果（特征、紧固件、约束、验证）
+  - `AssemblyMatcher` 类：5步自动匹配流程
+    1. `_identify_functional_part()`: 通过目录ID或类别识别功能件/结构件
+    2. `_generate_interface_features()`: 从 MountingInterface 生成配合特征（优先路径）
+    3. `_generate_heuristic_features()`: 使用 ConnectionFeatureEngine 启发式生成（回退路径）
+    4. `_select_fasteners()`: 自动选择螺栓长度+螺母+垫圈
+    5. `_setup_constraints()`: 根据连接方式设置配对约束
+    6. `_verify_match()`: 验证匹配结果合理性
+  - `assembly_match_tool_factory()`: 注册为 assembly_auto_match 工具
+  - `_opposite_face()` 辅助函数
+- 修改 `agent/core.py` — 注册 assembly_auto_match 工具
+- 修改 `tools/base.py` — 新增 assembly_auto_match 到 TOOL_CATEGORIES
+- Bug fix: `_select_fasteners()` 中当两零件都是结构件时 `func_part`/`struct_part` 为 None 的 AttributeError
+
+### Testing:
+- 新建 tests/test_assembly_matcher.py — 43 个测试
+  - TestIdentifyFunctionalPart (8): NEMA17/23/SG90/608 目录匹配、类别回退、两结构件 None
+  - TestInterfaceFeatureGeneration (7): NEMA17 孔+中心孔、NEMA23、SG90 口袋、608 压配、接口标识
+  - TestHeuristicFallback (2): 两结构件、未知功能件
+  - TestFastenerSelection (5): M3/M5 选择、压配无紧固件、摘要、默认 M3
+  - TestConstraintSetup (5): 螺栓coincident、压配concentric、snap-fit、anchor 实体
+  - TestVerification (4): 有效匹配、无孔警告、无螺栓尺寸无效、压配无孔警告
+  - TestHelpers (7): _opposite_face 参数化
+  - TestEndToEnd (5): NEMA17+支架、SG90+板、608+底座、传感器+板、通用件
+- 核心相关测试 407 passed, 0 failed
+
+### Notes:
+- 集成了 Task 71 (ConnectionFeatureEngine) + Task 72 (fastener_catalog) + Task 76 (MountingInterface) + Task 77 (MatingConstraint)
+- 当两零件都是结构件时，用 part_a/part_b 作为 fallback 调用 _select_fasteners()
+- 目录总量: 59 templates, 11 categories, 16 MountingInterfaces
+
+---
+
 ## 2026-06-08 - Task 77: 装配约束求解升级 — 从 anchor-face 到配对约束
 
 ### What was done:

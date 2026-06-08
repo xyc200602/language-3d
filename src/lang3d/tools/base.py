@@ -40,6 +40,7 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     "assembly": [
         "assembly_solve",
         "constraint_solve",
+        "assembly_auto_match",
         "assembly_vlm_solve",
         "ik_solve",
         "mesh_collision_check",

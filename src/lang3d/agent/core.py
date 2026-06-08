@@ -303,6 +303,13 @@ class Agent:
             self.tools.register(_cls())
         except Exception:
             pass
+
+        # Register assembly auto-matcher (Task 78)
+        try:
+            from ..tools.assembly_matcher import assembly_match_tool_factory
+            _def2, _cls2 = assembly_match_tool_factory()
+            self.tools.register(_cls2())
+        except Exception:
             pass
 
         # Register assembly VLM verification tools
