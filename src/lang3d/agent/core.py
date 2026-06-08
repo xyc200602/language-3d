@@ -12,7 +12,7 @@ from ..tools.bash import register_bash_tools
 from ..tools.file_ops import register_file_tools
 from .context import truncate_messages, truncate_tool_result
 from .executor import Executor
-from .fix_strategy import classify_failure, check_convergence, generate_fix_hint
+from .fix_strategy import classify_failure, check_convergence, extract_fix_commands, generate_fix_hint
 from .planner import Planner
 from .reflector import Reflector
 from .state import AgentState, HierarchicalPlan, Plan, PlanStep, StepStatus
@@ -282,11 +282,27 @@ class Agent:
         except Exception:
             pass
 
+        # Register fastener model tools (ISO/DIN standard hardware)
+        try:
+            from ..tools.fastener_model import register_fastener_tools
+            register_fastener_tools(self.tools)
+        except Exception:
+            pass
+
         # Register assembly solver tools (constraint-based auto-positioning)
         try:
             from ..tools.assembly_solver import register_assembly_solver_tools
             register_assembly_solver_tools(self.tools)
         except Exception:
+            pass
+
+        # Register mating constraint solver (Task 77)
+        try:
+            from ..tools.mating_constraint import constraint_solve_tool_factory
+            _def, _cls = constraint_solve_tool_factory()
+            self.tools.register(_cls())
+        except Exception:
+            pass
             pass
 
         # Register assembly VLM verification tools
@@ -451,6 +467,13 @@ class Agent:
         try:
             from ..tools.export_package import register_export_package_tools
             register_export_package_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register assembly generator tools (NL → assembly definition)
+        try:
+            from ..tools.assembly_generator import register_assembly_generator_tools
+            register_assembly_generator_tools(self.tools)
         except Exception:
             pass
 
@@ -818,6 +841,7 @@ class Agent:
                     if verify_fail_count <= max_verify_retries:
                         expected = tc.arguments.get("expected", "")
                         fix_ctx = classify_failure(result, expected)
+                        fix_commands = extract_fix_commands(result)
 
                         # Check for convergence (stuck in loop)
                         if check_convergence(fix_history, result):
@@ -827,7 +851,7 @@ class Agent:
                             )
                         else:
                             fix_ctx.fix_history = fix_history
-                            fix_hint = generate_fix_hint(fix_ctx)
+                            fix_hint = generate_fix_hint(fix_ctx, fix_commands=fix_commands)
 
                         fix_history.append(result)
                         messages.append(Message(role="user", content=fix_hint))

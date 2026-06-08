@@ -4,6 +4,42 @@
 
 ---
 
+## 2026-06-08 - Task 77: 装配约束求解升级 — 从 anchor-face 到配对约束
+
+### What was done:
+- 新建 `src/lang3d/tools/mating_constraint.py` — 完整的配对约束求解系统
+  - `MatingConstraint` 数据类：6种约束类型（coincident/concentric/distance/angle/parallel/perpendicular）
+  - `SolvedPosition` 数据类：position + rotation_matrix + axis-angle
+  - `ConstraintSolver` 类：输入 Assembly + 可选 MatingConstraints → 输出每个零件 position + rotation
+  - `anchor_to_constraints()`: 将旧 anchor-face Joint 自动转换为 MatingConstraint（向后兼容）
+  - 6种约束求解器:
+    - `_solve_coincident()`: 面贴合，法向量反向对齐
+    - `_solve_concentric()`: 轴孔同心，轴心线对齐
+    - `_solve_distance()`: 保持指定偏移距离
+    - `_solve_angle()`: 保持指定角度
+    - `_solve_parallel()`: 平行约束
+    - `_solve_perpendicular()`: 垂直约束（90°旋转）
+  - `_alignment_rotation()`: 向量对齐旋转计算（含平行/反平行/一般情况）
+  - `_build_constraint_graph()` + BFS顺序求解（从基准件开始）
+  - `constraint_solve_tool_factory()`: 注册为 constraint_solve 工具
+- 修改 `agent/core.py` — 注册 ConstraintSolver 工具
+- 修改 `tools/base.py` — 新增 constraint_solve 到 TOOL_CATEGORIES
+- 完整的向量/矩阵运算库（不依赖 numpy）
+
+### Testing:
+- 新建 tests/test_mating_constraint.py — 32 个测试
+- 全部 606 个相关测试通过
+- 零回归
+
+### Notes:
+- 向后兼容：不带显式 constraints 时，自动从 Joint 的 anchor-face 转换
+- 约束求解采用 BFS 顺序，从根节点逐步向外
+- 支持旋转副（revolute joint）+ 角度参数
+- 向量运算自包含（不依赖外部库），基于 Rodrigues 旋转公式
+- 3零件链测试验证：base→bracket→motor 位置递增正确
+
+---
+
 ## 2026-06-08 - Task 76: 零件接口标准化 — 功能件安装面统一定义
 
 ### What was done:

@@ -39,9 +39,13 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
     ],
     "assembly": [
         "assembly_solve",
+        "constraint_solve",
         "assembly_vlm_solve",
         "ik_solve",
         "mesh_collision_check",
+        "generate_connection_features",
+        "fastener_model",
+        "fastener_query",
     ],
     "slicing": [
         "slice_model", "slice_analyze", "slice_preview_layers", "slice_vlm_analyze",
