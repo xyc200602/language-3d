@@ -37,7 +37,7 @@
       "[缺失] 需要重写 test_auto_fix.py：先创建已知错误模型→验证cad_verify返回MATCH:False→验证修复后MATCH:True，断言修复闭环真正生效"
     ],
     "priority": 9,
-    "passes": false
+    "passes": true
   },
   {
     "id": 10,
@@ -316,7 +316,7 @@
       "[缺失] verify_result必须区分MATCH/MISMATCH/UNKNOWN，UNKNOWN不应视为成功；失败时sys.exit(1)让CI能捕获"
     ],
     "priority": 26,
-    "passes": false
+    "passes": true
   },
   {
     "id": 27,
@@ -999,6 +999,315 @@
       "修改 Task 42 production_check.py — 集成新的装配验证检查项"
     ],
     "priority": 66,
+    "passes": false
+  },
+  {
+    "id": 67,
+    "title": "功能件/结构件双层分类系统",
+    "description": "在 PartTemplate 中增加 part_class（functional/structural/fastener）、scalable、real_part、manufacturer、model_number 字段。功能件（电机/舵机/轴承）标记 scalable=False，结构件 scalable=True，紧固件 scalable=False。更新 search_parts 支持 part_class 过滤。更新 PartSearchTool 输出分类标签。添加 validate_functional_params 校验功能件参数。更新 assembly_generator LLM prompt 约束功能件尺寸。",
+    "steps": [
+      "修改 knowledge/parts_catalog.py — PartTemplate 新增 part_class/scalable/real_part/manufacturer/model_number 字段",
+      "修改 knowledge/parts_catalog.py — 所有功能件（servo_sg90/mg996r/nema17/bearing_608/623/625）标记 part_class='functional', scalable=False",
+      "修改 knowledge/parts_catalog.py — 所有紧固件标记 part_class='fastener', scalable=False",
+      "修改 knowledge/parts_catalog.py — search_parts 新增 part_class 参数过滤",
+      "新增 get_functional_parts/get_structural_parts/get_fastener_parts/validate_functional_params 辅助函数",
+      "修改 tools/part_library.py — PartSearchTool 支持 part_class 参数和输出分类标签",
+      "修改 tools/part_library.py — PartGenerateTool 对功能件做参数校验和自动选标准尺寸",
+      "修改 tools/assembly_generator.py — ASSEMBLY_GEN_SYSTEM_PROMPT 增加功能件/结构件尺寸约束规则",
+      "编写 tests/test_part_library.py TestPartClassification — 17 个新测试覆盖分类、校验、搜索",
+      "验证全量测试 127/127 通过"
+    ],
+    "priority": 67,
+    "passes": true
+  },
+  {
+    "id": 68,
+    "title": "功能件真实规格录入（电机/舵机/传感器）",
+    "description": "从真实产品手册录入功能件参数：TT电机、JGB37-520、NEMA17/23、SG90/MG996R/DS3218舵机、RPLIDAR A1、MPU6050、ESP32-CAM。每个标记 real_part=True, fixed=True 参数。",
+    "steps": [
+      "新增 TT 电机模板（30x24x22mm, 轴径3.175mm, 6V, 200rpm）",
+      "新增 JGB37-520 直流减速电机模板",
+      "新增 DS3218 舵机模板",
+      "新增传感器模板（RPLIDAR A1、MPU6050、ESP32-CAM）",
+      "新增 NEMA23 步进电机模板",
+      "编写 tests 验证新模板参数与真实规格一致"
+    ],
+    "priority": 68,
+    "passes": true
+  },
+  {
+    "id": 69,
+    "title": "装配连接方式扩展（螺栓/压入/卡扣/黏结）",
+    "description": "在 mechanics.py 中新增 ConnectionMethod 数据类（bolted/press_fit/snap_fit/adhesive/welded/magnetic），BoltHole 数据类。Joint 新增 connection 字段。每种连接方式定义 required_constraints 和 required_parts。更新 assembly_generator LLM prompt。",
+    "steps": [
+      "新增 knowledge/mechanics.py — ConnectionMethod 数据类（6种连接方式 + required_constraints/required_parts/describe 属性）",
+      "新增 knowledge/mechanics.py — BoltHole 数据类（position/diameter/depth/bolt_size）",
+      "修改 knowledge/mechanics.py — Joint 新增 connection: ConnectionMethod | None 字段",
+      "修改 tools/assembly_generator.py — JSON 格式新增 connection_method/connection_detail",
+      "修改 tools/assembly_generator.py — ASSEMBLY_GEN_SYSTEM_PROMPT 新增连接方式指导",
+      "编写 tests/test_connection_methods.py — 34 个测试覆盖 6 种连接方式的约束/附加件/描述/集成",
+      "验证全量测试 208/208 通过"
+    ],
+    "priority": 69,
+    "passes": true
+  },
+  {
+    "id": 70,
+    "title": "参考装配体逆向工程（BCN3D/Thor/Leo/ANYmal）",
+    "description": "下载分析 BCN3D MOVEO、Thor、Leo Rover、ANYmal B 等开源机器人项目的装配模式，提取零件分类、连接方式统计、装配约束模式、零件接口定义。将模式编码到 assembly_generator.py 的 few-shot 示例中。",
+    "steps": [
+      "下载 BCN3D MOVEO STL 文件，分析零件/连接方式",
+      "下载 Thor FreeCAD 源文件，提取装配约束",
+      "分析 Leo Rover STEP 文件，提取底盘/电机/轮子装配模式",
+      "统计连接方式分布（螺栓/压入/卡扣比例）",
+      "提取零件接口定义模式（安装孔位/配合面/定位销）",
+      "将提取的模式编码到 assembly_generator.py 的 few-shot 示例和 part_feature_engine.py 的规则中",
+      "编写逆向工程分析报告"
+    ],
+    "priority": 70,
+    "passes": true
+  },
+  {
+    "id": 71,
+    "title": "连接特征生成引擎 — 螺栓孔/轴承座/轴孔/卡扣几何自动生成",
+    "description": "当前 ConnectionMethod 只存元数据不生成几何。本 Task 实现 ConnectionFeatureEngine：给定两个零件+连接方式，自动在零件上生成工程特征（螺栓通孔/螺纹孔、轴承安装槽、轴孔+D切面/键槽、压入配合孔、卡扣特征、粘接面），并生成对应紧固件模型。这是从'概念设计'到'生产级'的核心断层。",
+    "steps": [
+      "新建 tools/connection_features.py — ConnectionFeatureEngine 类，核心入口 generate_features(part_a, part_b, connection_method) → FreeCAD 操作列表",
+      "实现 _generate_bolt_holes(part, bolt_spec) — 根据 ISO 273 间隙孔径表在零件上生成螺栓通孔（M3→3.4mm, M4→4.5mm, M5→5.5mm, M6→6.6mm）+ 沉头孔/倒角",
+      "实现 _generate_bearing_seat(part, bearing_spec) — 轴承安装槽（外圈配合孔+挡圈槽+定位台阶），608→Ø21.95×7mm，625→Ø15.95×5mm",
+      "实现 _generate_shaft_bore(part, shaft_spec) — 轴孔（直径+D切面或键槽），NEMA17→Ø5mm+D-flat，TT电机→Ø3.175mm+D-flat",
+      "实现 _generate_press_fit_bore(part, fit_spec) — 过盈配合孔（基孔制 H7/p6），自动计算干涉量",
+      "实现 _generate_snap_fit(part, snap_spec) — 卡扣+卡槽特征（悬臂梁式卡扣，参数化厚度/角度/深度）",
+      "实现 _generate_adhesive_gap(part, adhesive_spec) — 粘接面间隙（0.1-0.3mm）+ 增大粘接面积的沟槽纹理",
+      "实现 _generate_fastener_models(connection_method) — 生成螺栓/螺母/垫圈 FreeCAD 脚本（调用 Task 72 的紧固件库）",
+      "修改 tools/part_feature_engine.py — 每个零件的 _freecad_ops_for_part 调用 ConnectionFeatureEngine，根据装配关系添加特征",
+      "修改 knowledge/mechanics.py — ConnectionMethod 新增 features_generated: bool 字段，防止重复生成",
+      "修改 tools/assembly_generator.py — 装配规划时自动为每个连接指定合适的连接方式",
+      "编写 tests/test_connection_features.py — 每种连接方式的特征生成测试（~25 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 71,
+    "passes": true
+  },
+  {
+    "id": 72,
+    "title": "标准紧固件建模库 — ISO/DIN 螺栓/螺母/垫圈/热嵌螺母",
+    "description": "建立 ISO/DIN 标准紧固件尺寸库和参数化建模能力。当前紧固件只在 BOM 中列名称，没有 3D 模型。需要：标准尺寸表（M2-M12）、参数化 FreeCAD 建模脚本、热嵌螺母（heat-set insert）模型。紧固件是装配的基础，Task 71 的螺栓连接特征需要本库生成螺栓模型。",
+    "steps": [
+      "新建 knowledge/fastener_catalog.py — ISO bolt dimensions 数据库：thread_diameter, pitch, head_diameter, head_height, nut_width, nut_height, washer_id, washer_od, washer_thickness（M2/M2.5/M3/M4/M5/M6/M8/M10/M12）",
+      "新建 knowledge/fastener_catalog.py — ClearanceHole 表：ISO 273 间隙配合孔径（normal/medium/fine 三个等级）",
+      "新建 knowledge/fastener_catalog.py — ThreadInsert 表：热嵌螺母规格（M3-M6，外径/长度/安装孔径），常用品牌（Ruthex/Gridfinity）",
+      "新建 knowledge/fastener_catalog.py — get_bolt_spec(size, length) / get_nut_spec(size) / get_washer_spec(size) / get_thread_insert_spec(size) 查询函数",
+      "新建 knowledge/fastener_catalog.py — get_bolt_length_recommendation(grip_thickness) — 根据夹持厚度推荐螺栓长度",
+      "新建 knowledge/fastener_catalog.py — get_clearance_hole(bolt_size, fit='normal') — 返回间隙孔直径",
+      "新建 tools/fastener_model.py — FreeCAD 螺栓建模脚本生成（六角头 DIN 933 / 圆柱头 DIN 912 / 沉头 DIN 7991）",
+      "新建 tools/fastener_model.py — FreeCAD 螺母建模脚本生成（六角螺母 DIN 934）",
+      "新建 tools/fastener_model.py — FreeCAD 垫圈建模脚本生成（平垫 DIN 125 / 弹簧垫 DIN 127）",
+      "新建 tools/fastener_model.py — FreeCAD 热嵌螺母建模脚本生成（黄铜嵌件+外滚花）",
+      "新建 tools/fastener_model.py — FastenerModelTool Agent 工具，注册到 core.py",
+      "修改 parts_catalog.py — 紧固件模板引用 fastener_catalog 的标准尺寸",
+      "编写 tests/test_fastener_catalog.py — 尺寸表查询、长度推荐、间隙孔计算、建模脚本测试（~20 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 72,
+    "passes": true
+  },
+  {
+    "id": 73,
+    "title": "传动零件库 — 同步带/轮、联轴器、键槽",
+    "description": "扩充零件库的传动类零件。当前缺少同步带/同步轮（GT2 最常用）、联轴器（刚性/柔性）、键槽特征。这些是机器人关节驱动链的核心零件。",
+    "steps": [
+      "新增 parts_catalog.py — GT2 同步轮模板（齿数 16/20/36，5mm/6.35mm 孔径，铝制/塑料，含渐开线齿廓建模脚本）",
+      "新增 parts_catalog.py — GT2 同步带模板（宽度 6/9mm，节距 2mm，指定齿数即指定长度）",
+      "新增 parts_catalog.py — HTD 同步轮/带模板（3M/5M 系列，用于大功率传动）",
+      "新增 parts_catalog.py — 刚性联轴器模板（set screw 型，clamping 型，含紧定螺丝孔建模）",
+      "新增 parts_catalog.py — 柔性联轴器模板（梅花垫/波纹管型，含弹性体建模）",
+      "新增 parts_catalog.py — 键槽特征生成函数（square key DIN 6885，含轴键槽和孔键槽）",
+      "所有新模板标记 part_class='functional', scalable=False",
+      "新模板包含 realistic 建模脚本（齿廓/弹性体/滚花表面）",
+      "编写 tests/test_transmission_parts.py — 模板参数、建模脚本、搜索过滤测试（~15 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 73,
+    "passes": true
+  },
+  {
+    "id": 74,
+    "title": "直线运动与高级执行器零件库",
+    "description": "扩充零件库的直线运动和高级执行器零件。当前缺少直线轴承（LM8UU 等）、导轨（MGN12 等）、丝杠（T8 等）、BLDC 电机。这些是 3D 打印机、CNC、线性执行器的核心零件。",
+    "steps": [
+      "新增 parts_catalog.py — LM8UU/LM10UU/LM12UU 直线轴承模板（内径/外径/长度/钢珠数，含内外圈+滚珠建模脚本）",
+      "新增 parts_catalog.py — MGN12H/MGN12C 直线导轨滑块模板（含轨道和滑块建模脚本，安装孔位精确）",
+      "新增 parts_catalog.py — T8 丝杠+螺母模板（导程 2/4/8mm，含梯形螺纹建模脚本）",
+      "新增 parts_catalog.py — 5010/2208 BLDC 电机模板（外转子/内转子，含定子+转子简化建模脚本）",
+      "新增 parts_catalog.py — 弹簧模板（压缩弹簧 DIN 2098/2099，参数化线径/外径/自由长度/圈数）",
+      "新增 parts_catalog.py — 阻尼器/减震器模板（含弹簧+活塞+缸体建模）",
+      "所有新模板标记 part_class='functional', scalable=False，附真实厂商参数",
+      "编写 tests/test_linear_motion_parts.py — 模板参数验证、建模脚本、直线轴承配合测试（~15 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 74,
+    "passes": false
+  },
+  {
+    "id": 75,
+    "title": "电子与传感器零件库",
+    "description": "扩充零件库的电子/传感器零件。当前只有 RPLIDAR A1/MPU6050/ESP32-CAM 三个传感器，缺少电机驱动板、主控制器、编码器、限位开关等关键电子件。电子件是机器人功能实现的核心，也是功耗和布线规划的基础。",
+    "steps": [
+      "新增 parts_catalog.py — L298N/TB6612FNG 电机驱动板模板（含 PCB 尺寸+安装孔+散热片建模）",
+      "新增 parts_catalog.py — Arduino Uno/Nano/ESP32 开发板模板（含 PCB+排针+USB 口建模）",
+      "新增 parts_catalog.py — AS5600 磁编码器模板（含 PCB+磁铁建模，14-bit 精度参数）",
+      "新增 parts_catalog.py — 限位开关模板（机械微动开关，含杠杆+触点建模）",
+      "新增 parts_catalog.py — 电源模块模板（LM2596 降压模块/18650 电池盒/XT60 接头）",
+      "新增 parts_catalog.py — USB/杜邦/XT60 连接器模板",
+      "所有电子件标记 part_class='functional', scalable=False，附带电气参数（电压/电流/功耗）",
+      "更新 power_budget.py — 新电子件功耗可自动纳入功率预算",
+      "编写 tests/test_electronics_parts.py — 模板参数、功耗、建模脚本测试（~12 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 75,
+    "passes": false
+  },
+  {
+    "id": 76,
+    "title": "零件接口标准化 — 功能件安装面统一定义",
+    "description": "为每种功能件定义标准安装接口（mounting interface），让结构件能自动匹配。当前 interface_rules 只在 assembly_patterns.py 中硬编码了 NEMA17 和 608 轴承，缺少舵机、传感器、电机驱动板等。需要将接口定义整合到 parts_catalog.py 的模板中，作为零件的固有属性。",
+    "steps": [
+      "扩展 parts_catalog.py PartTemplate 新增 mounting_interface 字段（MountingInterface dataclass）",
+      "定义 MountingInterface dataclass — type（through_hole/threaded_hole/press_fit/snap_fit/flange）、holes 列表（BoltHole: position+direction+diameter+depth）、contact_face（面名称+法向量）、alignment_features（定位销/键槽/卡口）",
+      "录入 NEMA17 安装接口 — 4×Ø3.4mm through_hole @31mm 矩形分布 + Ø23mm 轴孔 + 正面接触面",
+      "录入 NEMA23 安装接口 — 4×Ø4.5mm through_hole @47.14mm 矩形分布 + Ø31mm 轴孔",
+      "录入 SG90 舵机安装接口 — 2×Ø2.2mm through_hole @55mm 分布 + 机身槽 22.2×11.8mm",
+      "录入 MG996R 舵机安装接口 — 4×Ø2.8mm through_hole @49.5×19.8mm + 机身槽 40.7×19.7mm",
+      "录入 DS3218 舵机安装接口 — 4×Ø2.8mm through_hole + 机身槽 40×20mm",
+      "录入 608/623/625 轴承安装接口 — press_fit bore + shoulder + 侧面接触面",
+      "录入常用传感器安装接口 — RPLIDAR A1/MPU6050/ESP32-CAM/AS5600 的 PCB 安装孔",
+      "录入电子板安装接口 — Arduino/Nano/L298N 的 PCB 安装孔 + 排针避让",
+      "新增 auto_match_interface(part, interface_type) 函数 — 给定结构件和功能件接口，自动在结构件上生成配合孔位",
+      "修改 ConnectionFeatureEngine（Task 71）— 优先使用 MountingInterface 而非硬编码规则",
+      "修改 assembly_solver.py — 约束求解时使用 contact_face 做面贴合约束",
+      "编写 tests/test_mounting_interface.py — 接口定义、孔位坐标、自动匹配测试（~20 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 76,
+    "passes": false
+  },
+  {
+    "id": 77,
+    "title": "装配约束求解升级 — 从 anchor-face 到配对约束",
+    "description": "重写约束求解器，从当前 6 基本面锚点定位升级为真实配对约束。支持：轴孔同心（concentric）、面对齐贴合（coincident）、距离约束（distance）、角度约束（angle）、平行/垂直约束。利用 Task 76 的 MountingInterface 定义配合面。向后兼容旧 anchor-face 定义（自动转换）。",
+    "steps": [
+      "新建 tools/mating_constraint.py — MatingConstraint dataclass（type: coincident/concentric/distance/angle/parallel/perpendicular，reference_entity_a, reference_entity_b, parameters）",
+      "新建 tools/mating_constraint.py — ConstraintSolver 类，输入 Assembly + MatingConstraints → 输出每个零件 position + rotation",
+      "实现 _solve_coincident() — 面贴合约束：两个面法向量相反、距离=0（配合面）",
+      "实现 _solve_concentric() — 轴孔同心约束：两个圆柱/孔轴心线对齐",
+      "实现 _solve_distance() — 距离约束：两个面/点之间保持指定距离",
+      "实现 _solve_angle() — 角度约束：两个轴/面之间保持指定角度",
+      "实现 _solve_parallel() / _solve_perpendicular() — 平行/垂直约束",
+      "实现 anchor_to_constraints() — 将旧 anchor-face 定义自动转换为 MatingConstraint（向后兼容）",
+      "实现 _build_constraint_graph() — 构建约束依赖图，确定求解顺序",
+      "实现 _sequential_solve() — 顺序求解（从基准件开始，沿装配链逐步求解）",
+      "修改 tools/assembly_solver.py — AssemblySolver.solve() 新增 use_mating_constraints 路径，优先使用新求解器",
+      "修改 agent/core.py — 注册 constraint_solve 工具",
+      "编写 tests/test_mating_constraint.py — 每种约束类型、向后兼容、多约束联合求解测试（~25 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 77,
+    "passes": false
+  },
+  {
+    "id": 78,
+    "title": "装配特征自动匹配 — 给定零件+连接方式自动选择并生成特征",
+    "description": "实现智能装配特征匹配：给定两个零件和连接方式（如 NEMA17+L支架+螺栓连接），自动：1) 查找功能件的 MountingInterface，2) 在结构件上生成对应配合孔，3) 选择合适螺栓长度，4) 生成紧固件模型，5) 设置配对约束。这是 Task 71+72+76+77 的集成胶水层。",
+    "steps": [
+      "新建 tools/assembly_matcher.py — AssemblyMatcher 类，入口 auto_match(part_a, part_b, connection_method) → AssemblyMatchResult",
+      "实现 _identify_functional_part() — 识别哪个是功能件（有 MountingInterface）、哪个是结构件（需要打孔）",
+      "实现 _generate_mating_features() — 从功能件的 MountingInterface 自动在结构件上生成配合特征（调用 ConnectionFeatureEngine）",
+      "实现 _select_fasteners() — 根据夹持厚度自动选择螺栓长度+螺母+垫圈（调用 fastener_catalog）",
+      "实现 _setup_constraints() — 根据连接方式和配合面自动建立 MatingConstraint（调用 MatingConstraintSolver）",
+      "实现 _verify_match() — 验证生成的特征是否合理（孔位对齐、螺栓不干涉、配合面贴合）",
+      "修改 assembly_generator.py — 装配规划后自动调用 AssemblyMatcher 为每个连接生成特征",
+      "修改 agent/core.py — 注册 assembly_auto_match 工具，系统提示词增加说明",
+      "编写 tests/test_assembly_matcher.py — NEMA17+支架、舵机+连杆、轴承+底座等典型场景测试（~15 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 78,
+    "passes": false
+  },
+  {
+    "id": 79,
+    "title": "公差体系基础 — ISO 配合等级与公差累积分析",
+    "description": "建立 ISO 配合等级体系（H7/g6 间隙配合、H7/k6 过渡配合、H7/p6 过盈配合）和常用配合推荐表。实现公差累积分析（最坏情况法），验证装配链末端累积误差是否可接受。修改特征生成引擎使用公差值（孔径=名义值+公差）。",
+    "steps": [
+      "新建 knowledge/tolerance.py — ISO_Tolerance 表：基本尺寸段（1-500mm）× 公差等级（IT5-IT12）的标准公差值",
+      "新建 knowledge/tolerance.py — ShaftFundamentalDeviations 表：轴基本偏差（a-zc）的公式和数值",
+      "新建 knowledge/tolerance.py — HoleFundamentalDeviations 表：孔基本偏差（A-ZC）的公式和数值",
+      "新建 knowledge/tolerance.py — FitRecommendations 常用配合推荐：滑动轴承 H8/f7、定位间隙 H7/g6、过渡定位 H7/k6、压入配合 H7/p6、轴承座 H7/js6",
+      "新建 knowledge/tolerance.py — compute_fit(nominal_d, hole_grade, shaft_grade, hole_deviation, shaft_deviation) → max_interference/max_clearance/fit_type",
+      "新建 knowledge/tolerance.py — recommend_fit(application: bearing_seat|sliding|locating|press) → 配合代号",
+      "新建 tools/tolerance_analysis.py — ToleranceStackup 类：沿装配链累积公差（最坏情况法）",
+      "实现 add_dimension() / compute_stackup() / check_acceptable() 方法",
+      "修改 tools/connection_features.py — 螺栓孔径使用 get_clearance_hole(bolt_size, fit='normal') + 公差",
+      "修改 tools/connection_features.py — 轴承座使用 H7/js6 配合等级 + 公差",
+      "修改 tools/connection_features.py — 压入配合使用 H7/p6 + 过盈量计算",
+      "编写 tests/test_tolerance.py — ISO 公差表、配合计算、推荐、累积分析测试（~20 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 79,
+    "passes": false
+  },
+  {
+    "id": 80,
+    "title": "生产级装配验证 — 配合面/螺栓对齐/干涉检查强化",
+    "description": "将装配验证从'检查文件存在'升级为'检查几何正确性'。实现：1) 配合面贴合验证（面法向量平行+距离在公差内），2) 螺栓孔跨零件对齐验证（位置偏差<0.5mm），3) 干涉检查强化（FCL 不可用时必须报警），4) 装配序列可行性检查。依赖 Task 76+77+79 完成。",
+    "steps": [
+      "修改 tools/assembly_verifier.py — 新增 check_mating_surfaces()：加载两个相邻零件 STL，检查配合面法向量平行（偏差<1°）且距离在公差范围内（<0.1mm）",
+      "修改 tools/assembly_verifier.py — 新增 check_bolt_hole_alignment()：提取两个零件的孔中心坐标，验证跨零件孔位一一对应（位置偏差<0.5mm）",
+      "修改 tools/assembly_verifier.py — 强化 check_collisions()：FCL 不可用时 raise ImportError 而非静默跳过；结果必须包含穿透深度和分离向量",
+      "修改 tools/assembly_verifier.py — 新增 check_tolerance_chain()：沿装配链累积公差，验证末端执行器位置误差在可接受范围（调用 tolerance_analysis.py）",
+      "修改 tools/assembly_verifier.py — 新增 check_assembly_sequence()：验证零件可按定义顺序装配（工具可达性、无干涉阻挡）",
+      "修改 tools/assembly_verifier.py — verify_assembly() 返回结构化报告（每项检查 pass/fail + 详细数据）",
+      "修改 agent/core.py — 装配验证步骤使用新的验证器",
+      "修改 tools/production_check.py（Task 42）— 集成新的装配验证检查项",
+      "编写 tests/test_production_assembly_verify.py — 配合面贴合、螺栓对齐、公差链、干涉检测测试（~18 个）",
+      "验证全量测试无回归"
+    ],
+    "priority": 80,
+    "passes": false
+  },
+  {
+    "id": 81,
+    "title": "开源机器人参考学习 — 下载 Thor/PAROL6 源文件并提取装配模式",
+    "description": "下载 Thor（FreeCAD 原生，37 零件）和 PAROL6（STEP+PDF 装配手册）的源文件，深入分析其装配模式：零件接口设计、连接方式分布、孔位布局规律、公差标注。将学到的模式编码到 assembly_generator.py 的 few-shot 示例和 MountingInterface 定义中。",
+    "steps": [
+      "下载 Thor GitHub 仓库（AngelLM/Thor）的 FreeCAD 源文件到 data/reference/thor/",
+      "分析 Thor 37 零件的装配结构：关节类型、连接方式、材料、安装孔位分布",
+      "提取 Thor 的 MG996R 舵机安装模式（法兰安装+连杆连接）并补充到 MountingInterface",
+      "下载 PAROL6 GitHub 仓库（PCrnjak/PAROL6-Desktop-robot-arm）的 STEP 文件和装配手册 PDF",
+      "分析 PAROL6 的轴承+同步带驱动链装配模式",
+      "统计两个项目的连接方式分布并更新 assembly_patterns.py 的统计数据",
+      "将学习到的最佳实践编码到 assembly_generator.py 的 few-shot 示例中",
+      "编写 data/reference/analysis_report.md 分析报告"
+    ],
+    "priority": 81,
+    "passes": false
+  },
+  {
+    "id": 82,
+    "title": "端到端装配验证 — L支架+NEMA17 螺栓连接全流程",
+    "description": "用真实案例验证 Task 71-80 的完整集成：输入'设计一个 L 型支架，用 4 个 M3 螺栓安装 NEMA17 电机'，验证：1) 自动识别 NEMA17 MountingInterface，2) 在 L 支架上生成 4 个 Ø3.4mm 孔@31mm，3) 选择 M3×12 螺栓+M3 螺母，4) 配对约束求解（面贴合+孔同心），5) 装配验证通过（配合面+螺栓对齐+无干涉）。",
+    "steps": [
+      "编写 tests/test_e2e_bolted_assembly.py — L支架+NEMA17 螺栓连接端到端测试",
+      "步骤 1: 调用 PartFeatureEngine 生成 L 支架（含 NEMA17 安装孔）",
+      "步骤 2: 调用 FastenerCatalog 生成 4×M3×12 螺栓+4×M3 螺母",
+      "步骤 3: 调用 MatingConstraintSolver 求解装配（面贴合+4 孔同心）",
+      "步骤 4: 调用 AssemblyVerifier 验证（配合面+螺栓对齐+干涉检查）",
+      "步骤 5: 验证所有检查项 pass",
+      "步骤 6: 用 FreeCAD 实际生成 FCStd + STL 验证几何正确性",
+      "记录结构化结果到 data/e2e_bolted_assembly_report.json",
+      "验证全量测试无回归"
+    ],
+    "priority": 82,
     "passes": false
   }
 ]

@@ -30,7 +30,7 @@ import pytest
 class TestCatalogDataIntegrity:
     def test_catalog_has_at_least_24_templates(self):
         from lang3d.knowledge.parts_catalog import PART_CATALOG
-        assert len(PART_CATALOG) >= 24
+        assert len(PART_CATALOG) >= 31
 
     def test_all_templates_have_required_fields(self):
         from lang3d.knowledge.parts_catalog import PART_CATALOG
@@ -139,7 +139,7 @@ class TestSearch:
     def test_search_category_actuator(self):
         from lang3d.knowledge.parts_catalog import search_parts
         results = search_parts(category="actuator")
-        assert len(results) == 3  # sg90, mg996r, nema17
+        assert len(results) >= 7  # sg90, mg996r, nema17, ds3218, nema23, motor_tt, jgb37_520
 
     def test_search_category_gear(self):
         from lang3d.knowledge.parts_catalog import search_parts
@@ -437,7 +437,7 @@ class TestToolExecution:
     def test_part_list_execution(self):
         registry = self._make_registry()
         result = registry.execute("part_list")
-        assert "24" in result
+        assert "39" in result
         assert "fastener" in result
 
     def test_part_list_by_category(self):
@@ -466,7 +466,7 @@ class TestCategoryTree:
         from lang3d.knowledge.parts_catalog import CATEGORY_TREE
         expected_categories = {
             "fastener", "bearing", "actuator", "shaft", "gear",
-            "structural", "mobile_base", "mounting",
+            "transmission", "structural", "mobile_base", "mounting", "sensor",
         }
         assert set(CATEGORY_TREE.keys()) == expected_categories
 
@@ -976,3 +976,456 @@ class TestBearingRealistic:
         assert "makeSphere" not in script  # simplified has no balls
         assert "OuterRing" in script
         assert "InnerRing" in script
+
+
+# ---------------------------------------------------------------------------
+# 14. Functional vs Structural part classification
+# ---------------------------------------------------------------------------
+
+class TestPartClassification:
+    """Tests for the functional/structural/fastener part classification system."""
+
+    def test_all_templates_have_part_class(self):
+        """Every template must have a part_class field."""
+        from lang3d.knowledge.parts_catalog import PART_CATALOG
+        for tid, t in PART_CATALOG.items():
+            assert hasattr(t, 'part_class'), f"Missing part_class for {tid}"
+            assert t.part_class in ("functional", "structural", "fastener"), \
+                f"Invalid part_class '{t.part_class}' for {tid}"
+
+    def test_all_templates_have_scalable_field(self):
+        from lang3d.knowledge.parts_catalog import PART_CATALOG
+        for tid, t in PART_CATALOG.items():
+            assert hasattr(t, 'scalable'), f"Missing scalable for {tid}"
+            assert isinstance(t.scalable, bool), f"scalable must be bool for {tid}"
+
+    def test_functional_parts_not_scalable(self):
+        """Functional parts (motors, servos, bearings, sensors) must have scalable=False."""
+        from lang3d.knowledge.parts_catalog import PART_CATALOG
+        functional_ids = ["servo_sg90", "servo_mg996r", "servo_ds3218",
+                          "nema17_stepper", "nema23_stepper",
+                          "bearing_608", "bearing_623", "bearing_625",
+                          "motor_tt", "motor_jgb37_520",
+                          "sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam"]
+        for fid in functional_ids:
+            t = PART_CATALOG[fid]
+            assert t.part_class == "functional", f"{fid} should be functional"
+            assert t.scalable is False, f"{fid} should not be scalable"
+            assert t.real_part is True, f"{fid} should be real_part"
+
+    def test_functional_parts_have_model_number(self):
+        """Functional parts should have a model_number identifying the real product."""
+        from lang3d.knowledge.parts_catalog import PART_CATALOG
+        for tid, t in PART_CATALOG.items():
+            if t.part_class == "functional":
+                assert t.model_number, f"Functional part {tid} missing model_number"
+                assert t.manufacturer, f"Functional part {tid} missing manufacturer"
+
+    def test_fastener_parts_not_scalable(self):
+        """Fastener parts (screws, nuts, washers) must have scalable=False."""
+        from lang3d.knowledge.parts_catalog import PART_CATALOG
+        fastener_ids = ["socket_head_cap_screw", "hex_nut", "flat_washer", "hex_bolt"]
+        for fid in fastener_ids:
+            t = PART_CATALOG[fid]
+            assert t.part_class == "fastener", f"{fid} should be fastener"
+            assert t.scalable is False, f"{fid} should not be scalable"
+
+    def test_structural_parts_scalable(self):
+        """Structural parts (brackets, plates, wheels) must have scalable=True."""
+        from lang3d.knowledge.parts_catalog import PART_CATALOG
+        structural_ids = ["l_bracket", "mounting_plate", "chassis_plate",
+                          "wheel_simple", "corner_bracket", "standoff_hex"]
+        for sid in structural_ids:
+            t = PART_CATALOG[sid]
+            assert t.part_class == "structural", f"{sid} should be structural"
+            assert t.scalable is True, f"{sid} should be scalable"
+
+    def test_get_functional_parts(self):
+        from lang3d.knowledge.parts_catalog import get_functional_parts
+        parts = get_functional_parts()
+        assert len(parts) >= 13  # 3 bearings + 3 servos + 2 steppers + 2 DC motors + 3 sensors
+        for p in parts:
+            assert p.part_class == "functional"
+
+    def test_get_structural_parts(self):
+        from lang3d.knowledge.parts_catalog import get_structural_parts
+        parts = get_structural_parts()
+        assert len(parts) >= 8  # brackets, plates, wheels, etc.
+        for p in parts:
+            assert p.part_class == "structural"
+
+    def test_get_fastener_parts(self):
+        from lang3d.knowledge.parts_catalog import get_fastener_parts
+        parts = get_fastener_parts()
+        assert len(parts) >= 4  # screw, nut, washer, bolt
+        for p in parts:
+            assert p.part_class == "fastener"
+
+    def test_search_by_part_class(self):
+        from lang3d.knowledge.parts_catalog import search_parts
+        func = search_parts(part_class="functional")
+        assert all(t.part_class == "functional" for t in func)
+        struct = search_parts(part_class="structural")
+        assert all(t.part_class == "structural" for t in struct)
+        fast = search_parts(part_class="fastener")
+        assert all(t.part_class == "fastener" for t in fast)
+
+    def test_validate_functional_params_ok(self):
+        """Parameters matching standard sizes should produce no warnings."""
+        from lang3d.knowledge.parts_catalog import validate_functional_params
+        warnings = validate_functional_params(
+            "servo_sg90",
+            {"body_length": 22.2, "body_width": 11.8, "body_height": 31.0,
+             "shaft_diameter": 4.6, "shaft_length": 5.0}
+        )
+        assert len(warnings) == 0
+
+    def test_validate_functional_params_deviation(self):
+        """Parameters deviating from standard sizes should produce warnings."""
+        from lang3d.knowledge.parts_catalog import validate_functional_params
+        warnings = validate_functional_params(
+            "servo_sg90",
+            {"body_length": 50.0, "body_width": 30.0, "body_height": 60.0,
+             "shaft_diameter": 10.0, "shaft_length": 20.0}
+        )
+        assert len(warnings) > 0
+
+    def test_validate_functional_params_non_functional(self):
+        """Non-functional parts should return empty warnings."""
+        from lang3d.knowledge.parts_catalog import validate_functional_params
+        warnings = validate_functional_params("l_bracket", {"length": 100})
+        assert len(warnings) == 0
+
+    def test_search_includes_model_number(self):
+        """Search should find parts by model_number."""
+        from lang3d.knowledge.parts_catalog import search_parts
+        results = search_parts(query="SG90")
+        assert len(results) >= 1
+        assert any(t.id == "servo_sg90" for t in results)
+
+    def test_classification_covers_all_templates(self):
+        """Every template must belong to exactly one class."""
+        from lang3d.knowledge.parts_catalog import PART_CATALOG
+        classes = {t.part_class for t in PART_CATALOG.values()}
+        assert classes == {"functional", "structural", "fastener"}
+        # Total should equal catalog size
+        total = sum(1 for t in PART_CATALOG.values() if t.part_class == "functional") + \
+                sum(1 for t in PART_CATALOG.values() if t.part_class == "structural") + \
+                sum(1 for t in PART_CATALOG.values() if t.part_class == "fastener")
+        assert total == len(PART_CATALOG)
+
+    def test_search_tool_accepts_part_class(self):
+        """PartSearchTool should accept part_class parameter."""
+        from lang3d.tools.part_library import PartSearchTool
+        tool = PartSearchTool()
+        defn = tool.get_definition()
+        assert "part_class" in defn.parameters["properties"]
+
+    def test_search_tool_output_shows_class(self):
+        """Search output should indicate part class."""
+        from lang3d.tools.part_library import PartSearchTool
+        tool = PartSearchTool()
+        result = tool.execute(query="舵机")
+        assert "[F]" in result  # Functional marker
+        assert "功能件" in result or "固定尺寸" in result
+
+
+# ---------------------------------------------------------------------------
+# 15. Task 68: Real functional part specs — motors, servos, sensors
+# ---------------------------------------------------------------------------
+
+class TestRealFunctionalParts:
+    """Verify that newly added functional parts have correct real-world specs."""
+
+    # --- TT Motor ---
+
+    def test_tt_motor_exists(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("motor_tt")
+        assert t is not None
+        assert t.part_class == "functional"
+        assert t.real_part is True
+
+    def test_tt_motor_dimensions(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters
+        t = get_template("motor_tt")
+        params = resolve_parameters(t)
+        assert abs(params["body_length"] - 26.5) < 0.2
+        assert abs(params["body_width"] - 20.5) < 0.2
+        assert abs(params["body_height"] - 15.0) < 0.2
+        assert abs(params["shaft_diameter"] - 3.175) < 0.01
+
+    def test_tt_motor_all_params_fixed(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("motor_tt")
+        for p in t.parameters:
+            assert p.fixed, f"Parameter '{p.name}' of TT motor should be fixed=True"
+
+    def test_tt_motor_script_renders(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        import re
+        t = get_template("motor_tt")
+        params = resolve_parameters(t)
+        script = format_fc_script(t, params)
+        unreplaced = re.findall(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', script)
+        assert len(unreplaced) == 0, f"Unreplaced: {unreplaced}"
+        assert "Gearbox" in script
+        assert "MountingTab" in script
+
+    # --- DS3218 Servo ---
+
+    def test_ds3218_servo_exists(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("servo_ds3218")
+        assert t is not None
+        assert t.part_class == "functional"
+        assert t.model_number == "DS3218"
+
+    def test_ds3218_servo_dimensions(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters
+        t = get_template("servo_ds3218")
+        params = resolve_parameters(t)
+        assert abs(params["body_length"] - 40.0) < 0.2
+        assert abs(params["body_width"] - 20.0) < 0.2
+        assert abs(params["body_height"] - 38.5) < 0.2
+        assert abs(params["shaft_diameter"] - 5.8) < 0.2
+
+    def test_ds3218_script_renders(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        import re
+        t = get_template("servo_ds3218")
+        params = resolve_parameters(t)
+        script = format_fc_script(t, params)
+        unreplaced = re.findall(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', script)
+        assert len(unreplaced) == 0
+        assert "MountingTab" in script
+
+    # --- JGB37-520 ---
+
+    def test_jgb37_520_exists(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("motor_jgb37_520")
+        assert t is not None
+        assert t.part_class == "functional"
+        assert t.model_number == "JGB37-520"
+
+    def test_jgb37_520_dimensions(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters
+        t = get_template("motor_jgb37_520")
+        params = resolve_parameters(t)
+        assert abs(params["body_diameter"] - 37.0) < 0.2
+        assert abs(params["shaft_diameter"] - 6.0) < 0.2
+        assert abs(params["shaft_length"] - 15.5) < 0.2
+
+    def test_jgb37_520_script_renders(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        import re
+        t = get_template("motor_jgb37_520")
+        params = resolve_parameters(t)
+        script = format_fc_script(t, params)
+        unreplaced = re.findall(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', script)
+        assert len(unreplaced) == 0
+        assert "Gearbox" in script
+
+    def test_jgb37_520_has_multiple_ratios(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("motor_jgb37_520")
+        assert len(t.standard_sizes) >= 3  # 1:30, 1:50, 1:131
+
+    # --- NEMA23 ---
+
+    def test_nema23_exists(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("nema23_stepper")
+        assert t is not None
+        assert t.part_class == "functional"
+        assert t.model_number == "NEMA23-57BYGH"
+
+    def test_nema23_dimensions(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters
+        t = get_template("nema23_stepper")
+        params = resolve_parameters(t)
+        assert abs(params["body_size"] - 56.4) < 0.2
+        assert abs(params["shaft_diameter"] - 6.35) < 0.02
+
+    def test_nema23_script_renders(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        import re
+        t = get_template("nema23_stepper")
+        params = resolve_parameters(t)
+        script = format_fc_script(t, params)
+        unreplaced = re.findall(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', script)
+        assert len(unreplaced) == 0
+
+    def test_nema23_has_multiple_lengths(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("nema23_stepper")
+        assert len(t.standard_sizes) >= 2
+        lengths = [s["body_length"] for s in t.standard_sizes]
+        assert 40.0 in lengths
+        assert 56.0 in lengths
+
+    # --- RPLIDAR A1 ---
+
+    def test_rplidar_a1_exists(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("sensor_rplidar_a1")
+        assert t is not None
+        assert t.part_class == "functional"
+        assert t.category == "sensor"
+        assert t.model_number == "RPLIDAR-A1"
+
+    def test_rplidar_a1_dimensions(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters
+        t = get_template("sensor_rplidar_a1")
+        params = resolve_parameters(t)
+        assert abs(params["body_diameter"] - 72.0) < 0.2
+        assert abs(params["body_height"] - 41.0) < 0.2
+
+    def test_rplidar_script_renders(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        import re
+        t = get_template("sensor_rplidar_a1")
+        params = resolve_parameters(t)
+        script = format_fc_script(t, params)
+        unreplaced = re.findall(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', script)
+        assert len(unreplaced) == 0
+        assert "Dome" in script
+
+    # --- MPU6050 ---
+
+    def test_mpu6050_exists(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("sensor_mpu6050")
+        assert t is not None
+        assert t.part_class == "functional"
+        assert t.category == "sensor"
+
+    def test_mpu6050_dimensions(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters
+        t = get_template("sensor_mpu6050")
+        params = resolve_parameters(t)
+        assert abs(params["pcb_length"] - 21.0) < 0.2
+        assert abs(params["pcb_width"] - 16.0) < 0.2
+        assert abs(params["pcb_thickness"] - 1.6) < 0.2
+
+    def test_mpu6050_script_renders(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        import re
+        t = get_template("sensor_mpu6050")
+        params = resolve_parameters(t)
+        script = format_fc_script(t, params)
+        unreplaced = re.findall(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', script)
+        assert len(unreplaced) == 0
+        assert "Chip" in script
+
+    # --- ESP32-CAM ---
+
+    def test_esp32_cam_exists(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        t = get_template("sensor_esp32_cam")
+        assert t is not None
+        assert t.part_class == "functional"
+        assert t.category == "sensor"
+        assert t.model_number == "ESP32-CAM"
+
+    def test_esp32_cam_dimensions(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters
+        t = get_template("sensor_esp32_cam")
+        params = resolve_parameters(t)
+        assert abs(params["pcb_length"] - 40.0) < 0.2
+        assert abs(params["pcb_width"] - 27.0) < 0.2
+        assert abs(params["camera_diameter"] - 8.0) < 0.2
+
+    def test_esp32_cam_script_renders(self):
+        from lang3d.knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        import re
+        t = get_template("sensor_esp32_cam")
+        params = resolve_parameters(t)
+        script = format_fc_script(t, params)
+        unreplaced = re.findall(r'\{[a-zA-Z_][a-zA-Z0-9_]*\}', script)
+        assert len(unreplaced) == 0
+        assert "Camera" in script
+        assert "ESP32Chip" in script
+
+    # --- Cross-cutting ---
+
+    def test_all_new_parts_have_standard_sizes(self):
+        """Every new functional part must have at least one standard size."""
+        from lang3d.knowledge.parts_catalog import get_template
+        new_ids = ["motor_tt", "servo_ds3218", "motor_jgb37_520", "nema23_stepper",
+                    "sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam"]
+        for pid in new_ids:
+            t = get_template(pid)
+            assert t is not None, f"Missing template {pid}"
+            assert len(t.standard_sizes) >= 1, f"{pid} has no standard sizes"
+
+    def test_all_new_parts_have_notes(self):
+        """Every new functional part must have notes with real specs."""
+        from lang3d.knowledge.parts_catalog import get_template
+        new_ids = ["motor_tt", "servo_ds3218", "motor_jgb37_520", "nema23_stepper",
+                    "sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam"]
+        for pid in new_ids:
+            t = get_template(pid)
+            assert t.notes, f"{pid} missing notes (should contain real specs)"
+
+    def test_all_new_parts_have_manufacturer(self):
+        from lang3d.knowledge.parts_catalog import get_template
+        new_ids = ["motor_tt", "servo_ds3218", "motor_jgb37_520", "nema23_stepper",
+                    "sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam"]
+        for pid in new_ids:
+            t = get_template(pid)
+            assert t.manufacturer, f"{pid} missing manufacturer"
+
+    def test_sensor_category_in_category_tree(self):
+        from lang3d.knowledge.parts_catalog import CATEGORY_TREE
+        assert "sensor" in CATEGORY_TREE
+        assert "lidar" in CATEGORY_TREE["sensor"]
+        assert "imu" in CATEGORY_TREE["sensor"]
+        assert "camera" in CATEGORY_TREE["sensor"]
+
+    def test_dc_motor_in_category_tree(self):
+        from lang3d.knowledge.parts_catalog import CATEGORY_TREE
+        assert "actuator" in CATEGORY_TREE
+        assert "dc_motor" in CATEGORY_TREE["actuator"]
+
+    def test_perception_subsystem_exists(self):
+        from lang3d.knowledge.parts_catalog import _SUBSYSTEM_COMPAT
+        assert "perception" in _SUBSYSTEM_COMPAT
+        assert "sensor_rplidar_a1" in _SUBSYSTEM_COMPAT["perception"]
+        assert "sensor_mpu6050" in _SUBSYSTEM_COMPAT["perception"]
+
+    def test_search_finds_tt_motor(self):
+        from lang3d.knowledge.parts_catalog import search_parts
+        results = search_parts(query="TT", part_class="functional")
+        assert any(t.id == "motor_tt" for t in results)
+
+    def test_search_finds_sensors(self):
+        from lang3d.knowledge.parts_catalog import search_parts
+        results = search_parts(query="传感器", part_class="functional")
+        assert len(results) >= 3
+
+    def test_search_by_category_sensor(self):
+        from lang3d.knowledge.parts_catalog import search_parts
+        results = search_parts(category="sensor")
+        assert len(results) >= 3
+        assert all(t.category == "sensor" for t in results)
+
+    def test_functional_validate_tt_motor_standard(self):
+        """Standard TT motor params should pass validation."""
+        from lang3d.knowledge.parts_catalog import validate_functional_params
+        warnings = validate_functional_params("motor_tt", {
+            "body_length": 26.5, "body_width": 20.5, "body_height": 15.0,
+            "gearbox_length": 10.0, "gearbox_width": 22.0, "gearbox_height": 18.0,
+            "shaft_diameter": 3.175, "shaft_length": 7.5,
+        })
+        assert len(warnings) == 0
+
+    def test_functional_validate_tt_motor_deviation(self):
+        """Non-standard TT motor params should produce warnings."""
+        from lang3d.knowledge.parts_catalog import validate_functional_params
+        warnings = validate_functional_params("motor_tt", {
+            "body_length": 50.0, "body_width": 30.0, "body_height": 25.0,
+            "shaft_diameter": 10.0, "shaft_length": 20.0,
+        })
+        assert len(warnings) > 0

@@ -46,6 +46,23 @@ class PartTemplate:
     quality_levels: list[str] = field(default_factory=lambda: ["simplified"])
     fc_script_alternatives: dict[str, str] = field(default_factory=dict)
 
+    # --- Functional vs Structural classification ---
+    # "functional" = real off-the-shelf part (motor, servo, sensor, bearing)
+    #   - Dimensions are FIXED (from real product specs)
+    #   - Cannot be freely scaled
+    #   - Must be selected from catalog, not generated with arbitrary dimensions
+    # "structural" = custom-designed part (bracket, plate, link, housing)
+    #   - Dimensions are PARAMETRIC (can be freely adjusted)
+    #   - Scalable within min/max constraints
+    # "fastener" = standard fastening hardware (screw, nut, washer)
+    #   - Dimensions follow ISO/DIN standards
+    #   - Selected from standard sizes, not arbitrary values
+    part_class: str = "structural"  # "functional" | "structural" | "fastener"
+    scalable: bool = True           # True for structural, False for functional/fastener
+    real_part: bool = False         # True if this is a real COTS (Commercial Off-The-Shelf) part
+    manufacturer: str = ""          # e.g. "Tower Pro", "Pololu", "DFRobot"
+    model_number: str = ""          # e.g. "SG90", "NEMA17-42BYGH", "JGB37-520"
+
 
 @dataclass
 class GeneratedPart:
@@ -92,12 +109,14 @@ class GeneratedPart:
 CATEGORY_TREE: dict[str, list[str]] = {
     "fastener": ["screw", "nut", "washer", "bolt"],
     "bearing": ["ball_bearing"],
-    "actuator": ["servo", "stepper"],
+    "actuator": ["servo", "stepper", "dc_motor"],
     "shaft": ["linear", "coupling"],
     "gear": ["spur"],
+    "transmission": ["timing_pulley", "timing_belt", "rigid_coupling", "flexible_coupling"],
     "structural": ["bracket", "plate"],
     "mobile_base": ["wheel", "chassis", "motor_bracket", "hub"],
     "mounting": ["standoff", "battery_holder", "pcb_mount"],
+    "sensor": ["lidar", "imu", "camera"],
 }
 
 
@@ -887,6 +906,769 @@ obj.Shape = result
 doc.recompute()
 """
 
+# ---------------------------------------------------------------------------
+# Task 68: Real functional part scripts — motors, servos, sensors
+# ---------------------------------------------------------------------------
+
+# TT Motor (Gearbox Motor) — most common cheap DC motor for robot kits
+_TT_MOTOR_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("tt_motor")
+# Motor body (rectangular)
+body = Part.makeBox({body_length}, {body_width}, {body_height})
+body_obj = doc.addObject("Part::Feature", "Body")
+body_obj.Shape = body
+# Gearbox housing (slightly wider section)
+gb = Part.makeBox({gearbox_length}, {gearbox_width}, {gearbox_height})
+gb.translate(FreeCAD.Vector({body_length}, ({body_width} - {gearbox_width})/2, ({body_height} - {gearbox_height})/2))
+gb_obj = doc.addObject("Part::Feature", "Gearbox")
+gb_obj.Shape = gb
+# Output shaft
+shaft = Part.makeCylinder({shaft_diameter}/2, {shaft_length})
+shaft.translate(FreeCAD.Vector({body_length} + {gearbox_length}, {body_width}/2, {body_height}/2))
+shaft_obj = doc.addObject("Part::Feature", "Shaft")
+shaft_obj.Shape = shaft
+# Mounting tabs (2 ears)
+tab_w = 5
+tab_h = 2
+tab = Part.makeBox({body_length} + 2*tab_w, tab_w, tab_h)
+tab.translate(FreeCAD.Vector(-tab_w, -tab_w, {body_height} - tab_h))
+tab_obj = doc.addObject("Part::Feature", "MountingTab")
+tab_obj.Shape = tab
+doc.recompute()
+"""
+
+# DS3218 Digital Servo — 20kg high-torque servo
+_DS3218_SERVO_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("servo_ds3218")
+# Main body
+body = Part.makeBox({body_length}, {body_width}, {body_height})
+body_obj = doc.addObject("Part::Feature", "Body")
+body_obj.Shape = body
+# Mounting tabs
+tab_w = 6
+tab = Part.makeBox({body_length} + 2*tab_w, {body_width}, tab_w/2)
+tab.translate(FreeCAD.Vector(-tab_w, 0, -tab_w/2))
+tab_obj = doc.addObject("Part::Feature", "MountingTab")
+tab_obj.Shape = tab
+# Output shaft (larger than SG90)
+shaft = Part.makeCylinder({shaft_diameter}/2, {shaft_length})
+shaft.translate(FreeCAD.Vector({body_length}/2 - 10, {body_width}/2, {body_height}))
+shaft_obj = doc.addObject("Part::Feature", "Shaft")
+shaft_obj.Shape = shaft
+doc.recompute()
+"""
+
+# JGB37-520 DC Gearmotor — common 12V gearmotor for medium robots
+_JGB37_520_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("jgb37_520")
+# Motor body (cylindrical)
+body = Part.makeCylinder({body_diameter}/2, {body_length})
+body_obj = doc.addObject("Part::Feature", "Body")
+body_obj.Shape = body
+# Gearbox housing (slightly larger cylinder)
+gb = Part.makeCylinder({gearbox_diameter}/2, {gearbox_length})
+gb.translate(FreeCAD.Vector(0, 0, {body_length}))
+gb_obj = doc.addObject("Part::Feature", "Gearbox")
+gb_obj.Shape = gb
+# Output shaft
+shaft = Part.makeCylinder({shaft_diameter}/2, {shaft_length})
+shaft.translate(FreeCAD.Vector(0, 0, {body_length} + {gearbox_length}))
+shaft_obj = doc.addObject("Part::Feature", "Shaft")
+shaft_obj.Shape = shaft
+# Mounting bracket holes (2 M3 holes on gearbox face)
+import math
+for angle in [0, 180]:
+    rad = math.radians(angle)
+    hx = {gearbox_diameter}/2 * 0.55 * math.cos(rad)
+    hy = {gearbox_diameter}/2 * 0.55 * math.sin(rad)
+    hole = Part.makeCylinder(1.5, {gearbox_length})
+    hole.translate(FreeCAD.Vector(hx, hy, {body_length}))
+    gb = gb.cut(hole)
+gb_obj.Shape = gb
+doc.recompute()
+"""
+
+# NEMA23 Stepper Motor — larger stepper for CNC/robotics
+_NEMA23_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("nema23_stepper")
+# Main body (square)
+body = Part.makeBox({body_size}, {body_size}, {body_length})
+body_obj = doc.addObject("Part::Feature", "Body")
+body_obj.Shape = body
+# Output shaft
+shaft = Part.makeCylinder({shaft_diameter}/2, {shaft_length})
+shaft.translate(FreeCAD.Vector({body_size}/2, {body_size}/2, {body_length}))
+shaft_obj = doc.addObject("Part::Feature", "Shaft")
+shaft_obj.Shape = shaft
+# Mounting holes (4 corners)
+for dx, dy in [(7.5, 7.5), ({body_size}-7.5, 7.5), (7.5, {body_size}-7.5), ({body_size}-7.5, {body_size}-7.5)]:
+    hole = Part.makeCylinder(2.0, 3)
+    hole.translate(FreeCAD.Vector(dx, dy, {body_length}))
+    body = body.cut(hole)
+body_obj.Shape = body
+doc.recompute()
+"""
+
+# RPLIDAR A1 — 2D LiDAR sensor for mobile robots
+_RPLIDAR_A1_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("rplidar_a1")
+# Main body (cylinder)
+body = Part.makeCylinder({body_diameter}/2, {body_height})
+body_obj = doc.addObject("Part::Feature", "Body")
+body_obj.Shape = body
+# Top dome (slight bump)
+dome = Part.makeCylinder({body_diameter}/4, 3)
+dome.translate(FreeCAD.Vector(0, 0, {body_height}))
+dome_obj = doc.addObject("Part::Feature", "Dome")
+dome_obj.Shape = dome
+# Base mounting holes (4x M3)
+import math
+mount_r = {body_diameter}/2 - 5
+for i in range(4):
+    angle = math.radians(90 * i + 45)
+    hx = mount_r * math.cos(angle)
+    hy = mount_r * math.sin(angle)
+    hole = Part.makeCylinder(1.6, {body_height})
+    hole.translate(FreeCAD.Vector(hx, hy, 0))
+    body = body.cut(hole)
+body_obj.Shape = body
+doc.recompute()
+"""
+
+# MPU6050 IMU Module
+_MPU6050_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("mpu6050")
+# PCB board
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+# IMU chip (center)
+chip = Part.makeBox(4, 4, 1.2)
+chip.translate(FreeCAD.Vector({pcb_length}/2 - 2, {pcb_width}/2 - 2, {pcb_thickness}))
+chip_obj = doc.addObject("Part::Feature", "Chip")
+chip_obj.Shape = chip
+# Mounting holes (4 corners)
+margin = 2.5
+hole_r = 1.0
+for x in [margin, {pcb_length} - margin]:
+    for y in [margin, {pcb_width} - margin]:
+        hole = Part.makeCylinder(hole_r, {pcb_thickness})
+        hole.translate(FreeCAD.Vector(x, y, 0))
+        pcb = pcb.cut(hole)
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+# ESP32-CAM Module
+_ESP32_CAM_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("esp32_cam")
+# Main PCB
+pcb = Part.makeBox({pcb_length}, {pcb_width}, {pcb_thickness})
+pcb_obj = doc.addObject("Part::Feature", "PCB")
+pcb_obj.Shape = pcb
+# Camera module (center, cylindrical)
+cam = Part.makeCylinder({camera_diameter}/2, {camera_height})
+cam.translate(FreeCAD.Vector({pcb_length}/2, {pcb_width}/2, {pcb_thickness}))
+cam_obj = doc.addObject("Part::Feature", "Camera")
+cam_obj.Shape = cam
+# ESP32 chip
+chip = Part.makeBox(10, 10, 2)
+chip.translate(FreeCAD.Vector({pcb_length}/2 - 5, 3, {pcb_thickness}))
+chip_obj = doc.addObject("Part::Feature", "ESP32Chip")
+chip_obj.Shape = chip
+# Mounting holes (2 on each side)
+for x in [3, {pcb_length} - 3]:
+    for y in [3, {pcb_width} - 3]:
+        hole = Part.makeCylinder(1.0, {pcb_thickness})
+        hole.translate(FreeCAD.Vector(x, y, 0))
+        pcb = pcb.cut(hole)
+pcb_obj.Shape = pcb
+doc.recompute()
+"""
+
+
+# ---------------------------------------------------------------------------
+# Task 73: Transmission parts — GT2/HTD pulleys, belts, couplings, keyway
+# ---------------------------------------------------------------------------
+
+# GT2 Synchronous Pulley — simplified (cylinder + flange + bore)
+_GT2_PULLEY_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("gt2_pulley")
+pitch = 2.0
+n_teeth = {teeth}
+r_pitch = n_teeth * pitch / (2 * math.pi)
+r_outer = r_pitch + 0.75
+r_root = r_pitch - 0.30
+w = {width}
+flange_d = r_outer + 1.5
+# Main body
+body = Part.makeCylinder(r_outer, w)
+# Flanges
+flange1 = Part.makeCylinder(flange_d, 1.0)
+flange2 = Part.makeCylinder(flange_d, 1.0)
+flange2.translate(FreeCAD.Vector(0, 0, w - 1.0))
+body = body.fuse(flange1).fuse(flange2)
+# Bore
+bore = Part.makeCylinder({bore_diameter}/2, w)
+body = body.cut(bore)
+obj = doc.addObject("Part::Feature", "GT2Pulley")
+obj.Shape = body
+doc.recompute()
+"""
+
+# GT2 Synchronous Pulley — realistic (tooth profile)
+_GT2_PULLEY_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("gt2_pulley_realistic")
+pitch = 2.0
+n_teeth = int({teeth})
+w = {width}
+bore_r = {bore_diameter} / 2.0
+
+r_pitch = n_teeth * pitch / (2 * math.pi)
+r_outer = r_pitch + 0.75
+r_root = r_pitch - 0.30
+
+# Build tooth profile: GT2 has rounded trapezoidal teeth
+tooth_half_angle = math.pi / n_teeth  # half angular pitch
+tip_half_angle = tooth_half_angle * 0.45
+root_half_angle = tooth_half_angle * 0.55
+
+points = []
+for i in range(n_teeth):
+    base_angle = i * 2 * math.pi / n_teeth
+    # Root arc start
+    a0 = base_angle - root_half_angle
+    points.append(FreeCAD.Vector(r_root * math.cos(a0), r_root * math.sin(a0), 0))
+    # Tooth flank rise (left)
+    a1 = base_angle - tip_half_angle
+    points.append(FreeCAD.Vector(r_outer * math.cos(a1), r_outer * math.sin(a1), 0))
+    # Tooth tip (small arc approximated by 3 points)
+    for j in range(3):
+        ta = base_angle - tip_half_angle + tip_half_angle * 2 * j / 2
+        points.append(FreeCAD.Vector(r_outer * math.cos(ta), r_outer * math.sin(ta), 0))
+    # Tooth flank fall (right)
+    a2 = base_angle + tip_half_angle
+    points.append(FreeCAD.Vector(r_outer * math.cos(a2), r_outer * math.sin(a2), 0))
+    # Root arc end
+    a3 = base_angle + root_half_angle
+    points.append(FreeCAD.Vector(r_root * math.cos(a3), r_root * math.sin(a3), 0))
+
+points.append(points[0])
+
+try:
+    gear_wire = Part.makePolygon(points)
+    gear_face = Part.Face(gear_wire)
+    body = gear_face.extrude(FreeCAD.Vector(0, 0, w))
+except Exception:
+    body = Part.makeCylinder(r_outer, w)
+
+# Flanges
+flange_d = r_outer + 1.5
+flange1 = Part.makeCylinder(flange_d, 1.0)
+flange2 = Part.makeCylinder(flange_d, 1.0)
+flange2.translate(FreeCAD.Vector(0, 0, w - 1.0))
+body = body.fuse(flange1).fuse(flange2)
+
+# Bore
+bore = Part.makeCylinder(bore_r, w)
+body = body.cut(bore)
+
+# Hub (optional raised center)
+if {hub_diameter} > {bore_diameter}:
+    hub_h = {hub_height}
+    hub = Part.makeCylinder({hub_diameter}/2, hub_h)
+    hub.translate(FreeCAD.Vector(0, 0, w))
+    body = body.fuse(hub)
+    hub_bore = Part.makeCylinder(bore_r, w + hub_h)
+    body = body.cut(hub_bore)
+
+obj = doc.addObject("Part::Feature", "GT2Pulley")
+obj.Shape = body
+doc.recompute()
+"""
+
+# GT2 Belt — simplified flat belt with teeth on one side
+_GT2_BELT_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("gt2_belt")
+pitch = 2.0
+n_teeth = {teeth}
+w = {width}
+belt_length = n_teeth * pitch
+belt_thickness = 1.38
+tooth_height = 0.75
+
+# Belt body (flat strip loop approximated as a thick ring)
+r_outer = belt_length / (2 * math.pi)
+r_inner = r_outer - belt_thickness
+
+body = Part.makeCylinder(r_outer, w)
+inner = Part.makeCylinder(r_inner, w)
+belt = body.cut(inner)
+
+# Teeth on inner surface
+tooth_count = n_teeth
+for i in range(tooth_count):
+    angle = 2 * math.pi * i / tooth_count
+    cx = r_inner * math.cos(angle)
+    cy = r_inner * math.sin(angle)
+    tooth = Part.makeCylinder(0.3, w)
+    tooth.translate(FreeCAD.Vector(cx, cy, 0))
+    try:
+        belt = belt.cut(tooth)
+    except Exception:
+        pass
+
+obj = doc.addObject("Part::Feature", "GT2Belt")
+obj.Shape = belt
+doc.recompute()
+"""
+
+# HTD Pulley — simplified (cylinder + flange + bore)
+_HTD_PULLEY_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("htd_pulley")
+pitch = {pitch}
+n_teeth = {teeth}
+r_pitch = n_teeth * pitch / (2 * math.pi)
+r_addendum = r_pitch + {module}
+r_dedendum = r_pitch - 1.25 * {module}
+w = {width}
+flange_r = r_addendum + 2.0
+
+body = Part.makeCylinder(r_addendum, w)
+# Flanges
+flange1 = Part.makeCylinder(flange_r, 1.5)
+flange2 = Part.makeCylinder(flange_r, 1.5)
+flange2.translate(FreeCAD.Vector(0, 0, w - 1.5))
+body = body.fuse(flange1).fuse(flange2)
+# Bore
+bore = Part.makeCylinder({bore_diameter}/2, w)
+body = body.cut(bore)
+obj = doc.addObject("Part::Feature", "HTDPulley")
+obj.Shape = body
+doc.recompute()
+"""
+
+# HTD Pulley — realistic (HTD tooth profile: semi-circular)
+_HTD_PULLEY_REALISTIC_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("htd_pulley_realistic")
+pitch = {pitch}
+n_teeth = int({teeth})
+w = {width}
+bore_r = {bore_diameter} / 2.0
+
+r_pitch = n_teeth * pitch / (2 * math.pi)
+r_addendum = r_pitch + {module}
+r_dedendum = r_pitch - 1.25 * {module}
+
+# HTD tooth profile: semi-circular groove between rounded teeth
+tooth_angle = 2 * math.pi / n_teeth
+groove_r = pitch * 0.30  # groove radius for HTD profile
+
+points = []
+resolution = 8  # points per groove and per tooth
+for i in range(n_teeth):
+    base = i * tooth_angle
+    # Groove (dedendum arc)
+    groove_center_r = r_dedendum + groove_r
+    for j in range(resolution + 1):
+        a = base + tooth_angle * 0.1 + (tooth_angle * 0.35) * j / resolution
+        gx = (groove_center_r - groove_r) * math.cos(a)
+        gy = (groove_center_r - groove_r) * math.sin(a)
+        points.append(FreeCAD.Vector(gx, gy, 0))
+    # Tooth (addendum arc)
+    for j in range(resolution + 1):
+        a = base + tooth_angle * 0.5 + (tooth_angle * 0.4) * j / resolution
+        tx = r_addendum * math.cos(a)
+        ty = r_addendum * math.sin(a)
+        points.append(FreeCAD.Vector(tx, ty, 0))
+
+points.append(points[0])
+
+try:
+    profile_wire = Part.makePolygon(points)
+    profile_face = Part.Face(profile_wire)
+    body = profile_face.extrude(FreeCAD.Vector(0, 0, w))
+except Exception:
+    body = Part.makeCylinder(r_addendum, w)
+
+# Flanges
+flange_r = r_addendum + 2.0
+flange1 = Part.makeCylinder(flange_r, 1.5)
+flange2 = Part.makeCylinder(flange_r, 1.5)
+flange2.translate(FreeCAD.Vector(0, 0, w - 1.5))
+body = body.fuse(flange1).fuse(flange2)
+
+# Bore
+bore = Part.makeCylinder(bore_r, w)
+body = body.cut(bore)
+
+# Hub
+if {hub_diameter} > {bore_diameter}:
+    hub_h = {hub_height}
+    hub = Part.makeCylinder({hub_diameter}/2, hub_h)
+    hub.translate(FreeCAD.Vector(0, 0, w))
+    body = body.fuse(hub)
+    hub_bore = Part.makeCylinder(bore_r, w + hub_h)
+    body = body.cut(hub_bore)
+
+obj = doc.addObject("Part::Feature", "HTDPulley")
+obj.Shape = body
+doc.recompute()
+"""
+
+# Rigid Coupling — set screw type
+_RIGID_COUPLING_SETSCREW_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("rigid_coupling_setscrew")
+od = {outer_diameter}
+l = {length}
+bore = {bore_diameter}
+n_setscrews = {num_setscrews}
+setscrew_size = {setscrew_size}
+
+body = Part.makeCylinder(od/2, l)
+# Central bore
+hole = Part.makeCylinder(bore/2, l)
+body = body.cut(hole)
+# Set screw holes (radial, perpendicular to bore axis)
+for i in range(int(n_setscrews)):
+    z = l * (i + 1) / (n_setscrews + 1)
+    setscrew_hole = Part.makeCylinder(setscrew_size/4, od/2)
+    setscrew_hole.translate(FreeCAD.Vector(0, 0, z))
+    setscrew_hole.rotate(FreeCAD.Vector(0, 0, z), FreeCAD.Vector(0, 0, 1), 90)
+    body = body.cut(setscrew_hole)
+
+obj = doc.addObject("Part::Feature", "RigidCoupling")
+obj.Shape = body
+doc.recompute()
+"""
+
+# Rigid Coupling — clamping type (split clamp)
+_RIGID_COUPLING_CLAMPING_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("rigid_coupling_clamping")
+od = {outer_diameter}
+l = {length}
+bore = {bore_diameter}
+clamp_screw = {clamp_screw_size}
+clamp_width = 4.0
+
+body = Part.makeCylinder(od/2, l)
+# Central bore
+hole = Part.makeCylinder(bore/2, l)
+body = body.cut(hole)
+# Clamp slot (through the diameter)
+slot = Part.makeBox(od, clamp_width, l)
+slot.translate(FreeCAD.Vector(-od/2, -clamp_width/2, 0))
+body = body.cut(slot)
+# Clamp screw holes (perpendicular to slot)
+screw_hole_r = clamp_screw / 2
+for z in [l * 0.3, l * 0.7]:
+    for dx in [-od/4, od/4]:
+        sh = Part.makeCylinder(screw_hole_r, clamp_width + 4)
+        sh.translate(FreeCAD.Vector(dx, -clamp_width/2 - 2, z))
+        sh.rotate(FreeCAD.Vector(dx, 0, z), FreeCAD.Vector(1, 0, 0), 90)
+        body = body.cut(sh)
+
+obj = doc.addObject("Part::Feature", "ClampingCoupling")
+obj.Shape = body
+doc.recompute()
+"""
+
+# Spider (Jaw) Flexible Coupling — two metal hubs + elastomer spider
+_SPIDER_COUPLING_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("spider_coupling")
+od = {outer_diameter}
+l = {length}
+bore1 = {bore1_diameter}
+bore2 = {bore2_diameter}
+jaw_count = {jaw_count}
+jaw_depth = {jaw_depth}
+
+half_l = l / 2.0
+
+# Hub 1 (bottom half)
+hub1 = Part.makeCylinder(od/2, half_l)
+bore1_shape = Part.makeCylinder(bore1/2, half_l)
+hub1 = hub1.cut(bore1_shape)
+
+# Jaw cuts on top of hub1
+for i in range(int(jaw_count)):
+    angle = 2 * math.pi * i / jaw_count
+    jaw_w = od * 0.25
+    jaw = Part.makeBox(jaw_depth, jaw_w, jaw_depth)
+    cx = (od/2 - jaw_depth) * math.cos(angle)
+    cy = (od/2 - jaw_depth) * math.sin(angle)
+    jaw.translate(FreeCAD.Vector(cx - jaw_depth/2, cy - jaw_w/2, half_l - jaw_depth))
+    jaw_rot = Part.Body()
+    jaw_obj_rot = jaw_rot.addObject("Part::Feature", "Jaw")
+    jaw_obj_rot.Shape = jaw
+    jaw_rot.rotate(FreeCAD.Vector(0, 0, half_l), FreeCAD.Vector(0, 0, 1), math.degrees(angle))
+    try:
+        hub1 = hub1.cut(jaw_rot.Shape)
+    except Exception:
+        pass
+
+# Hub 2 (top half)
+hub2 = Part.makeCylinder(od/2, half_l)
+bore2_shape = Part.makeCylinder(bore2/2, half_l)
+hub2 = hub2.cut(bore2_shape)
+hub2.translate(FreeCAD.Vector(0, 0, half_l))
+
+# Spider (elastomer) — simplified as thin ring between hubs
+spider_r = od / 2 * 0.75
+spider_t = 2.0
+spider = Part.makeCylinder(spider_r, spider_t)
+spider_inner = Part.makeCylinder(od/4, spider_t)
+spider = spider.cut(spider_inner)
+spider.translate(FreeCAD.Vector(0, 0, half_l - spider_t/2))
+
+obj1 = doc.addObject("Part::Feature", "Hub1")
+obj1.Shape = hub1
+obj2 = doc.addObject("Part::Feature", "Hub2")
+obj2.Shape = hub2
+obj3 = doc.addObject("Part::Feature", "Spider")
+obj3.Shape = spider
+doc.recompute()
+"""
+
+# Bellows Flexible Coupling
+_BELLOWS_COUPLING_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("bellows_coupling")
+od = {outer_diameter}
+l = {length}
+bore1 = {bore1_diameter}
+bore2 = {bore2_diameter}
+n_convolutions = {convolutions}
+wall_t = {wall_thickness}
+
+half_l = l / 2.0
+conv_height = half_l / n_convolutions
+
+# Hub 1
+hub1_od = od * 1.2
+hub1 = Part.makeCylinder(hub1_od/2, half_l * 0.3)
+bore1_shape = Part.makeCylinder(bore1/2, half_l * 0.3)
+hub1 = hub1.cut(bore1_shape)
+
+# Bellows section (corrugated thin wall)
+bellows_r = od / 2
+bellows_start = half_l * 0.3
+for i in range(int(n_convolutions)):
+    z = bellows_start + i * conv_height
+    r = bellows_r if i % 2 == 0 else bellows_r * 0.75
+    ring = Part.makeCylinder(r, conv_height)
+    ring.translate(FreeCAD.Vector(0, 0, z))
+    if i == 0:
+        bellows = ring
+    else:
+        bellows = bellows.fuse(ring)
+
+# Hub 2
+hub2_od = od * 1.2
+hub2 = Part.makeCylinder(hub2_od/2, half_l * 0.3)
+bore2_shape = Part.makeCylinder(bore2/2, half_l * 0.3)
+hub2 = hub2.cut(bore2_shape)
+hub2.translate(FreeCAD.Vector(0, 0, l - half_l * 0.3))
+
+obj1 = doc.addObject("Part::Feature", "Hub1")
+obj1.Shape = hub1
+obj2 = doc.addObject("Part::Feature", "Hub2")
+obj2.Shape = hub2
+obj3 = doc.addObject("Part::Feature", "Bellows")
+obj3.Shape = bellows
+doc.recompute()
+"""
+
+
+# ---------------------------------------------------------------------------
+# Keyway generation — DIN 6885 square key feature utilities
+# ---------------------------------------------------------------------------
+
+# DIN 6885 square key dimensions (shaft diameter -> key size)
+DIN_6885_SQUARE_KEYS: dict[tuple[float, float], dict[str, float]] = {
+    # (min_shaft_d, max_shaft_d) -> {key_width, key_height}
+    (6, 8):   {"key_width": 2, "key_height": 2},
+    (8, 10):  {"key_width": 3, "key_height": 3},
+    (10, 12): {"key_width": 4, "key_height": 4},
+    (12, 17): {"key_width": 5, "key_height": 5},
+    (17, 22): {"key_width": 6, "key_height": 6},
+    (22, 30): {"key_width": 8, "key_height": 7},
+    (30, 38): {"key_width": 10, "key_height": 8},
+    (38, 44): {"key_width": 12, "key_height": 8},
+    (44, 50): {"key_width": 14, "key_height": 9},
+    (50, 58): {"key_width": 16, "key_height": 10},
+    (58, 65): {"key_width": 18, "key_height": 11},
+    (65, 75): {"key_width": 20, "key_height": 12},
+    (75, 85): {"key_width": 22, "key_height": 14},
+    (85, 95): {"key_width": 25, "key_height": 14},
+    (95, 110): {"key_width": 28, "key_height": 16},
+    (110, 130): {"key_width": 32, "key_height": 18},
+}
+
+# Standard key lengths (DIN 6885)
+STANDARD_KEY_LENGTHS: list[float] = [
+    6, 8, 10, 12, 14, 16, 18, 20, 22, 25, 28, 32, 36, 40, 45, 50,
+    56, 63, 70, 80, 90, 100, 110, 125, 140, 160, 180, 200,
+]
+
+
+def get_key_size(shaft_diameter: float) -> dict[str, float]:
+    """Get DIN 6885 square key dimensions for a given shaft diameter.
+
+    Args:
+        shaft_diameter: Shaft diameter in mm.
+
+    Returns:
+        Dict with 'key_width' and 'key_height' in mm.
+
+    Raises:
+        ValueError: If shaft diameter is out of DIN 6885 range.
+    """
+    for (min_d, max_d), dims in DIN_6885_SQUARE_KEYS.items():
+        if min_d <= shaft_diameter <= max_d:
+            return dims
+    raise ValueError(
+        f"Shaft diameter {shaft_diameter}mm is outside DIN 6885 range (6-130mm)"
+    )
+
+
+def generate_shaft_keyway_ops(
+    shaft_diameter: float,
+    keyway_length: float,
+    position_z: float = 0.0,
+) -> list[dict]:
+    """Generate FreeCAD operations for a shaft keyway (DIN 6885).
+
+    The keyway is a rectangular slot cut into the shaft surface.
+
+    Args:
+        shaft_diameter: Shaft diameter in mm.
+        keyway_length: Length of the keyway along shaft axis.
+        position_z: Z-offset of keyway start along shaft.
+
+    Returns:
+        List of operation dicts for part_feature_engine.
+    """
+    key = get_key_size(shaft_diameter)
+    key_w = key["key_width"]
+    key_h = key["key_height"]
+    shaft_r = shaft_diameter / 2.0
+
+    # Keyway depth: how deep the key sits into the shaft
+    keyway_depth = shaft_r - (shaft_r - key_h)
+
+    return [
+        {
+            "type": "box",
+            "name": "keyway",
+            "width": key_w,
+            "depth": key_h,
+            "height": keyway_length,
+            "x": -key_w / 2.0,
+            "y": shaft_r - key_h,
+            "z": position_z,
+            "operation": "cut",
+        }
+    ]
+
+
+def generate_hub_keyway_ops(
+    bore_diameter: float,
+    hub_length: float,
+    position_z: float = 0.0,
+) -> list[dict]:
+    """Generate FreeCAD operations for a hub/bore keyway (DIN 6885).
+
+    The keyway is a rectangular slot cut into the bore surface.
+
+    Args:
+        bore_diameter: Bore diameter in mm.
+        hub_length: Length of the hub along bore axis.
+        position_z: Z-offset of keyway start.
+
+    Returns:
+        List of operation dicts for part_feature_engine.
+    """
+    key = get_key_size(bore_diameter)
+    key_w = key["key_width"]
+    key_h = key["key_height"]
+    bore_r = bore_diameter / 2.0
+
+    # Hub keyway extends from bore surface outward
+    return [
+        {
+            "type": "box",
+            "name": "hub_keyway",
+            "width": key_w,
+            "depth": key_h,
+            "height": hub_length,
+            "x": -key_w / 2.0,
+            "y": bore_r - key_h * 0.2,
+            "z": position_z,
+            "operation": "cut",
+        }
+    ]
+
+
+def generate_key_ops(
+    shaft_diameter: float,
+    key_length: float,
+) -> list[dict]:
+    """Generate FreeCAD operations for a standalone square key (DIN 6885).
+
+    Args:
+        shaft_diameter: Shaft diameter in mm (determines key cross-section).
+        key_length: Length of the key along the shaft axis.
+
+    Returns:
+        List of operation dicts for part_feature_engine.
+    """
+    key = get_key_size(shaft_diameter)
+    return [
+        {
+            "type": "box",
+            "name": "square_key",
+            "width": key["key_width"],
+            "depth": key["key_height"],
+            "height": key_length,
+            "x": -key["key_width"] / 2.0,
+            "y": 0,
+            "z": 0,
+            "operation": "add",
+        }
+    ]
+
+
+def recommend_key_length(shaft_diameter: float, required_length: float) -> float:
+    """Recommend the nearest standard key length (DIN 6885).
+
+    Args:
+        shaft_diameter: Shaft diameter in mm.
+        required_length: Minimum required key length.
+
+    Returns:
+        Nearest standard key length >= required_length.
+    """
+    for kl in STANDARD_KEY_LENGTHS:
+        if kl >= required_length:
+            return kl
+    return STANDARD_KEY_LENGTHS[-1]
+
 
 # ---------------------------------------------------------------------------
 # Standard parts catalog (25+ templates)
@@ -901,6 +1683,7 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="screw",
         description="DIN 912 / ISO 4762 内六角圆柱头螺钉，标准机械连接件",
         tags=["螺钉", "内六角", "DIN912", "紧固件", "screw", "socket head"],
+        part_class="fastener", scalable=False,
         parameters=[
             ParamDef("thread_diameter", "螺纹直径", "mm", 3, 1, 30, 0.5),
             ParamDef("length", "螺钉长度", "mm", 10, 2, 200, 1),
@@ -931,6 +1714,7 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="nut",
         description="DIN 934 / ISO 4032 六角螺母，标准紧固件",
         tags=["螺母", "六角", "DIN934", "紧固件", "nut", "hex"],
+        part_class="fastener", scalable=False,
         parameters=[
             ParamDef("nominal_diameter", "公称直径", "mm", 3, 1, 30, 0.5),
             ParamDef("thread_detail", "螺纹细节", param_type="string",
@@ -958,6 +1742,7 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="washer",
         description="DIN 125 / ISO 7089 平垫圈，配合螺栓/螺钉使用",
         tags=["垫圈", "平垫", "DIN125", "紧固件", "washer", "flat"],
+        part_class="fastener", scalable=False,
         parameters=[
             ParamDef("inner_diameter", "内径", "mm", 3.2, 1, 30, 0.1),
             ParamDef("outer_diameter", "外径", "mm", 7.0, 2, 60, 0.1),
@@ -980,6 +1765,7 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="bolt",
         description="DIN 933 / ISO 4014 六角螺栓，全牙标准件",
         tags=["螺栓", "六角", "DIN933", "紧固件", "bolt", "hex"],
+        part_class="fastener", scalable=False,
         parameters=[
             ParamDef("thread_diameter", "螺纹直径", "mm", 4, 2, 30, 0.5),
             ParamDef("length", "螺栓长度", "mm", 20, 5, 300, 1),
@@ -1008,6 +1794,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="ball_bearing",
         description="608 系列深沟球轴承，常用于滑轮、滑板轮、3D打印机",
         tags=["轴承", "608", "深沟球", "bearing", "ball bearing", "skateboard"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="608-2RS",
         parameters=[
             ParamDef("inner_diameter", "内径", "mm", 8, 1, 100, 1),
             ParamDef("outer_diameter", "外径", "mm", 22, 5, 200, 1),
@@ -1032,6 +1820,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="ball_bearing",
         description="623 系列深沟球轴承，小型精密轴承",
         tags=["轴承", "623", "深沟球", "bearing", "small"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="623-2RS",
         parameters=[
             ParamDef("inner_diameter", "内径", "mm", 3, 1, 100, 1),
             ParamDef("outer_diameter", "外径", "mm", 10, 5, 200, 1),
@@ -1056,6 +1846,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="ball_bearing",
         description="625 系列深沟球轴承，常用于3D打印机",
         tags=["轴承", "625", "深沟球", "bearing", "3D printer"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="625-2RS",
         parameters=[
             ParamDef("inner_diameter", "内径", "mm", 5, 1, 100, 1),
             ParamDef("outer_diameter", "外径", "mm", 16, 5, 200, 1),
@@ -1080,6 +1872,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="servo",
         description="SG90 微型舵机，常用于小型机器人、航模",
         tags=["舵机", "SG90", "servo", "微型", "robot", "RC"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Tower Pro", model_number="SG90",
         parameters=[
             ParamDef("body_length", "机身长度", "mm", 22.2, 10, 100, 0.1),
             ParamDef("body_width", "机身宽度", "mm", 11.8, 5, 50, 0.1),
@@ -1102,6 +1896,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="servo",
         description="MG996R 大扭力金属齿轮舵机，常用于机器人关节",
         tags=["舵机", "MG996R", "servo", "大扭力", "robot"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Tower Pro", model_number="MG996R",
         parameters=[
             ParamDef("body_length", "机身长度", "mm", 40.7, 20, 100, 0.1),
             ParamDef("body_width", "机身宽度", "mm", 19.7, 10, 60, 0.1),
@@ -1124,6 +1920,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="stepper",
         description="NEMA17 (42mm) 步进电机，常用于3D打印机和CNC",
         tags=["步进电机", "NEMA17", "stepper", "motor", "42mm", "3D printer"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="NEMA17-42BYGH",
         parameters=[
             ParamDef("body_size", "机身尺寸", "mm", 42.3, 20, 100, 0.1),
             ParamDef("body_length", "机身长度", "mm", 40.0, 20, 100, 1),
@@ -1443,6 +2241,480 @@ PART_CATALOG: dict[str, PartTemplate] = {
             {"outer_diameter": 6, "height": 25, "hole_diameter": 3},
         ],
     ),
+
+    # ---- Task 68: Real functional parts from product specs ----
+
+    "motor_tt": PartTemplate(
+        id="motor_tt",
+        name_en="TT Motor (Gearbox Motor)",
+        name_cn="TT 减速电机（黄电机）",
+        category="actuator",
+        subcategory="dc_motor",
+        description="TT 减速电机（又称黄电机/130电机），最常用的低成本机器人驱动电机，配塑料减速齿轮箱，常见于 Arduino 机器人套件",
+        tags=["电机", "TT", "黄电机", "直流电机", "减速电机", "130", "motor", "DC", "gearbox", "robot"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (Zhengzhou)", model_number="TT-130-1:48",
+        parameters=[
+            ParamDef("body_length", "机身长度", "mm", 26.5, 10, 100, 0.1, fixed=True),
+            ParamDef("body_width", "机身宽度", "mm", 20.5, 5, 50, 0.1, fixed=True),
+            ParamDef("body_height", "机身高度", "mm", 15.0, 5, 50, 0.1, fixed=True),
+            ParamDef("gearbox_length", "齿轮箱长度", "mm", 10.0, 3, 50, 0.1, fixed=True),
+            ParamDef("gearbox_width", "齿轮箱宽度", "mm", 22.0, 5, 50, 0.1, fixed=True),
+            ParamDef("gearbox_height", "齿轮箱高度", "mm", 18.0, 5, 50, 0.1, fixed=True),
+            ParamDef("shaft_diameter", "输出轴直径", "mm", 3.175, 1, 10, 0.01, fixed=True),
+            ParamDef("shaft_length", "输出轴长度", "mm", 7.5, 2, 30, 0.1, fixed=True),
+        ],
+        fc_script_template=_TT_MOTOR_SCRIPT,
+        standard_sizes=[
+            # 1:48 ratio (most common)
+            {"body_length": 26.5, "body_width": 20.5, "body_height": 15.0,
+             "gearbox_length": 10.0, "gearbox_width": 22.0, "gearbox_height": 18.0,
+             "shaft_diameter": 3.175, "shaft_length": 7.5},
+            # 1:120 ratio (slower, more torque)
+            {"body_length": 26.5, "body_width": 20.5, "body_height": 15.0,
+             "gearbox_length": 10.0, "gearbox_width": 22.0, "gearbox_height": 18.0,
+             "shaft_diameter": 3.175, "shaft_length": 7.5},
+        ],
+        notes="真实参数来源于产品手册。电压3-6V，空载转速200rpm(1:48)/90rpm(1:120)。D型输出轴。",
+    ),
+
+    "servo_ds3218": PartTemplate(
+        id="servo_ds3218",
+        name_en="DS3218 Digital Servo (20kg)",
+        name_cn="DS3218 数字舵机（20kg）",
+        category="actuator",
+        subcategory="servo",
+        description="DS3218 20kg 大扭力数字舵机，金属齿轮，常用于大型机器人关节、云台、机械爪",
+        tags=["舵机", "DS3218", "servo", "20kg", "大扭力", "数字", "robot", "pan tilt"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="JX", model_number="DS3218",
+        parameters=[
+            ParamDef("body_length", "机身长度", "mm", 40.0, 20, 100, 0.1, fixed=True),
+            ParamDef("body_width", "机身宽度", "mm", 20.0, 10, 60, 0.1, fixed=True),
+            ParamDef("body_height", "机身高度", "mm", 38.5, 20, 100, 0.1, fixed=True),
+            ParamDef("shaft_diameter", "输出轴直径", "mm", 5.8, 2, 20, 0.1, fixed=True),
+            ParamDef("shaft_length", "输出轴长度", "mm", 6.0, 2, 30, 0.1, fixed=True),
+        ],
+        fc_script_template=_DS3218_SERVO_SCRIPT,
+        standard_sizes=[
+            {"body_length": 40.0, "body_width": 20.0, "body_height": 38.5,
+             "shaft_diameter": 5.8, "shaft_length": 6.0},
+        ],
+        notes="真实参数来源于产品手册。电压6.8-7.4V，扭矩20kg·cm@6.8V，速度0.17s/60°@6.8V。",
+    ),
+
+    "motor_jgb37_520": PartTemplate(
+        id="motor_jgb37_520",
+        name_en="JGB37-520 DC Gearmotor",
+        name_cn="JGB37-520 直流减速电机",
+        category="actuator",
+        subcategory="dc_motor",
+        description="JGB37-520 直流减速电机，12V 金属齿轮箱，常用于中型 AGV、巡检机器人、服务机器人",
+        tags=["电机", "JGB37-520", "直流减速电机", "gearmotor", "12V", "AGV", "robot"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="JGB37-520",
+        parameters=[
+            ParamDef("body_diameter", "机身直径", "mm", 37.0, 20, 80, 0.1, fixed=True),
+            ParamDef("body_length", "机身长度", "mm", 50.0, 20, 100, 0.1, fixed=True),
+            ParamDef("gearbox_diameter", "齿轮箱直径", "mm", 37.0, 20, 80, 0.1, fixed=True),
+            ParamDef("gearbox_length", "齿轮箱长度", "mm", 18.0, 5, 50, 0.1, fixed=True),
+            ParamDef("shaft_diameter", "输出轴直径", "mm", 6.0, 2, 20, 0.1, fixed=True),
+            ParamDef("shaft_length", "输出轴长度", "mm", 15.5, 5, 30, 0.1, fixed=True),
+        ],
+        fc_script_template=_JGB37_520_SCRIPT,
+        standard_sizes=[
+            # 1:30 ratio @ 12V, 200rpm
+            {"body_diameter": 37.0, "body_length": 50.0,
+             "gearbox_diameter": 37.0, "gearbox_length": 18.0,
+             "shaft_diameter": 6.0, "shaft_length": 15.5},
+            # 1:50 ratio @ 12V, 130rpm
+            {"body_diameter": 37.0, "body_length": 50.0,
+             "gearbox_diameter": 37.0, "gearbox_length": 18.0,
+             "shaft_diameter": 6.0, "shaft_length": 15.5},
+            # 1:131 ratio @ 12V, 50rpm
+            {"body_diameter": 37.0, "body_length": 50.0,
+             "gearbox_diameter": 37.0, "gearbox_length": 18.0,
+             "shaft_diameter": 6.0, "shaft_length": 15.5},
+        ],
+        notes="真实参数来源于产品手册。D型输出轴。齿轮箱端面2×M3安装螺孔。",
+    ),
+
+    "nema23_stepper": PartTemplate(
+        id="nema23_stepper",
+        name_en="NEMA23 Stepper Motor",
+        name_cn="NEMA23 步进电机",
+        category="actuator",
+        subcategory="stepper",
+        description="NEMA23 (57mm) 步进电机，大扭力，常用于CNC、大型3D打印机、工业机械臂",
+        tags=["步进电机", "NEMA23", "stepper", "motor", "57mm", "CNC", "3D printer"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="NEMA23-57BYGH",
+        parameters=[
+            ParamDef("body_size", "机身尺寸", "mm", 56.4, 30, 100, 0.1, fixed=True),
+            ParamDef("body_length", "机身长度", "mm", 56.0, 30, 150, 1, fixed=True),
+            ParamDef("shaft_diameter", "输出轴直径", "mm", 6.35, 2, 20, 0.01, fixed=True),
+            ParamDef("shaft_length", "输出轴长度", "mm", 21.0, 5, 50, 0.1, fixed=True),
+        ],
+        fc_script_template=_NEMA23_SCRIPT,
+        standard_sizes=[
+            # Standard NEMA23
+            {"body_size": 56.4, "body_length": 56.0,
+             "shaft_diameter": 6.35, "shaft_length": 21.0},
+            # Short body variant
+            {"body_size": 56.4, "body_length": 40.0,
+             "shaft_diameter": 6.35, "shaft_length": 21.0},
+            # Long body (high torque)
+            {"body_size": 56.4, "body_length": 76.0,
+             "shaft_diameter": 6.35, "shaft_length": 21.0},
+        ],
+        notes="真实参数来源于NEMA23标准。安装孔距47.14mm×47.14mm，4×M5安装孔。",
+    ),
+
+    "sensor_rplidar_a1": PartTemplate(
+        id="sensor_rplidar_a1",
+        name_en="RPLIDAR A1 2D LiDAR",
+        name_cn="RPLIDAR A1 2D 激光雷达",
+        category="sensor",
+        subcategory="lidar",
+        description="RPLIDAR A1 2D 激光雷达，360° 扫描，测距范围 12m，常用于移动机器人导航和建图",
+        tags=["传感器", "激光雷达", "LiDAR", "RPLIDAR", "A1", "SLAM", "navigation", "robot"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Slamtec", model_number="RPLIDAR-A1",
+        parameters=[
+            ParamDef("body_diameter", "机身直径", "mm", 72.0, 30, 200, 0.1, fixed=True),
+            ParamDef("body_height", "机身高度", "mm", 41.0, 10, 100, 0.1, fixed=True),
+        ],
+        fc_script_template=_RPLIDAR_A1_SCRIPT,
+        standard_sizes=[
+            {"body_diameter": 72.0, "body_height": 41.0},
+        ],
+        notes="真实参数来源于Slamtec官方规格。扫描频率5.5Hz，角度分辨率1°，测距范围0.15-12m。",
+    ),
+
+    "sensor_mpu6050": PartTemplate(
+        id="sensor_mpu6050",
+        name_en="MPU6050 IMU Module",
+        name_cn="MPU6050 惯性测量模块",
+        category="sensor",
+        subcategory="imu",
+        description="MPU6050 六轴惯性测量单元（3轴加速度+3轴陀螺仪），常用于机器人姿态估计和平衡控制",
+        tags=["传感器", "IMU", "MPU6050", "加速度计", "陀螺仪", "姿态", "robot", "balancing"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="InvenSense (TDK)", model_number="MPU-6050",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 21.0, 10, 50, 0.1, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 16.0, 8, 40, 0.1, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+        ],
+        fc_script_template=_MPU6050_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 21.0, "pcb_width": 16.0, "pcb_thickness": 1.6},
+        ],
+        notes="真实参数来源于模块尺寸。芯片本身4x4mm QFN封装。加速度范围±2/4/8/16g，陀螺仪范围±250/500/1000/2000°/s。",
+    ),
+
+    "sensor_esp32_cam": PartTemplate(
+        id="sensor_esp32_cam",
+        name_en="ESP32-CAM Module",
+        name_cn="ESP32-CAM 摄像头模块",
+        category="sensor",
+        subcategory="camera",
+        description="ESP32-CAM Wi-Fi 摄像头模块，集成 ESP32 + OV2640 摄像头，常用于机器人视觉、远程监控",
+        tags=["传感器", "摄像头", "ESP32", "ESP32-CAM", "Wi-Fi", "camera", "vision", "robot"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Ai-Thinker", model_number="ESP32-CAM",
+        parameters=[
+            ParamDef("pcb_length", "PCB长度", "mm", 40.0, 20, 80, 0.1, fixed=True),
+            ParamDef("pcb_width", "PCB宽度", "mm", 27.0, 10, 60, 0.1, fixed=True),
+            ParamDef("pcb_thickness", "PCB厚度", "mm", 1.6, 0.8, 3.0, 0.1, fixed=True),
+            ParamDef("camera_diameter", "摄像头直径", "mm", 8.0, 3, 20, 0.1, fixed=True),
+            ParamDef("camera_height", "摄像头高度", "mm", 5.0, 2, 15, 0.1, fixed=True),
+        ],
+        fc_script_template=_ESP32_CAM_SCRIPT,
+        standard_sizes=[
+            {"pcb_length": 40.0, "pcb_width": 27.0, "pcb_thickness": 1.6,
+             "camera_diameter": 8.0, "camera_height": 5.0},
+        ],
+        notes="真实参数来源于Ai-Thinker官方尺寸。OV2640摄像头，支持JPEG/QT streaming。注意：模块无USB口，需FTTL下载器。",
+    ),
+
+    # ---- Task 73: Transmission parts ----
+
+    "gt2_pulley": PartTemplate(
+        id="gt2_pulley",
+        name_en="GT2 Timing Pulley",
+        name_cn="GT2 同步轮",
+        category="transmission",
+        subcategory="timing_pulley",
+        description="GT2 同步轮，节距2mm，常用于3D打印机、小型CNC、机器人关节驱动链",
+        tags=["同步轮", "GT2", "timing pulley", "同步带轮", "3D printer", "robot", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="GT2",
+        parameters=[
+            ParamDef("teeth", "齿数", "", 20, 10, 80, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 6.0, 3, 15, 0.5, fixed=True),
+            ParamDef("bore_diameter", "轴孔直径", "mm", 5.0, 3, 12, 0.5, fixed=True),
+            ParamDef("hub_diameter", "轮毂直径", "mm", 10.0, 5, 25, 0.5, fixed=True),
+            ParamDef("hub_height", "轮毂高度", "mm", 5.0, 0, 15, 0.5, fixed=True),
+            ParamDef("pulley_detail", "齿廓细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_GT2_PULLEY_SCRIPT,
+        fc_script_alternatives={"realistic": _GT2_PULLEY_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            # 16T for NEMA17 (5mm shaft)
+            {"teeth": 16, "width": 6.0, "bore_diameter": 5.0,
+             "hub_diameter": 10.0, "hub_height": 5.0},
+            # 20T for NEMA17
+            {"teeth": 20, "width": 6.0, "bore_diameter": 5.0,
+             "hub_diameter": 12.0, "hub_height": 5.0},
+            # 20T 9mm wide
+            {"teeth": 20, "width": 9.0, "bore_diameter": 5.0,
+             "hub_diameter": 12.0, "hub_height": 5.0},
+            # 36T for NEMA23 (6.35mm shaft)
+            {"teeth": 36, "width": 6.0, "bore_diameter": 6.35,
+             "hub_diameter": 15.0, "hub_height": 7.0},
+            # 36T 9mm wide
+            {"teeth": 36, "width": 9.0, "bore_diameter": 6.35,
+             "hub_diameter": 15.0, "hub_height": 7.0},
+        ],
+        notes="GT2节距2mm。铝合金材质最常用（标注中未区分，建模为统一外观）。"
+              "轮毂侧有凸台（hub），带平键或紧定螺钉固定。",
+    ),
+
+    "gt2_belt": PartTemplate(
+        id="gt2_belt",
+        name_en="GT2 Timing Belt",
+        name_cn="GT2 同步带",
+        category="transmission",
+        subcategory="timing_belt",
+        description="GT2 同步带，节距2mm，玻璃纤维芯/钢芯，用于3D打印机和小型传动",
+        tags=["同步带", "GT2", "timing belt", "传动带", "3D printer", "robot", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (Gates/Continental clone)", model_number="GT2",
+        parameters=[
+            ParamDef("teeth", "齿数", "", 100, 20, 500, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 6.0, 3, 15, 0.5, fixed=True),
+        ],
+        fc_script_template=_GT2_BELT_SCRIPT,
+        standard_sizes=[
+            # Common 3D printer belts
+            {"teeth": 100, "width": 6.0},   # 200mm loop
+            {"teeth": 150, "width": 6.0},   # 300mm loop
+            {"teeth": 200, "width": 6.0},   # 400mm loop
+            {"teeth": 100, "width": 9.0},   # 200mm loop (wide)
+            {"teeth": 150, "width": 9.0},   # 300mm loop (wide)
+            {"teeth": 200, "width": 9.0},   # 400mm loop (wide)
+        ],
+        notes="GT2同步带节距2mm。长度 = 齿数 × 2mm。建模为环形近似。"
+              "常见宽度6mm和9mm。玻璃纤维芯抗拉伸。",
+    ),
+
+    "htd_pulley_3m": PartTemplate(
+        id="htd_pulley_3m",
+        name_en="HTD 3M Timing Pulley",
+        name_cn="HTD 3M 同步轮",
+        category="transmission",
+        subcategory="timing_pulley",
+        description="HTD 3M 同步轮，节距3mm，半圆齿形，适用于中小功率传动",
+        tags=["同步轮", "HTD", "3M", "timing pulley", "传动", "robot", "CNC", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="HTD-3M",
+        parameters=[
+            ParamDef("teeth", "齿数", "", 15, 10, 72, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 9.0, 5, 20, 0.5, fixed=True),
+            ParamDef("bore_diameter", "轴孔直径", "mm", 5.0, 3, 15, 0.5, fixed=True),
+            ParamDef("hub_diameter", "轮毂直径", "mm", 12.0, 5, 30, 0.5, fixed=True),
+            ParamDef("hub_height", "轮毂高度", "mm", 5.0, 0, 15, 0.5, fixed=True),
+            ParamDef("pitch", "节距", "mm", 3.0, 3, 3, 0.0, fixed=True),
+            ParamDef("module", "模数", "mm", 0.97, 0.5, 2.0, 0.01, fixed=True),
+            ParamDef("pulley_detail", "齿廓细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_HTD_PULLEY_SCRIPT,
+        fc_script_alternatives={"realistic": _HTD_PULLEY_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"teeth": 15, "width": 9.0, "bore_diameter": 5.0,
+             "hub_diameter": 12.0, "hub_height": 5.0},
+            {"teeth": 20, "width": 9.0, "bore_diameter": 5.0,
+             "hub_diameter": 14.0, "hub_height": 5.0},
+            {"teeth": 30, "width": 9.0, "bore_diameter": 8.0,
+             "hub_diameter": 18.0, "hub_height": 7.0},
+        ],
+        notes="HTD 3M节距3mm，半圆齿形，比GT2传递力矩更大。铝合金材质。",
+    ),
+
+    "htd_pulley_5m": PartTemplate(
+        id="htd_pulley_5m",
+        name_en="HTD 5M Timing Pulley",
+        name_cn="HTD 5M 同步轮",
+        category="transmission",
+        subcategory="timing_pulley",
+        description="HTD 5M 同步轮，节距5mm，半圆齿形，适用于大功率传动",
+        tags=["同步轮", "HTD", "5M", "timing pulley", "传动", "robot", "CNC", "大功率", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="HTD-5M",
+        parameters=[
+            ParamDef("teeth", "齿数", "", 15, 10, 72, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 15.0, 9, 30, 0.5, fixed=True),
+            ParamDef("bore_diameter", "轴孔直径", "mm", 8.0, 5, 20, 0.5, fixed=True),
+            ParamDef("hub_diameter", "轮毂直径", "mm", 18.0, 10, 35, 0.5, fixed=True),
+            ParamDef("hub_height", "轮毂高度", "mm", 7.0, 0, 20, 0.5, fixed=True),
+            ParamDef("pitch", "节距", "mm", 5.0, 5, 5, 0.0, fixed=True),
+            ParamDef("module", "模数", "mm", 1.60, 1.0, 3.0, 0.01, fixed=True),
+            ParamDef("pulley_detail", "齿廓细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_HTD_PULLEY_SCRIPT,
+        fc_script_alternatives={"realistic": _HTD_PULLEY_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"teeth": 15, "width": 15.0, "bore_diameter": 8.0,
+             "hub_diameter": 18.0, "hub_height": 7.0},
+            {"teeth": 20, "width": 15.0, "bore_diameter": 8.0,
+             "hub_diameter": 22.0, "hub_height": 8.0},
+            {"teeth": 30, "width": 15.0, "bore_diameter": 10.0,
+             "hub_diameter": 28.0, "hub_height": 10.0},
+        ],
+        notes="HTD 5M节距5mm，比3M更大承载能力。常用于CNC主轴、大型3D打印机、机器人关节。",
+    ),
+
+    "rigid_coupling_setscrew": PartTemplate(
+        id="rigid_coupling_setscrew",
+        name_en="Rigid Coupling (Set Screw)",
+        name_cn="刚性联轴器（紧定螺钉型）",
+        category="transmission",
+        subcategory="rigid_coupling",
+        description="刚性联轴器，紧定螺钉固定，适用于两轴刚性对中连接",
+        tags=["联轴器", "刚性", "紧定螺钉", "rigid coupling", "set screw", "shaft", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="RCS",
+        parameters=[
+            ParamDef("outer_diameter", "外径", "mm", 16.0, 8, 40, 0.5, fixed=True),
+            ParamDef("length", "长度", "mm", 25.0, 10, 60, 1, fixed=True),
+            ParamDef("bore_diameter", "轴孔直径", "mm", 5.0, 2, 20, 0.5, fixed=True),
+            ParamDef("num_setscrews", "紧定螺钉数量", "", 2, 1, 4, 1, fixed=True),
+            ParamDef("setscrew_size", "紧定螺钉尺寸", "mm", 3.0, 1.5, 6, 0.5, fixed=True),
+        ],
+        fc_script_template=_RIGID_COUPLING_SETSCREW_SCRIPT,
+        standard_sizes=[
+            # 5mm shaft
+            {"outer_diameter": 16.0, "length": 25.0, "bore_diameter": 5.0,
+             "num_setscrews": 2, "setscrew_size": 3.0},
+            # 6mm shaft
+            {"outer_diameter": 19.0, "length": 30.0, "bore_diameter": 6.0,
+             "num_setscrews": 2, "setscrew_size": 3.0},
+            # 8mm shaft
+            {"outer_diameter": 22.0, "length": 35.0, "bore_diameter": 8.0,
+             "num_setscrews": 2, "setscrew_size": 4.0},
+        ],
+        notes="紧定螺钉压入轴面固定，要求轴面有平面或D-cut。对中性要求高。",
+    ),
+
+    "rigid_coupling_clamping": PartTemplate(
+        id="rigid_coupling_clamping",
+        name_en="Rigid Coupling (Clamping)",
+        name_cn="刚性联轴器（夹紧型）",
+        category="transmission",
+        subcategory="rigid_coupling",
+        description="刚性联轴器，夹紧式固定，开缝设计，通过螺栓径向夹紧轴",
+        tags=["联轴器", "刚性", "夹紧", "clamping coupling", "split clamp", "shaft", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="RCC",
+        parameters=[
+            ParamDef("outer_diameter", "外径", "mm", 19.0, 10, 40, 0.5, fixed=True),
+            ParamDef("length", "长度", "mm", 25.0, 10, 60, 1, fixed=True),
+            ParamDef("bore_diameter", "轴孔直径", "mm", 5.0, 2, 20, 0.5, fixed=True),
+            ParamDef("clamp_screw_size", "夹紧螺栓尺寸", "mm", 3.0, 2, 6, 0.5, fixed=True),
+        ],
+        fc_script_template=_RIGID_COUPLING_CLAMPING_SCRIPT,
+        standard_sizes=[
+            # 5mm shaft
+            {"outer_diameter": 19.0, "length": 25.0, "bore_diameter": 5.0,
+             "clamp_screw_size": 3.0},
+            # 8mm shaft
+            {"outer_diameter": 25.0, "length": 30.0, "bore_diameter": 8.0,
+             "clamp_screw_size": 4.0},
+            # 10mm shaft
+            {"outer_diameter": 30.0, "length": 35.0, "bore_diameter": 10.0,
+             "clamp_screw_size": 5.0},
+        ],
+        notes="开缝设计，通过M3/M4螺栓径向夹紧。无需D-cut轴面。拆装方便。",
+    ),
+
+    "spider_coupling": PartTemplate(
+        id="spider_coupling",
+        name_en="Spider (Jaw) Flexible Coupling",
+        name_cn="梅花弹性联轴器",
+        category="transmission",
+        subcategory="flexible_coupling",
+        description="梅花弹性联轴器，金属两端+弹性体中间，补偿轴向/径向/角向偏差",
+        tags=["联轴器", "柔性", "梅花", "spider", "jaw coupling", "flexible", "elastomer", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (Lovejoy type)", model_number="L-type",
+        parameters=[
+            ParamDef("outer_diameter", "外径", "mm", 19.0, 10, 50, 0.5, fixed=True),
+            ParamDef("length", "长度", "mm", 25.0, 15, 60, 1, fixed=True),
+            ParamDef("bore1_diameter", "孔1直径", "mm", 5.0, 2, 20, 0.5, fixed=True),
+            ParamDef("bore2_diameter", "孔2直径", "mm", 5.0, 2, 20, 0.5, fixed=True),
+            ParamDef("jaw_count", "爪数", "", 3, 2, 6, 1, fixed=True),
+            ParamDef("jaw_depth", "爪深", "mm", 3.0, 1, 8, 0.5, fixed=True),
+        ],
+        fc_script_template=_SPIDER_COUPLING_SCRIPT,
+        standard_sizes=[
+            # L035 (5mm x 5mm)
+            {"outer_diameter": 19.0, "length": 25.0,
+             "bore1_diameter": 5.0, "bore2_diameter": 5.0,
+             "jaw_count": 3, "jaw_depth": 3.0},
+            # L050 (8mm x 8mm)
+            {"outer_diameter": 25.0, "length": 30.0,
+             "bore1_diameter": 8.0, "bore2_diameter": 8.0,
+             "jaw_count": 3, "jaw_depth": 4.0},
+            # L070 (10mm x 10mm)
+            {"outer_diameter": 30.0, "length": 35.0,
+             "bore1_diameter": 10.0, "bore2_diameter": 10.0,
+             "jaw_count": 4, "jaw_depth": 5.0},
+        ],
+        notes="弹性体材质：聚氨酯(85A/95A/98A)。可补偿径向偏差0.1-0.3mm、角向偏差1-2°。",
+    ),
+
+    "bellows_coupling": PartTemplate(
+        id="bellows_coupling",
+        name_en="Bellows Flexible Coupling",
+        name_cn="波纹管联轴器",
+        category="transmission",
+        subcategory="flexible_coupling",
+        description="波纹管联轴器，不锈钢波纹管+两端铝合金夹紧头，高刚性高精度",
+        tags=["联轴器", "柔性", "波纹管", "bellows", "flexible", "高精度", "servo", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (Servo City/Misumi type)", model_number="BC",
+        parameters=[
+            ParamDef("outer_diameter", "外径", "mm", 19.0, 10, 40, 0.5, fixed=True),
+            ParamDef("length", "长度", "mm", 30.0, 15, 60, 1, fixed=True),
+            ParamDef("bore1_diameter", "孔1直径", "mm", 5.0, 2, 16, 0.5, fixed=True),
+            ParamDef("bore2_diameter", "孔2直径", "mm", 8.0, 2, 16, 0.5, fixed=True),
+            ParamDef("convolutions", "波纹数", "", 6, 3, 12, 1, fixed=True),
+            ParamDef("wall_thickness", "壁厚", "mm", 0.3, 0.1, 1.0, 0.05, fixed=True),
+        ],
+        fc_script_template=_BELLOWS_COUPLING_SCRIPT,
+        standard_sizes=[
+            # 5mm to 8mm
+            {"outer_diameter": 19.0, "length": 30.0,
+             "bore1_diameter": 5.0, "bore2_diameter": 8.0,
+             "convolutions": 6, "wall_thickness": 0.3},
+            # 6.35mm to 8mm
+            {"outer_diameter": 19.0, "length": 33.0,
+             "bore1_diameter": 6.35, "bore2_diameter": 8.0,
+             "convolutions": 7, "wall_thickness": 0.3},
+            # 8mm to 8mm
+            {"outer_diameter": 25.0, "length": 36.0,
+             "bore1_diameter": 8.0, "bore2_diameter": 8.0,
+             "convolutions": 6, "wall_thickness": 0.4},
+        ],
+        notes="不锈钢波纹管提供高扭转刚性和零背隙。适用于伺服电机、编码器、精密传动。",
+    ),
 }
 
 
@@ -1454,16 +2726,27 @@ def search_parts(
     query: str = "",
     category: str | None = None,
     tags: list[str] | None = None,
+    part_class: str | None = None,
 ) -> list[PartTemplate]:
-    """Search parts by keyword, category, and/or tags.
+    """Search parts by keyword, category, tags, and/or part_class.
 
     Keyword matching is case-insensitive and checks name_en, name_cn,
     description, and tags.
+
+    Args:
+        query: Keyword search string.
+        category: Filter by category or subcategory.
+        tags: Filter by tags (any match).
+        part_class: Filter by part_class ("functional", "structural", "fastener").
     """
     results: list[PartTemplate] = []
     query_lower = query.lower().strip() if query else ""
 
     for template in PART_CATALOG.values():
+        # Part class filter
+        if part_class and template.part_class != part_class:
+            continue
+
         # Category filter
         if category:
             cat_lower = category.lower()
@@ -1481,6 +2764,7 @@ def search_parts(
             searchable = " ".join([
                 template.name_en, template.name_cn, template.description,
                 *template.tags, template.category, template.subcategory,
+                template.part_class, template.model_number, template.manufacturer,
             ]).lower()
             if query_lower not in searchable:
                 continue
@@ -1500,16 +2784,77 @@ def get_all_templates() -> list[PartTemplate]:
     return list(PART_CATALOG.values())
 
 
+def get_functional_parts() -> list[PartTemplate]:
+    """Get all functional (non-scalable, real COTS) parts: motors, servos, sensors, bearings."""
+    return [t for t in PART_CATALOG.values() if t.part_class == "functional"]
+
+
+def get_structural_parts() -> list[PartTemplate]:
+    """Get all structural (scalable, custom-designed) parts: brackets, plates, links."""
+    return [t for t in PART_CATALOG.values() if t.part_class == "structural"]
+
+
+def get_fastener_parts() -> list[PartTemplate]:
+    """Get all fastener (standard hardware) parts: screws, nuts, washers."""
+    return [t for t in PART_CATALOG.values() if t.part_class == "fastener"]
+
+
+def validate_functional_params(template_id: str, params: dict[str, Any]) -> list[str]:
+    """Validate that functional part parameters match real product specs.
+
+    Returns a list of warning strings for parameters that deviate from
+    standard sizes.  Empty list means all OK.
+    """
+    template = PART_CATALOG.get(template_id)
+    if not template or template.part_class != "functional":
+        return []
+
+    warnings: list[str] = []
+    if not template.standard_sizes:
+        return warnings
+
+    # Check if params match any standard size
+    for std_size in template.standard_sizes:
+        match = True
+        for key, std_val in std_size.items():
+            if key in params and abs(float(params[key]) - float(std_val)) > 0.5:
+                match = False
+                break
+        if match:
+            return warnings  # Found a matching standard size
+
+    # No exact match — generate warnings for each deviating parameter
+    best_match = template.standard_sizes[0]
+    for key in params:
+        if key in best_match:
+            diff = abs(float(params[key]) - float(best_match[key]))
+            if diff > 0.5:
+                warnings.append(
+                    f"Parameter '{key}' = {params[key]} deviates from standard "
+                    f"value {best_match[key]} (diff={diff:.1f}). "
+                    f"Functional part '{template.name_en}' has fixed dimensions."
+                )
+    return warnings
+
+
 # Subsystem compatibility mappings
 _SUBSYSTEM_COMPAT: dict[str, list[str]] = {
     "mobile_base": ["wheel_simple", "wheel_mecanum", "hub_adapter", "motor_bracket_u",
-                     "chassis_plate", "corner_bracket", "standoff_hex", "battery_holder_18650"],
+                     "chassis_plate", "corner_bracket", "standoff_hex", "battery_holder_18650",
+                     "motor_tt", "motor_jgb37_520"],
     "mounting": ["standoff_hex", "pcb_mount", "battery_holder_18650", "corner_bracket",
                   "l_bracket", "mounting_plate"],
-    "arm": ["servo_sg90", "servo_mg996r", "nema17_stepper", "l_bracket",
-             "mounting_plate", "standoff_hex"],
+    "arm": ["servo_sg90", "servo_mg996r", "servo_ds3218", "nema17_stepper", "nema23_stepper",
+             "l_bracket", "mounting_plate", "standoff_hex"],
     "drive": ["motor_bracket_u", "hub_adapter", "wheel_simple", "wheel_mecanum",
-               "spur_gear", "flexible_coupling"],
+               "spur_gear", "flexible_coupling", "motor_tt", "motor_jgb37_520"],
+    "transmission": ["gt2_pulley", "gt2_belt", "htd_pulley_3m", "htd_pulley_5m",
+                      "rigid_coupling_setscrew", "rigid_coupling_clamping",
+                      "spider_coupling", "bellows_coupling",
+                      "flexible_coupling", "nema17_stepper", "nema23_stepper",
+                      "linear_shaft", "hub_adapter"],
+    "perception": ["sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam",
+                    "mounting_plate", "l_bracket", "standoff_hex"],
 }
 
 # Dimension-based compatibility: maps parameter name patterns to matching parts
@@ -1611,7 +2956,8 @@ def format_fc_script(template: PartTemplate, params: dict[str, Any]) -> str:
     # Determine detail level from params
     detail = params.get(
         "thread_detail",
-        params.get("tooth_detail", params.get("bearing_detail", "simplified")),
+        params.get("tooth_detail", params.get("bearing_detail",
+                      params.get("pulley_detail", "simplified"))),
     )
     # Select script: prefer alternative matching detail level
     script_template = template.fc_script_alternatives.get(detail, template.fc_script_template)
