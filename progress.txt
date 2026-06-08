@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-06-08 - Task 79: 公差体系基础 — ISO 配合等级与公差累积分析
+
+### What was done:
+- 新建 `src/lang3d/knowledge/tolerance.py` — ISO 286 公差与配合系统
+  - ISO 标准公差表 IT5-IT12，覆盖 1-500mm 共 13 个基本尺寸段
+  - 轴基本偏差表 (f, g, h, js, k, p) — 最常用的 6 种轴偏差
+  - 孔基本偏差表 (F, G, H, Js, K, P) — H 基孔制系统
+  - `compute_fit()`: 计算孔轴配合（间隙/过渡/过盈），输出最大/最小间隙和过盈
+  - `recommend_fit()`: 6 种常用配合推荐（轴承座 H7/js6、滑动 H8/f7、定位 H7/g6、紧配 H7/h6、过渡 H7/k6、压配 H7/p6）
+  - `tolerance_hole_diameter()` / `tolerance_shaft_diameter()`: 公差感知尺寸计算
+  - `bearing_seat_diameter()`: 轴承座 H7 公差孔径
+  - `press_fit_bore_diameter()`: 压配合 H7/p6 孔径
+- 新建 `src/lang3d/tools/tolerance_analysis.py` — 公差累积分析（最坏情况法）
+  - `ToleranceStackup` 类：`add_dimension()` / `compute_stackup()` / `check_acceptable()`
+  - 支持 IT 等级自动查询、正/负方向尺寸、配合尺寸
+  - `analyze_assembly_chain()`: 从字典列表快速分析公差链
+  - `tolerance_analysis_tool_factory()`: 注册为 tolerance_analysis 工具
+- 修改 `tools/connection_features.py` — 公差集成
+  - 新增 `get_clearance_hole_with_tolerance()`: ISO 273 + IT12 公差的螺栓孔径
+  - 螺栓连接特征生成使用公差感知孔径
+  - 压配合孔径使用 H7/p6 配合等级计算
+  - 轴承座使用 H7/js6 公差（区分轴承座和一般压配合）
+- 修改 `agent/core.py` — 注册 tolerance_analysis 工具
+- 修改 `tools/base.py` — 新增 tolerance_analysis 到 TOOL_CATEGORIES
+
+### Testing:
+- 新建 tests/test_tolerance.py — 61 个测试
+  - TestITTolerance (11): IT 等级表查询、边界值、递增规律、越界钳位
+  - TestShaftDeviations (7): h/g/f/js/k/p 偏差验证
+  - TestHoleDeviations (6): H/G/Js/P/K 偏差验证
+  - TestComputeFit (8): H7/g6 间隙、H7/k6 过渡、H7/p6 过盈、H7/js6 过渡
+  - TestFitRecommendations (8): 6 种推荐 + 未知返回 None + 编码验证
+  - TestToleranceDimensions (5): 轴承座/压配合/孔径/轴径
+  - TestToleranceStackup (10): 简单/负方向/IT等级/可接受检查/清空/空链
+  - TestAnalyzeAssemblyChain (2): 基本链 + IT 等级
+  - TestConnectionFeaturesTolerance (3): M3/M5/loose 公差孔径
+- 核心相关测试 468 passed, 0 failed
+
+### Notes:
+- ISO 286 标准公差值来源于 ISO 286-1:2010
+- 轴/孔基本偏差覆盖最常用的 f/g/h/js/k/p 六种（占机械设计 95% 以上场景）
+- H7/p6 在 10mm 边界处 max_clearance 恰好为 0（过渡/过盈边界）
+- 清隙孔使用 IT12 公差（宽松，适合 3D 打印）
+
+---
+
 ## 2026-06-08 - Task 78: 装配特征自动匹配 — 零件+连接方式自动生成特征
 
 ### What was done:

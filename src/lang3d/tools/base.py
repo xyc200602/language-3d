@@ -47,6 +47,7 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
         "generate_connection_features",
         "fastener_model",
         "fastener_query",
+        "tolerance_analysis",
     ],
     "slicing": [
         "slice_model", "slice_analyze", "slice_preview_layers", "slice_vlm_analyze",

@@ -312,6 +312,14 @@ class Agent:
         except Exception:
             pass
 
+        # Register tolerance analysis tool
+        try:
+            from ..tools.tolerance_analysis import tolerance_analysis_tool_factory
+            _def3, _cls3 = tolerance_analysis_tool_factory()
+            self.tools.register(_cls3())
+        except Exception:
+            pass
+
         # Register assembly VLM verification tools
         try:
             from ..tools.assembly_vlm import AssemblyVLMSolveTool

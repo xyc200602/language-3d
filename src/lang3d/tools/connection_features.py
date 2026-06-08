@@ -46,6 +46,12 @@ from ..knowledge.fastener_catalog import (
     get_thread_insert_spec as _get_thread_insert_spec,
     recommend_bolt_length as _recommend_bolt_length,
 )
+from ..knowledge.tolerance import (
+    bearing_seat_diameter,
+    press_fit_bore_diameter,
+    it_tolerance,
+    compute_fit,
+)
 
 
 # ============================================================================
@@ -126,6 +132,28 @@ def get_thread_insert_dims(bolt_size: str) -> tuple[float, float, float]:
 def get_bearing_spec(bearing_name: str) -> tuple[float, float, float] | None:
     """Return (inner_diameter, outer_diameter, width) for a standard bearing."""
     return _BEARING_SPECS.get(bearing_name)
+
+
+def get_clearance_hole_with_tolerance(
+    bolt_size: str,
+    fit: str = "normal",
+) -> tuple[float, float, float]:
+    """Return (nominal, min, max) clearance hole diameter with IT12 tolerance.
+
+    The hole diameter uses ISO 273 clearance + IT12 tolerance band.
+    This gives a tolerance-aware hole for 3D printed or machined parts.
+
+    Args:
+        bolt_size: e.g. "M3"
+        fit: "close", "normal", or "loose"
+
+    Returns:
+        (nominal_d, min_d, max_d) in mm.
+    """
+    nominal = _get_clearance_hole(bolt_size, fit)
+    # Use IT12 for clearance holes (generous for 3D printing)
+    tol = it_tolerance(nominal, "IT12")
+    return (nominal, nominal, nominal + tol)
 
 
 # ============================================================================
@@ -275,7 +303,9 @@ class ConnectionFeatureEngine:
         fastener_ops: list[dict] = []
 
         bolt_size = conn.bolt_size or "M3"
-        hole_d = get_clearance_hole(bolt_size)
+        # Tolerance-aware clearance hole: nominal + IT12 upper tolerance
+        hole_nominal, hole_min, hole_max = get_clearance_hole_with_tolerance(bolt_size)
+        hole_d = hole_nominal  # use nominal for geometry (tolerance info available for inspection)
         hole_r = hole_d / 2
         head_d, head_h = get_bolt_head_dims(bolt_size)
 
@@ -361,12 +391,15 @@ class ConnectionFeatureEngine:
         ops: list[dict] = []
 
         # Determine bore specs from interference or defaults
-        # For bearing seats: bore = bearing OD - interference
-        # For shaft press-fit: bore = shaft diameter - interference
+        # For bearing seats: bore = bearing OD with H7/js6 tolerance
+        # For press-fit: bore = OD - interference with H7/p6 tolerance
         interference = conn.interference_mm or 0.05  # default 0.05mm
 
         # Try to infer bore diameter from part dimensions or notes
         bore_d = self._infer_bore_diameter(part, conn)
+
+        # Determine if this is a bearing seat (no explicit interference)
+        is_bearing_seat = bore_d > 0 and conn.interference_mm == 0
         if bore_d <= 0:
             result.warnings.append(
                 "Cannot determine press-fit bore diameter. "
@@ -374,7 +407,17 @@ class ConnectionFeatureEngine:
             )
             return result
 
-        actual_bore = bore_d - interference
+        # Compute actual bore with tolerance
+        if is_bearing_seat and bore_d > 0:
+            # Bearing seat: H7 tolerance on bore diameter
+            bore_min, bore_nominal, bore_max = bearing_seat_diameter(bore_d)
+            actual_bore = bore_nominal
+            tol_info = f"H7 ({bore_min:.3f}/{bore_max:.3f})"
+        else:
+            # Press-fit: use H7/p6 to compute interference bore
+            bore_min, bore_nominal, bore_max = press_fit_bore_diameter(bore_d, interference)
+            actual_bore = bore_nominal
+            tol_info = f"H7/p6 ({bore_min:.3f}/{bore_max:.3f})"
         shoulder_d = bore_d + 2.0  # shoulder 1mm wider than nominal
         shoulder_depth = max(1.0, thickness * 0.1)
 
@@ -408,7 +451,7 @@ class ConnectionFeatureEngine:
         })
 
         result.features_generated.append(
-            f"Press-fit bore Ø{actual_bore:.2f}mm (interference {interference}mm) "
+            f"Press-fit bore Ø{actual_bore:.2f}mm (interference {interference}mm, {tol_info}) "
             f"with Ø{shoulder_d}mm × {shoulder_depth}mm shoulder"
         )
         result.ops = ops
