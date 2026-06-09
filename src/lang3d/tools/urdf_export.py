@@ -195,6 +195,72 @@ def _axis_angle_to_rpy(aa: list[float]) -> tuple[float, float, float]:
     return (roll, pitch, yaw)
 
 
+def _axis_angle_to_rot_matrix(aa: list[float]) -> list[list[float]]:
+    """Convert axis-angle [ax, ay, az, deg] to 3x3 rotation matrix (Rodrigues)."""
+    if len(aa) < 4 or abs(aa[3]) < 1e-6:
+        return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    ax, ay, az = aa[0], aa[1], aa[2]
+    norm = math.sqrt(ax * ax + ay * ay + az * az)
+    if norm < 1e-10:
+        return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
+    ax /= norm
+    ay /= norm
+    az /= norm
+    angle_rad = math.radians(aa[3])
+    c = math.cos(angle_rad)
+    s = math.sin(angle_rad)
+    t = 1 - c
+    return [
+        [t * ax * ax + c,     t * ax * ay - s * az, t * ax * az + s * ay],
+        [t * ax * ay + s * az, t * ay * ay + c,     t * ay * az - s * ax],
+        [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c],
+    ]
+
+
+def _mat3_mul(a: list[list[float]], b: list[list[float]]) -> list[list[float]]:
+    """3x3 matrix multiply."""
+    r = [[0.0] * 3 for _ in range(3)]
+    for i in range(3):
+        for j in range(3):
+            for k in range(3):
+                r[i][j] += a[i][k] * b[k][j]
+    return r
+
+
+def _mat3_transpose(m: list[list[float]]) -> list[list[float]]:
+    """Transpose a 3x3 matrix."""
+    return [[m[j][i] for j in range(3)] for i in range(3)]
+
+
+def _rot_matrix_to_rpy(m: list[list[float]]) -> tuple[float, float, float]:
+    """Extract ZYX Euler angles (roll, pitch, yaw) from 3x3 rotation matrix."""
+    sin_pitch = -m[2][0]
+    sin_pitch = max(-1.0, min(1.0, sin_pitch))
+    if abs(cos_pitch := math.cos(math.asin(sin_pitch))) > 1e-6:
+        roll = math.atan2(m[2][1], m[2][2])
+        pitch = math.asin(sin_pitch)
+        yaw = math.atan2(m[1][0], m[0][0])
+    else:
+        roll = math.atan2(-m[1][2], m[1][1])
+        pitch = math.asin(sin_pitch)
+        yaw = 0.0
+    return (roll, pitch, yaw)
+
+
+def _relative_axis_angle_to_rpy(
+    parent_aa: list[float], child_aa: list[float]
+) -> tuple[float, float, float]:
+    """Compute relative rotation R_child * R_parent^T and return as RPY.
+
+    This gives the orientation of the child frame expressed in the parent
+    frame — exactly what URDF joint origin rpy needs.
+    """
+    r_child = _axis_angle_to_rot_matrix(child_aa)
+    r_parent = _axis_angle_to_rot_matrix(parent_aa)
+    r_rel = _mat3_mul(r_child, _mat3_transpose(r_parent))
+    return _rot_matrix_to_rpy(r_rel)
+
+
 # ============================================================================
 # AssemblyToURDF — core converter
 # ============================================================================
@@ -391,9 +457,11 @@ class AssemblyToURDF:
         # Relative displacement: child - parent (mm → m)
         rel_xyz = tuple(_mm_to_m(child_pos[i] - parent_pos[i]) for i in range(3))
 
-        # Rotation from parent part (axis-angle → RPY)
+        # Relative rotation: R_child * R_parent^(-1) → RPY
+        # This gives the orientation of the child frame relative to the parent frame.
+        child_rot = self.positions.get(joint.child, {}).get("rotation", [0, 0, 1, 0])
         parent_rot = self.positions.get(joint.parent, {}).get("rotation", [0, 0, 1, 0])
-        rpy = _axis_angle_to_rpy(parent_rot)
+        rpy = _relative_axis_angle_to_rpy(parent_rot, child_rot)
 
         return rel_xyz, rpy
 

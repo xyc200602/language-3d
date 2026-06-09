@@ -152,7 +152,11 @@ class TestURDFWithPositions:
         assert right_joint.origin_xyz[2] == pytest.approx(-0.025, abs=1e-4)
 
     def test_uses_solver_rpy(self):
-        """When parent has non-identity rotation, joint origin rpy should be non-zero."""
+        """When parent/child have different rotations, joint origin rpy should be non-zero.
+
+        The rpy is now computed as R_child * R_parent^T (relative rotation),
+        so any difference between parent and child rotations produces non-zero rpy.
+        """
         asm = _make_wheel_assembly()
         positions = {
             "chassis": {"position": [0, 0, 50], "rotation": [0, 1, 0, 90]},
@@ -163,10 +167,36 @@ class TestURDFWithPositions:
         converter.convert()
         joints = converter.get_joints()
 
-        # Parent (chassis) has 90° Y rotation → pitch should be ~π/2
+        # Relative rotation should be non-zero since parent and child differ
         for j in joints:
-            _, pitch, _ = j.origin_rpy
-            assert abs(pitch) > 0.1, "Expected non-zero pitch from parent rotation"
+            roll, pitch, yaw = j.origin_rpy
+            has_rotation = abs(roll) > 0.01 or abs(pitch) > 0.01 or abs(yaw) > 0.01
+            assert has_rotation, (
+                f"Expected non-zero relative rotation, got rpy=({roll:.4f}, {pitch:.4f}, {yaw:.4f})"
+            )
+
+    def test_child_rotation_produces_rpy(self):
+        """When only child has rotation (parent is identity), joint rpy should be non-zero.
+
+        This is the critical case for wheels: parent (motor) has no rotation,
+        child (wheel) has 90° rotation to stand upright.
+        """
+        asm = _make_wheel_assembly()
+        positions = {
+            "chassis": {"position": [0, 0, 50], "rotation": [0, 0, 1, 0]},
+            "wheel_l": {"position": [-75, 0, 25], "rotation": [1, 0, 0, 90]},
+            "wheel_r": {"position": [75, 0, 25], "rotation": [1, 0, 0, -90]},
+        }
+        converter = AssemblyToURDF(asm, positions=positions)
+        converter.convert()
+        joints = converter.get_joints()
+
+        for j in joints:
+            roll, pitch, yaw = j.origin_rpy
+            has_rotation = abs(roll) > 0.01 or abs(pitch) > 0.01 or abs(yaw) > 0.01
+            assert has_rotation, (
+                f"Expected non-zero rpy from child rotation, got ({roll:.4f}, {pitch:.4f}, {yaw:.4f})"
+            )
 
     def test_xml_contains_nonzero_rpy(self):
         """Generated URDF XML should have non-zero rpy values when rotations exist."""
