@@ -1375,6 +1375,15 @@ def _resolve_assembly(name: str, json_str: str) -> Assembly | None:
         except Exception:
             pass
 
+    # Try assembly templates (exact ID match only)
+    try:
+        from ..knowledge.assembly_templates import TEMPLATES, template_to_assembly
+        tpl_key = name.lower().replace(" ", "_").replace("-", "_")
+        if tpl_key in TEMPLATES:
+            return template_to_assembly(TEMPLATES[tpl_key])
+    except Exception:
+        pass
+
     return None
 
 

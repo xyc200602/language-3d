@@ -492,6 +492,20 @@ class Agent:
         except Exception:
             pass
 
+        # Register assembly template tools (template search & instantiate)
+        try:
+            from ..tools.assembly_template_tool import register_assembly_template_tools
+            register_assembly_template_tools(self.tools)
+        except Exception:
+            pass
+
+        # Register part recommendation tools (accessory suggestions)
+        try:
+            from ..tools.part_recommend_tool import register_part_recommend_tools
+            register_part_recommend_tools(self.tools)
+        except Exception:
+            pass
+
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
         self._on_tool_result: Callable[[str, str], None] | None = None
