@@ -1244,6 +1244,393 @@ doc.recompute()
 """
 
 # ---------------------------------------------------------------------------
+# Layer 3 Phase 1: 15 additional structural part templates
+# ---------------------------------------------------------------------------
+
+_ALUMINUM_EXTRUSION_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("aluminum_extrusion")
+# Main square profile
+profile = Part.makeBox({profile_size}, {profile_size}, {length})
+# Central bore
+if {bore_size} > 0:
+    bore_r = {bore_size} / 2
+    bore = Part.makeCylinder(bore_r, {length} + 2)
+    bore.translate(FreeCAD.Vector({profile_size}/2, {profile_size}/2, -1))
+    profile = profile.cut(bore)
+# T-slot grooves on all 4 sides
+gw = {groove_w}
+gd = {groove_d}
+half = {profile_size} / 2
+if gw > 0 and gd > 0:
+    for cx, cy, dx, dy in [(0, half - gd/2, gw, gd), ({profile_size} - gw, half - gd/2, gw, gd),
+                            (half - gd/2, 0, gd, gw), (half - gd/2, {profile_size} - gw, gd, gw)]:
+        groove = Part.makeBox(dx, dy, {length} + 2)
+        groove.translate(FreeCAD.Vector(cx, cy, -1))
+        profile = profile.cut(groove)
+obj = doc.addObject("Part::Feature", "AluminumExtrusion")
+obj.Shape = profile
+doc.recompute()
+"""
+
+_U_BRACKET_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("u_bracket")
+t = {thickness}
+# Base plate
+base = Part.makeBox({leg_length}, {width}, t)
+# Left wall
+left = Part.makeBox(t, {width}, {height} - t)
+left.translate(FreeCAD.Vector(0, 0, t))
+# Right wall
+right = Part.makeBox(t, {width}, {height} - t)
+right.translate(FreeCAD.Vector({leg_length} - t, 0, t))
+body = base.fuse(left).fuse(right)
+# Mounting holes on base
+hole_r = {hole_d} / 2
+margin = t + hole_r + 1
+for hx in [margin, {leg_length} - margin]:
+    for hy in [margin, {width} - margin]:
+        hole = Part.makeCylinder(hole_r, t + 2)
+        hole.translate(FreeCAD.Vector(hx, hy, -1))
+        body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "UBracket")
+obj.Shape = body
+doc.recompute()
+"""
+
+_T_BRACKET_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("t_bracket")
+t = {thickness}
+# Horizontal plate
+plate = Part.makeBox({plate_w}, {plate_h}, t)
+# Vertical stem (centered)
+stem = Part.makeBox(t, {plate_h}, {stem_l})
+stem.translate(FreeCAD.Vector({plate_w}/2 - t/2, 0, -{stem_l}))
+body = plate.fuse(stem)
+# Holes on plate (4 corners)
+hole_r = {hole_d} / 2
+margin = hole_r + 2
+for hx in [margin, {plate_w} - margin]:
+    for hy in [margin, {plate_h} - margin]:
+        hole = Part.makeCylinder(hole_r, t + 2)
+        hole.translate(FreeCAD.Vector(hx, hy, -1))
+        body = body.cut(hole)
+# Holes on stem (2 positions)
+for sz in [{stem_l} * 0.3, {stem_l} * 0.7]:
+    hole = Part.makeCylinder(hole_r, t + 2)
+    hole.translate(FreeCAD.Vector({plate_w}/2, {plate_h}/2, -sz))
+    body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "TBracket")
+obj.Shape = body
+doc.recompute()
+"""
+
+_GUSSET_PLATE_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("gusset_plate")
+import math
+a = {side_a}
+b = {side_b}
+t = {thickness}
+# Right triangle prism via wire extrusion
+v0 = FreeCAD.Vector(0, 0, 0)
+v1 = FreeCAD.Vector(a, 0, 0)
+v2 = FreeCAD.Vector(0, b, 0)
+wire = Part.makePolygon([v0, v1, v2, v0])
+face = Part.Face(wire)
+body = face.extrude(FreeCAD.Vector(0, 0, t))
+# Mounting holes
+hole_r = {hole_d} / 2
+for hx, hy in [a * 0.2, b * 0.2], [a * 0.6, b * 0.15]:
+    hole = Part.makeCylinder(hole_r, t + 2)
+    hole.translate(FreeCAD.Vector(hx, hy, -1))
+    body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "GussetPlate")
+obj.Shape = body
+doc.recompute()
+"""
+
+_BEARING_BLOCK_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("bearing_block")
+# Base plate
+base = Part.makeBox({base_l}, {base_w}, {base_l} * 0.3)
+base_h = {base_l} * 0.3
+# Side walls
+wall_h = {block_h} - base_h
+wall1 = Part.makeBox({base_l}, {base_w} * 0.15, wall_h)
+wall1.translate(FreeCAD.Vector(0, 0, base_h))
+wall2 = Part.makeBox({base_l}, {base_w} * 0.15, wall_h)
+wall2.translate(FreeCAD.Vector(0, {base_w} * 0.85, base_h))
+body = base.fuse(wall1).fuse(wall2)
+# Bearing bore through walls
+bore_r = {shaft_d} / 2
+for wy in [{base_w} * 0.075, {base_w} * 0.925]:
+    bore = Part.makeCylinder(bore_r, wall_h + 2)
+    bore.translate(FreeCAD.Vector({base_l}/2, wy, base_h - 1))
+    body = body.cut(bore)
+# Bolt holes in base
+bolt_r = {bolt_d} / 2
+margin = {base_l} * 0.15
+for bx in [margin, {base_l} - margin]:
+    for by in [margin, {base_w} - margin]:
+        hole = Part.makeCylinder(bolt_r, base_h + 2)
+        hole.translate(FreeCAD.Vector(bx, by, -1))
+        body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "BearingBlock")
+obj.Shape = body
+doc.recompute()
+"""
+
+_SERVO_BRACKET_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("servo_bracket")
+t = {plate_t}
+servo_type = "{servo_type}"
+# U-channel base
+base = Part.makeBox({plate_l}, {plate_w}, t)
+left = Part.makeBox({plate_l}, t, {flange_h})
+left.translate(FreeCAD.Vector(0, 0, t))
+right = Part.makeBox({plate_l}, t, {flange_h})
+right.translate(FreeCAD.Vector(0, {plate_w} - t, t))
+body = base.fuse(left).fuse(right)
+# SG90 mounting holes
+hole_r = 1.3
+spacing_x = 28.0
+for hx in [{plate_l}/2 - spacing_x/2, {plate_l}/2 + spacing_x/2]:
+    for hy in [t/2, {plate_w} - t/2]:
+        hole = Part.makeCylinder(hole_r, {flange_h} + 2)
+        hole.translate(FreeCAD.Vector(hx, hy, -1))
+        body = body.cut(hole)
+# Base mounting holes
+for bx in [{plate_l} * 0.15, {plate_l} * 0.85]:
+    hole = Part.makeCylinder(1.5, t + 2)
+    hole.translate(FreeCAD.Vector(bx, {plate_w}/2, -1))
+    body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "ServoBracket")
+obj.Shape = body
+doc.recompute()
+"""
+
+_NEMA_MOUNT_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("nema_mount")
+motor_type = "{motor_type}"
+# Plate
+plate = Part.makeBox({plate_l}, {plate_w}, {plate_t})
+# NEMA hole pattern
+patterns = {{"NEMA17": (31.0, 3.4, 22.0), "NEMA23": (47.14, 4.5, 31.0),
+             "NEMA14": (26.0, 3.0, 16.0)}}
+spacing, hole_d, bore_d = patterns.get(motor_type, (31.0, 3.4, 22.0))
+cx, cy = {plate_l}/2, {plate_w}/2
+# Center bore
+bore = Part.makeCylinder(bore_d/2, {plate_t} + 2)
+bore.translate(FreeCAD.Vector(cx, cy, -1))
+plate = plate.cut(bore)
+# Corner mounting holes
+half = spacing / 2
+hole_r = hole_d / 2
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {plate_t} + 2)
+        hole.translate(FreeCAD.Vector(cx + dx, cy + dy, -1))
+        plate = plate.cut(hole)
+obj = doc.addObject("Part::Feature", "NEMAMount")
+obj.Shape = plate
+doc.recompute()
+"""
+
+_STANDOFF_COLUMN_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("standoff_column")
+# Outer cylinder
+pillar = Part.makeCylinder({od}/2, {length})
+# Through hole
+hole = Part.makeCylinder({hole_d}/2, {length} + 2)
+hole.translate(FreeCAD.Vector(0, 0, -1))
+result = pillar.cut(hole)
+obj = doc.addObject("Part::Feature", "StandoffColumn")
+obj.Shape = result
+doc.recompute()
+"""
+
+_CABLE_CHAIN_MOUNT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("cable_chain_mount")
+t = {thickness}
+# L-shaped bracket
+base = Part.makeBox({base_l}, {base_w}, t)
+wall = Part.makeBox(t, {base_w}, {slot_h} + t)
+wall.translate(FreeCAD.Vector(0, 0, t))
+body = base.fuse(wall)
+# Cable slot (rectangular cutout in wall)
+slot = Part.makeBox(t + 2, {slot_w}, {slot_h})
+slot.translate(FreeCAD.Vector(-1, ({base_w} - {slot_w})/2, t))
+body = body.cut(slot)
+# Base mounting holes
+hole_r = 1.5
+margin = t + 3
+for bx in [margin, {base_l} - margin]:
+    hole = Part.makeCylinder(hole_r, t + 2)
+    hole.translate(FreeCAD.Vector(bx, {base_w}/2, -1))
+    body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "CableChainMount")
+obj.Shape = body
+doc.recompute()
+"""
+
+_BATTERY_TRAY_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("battery_tray")
+# Open-top box
+outer = Part.makeBox({length}, {width}, {height})
+inner_l = {length} - 2 * {wall_t}
+inner_w = {width} - 2 * {wall_t}
+inner_h = {height} - {wall_t}
+if inner_l > 0 and inner_w > 0 and inner_h > 0:
+    inner = Part.makeBox(inner_l, inner_w, inner_h)
+    inner.translate(FreeCAD.Vector({wall_t}, {wall_t}, 0))
+    box = outer.cut(inner)
+else:
+    box = outer
+# Tie-down slots on both long sides
+slot_w = 3
+slot_d = 2
+for side_y in [0, {width} - slot_d]:
+    slot = Part.makeBox({length} * 0.4, slot_d, slot_w)
+    slot.translate(FreeCAD.Vector({length} * 0.3, side_y, {height} - slot_w))
+    box = box.fuse(slot)
+obj = doc.addObject("Part::Feature", "BatteryTray")
+obj.Shape = box
+doc.recompute()
+"""
+
+_SENSOR_SHELF_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("sensor_shelf")
+t = {thickness}
+angle_rad = math.radians({shelf_angle})
+# Horizontal base
+base = Part.makeBox({base_l}, {base_w}, t)
+# Angled shelf
+shelf_h = {base_l} * 0.5 * math.sin(angle_rad)
+shelf_d = {base_l} * 0.5 * math.cos(angle_rad)
+shelf = Part.makeBox(shelf_d, {base_w}, t)
+shelf.translate(FreeCAD.Vector(0, 0, shelf_h))
+shelf.rotate(FreeCAD.Vector(0, 0, shelf_h), FreeCAD.Vector(0, 1, 0), -{shelf_angle})
+body = base.fuse(shelf)
+# Sensor mounting hole on shelf
+hole_r = 2.0
+hole = Part.makeCylinder(hole_r, t + 2)
+hole.translate(FreeCAD.Vector(shelf_d * 0.5, {base_w}/2, shelf_h - 1))
+body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "SensorShelf")
+obj.Shape = body
+doc.recompute()
+"""
+
+_SHAFT_COUPLING_BLOCK_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("shaft_coupling_block")
+# Main block
+block = Part.makeBox({block_l}, {block_w}, {block_h})
+# Bore through center (along X)
+bore_r = {bore_d} / 2
+bore = Part.makeCylinder(bore_r, {block_l} + 2)
+bore.translate(FreeCAD.Vector(-1, {block_w}/2, {block_h}/2))
+block = block.cut(bore)
+# Set-screw hole (top, perpendicular)
+if {set_screw_d} > 0:
+    screw_r = {set_screw_d} / 2
+    screw = Part.makeCylinder(screw_r, {block_h}/2 + 2)
+    screw.translate(FreeCAD.Vector({block_l}/2, {block_w}/2, {block_h} - 1))
+    block = block.cut(screw)
+obj = doc.addObject("Part::Feature", "ShaftCouplingBlock")
+obj.Shape = block
+doc.recompute()
+"""
+
+_GUIDE_RAIL_CARRIAGE_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("guide_rail_carriage")
+rail_type = "{rail_type}"
+# Carriage plate
+plate = Part.makeBox({plate_l}, {plate_w}, {plate_t})
+# Mounting holes (4 corner holes)
+hole_r = 1.5
+margin_l = {plate_l} * 0.15
+margin_w = {plate_w} * 0.15
+for hx in [margin_l, {plate_l} - margin_l]:
+    for hy in [margin_w, {plate_w} - margin_w]:
+        hole = Part.makeCylinder(hole_r, {plate_t} + 2)
+        hole.translate(FreeCAD.Vector(hx, hy, -1))
+        plate = plate.cut(hole)
+# Rail slot indicators (grooves on bottom)
+groove_w = 3.0
+groove_d = 1.5
+for gx in [{plate_l} * 0.3, {plate_l} * 0.7]:
+    groove = Part.makeBox(groove_w, {plate_w} * 0.6, groove_d)
+    groove.translate(FreeCAD.Vector(gx - groove_w/2, {plate_w} * 0.2, -groove_d))
+    plate = plate.cut(groove)
+obj = doc.addObject("Part::Feature", "GuideRailCarriage")
+obj.Shape = plate
+doc.recompute()
+"""
+
+_PULLEY_IDLER_MOUNT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("pulley_idler_mount")
+t = {plate_t}
+# L-bracket
+base = Part.makeBox({plate_l}, {plate_w}, t)
+wall = Part.makeBox(t, {plate_w}, {plate_w} * 0.8)
+wall.translate(FreeCAD.Vector(0, 0, t))
+body = base.fuse(wall)
+# Bearing hole in wall
+bearing_r = {bearing_od} / 2
+bore = Part.makeCylinder(bearing_r, t + 2)
+bore.translate(FreeCAD.Vector(t/2, {plate_w}/2, t + {plate_w} * 0.4 - 1))
+body = body.cut(bore)
+# Base mounting holes
+hole_r = 1.5
+margin = t + 3
+for bx in [margin, {plate_l} - margin]:
+    hole = Part.makeCylinder(hole_r, t + 2)
+    hole.translate(FreeCAD.Vector(bx, {plate_w}/2, -1))
+    body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "PulleyIdlerMount")
+obj.Shape = body
+doc.recompute()
+"""
+
+_ENCODER_MOUNT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("encoder_mount")
+t = {thickness}
+# Small L-bracket
+base = Part.makeBox({base_l}, {base_w}, t)
+wall = Part.makeBox(t, {base_w}, {base_w} * 0.7)
+wall.translate(FreeCAD.Vector(0, 0, t))
+body = base.fuse(wall)
+# Encoder center bore through wall
+bore_r = {bore_d} / 2
+bore = Part.makeCylinder(bore_r, t + 2)
+bore.translate(FreeCAD.Vector(t/2, {base_w}/2, t + {base_w} * 0.35 - 1))
+body = body.cut(bore)
+# Fixing holes (2 on base, 2 on wall)
+hole_r = 1.3
+for bx in [{base_l} * 0.2, {base_l} * 0.8]:
+    hole = Part.makeCylinder(hole_r, t + 2)
+    hole.translate(FreeCAD.Vector(bx, {base_w}/2, -1))
+    body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "EncoderMount")
+obj.Shape = body
+doc.recompute()
+"""
+
+# ---------------------------------------------------------------------------
 # Task 68: Real functional part scripts — motors, servos, sensors
 # ---------------------------------------------------------------------------
 
@@ -4781,6 +5168,498 @@ doc.recompute()
             {"length": 96.0, "width": 28.0, "height": 16.0},
         ],
         notes="FR12-S102-K 铝合金切削件。用于OpenMANIPULATOR-X的link3（上臂）。",
+    ),
+
+    # ===================================================================
+    # Layer 3 Phase 1: 15 new structural templates
+    # ===================================================================
+
+    "aluminum_extrusion": PartTemplate(
+        id="aluminum_extrusion",
+        name_en="Aluminum Extrusion",
+        name_cn="铝型材",
+        category="structural",
+        subcategory="bracket",
+        description="参数化铝型材方管，含中心孔和T型槽",
+        tags=["铝型材", "extrusion", "profile", "structural", "frame"],
+        parameters=[
+            ParamDef("profile_size", "截面尺寸", "mm", 20, 10, 80, 1),
+            ParamDef("length", "长度", "mm", 300, 50, 2000, 1),
+            ParamDef("bore_size", "中心孔径", "mm", 4, 0, 30, 0.5),
+            ParamDef("groove_w", "T槽宽度", "mm", 5, 0, 15, 0.5),
+            ParamDef("groove_d", "T槽深度", "mm", 2, 0, 10, 0.5),
+        ],
+        fc_script_template=_ALUMINUM_EXTRUSION_SCRIPT,
+        standard_sizes=[
+            {"profile_size": 20, "length": 300, "bore_size": 4, "groove_w": 5, "groove_d": 2},
+            {"profile_size": 30, "length": 500, "bore_size": 6, "groove_w": 6, "groove_d": 3},
+            {"profile_size": 40, "length": 500, "bore_size": 8, "groove_w": 8, "groove_d": 4},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="end",
+            holes=[
+                BoltHole(x=0, y=0, diameter=4.0),
+            ],
+            bore_diameter=4.0,
+        ),
+    ),
+
+    "u_bracket": PartTemplate(
+        id="u_bracket",
+        name_en="U Bracket",
+        name_cn="U型支架",
+        category="structural",
+        subcategory="bracket",
+        description="参数化U型支架，底面带安装孔",
+        tags=["支架", "U型", "bracket", "structural", "mount"],
+        parameters=[
+            ParamDef("width", "宽度", "mm", 30, 15, 100, 1),
+            ParamDef("height", "高度", "mm", 40, 15, 120, 1),
+            ParamDef("thickness", "壁厚", "mm", 3, 1, 10, 0.5),
+            ParamDef("leg_length", "腿长", "mm", 30, 10, 80, 1),
+            ParamDef("hole_d", "安装孔径", "mm", 4, 2, 10, 0.5),
+        ],
+        fc_script_template=_U_BRACKET_SCRIPT,
+        standard_sizes=[
+            {"width": 30, "height": 40, "thickness": 3, "leg_length": 30, "hole_d": 4},
+            {"width": 40, "height": 50, "thickness": 4, "leg_length": 40, "hole_d": 5},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=8, y=8, diameter=4.0),
+                BoltHole(x=22, y=8, diameter=4.0),
+                BoltHole(x=8, y=22, diameter=4.0),
+                BoltHole(x=22, y=22, diameter=4.0),
+            ],
+        ),
+    ),
+
+    "t_bracket": PartTemplate(
+        id="t_bracket",
+        name_en="T Bracket",
+        name_cn="T型支架",
+        category="structural",
+        subcategory="bracket",
+        description="参数化T型支架，横板和竖干均有安装孔",
+        tags=["支架", "T型", "bracket", "structural", "mount"],
+        parameters=[
+            ParamDef("plate_w", "横板宽", "mm", 60, 20, 150, 1),
+            ParamDef("plate_h", "横板高", "mm", 30, 15, 80, 1),
+            ParamDef("stem_l", "竖干长", "mm", 40, 15, 100, 1),
+            ParamDef("thickness", "板厚", "mm", 3, 1, 10, 0.5),
+            ParamDef("hole_d", "孔径", "mm", 4, 2, 10, 0.5),
+        ],
+        fc_script_template=_T_BRACKET_SCRIPT,
+        standard_sizes=[
+            {"plate_w": 60, "plate_h": 30, "stem_l": 40, "thickness": 3, "hole_d": 4},
+            {"plate_w": 80, "plate_h": 40, "stem_l": 50, "thickness": 4, "hole_d": 5},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=30, y=15, diameter=4.0),
+                BoltHole(x=30, y=15, diameter=4.0),
+            ],
+        ),
+    ),
+
+    "gusset_plate": PartTemplate(
+        id="gusset_plate",
+        name_en="Gusset Plate",
+        name_cn="加强筋板",
+        category="structural",
+        subcategory="bracket",
+        description="参数化三角形加强筋板",
+        tags=["加强筋", "gusset", "triangular", "structural", "reinforcement"],
+        parameters=[
+            ParamDef("side_a", "直角边A", "mm", 40, 15, 100, 1),
+            ParamDef("side_b", "直角边B", "mm", 40, 15, 100, 1),
+            ParamDef("thickness", "厚度", "mm", 3, 1, 10, 0.5),
+            ParamDef("hole_d", "安装孔径", "mm", 4, 2, 10, 0.5),
+        ],
+        fc_script_template=_GUSSET_PLATE_SCRIPT,
+        standard_sizes=[
+            {"side_a": 40, "side_b": 40, "thickness": 3, "hole_d": 4},
+            {"side_a": 60, "side_b": 40, "thickness": 4, "hole_d": 5},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=10, y=10, diameter=4.0),
+            ],
+        ),
+    ),
+
+    "bearing_block": PartTemplate(
+        id="bearing_block",
+        name_en="Bearing Block",
+        name_cn="轴承座",
+        category="structural",
+        subcategory="bracket",
+        description="参数化轴承座，底板+侧壁+轴孔",
+        tags=["轴承座", "bearing", "block", "pillow", "structural"],
+        parameters=[
+            ParamDef("shaft_d", "轴径", "mm", 10, 3, 30, 0.5),
+            ParamDef("block_h", "座高", "mm", 30, 15, 60, 1),
+            ParamDef("base_l", "底板长", "mm", 40, 20, 80, 1),
+            ParamDef("base_w", "底板宽", "mm", 30, 15, 60, 1),
+            ParamDef("bolt_d", "螺栓孔径", "mm", 4, 2, 8, 0.5),
+        ],
+        fc_script_template=_BEARING_BLOCK_SCRIPT,
+        standard_sizes=[
+            {"shaft_d": 10, "block_h": 30, "base_l": 40, "base_w": 30, "bolt_d": 4},
+            {"shaft_d": 15, "block_h": 40, "base_l": 50, "base_w": 40, "bolt_d": 5},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=6, y=6, diameter=4.0),
+                BoltHole(x=34, y=6, diameter=4.0),
+                BoltHole(x=6, y=24, diameter=4.0),
+                BoltHole(x=34, y=24, diameter=4.0),
+            ],
+            bore_diameter=10.0,
+        ),
+    ),
+
+    "servo_bracket": PartTemplate(
+        id="servo_bracket",
+        name_en="Servo Bracket",
+        name_cn="舵机支架",
+        category="structural",
+        subcategory="bracket",
+        description="参数化U型舵机支架，适配SG90安装孔",
+        tags=["舵机", "支架", "servo", "bracket", "SG90", "structural"],
+        parameters=[
+            ParamDef("servo_type", "舵机型号", "", "SG90", "SG90", "SG90", 1,
+                     param_type="string", choices=["SG90", "MG996R", "DS3218"]),
+            ParamDef("plate_l", "底板长", "mm", 40, 20, 80, 1),
+            ParamDef("plate_w", "底板宽", "mm", 20, 10, 40, 1),
+            ParamDef("plate_t", "板厚", "mm", 2, 1, 6, 0.5),
+            ParamDef("flange_h", "法兰高", "mm", 25, 10, 50, 1),
+        ],
+        fc_script_template=_SERVO_BRACKET_SCRIPT,
+        standard_sizes=[
+            {"servo_type": "SG90", "plate_l": 40, "plate_w": 20, "plate_t": 2, "flange_h": 25},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=6, y=10, diameter=1.5),
+                BoltHole(x=34, y=10, diameter=1.5),
+            ],
+        ),
+    ),
+
+    "nema_mount": PartTemplate(
+        id="nema_mount",
+        name_en="NEMA Mount Plate",
+        name_cn="步进电机安装板",
+        category="structural",
+        subcategory="bracket",
+        description="参数化NEMA步进电机安装板，自动匹配孔位",
+        tags=["NEMA", "步进电机", "安装板", "stepper", "mount", "structural"],
+        parameters=[
+            ParamDef("motor_type", "电机型号", "", "NEMA17", "NEMA14", "NEMA23", 1,
+                     param_type="string", choices=["NEMA14", "NEMA17", "NEMA23"]),
+            ParamDef("plate_l", "板长", "mm", 50, 25, 100, 1),
+            ParamDef("plate_w", "板宽", "mm", 50, 25, 100, 1),
+            ParamDef("plate_t", "板厚", "mm", 3, 1, 10, 0.5),
+        ],
+        fc_script_template=_NEMA_MOUNT_SCRIPT,
+        standard_sizes=[
+            {"motor_type": "NEMA17", "plate_l": 50, "plate_w": 50, "plate_t": 3},
+            {"motor_type": "NEMA23", "plate_l": 70, "plate_w": 70, "plate_t": 5},
+            {"motor_type": "NEMA14", "plate_l": 40, "plate_w": 40, "plate_t": 3},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="front",
+            holes=[
+                BoltHole(x=9.5, y=9.5, diameter=3.4),
+                BoltHole(x=40.5, y=9.5, diameter=3.4),
+                BoltHole(x=9.5, y=40.5, diameter=3.4),
+                BoltHole(x=40.5, y=40.5, diameter=3.4),
+            ],
+            bore_diameter=22.0,
+        ),
+    ),
+
+    "standoff_column": PartTemplate(
+        id="standoff_column",
+        name_en="Standoff Column",
+        name_cn="支撑柱",
+        category="structural",
+        subcategory="bracket",
+        description="参数化圆柱支撑柱，含通孔",
+        tags=["支撑柱", "standoff", "spacer", "pillar", "structural"],
+        parameters=[
+            ParamDef("od", "外径", "mm", 6, 3, 20, 0.5),
+            ParamDef("length", "长度", "mm", 25, 5, 100, 1),
+            ParamDef("hole_d", "通孔径", "mm", 3, 1, 12, 0.5),
+        ],
+        fc_script_template=_STANDOFF_COLUMN_SCRIPT,
+        standard_sizes=[
+            {"od": 6, "length": 10, "hole_d": 3},
+            {"od": 6, "length": 25, "hole_d": 3},
+            {"od": 8, "length": 40, "hole_d": 4},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="top",
+            holes=[
+                BoltHole(x=0, y=0, diameter=3.0),
+            ],
+            bore_diameter=3.0,
+        ),
+    ),
+
+    "cable_chain_mount": PartTemplate(
+        id="cable_chain_mount",
+        name_en="Cable Chain Mount",
+        name_cn="线缆链支架",
+        category="structural",
+        subcategory="bracket",
+        description="参数化L型线缆链固定支架，含线槽",
+        tags=["线缆", "支架", "cable", "chain", "drag", "structural"],
+        parameters=[
+            ParamDef("base_l", "底板长", "mm", 40, 20, 100, 1),
+            ParamDef("base_w", "底板宽", "mm", 25, 10, 60, 1),
+            ParamDef("slot_w", "线槽宽", "mm", 12, 5, 30, 1),
+            ParamDef("slot_h", "线槽高", "mm", 15, 5, 40, 1),
+            ParamDef("thickness", "壁厚", "mm", 3, 1, 8, 0.5),
+        ],
+        fc_script_template=_CABLE_CHAIN_MOUNT_SCRIPT,
+        standard_sizes=[
+            {"base_l": 40, "base_w": 25, "slot_w": 12, "slot_h": 15, "thickness": 3},
+            {"base_l": 60, "base_w": 35, "slot_w": 18, "slot_h": 20, "thickness": 4},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=6, y=12.5, diameter=1.5),
+                BoltHole(x=34, y=12.5, diameter=1.5),
+            ],
+        ),
+    ),
+
+    "battery_tray": PartTemplate(
+        id="battery_tray",
+        name_en="Battery Tray",
+        name_cn="电池托盘",
+        category="structural",
+        subcategory="bracket",
+        description="参数化电池托盘，开口盒+绑带槽",
+        tags=["电池", "托盘", "battery", "tray", "structural"],
+        parameters=[
+            ParamDef("length", "长度", "mm", 80, 30, 200, 1),
+            ParamDef("width", "宽度", "mm", 50, 20, 100, 1),
+            ParamDef("height", "高度", "mm", 25, 10, 60, 1),
+            ParamDef("wall_t", "壁厚", "mm", 2, 1, 6, 0.5),
+        ],
+        fc_script_template=_BATTERY_TRAY_SCRIPT,
+        standard_sizes=[
+            {"length": 80, "width": 50, "height": 25, "wall_t": 2},
+            {"length": 120, "width": 60, "height": 30, "wall_t": 3},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=5, y=5, diameter=2.0),
+                BoltHole(x=75, y=5, diameter=2.0),
+                BoltHole(x=5, y=45, diameter=2.0),
+                BoltHole(x=75, y=45, diameter=2.0),
+            ],
+        ),
+    ),
+
+    "sensor_shelf": PartTemplate(
+        id="sensor_shelf",
+        name_en="Sensor Shelf",
+        name_cn="传感器安装架",
+        category="structural",
+        subcategory="bracket",
+        description="参数化斜面传感器安装架",
+        tags=["传感器", "安装架", "sensor", "shelf", "angled", "structural"],
+        parameters=[
+            ParamDef("base_l", "底板长", "mm", 50, 20, 100, 1),
+            ParamDef("base_w", "底板宽", "mm", 30, 15, 60, 1),
+            ParamDef("shelf_angle", "斜面角度", "deg", 30, 10, 60, 1),
+            ParamDef("thickness", "板厚", "mm", 3, 1, 8, 0.5),
+        ],
+        fc_script_template=_SENSOR_SHELF_SCRIPT,
+        standard_sizes=[
+            {"base_l": 50, "base_w": 30, "shelf_angle": 30, "thickness": 3},
+            {"base_l": 60, "base_w": 40, "shelf_angle": 45, "thickness": 4},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=8, y=15, diameter=2.0),
+                BoltHole(x=42, y=15, diameter=2.0),
+            ],
+        ),
+    ),
+
+    "shaft_coupling_block": PartTemplate(
+        id="shaft_coupling_block",
+        name_en="Shaft Coupling Block",
+        name_cn="轴连接块",
+        category="structural",
+        subcategory="bracket",
+        description="参数化轴连接块，含轴孔和紧定螺钉孔",
+        tags=["轴", "连接", "coupling", "shaft", "structural"],
+        parameters=[
+            ParamDef("block_l", "块长", "mm", 30, 10, 60, 1),
+            ParamDef("block_w", "块宽", "mm", 20, 10, 40, 1),
+            ParamDef("block_h", "块高", "mm", 20, 10, 40, 1),
+            ParamDef("bore_d", "轴孔径", "mm", 6, 2, 20, 0.5),
+            ParamDef("set_screw_d", "紧定孔径", "mm", 3, 0, 8, 0.5),
+        ],
+        fc_script_template=_SHAFT_COUPLING_BLOCK_SCRIPT,
+        standard_sizes=[
+            {"block_l": 30, "block_w": 20, "block_h": 20, "bore_d": 6, "set_screw_d": 3},
+            {"block_l": 40, "block_w": 25, "block_h": 25, "bore_d": 8, "set_screw_d": 4},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="side",
+            holes=[
+                BoltHole(x=10, y=10, diameter=6.0),
+            ],
+            bore_diameter=6.0,
+        ),
+    ),
+
+    "guide_rail_carriage": PartTemplate(
+        id="guide_rail_carriage",
+        name_en="Guide Rail Carriage",
+        name_cn="导轨滑块板",
+        category="structural",
+        subcategory="bracket",
+        description="参数化导轨滑块安装板",
+        tags=["导轨", "滑块", "rail", "carriage", "linear", "structural"],
+        parameters=[
+            ParamDef("rail_type", "导轨型号", "", "MGN12", "MGN9", "MGN15", 1,
+                     param_type="string", choices=["MGN9", "MGN12", "MGN15"]),
+            ParamDef("plate_l", "板长", "mm", 50, 20, 100, 1),
+            ParamDef("plate_w", "板宽", "mm", 30, 15, 60, 1),
+            ParamDef("plate_t", "板厚", "mm", 5, 2, 12, 0.5),
+        ],
+        fc_script_template=_GUIDE_RAIL_CARRIAGE_SCRIPT,
+        standard_sizes=[
+            {"rail_type": "MGN12", "plate_l": 50, "plate_w": 30, "plate_t": 5},
+            {"rail_type": "MGN15", "plate_l": 60, "plate_w": 40, "plate_t": 6},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="top",
+            holes=[
+                BoltHole(x=7.5, y=7.5, diameter=1.5),
+                BoltHole(x=42.5, y=7.5, diameter=1.5),
+                BoltHole(x=7.5, y=22.5, diameter=1.5),
+                BoltHole(x=42.5, y=22.5, diameter=1.5),
+            ],
+        ),
+    ),
+
+    "pulley_idler_mount": PartTemplate(
+        id="pulley_idler_mount",
+        name_en="Pulley Idler Mount",
+        name_cn="惰轮支架",
+        category="structural",
+        subcategory="bracket",
+        description="参数化L型惰轮支架，含轴承安装孔",
+        tags=["惰轮", "支架", "pulley", "idler", "bearing", "structural"],
+        parameters=[
+            ParamDef("bearing_od", "轴承外径", "mm", 16, 8, 30, 0.5),
+            ParamDef("plate_l", "底板长", "mm", 40, 20, 80, 1),
+            ParamDef("plate_w", "底板宽", "mm", 25, 10, 50, 1),
+            ParamDef("plate_t", "板厚", "mm", 3, 1, 8, 0.5),
+        ],
+        fc_script_template=_PULLEY_IDLER_MOUNT_SCRIPT,
+        standard_sizes=[
+            {"bearing_od": 16, "plate_l": 40, "plate_w": 25, "plate_t": 3},
+            {"bearing_od": 22, "plate_l": 50, "plate_w": 30, "plate_t": 4},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=6, y=12.5, diameter=1.5),
+                BoltHole(x=34, y=12.5, diameter=1.5),
+            ],
+        ),
+    ),
+
+    "encoder_mount": PartTemplate(
+        id="encoder_mount",
+        name_en="Encoder Mount",
+        name_cn="编码器安装架",
+        category="structural",
+        subcategory="bracket",
+        description="参数化编码器安装架，含中心孔和固定孔",
+        tags=["编码器", "安装架", "encoder", "mount", "structural"],
+        parameters=[
+            ParamDef("bore_d", "中心孔径", "mm", 6, 2, 15, 0.5),
+            ParamDef("base_l", "底板长", "mm", 30, 15, 60, 1),
+            ParamDef("base_w", "底板宽", "mm", 20, 10, 40, 1),
+            ParamDef("thickness", "板厚", "mm", 2, 1, 6, 0.5),
+        ],
+        fc_script_template=_ENCODER_MOUNT_SCRIPT,
+        standard_sizes=[
+            {"bore_d": 6, "base_l": 30, "base_w": 20, "thickness": 2},
+            {"bore_d": 8, "base_l": 35, "base_w": 25, "thickness": 3},
+        ],
+        part_class="structural",
+        scalable=True,
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=6, y=10, diameter=1.3),
+                BoltHole(x=24, y=10, diameter=1.3),
+            ],
+            bore_diameter=6.0,
+        ),
     ),
 }
 

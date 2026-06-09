@@ -4,6 +4,55 @@
 
 ---
 
+## 2026-06-09 - Layer 4: 装配模板 + 碰撞修复建议 + 零件推荐
+
+### What was done:
+三阶段推进，新增 ~3580 行代码，136 个新测试：
+
+**Phase 1: 装配模板知识库**
+- 新建 `src/lang3d/knowledge/assembly_templates.py` — 6 个装配体模板（3dof_arm, 4dof_arm, 6dof_belt_arm, diff_drive_4w, mecanum_4w, scara_arm），含零件规格、关节链、默认角度
+- 加权搜索函数 `search_assembly_templates()` — keyword 3x, robot_type 5x, DOF 2x 权重
+- `template_to_assembly()` 模板 → Assembly 对象转换，支持参数覆盖
+- 新建 `src/lang3d/tools/assembly_template_tool.py` — `assembly_template_search` 和 `assembly_template_instantiate` 工具
+- 修改 `assembly_solver.py` — `_resolve_assembly()` 添加模板 ID 精确匹配回退
+- 修改 `agent/core.py` — 注册装配模板工具
+- 59 个新测试通过
+
+**Phase 2: 碰撞修复建议器**
+- 修改 `src/lang3d/tools/motion_collision.py` — 追加 ~280 行
+- `CollisionFixSuggester` 决策树算法：
+  - 碰撞覆盖 >50% → `reduce_link_length`（缩减子件 25%）
+  - 极端角度碰撞 → `limit_joint_range`（裁剪+5°余量）
+  - 零位碰撞 → `add_offset`
+  - 几乎全范围碰撞 → `increase_spacing`
+- 约束传播：连杆长度变化→下游关节偏移，关节范围变化→默认角度
+- `CollisionFixTool` — 纯分析不依赖 FCL，始终注册
+- 16 个新测试通过（含手动构建 MotionCollisionResult，无需 FCL）
+
+**Phase 3: 零件推荐引擎**
+- 新建 `src/lang3d/knowledge/part_recommendations.py` — 10 条核心规则
+  - servo_sg90 → M2螺丝+支架, nema17 → M3螺丝+GT2同步轮+608轴承
+  - bearing_608 → 8mm光轴+轴承座, gt2_pulley → 同步带+紧定螺钉 等
+- 三级匹配：精确 ID → 模糊关键词 → 类别回退
+- `compute_compatibility_score()` — 0.0-1.0 兼容性评分
+- `get_recommendations_for_assembly()` — 全装配体推荐，去重聚合数量
+- 新建 `src/lang3d/tools/part_recommend_tool.py` — `part_recommend` 工具
+- 修改 `agent/core.py` — 注册零件推荐工具
+- 61 个新测试通过
+
+### Testing:
+- 新测试：136/136 通过
+- 回归测试：3453 passed, 11 failed（10 个预存问题 + 1 个因模板回退匹配 "unknown_assembly" 引起的回归已修复）
+- 修复后针对性回归：137 passed, 0 failures
+
+### Notes:
+- `_resolve_assembly()` 模板回退使用精确 ID 匹配而非模糊搜索，避免误匹配
+- `CollisionFixTool` 无 FCL 依赖，始终注册可用
+- `motion_collision.py` 实际是新文件（git 识别为 create mode），因为原始文件可能不在 git 追踪中
+- 零件推荐规则中所有推荐的 part_catalog_id 均已验证存在于 PART_CATALOG
+
+---
+
 ## 2026-06-08 - 双臂四轮机器人端到端集成测试（Task 70-82 最终验证）
 
 ### What was done:

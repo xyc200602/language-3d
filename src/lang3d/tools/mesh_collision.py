@@ -58,6 +58,30 @@ class CollisionResult:
     summary: str = ""
 
 
+@dataclass
+class InterferencePair:
+    """Detailed interference information for a single part pair."""
+
+    part_a: str
+    part_b: str
+    penetration_depth_mm: float = 0.0
+    estimated_volume_mm3: float = 0.0
+    clearance_mm: float = 0.0
+    severity: str = "none"  # "none" | "clearance" | "light" | "moderate" | "severe"
+
+
+@dataclass
+class InterferenceReport:
+    """Complete interference analysis report for an assembly."""
+
+    collision_free: bool = True
+    pairs: list[InterferencePair] = field(default_factory=list)
+    worst_interference: InterferencePair | None = None
+    parts_checked: int = 0
+    pairs_checked: int = 0
+    summary: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Mesh creation helpers
 # ---------------------------------------------------------------------------
@@ -169,6 +193,153 @@ class MeshCollisionChecker:
             pairs_checked=n_pairs,
             summary=summary,
         )
+
+    def generate_interference_report(
+        self,
+        assembly: Assembly,
+        placements: dict[str, dict],
+        skip_adjacent: bool = True,
+        clearance_threshold_mm: float = 2.0,
+    ) -> InterferenceReport:
+        """Generate a detailed interference report with volume estimates and severity.
+
+        Uses AABB overlap volume as a fast (conservative) estimate of
+        interference volume.  Severity is classified as:
+          - "none"       : no collision, clearance > threshold
+          - "clearance"  : no collision, but clearance < threshold
+          - "light"      : penetration < 0.5 mm
+          - "moderate"   : 0.5 <= penetration < 2.0 mm
+          - "severe"     : penetration >= 2.0 mm
+        """
+        import numpy as np
+
+        parts_by_name = {p.name: p for p in assembly.parts}
+        adjacent = set()
+        if skip_adjacent:
+            for j in assembly.joints:
+                adjacent.add((j.parent, j.child))
+                adjacent.add((j.child, j.parent))
+
+        names = [p.name for p in assembly.parts]
+        interference_pairs: list[InterferencePair] = []
+        collision_free = True
+        worst: InterferencePair | None = None
+
+        for i in range(len(names)):
+            for k in range(i + 1, len(names)):
+                a, b = names[i], names[k]
+                if skip_adjacent and (a, b) in adjacent:
+                    continue
+
+                part_a = parts_by_name.get(a)
+                part_b = parts_by_name.get(b)
+                if part_a is None or part_b is None:
+                    continue
+
+                place_a = placements.get(a, {})
+                place_b = placements.get(b, {})
+
+                # Compute AABB overlap volume
+                vol = self._aabb_overlap_volume(part_a, part_b, place_a, place_b)
+
+                # Run collision check for depth
+                cp = self._check_pair(a, b, part_a, part_b, place_a, place_b)
+
+                depth = cp.penetration_depth_mm if cp.is_collision else 0.0
+                clearance = 0.0 if cp.is_collision else max(0.0, -depth) if depth < 0 else 0.0
+
+                severity = self._classify_severity(
+                    cp.is_collision, depth, clearance, clearance_threshold_mm,
+                )
+
+                ip = InterferencePair(
+                    part_a=a,
+                    part_b=b,
+                    penetration_depth_mm=round(depth, 4),
+                    estimated_volume_mm3=round(vol, 4),
+                    clearance_mm=round(clearance, 4),
+                    severity=severity,
+                )
+                interference_pairs.append(ip)
+
+                if cp.is_collision:
+                    collision_free = False
+
+                if worst is None or depth > worst.penetration_depth_mm:
+                    worst = ip
+
+        n_pairs = len(interference_pairs)
+        n_col = sum(1 for ip in interference_pairs if ip.severity != "none" and ip.severity != "clearance")
+        summary = (
+            f"Interference report: {len(names)} parts, {n_pairs} pairs, "
+            f"{n_col} interferences. "
+            f"Result: {'interference-free' if collision_free else 'INTERFERENCES DETECTED'}"
+        )
+
+        return InterferenceReport(
+            collision_free=collision_free,
+            pairs=interference_pairs,
+            worst_interference=worst,
+            parts_checked=len(names),
+            pairs_checked=n_pairs,
+            summary=summary,
+        )
+
+    @staticmethod
+    def _aabb_overlap_volume(
+        part_a: Part,
+        part_b: Part,
+        place_a: dict,
+        place_b: dict,
+    ) -> float:
+        """Estimate overlap volume from AABB intersection."""
+        def part_aabb(part: Part, place: dict) -> tuple[list[float], list[float]]:
+            d = part.dimensions
+            pos = place.get("position", [0, 0, 0])
+            if "length" in d and "width" in d:
+                l, w = d["length"], d["width"]
+                h = d.get("height", d.get("thickness", 20))
+            elif "outer_diameter" in d:
+                l = w = d["outer_diameter"]
+                h = d.get("height", l)
+            elif "diameter" in d:
+                l = w = d["diameter"]
+                h = d.get("height", l)
+            else:
+                l = w = h = 20.0
+            lo = [pos[0] - l / 2, pos[1] - w / 2, pos[2] - h / 2]
+            hi = [pos[0] + l / 2, pos[1] + w / 2, pos[2] + h / 2]
+            return lo, hi
+
+        lo_a, hi_a = part_aabb(part_a, place_a)
+        lo_b, hi_b = part_aabb(part_b, place_b)
+
+        overlap = 1.0
+        for i in range(3):
+            o_lo = max(lo_a[i], lo_b[i])
+            o_hi = min(hi_a[i], hi_b[i])
+            if o_hi <= o_lo:
+                return 0.0
+            overlap *= (o_hi - o_lo)
+        return overlap
+
+    @staticmethod
+    def _classify_severity(
+        is_collision: bool,
+        depth: float,
+        clearance: float,
+        threshold: float,
+    ) -> str:
+        if is_collision:
+            if depth >= 2.0:
+                return "severe"
+            elif depth >= 0.5:
+                return "moderate"
+            else:
+                return "light"
+        elif clearance > 0 and clearance < threshold:
+            return "clearance"
+        return "none"
 
     # -- internals -----------------------------------------------------------
 
