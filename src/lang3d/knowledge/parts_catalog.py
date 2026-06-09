@@ -89,6 +89,9 @@ class MountingInterface:
     shoulder_diameter: float = 0.0       # mm, retaining lip OD
     shoulder_depth: float = 0.0          # mm
 
+    # Documentation
+    notes: str = ""
+
 
 @dataclass
 class PartTemplate:
@@ -960,6 +963,270 @@ for side in range(2):
         result = result.cut(hole)
 obj = doc.addObject("Part::Feature", "CornerBracket")
 obj.Shape = result
+doc.recompute()
+"""
+
+# ---------------------------------------------------------------------------
+# Scalable structural part scripts — link, housing, mount, etc.
+# ---------------------------------------------------------------------------
+
+_LINK_ARM_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("link_arm")
+# Hollow rectangular beam
+outer = Part.makeBox({length}, {width}, {height})
+inner_l = {length} - 2 * {joint_hole_margin}
+inner_w = {width} - 2 * {wall_thickness}
+inner_h = {height} - 2 * {wall_thickness}
+if inner_l > 0 and inner_w > 0 and inner_h > 0:
+    inner = Part.makeBox(inner_l, inner_w, inner_h)
+    inner.translate(FreeCAD.Vector({joint_hole_margin}, {wall_thickness}, {wall_thickness}))
+    beam = outer.cut(inner)
+else:
+    beam = outer
+# Joint mounting holes at both ends (2 holes each end)
+hole_r = {joint_hole_diameter} / 2
+margin_x = {joint_hole_margin} / 2
+margin_y = {width} / 3
+for end_x in [margin_x, {length} - margin_x]:
+    for dy in [-margin_y, margin_y]:
+        hole = Part.makeCylinder(hole_r, {height} + 4)
+        hole.translate(FreeCAD.Vector(end_x, {width}/2 + dy, -2))
+        beam = beam.cut(hole)
+obj = doc.addObject("Part::Feature", "LinkArm")
+obj.Shape = beam
+doc.recompute()
+"""
+
+_JOINT_HOUSING_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("joint_housing")
+# Outer cylinder body
+body = Part.makeCylinder({outer_diameter}/2, {height})
+# Bearing press-fit bore (H7 tolerance)
+if {bearing_bore_diameter} > 0:
+    bore = Part.makeCylinder({bearing_bore_diameter}/2 - 0.02, {height})
+    body = body.cut(bore)
+# Bolt holes on PCD
+if {bolt_count} > 0 and {bolt_pcd} > 0:
+    for i in range({bolt_count}):
+        angle = 2 * math.pi * i / {bolt_count}
+        bx = {bolt_pcd}/2 * math.cos(angle)
+        by = {bolt_pcd}/2 * math.sin(angle)
+        hole = Part.makeCylinder({bolt_hole_diameter}/2, {height} + 2)
+        hole.translate(FreeCAD.Vector(bx, by, -1))
+        body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "JointHousing")
+obj.Shape = body
+doc.recompute()
+"""
+
+_MOTOR_MOUNT_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("motor_mount")
+# Base plate
+plate = Part.makeBox({plate_length}, {plate_width}, {plate_thickness})
+# Motor mounting holes — pattern depends on motor_type
+motor_type = "{motor_type}"
+if motor_type == "NEMA17":
+    spacing = 31.0
+    hole_d = 3.4
+    cx, cy = {plate_length}/2, {plate_width}/2
+elif motor_type == "NEMA23":
+    spacing = 47.14
+    hole_d = 4.5
+    cx, cy = {plate_length}/2, {plate_width}/2
+elif motor_type == "XM430":
+    spacing = 16.0
+    hole_d = 2.9
+    cx, cy = {plate_length}/2, {plate_width}/2
+elif motor_type == "MG996R":
+    spacing = 49.5
+    hole_d = 2.8
+    cx, cy = {plate_length}/2, {plate_width}/2
+elif motor_type == "SG90":
+    spacing = 28.0
+    hole_d = 2.2
+    cx, cy = {plate_length}/2, {plate_width}/2
+else:
+    spacing = 31.0
+    hole_d = 3.4
+    cx, cy = {plate_length}/2, {plate_width}/2
+half = spacing / 2
+hole_r = hole_d / 2
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {plate_thickness} + 2)
+        hole.translate(FreeCAD.Vector(cx + dx, cy + dy, -1))
+        plate = plate.cut(hole)
+# Center bore for shaft
+bore_r = hole_r * 2.5
+bore = Part.makeCylinder(bore_r, {plate_thickness} + 2)
+bore.translate(FreeCAD.Vector(cx, cy, -1))
+plate = plate.cut(bore)
+obj = doc.addObject("Part::Feature", "MotorMount")
+obj.Shape = plate
+doc.recompute()
+"""
+
+_SENSOR_MOUNT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("sensor_mount")
+# Horizontal base
+base = Part.makeBox({base_length}, {base_width}, {thickness})
+# Vertical bracket arm
+arm = Part.makeBox({thickness}, {base_width}, {bracket_height})
+arm.translate(FreeCAD.Vector(0, 0, {thickness}))
+result = base.fuse(arm)
+# Sensor mounting hole on arm
+hole = Part.makeCylinder({hole_diameter}/2, {thickness} + 2)
+hole.translate(FreeCAD.Vector({thickness}/2, {base_width}/2, {bracket_height} * 0.6 - 1))
+result = result.cut(hole)
+obj = doc.addObject("Part::Feature", "SensorMount")
+obj.Shape = result
+doc.recompute()
+"""
+
+_BASE_PLATE_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("base_plate")
+shape = "{shape}"
+if shape == "circle":
+    body = Part.makeCylinder({length_or_diameter}/2, {thickness})
+    if {center_bore} > 0:
+        bore = Part.makeCylinder({center_bore}/2, {thickness} + 2)
+        body = body.cut(bore)
+    if {mounting_hole_diameter} > 0 and {num_holes} > 0:
+        hole_r = {mounting_hole_diameter} / 2
+        pcd = {length_or_diameter} * 0.8
+        for i in range({num_holes}):
+            angle = 2 * math.pi * i / {num_holes}
+            hx = pcd/2 * math.cos(angle)
+            hy = pcd/2 * math.sin(angle)
+            hole = Part.makeCylinder(hole_r, {thickness} + 2)
+            hole.translate(FreeCAD.Vector(hx, hy, -1))
+            body = body.cut(hole)
+else:
+    body = Part.makeBox({length_or_diameter}, {width}, {thickness})
+    if {center_bore} > 0:
+        bore = Part.makeCylinder({center_bore}/2, {thickness} + 2)
+        bore.translate(FreeCAD.Vector({length_or_diameter}/2, {width}/2, -1))
+        body = body.cut(bore)
+    if {mounting_hole_diameter} > 0 and {num_holes} >= 4:
+        hole_r = {mounting_hole_diameter} / 2
+        margin = min({length_or_diameter}, {width}) * 0.1
+        cols = max(2, int(math.sqrt({num_holes})))
+        rows = max(2, ({num_holes} + cols - 1) // cols)
+        dx = ({length_or_diameter} - 2*margin) / max(cols - 1, 1)
+        dy = ({width} - 2*margin) / max(rows - 1, 1)
+        count = 0
+        for ix in range(cols):
+            for iy in range(rows):
+                if count >= {num_holes}:
+                    break
+                hx = margin + ix * dx
+                hy = margin + iy * dy
+                hole = Part.makeCylinder(hole_r, {thickness} + 2)
+                hole.translate(FreeCAD.Vector(hx, hy, -1))
+                body = body.cut(hole)
+                count += 1
+obj = doc.addObject("Part::Feature", "BasePlate")
+obj.Shape = body
+doc.recompute()
+"""
+
+_FLANGE_COUPLING_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("flange_coupling")
+# Main disc
+disc = Part.makeCylinder({outer_diameter}/2, {thickness})
+# Center bore
+if {inner_diameter} > 0:
+    bore = Part.makeCylinder({inner_diameter}/2, {thickness} + 2)
+    disc = disc.cut(bore)
+# Bolt holes on PCD
+if {bolt_count} > 0 and {bolt_pcd} > 0:
+    hole_r = {bolt_hole_diameter} / 2
+    for i in range({bolt_count}):
+        angle = 2 * math.pi * i / {bolt_count}
+        hx = {bolt_pcd}/2 * math.cos(angle)
+        hy = {bolt_pcd}/2 * math.sin(angle)
+        hole = Part.makeCylinder(hole_r, {thickness} + 2)
+        hole.translate(FreeCAD.Vector(hx, hy, -1))
+        disc = disc.cut(hole)
+obj = doc.addObject("Part::Feature", "FlangeCoupling")
+obj.Shape = disc
+doc.recompute()
+"""
+
+_SHAFT_SUPPORT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("shaft_support")
+# Base plate
+base = Part.makeBox({base_length}, {base_width}, {base_thickness})
+# Side supports (left and right walls)
+wall_h = {bearing_width} + 2 * {base_thickness}
+wall1 = Part.makeBox({base_thickness}, {base_width}, wall_h)
+wall1.translate(FreeCAD.Vector(0, 0, {base_thickness}))
+wall2 = Part.makeBox({base_thickness}, {base_width}, wall_h)
+wall2.translate(FreeCAD.Vector({base_length} - {base_thickness}, 0, {base_thickness}))
+result = base.fuse(wall1).fuse(wall2)
+# Bearing press-fit holes in both walls
+bore_r = {shaft_diameter}/2 + 0.5
+for wx in [{base_thickness}/2, {base_length} - {base_thickness}/2]:
+    bore = Part.makeCylinder(bore_r, {base_thickness} + 4)
+    bore.translate(FreeCAD.Vector(wx, {base_width}/2, wall_h/2 + {base_thickness} - 2))
+    result = result.cut(bore)
+# Base mounting holes
+mhole_r = 2.0
+margin = {base_thickness} + 2
+for mx in [margin, {base_length} - margin]:
+    for my in [margin, {base_width} - margin]:
+        mhole = Part.makeCylinder(mhole_r, {base_thickness} + 2)
+        mhole.translate(FreeCAD.Vector(mx, my, -1))
+        result = result.cut(mhole)
+obj = doc.addObject("Part::Feature", "ShaftSupport")
+obj.Shape = result
+doc.recompute()
+"""
+
+_BATTERY_BOX_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("battery_box")
+# Outer box (open top)
+outer = Part.makeBox({length}, {width}, {height})
+inner_l = {length} - 2 * {wall_thickness}
+inner_w = {width} - 2 * {wall_thickness}
+inner_h = {height} - {wall_thickness}
+if inner_l > 0 and inner_w > 0 and inner_h > 0:
+    inner = Part.makeBox(inner_l, inner_w, inner_h)
+    inner.translate(FreeCAD.Vector({wall_thickness}, {wall_thickness}, 0))
+    box = outer.cut(inner)
+else:
+    box = outer
+# Battery cell slots
+cell_type = "{cell_type}"
+cell_d = {{"18650": 18.0, "21700": 21.0, "26650": 26.0}}.get(cell_type, 18.0)
+cell_r = cell_d / 2
+spacing = cell_d + 1.0
+for i in range({num_cells}):
+    cx = {wall_thickness} + cell_r + 1
+    cy = {wall_thickness} + cell_r + 1 + i * spacing
+    if cy + cell_r < {width} - {wall_thickness}:
+        slot = Part.makeCylinder(cell_r, inner_l)
+        slot.rotate(FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(0, 1, 0), 90)
+        slot.translate(FreeCAD.Vector({wall_thickness}, cy, cell_r + {wall_thickness}))
+        box = box.cut(slot)
+# Lid mounting holes (corners)
+hole_r = 1.5
+margin = {wall_thickness} + 2
+for hx in [margin, {length} - margin]:
+    for hy in [margin, {width} - margin]:
+        hole = Part.makeCylinder(hole_r, {wall_thickness} + 2)
+        hole.translate(FreeCAD.Vector(hx, hy, -1))
+        box = box.cut(hole)
+obj = doc.addObject("Part::Feature", "BatteryBox")
+obj.Shape = box
 doc.recompute()
 """
 
@@ -1970,6 +2237,51 @@ shaft_obj.Shape = shaft
 doc.recompute()
 """
 
+# DYNAMIXEL XM430-W350-T Smart Servo
+_XM430_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("xm430_w350")
+BW = {body_width}
+BH = {body_height}
+BD = {body_depth}
+HD = {horn_diameter}
+SD = {shaft_diameter}
+# Body (rectangular block)
+body = Part.makeBox(BW, BH, BD)
+# Output flange cylinder (front face, centered)
+flange = Part.makeCylinder(HD/2, 3.0)
+flange.translate(FreeCAD.Vector(BW/2 - HD/2, BH/2, 0))
+body = body.fuse(flange)
+# Output shaft (D-cut, passes through body)
+shaft = Part.makeCylinder(SD/2, BD + 8.0)
+shaft.translate(FreeCAD.Vector(BW/2 - SD/2, BH/2, -4.0))
+body = body.fuse(shaft)
+# D-flat cut on shaft
+flat_w = SD * 0.3
+flat = Part.makeBox(SD, flat_w, BD + 10.0)
+flat.translate(FreeCAD.Vector(BW/2 - SD/2 + SD - flat_w*0.2, BH/2 + SD/2 - flat_w, -5.0))
+body = body.cut(flat)
+# 4x M2.5 mounting holes (back face, 16x16mm grid)
+hx_off = BW/2
+hy_off = BH/2
+hole_spacing = 8.0
+hole_r = 1.25
+for dx in [-hole_spacing, hole_spacing]:
+    for dy in [-hole_spacing, hole_spacing]:
+        hole = Part.makeCylinder(hole_r, BD)
+        hole.translate(FreeCAD.Vector(hx_off - hole_r + dx, hy_off - hole_r + dy, 0))
+        body = body.cut(hole)
+# 4x M2.5 through holes on flange face
+for dx in [-hole_spacing, hole_spacing]:
+    for dy in [-hole_spacing, hole_spacing]:
+        fhole = Part.makeCylinder(hole_r, 5.0)
+        fhole.translate(FreeCAD.Vector(BW/2 - hole_r + dx, BH/2 - hole_r + dy, BD))
+        body = body.cut(fhole)
+obj = doc.addObject("Part::Feature", "XM430_W350")
+obj.Shape = body
+doc.recompute()
+"""
+
 # Compression Spring — parametric helix
 _COMPRESSION_SPRING_SCRIPT = """\
 import FreeCAD, Part, math
@@ -2907,6 +3219,272 @@ PART_CATALOG: dict[str, PartTemplate] = {
             ParamDef("hole_diameter", "孔径", default=4.0, min_value=2, max_value=8),
         ],
         fc_script_template=_CORNER_BRACKET_SCRIPT,
+    ),
+
+    "link_arm": PartTemplate(
+        id="link_arm",
+        name_en="Link Arm",
+        name_cn="机械臂连杆",
+        category="structural",
+        subcategory="bracket",
+        description="参数化中空矩形连杆，两端带关节安装孔",
+        tags=["连杆", "机械臂", "link", "arm", "beam", "structural"],
+        parameters=[
+            ParamDef("length", "长度", "mm", 150, 30, 500, 1),
+            ParamDef("width", "宽度", "mm", 30, 15, 100, 1),
+            ParamDef("height", "高度", "mm", 25, 10, 80, 1),
+            ParamDef("wall_thickness", "壁厚", "mm", 3, 1, 10, 0.5),
+            ParamDef("joint_hole_diameter", "关节孔径", "mm", 6, 2, 12, 0.5),
+            ParamDef("joint_hole_margin", "关节孔边距", "mm", 15, 5, 50, 1),
+        ],
+        fc_script_template=_LINK_ARM_SCRIPT,
+        standard_sizes=[
+            {"length": 100, "width": 30, "height": 20, "wall_thickness": 3,
+             "joint_hole_diameter": 6, "joint_hole_margin": 12},
+            {"length": 200, "width": 40, "height": 30, "wall_thickness": 4,
+             "joint_hole_diameter": 8, "joint_hole_margin": 18},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="front",
+            holes=[
+                BoltHole(x=0, y=0, diameter=6.0),
+            ],
+        ),
+    ),
+
+    "joint_housing": PartTemplate(
+        id="joint_housing",
+        name_en="Joint Housing",
+        name_cn="关节壳体",
+        category="structural",
+        subcategory="bracket",
+        description="圆柱形关节壳体，含轴承压入孔和螺栓分布圆",
+        tags=["壳体", "关节", "housing", "joint", "bearing seat", "structural"],
+        parameters=[
+            ParamDef("outer_diameter", "外径", "mm", 50, 25, 100, 1),
+            ParamDef("height", "高度", "mm", 30, 15, 80, 1),
+            ParamDef("wall_thickness", "壁厚", "mm", 4, 2, 8, 0.5),
+            ParamDef("bearing_bore_diameter", "轴承孔径", "mm", 0, 0, 30, 0.5),
+            ParamDef("bolt_hole_diameter", "螺栓孔径", "mm", 4, 2, 8, 0.5),
+            ParamDef("bolt_count", "螺栓数", "", 6, 0, 8, 1),
+            ParamDef("bolt_pcd", "螺栓PCD", "mm", 40, 0, 80, 1),
+        ],
+        fc_script_template=_JOINT_HOUSING_SCRIPT,
+        standard_sizes=[
+            {"outer_diameter": 50, "height": 30, "wall_thickness": 4,
+             "bearing_bore_diameter": 22, "bolt_hole_diameter": 4,
+             "bolt_count": 6, "bolt_pcd": 40},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="top",
+            holes=[
+                BoltHole(x=20, y=0, diameter=4.0),
+                BoltHole(x=-20, y=0, diameter=4.0),
+            ],
+        ),
+    ),
+
+    "motor_mount": PartTemplate(
+        id="motor_mount",
+        name_en="Motor Mount Plate",
+        name_cn="电机安装座",
+        category="structural",
+        subcategory="bracket",
+        description="参数化电机安装板，根据电机类型自动匹配孔位",
+        tags=["电机", "安装座", "motor mount", "NEMA", "servo", "structural"],
+        parameters=[
+            ParamDef("motor_type", "电机类型", "", "NEMA17", "NEMA17", "SG90", 1,
+                     param_type="string",
+                     choices=["NEMA17", "NEMA23", "XM430", "MG996R", "SG90"]),
+            ParamDef("plate_length", "板长", "mm", 60, 30, 200, 1),
+            ParamDef("plate_width", "板宽", "mm", 60, 30, 200, 1),
+            ParamDef("plate_thickness", "板厚", "mm", 5, 2, 10, 0.5),
+        ],
+        fc_script_template=_MOTOR_MOUNT_SCRIPT,
+        standard_sizes=[
+            {"motor_type": "NEMA17", "plate_length": 60, "plate_width": 60, "plate_thickness": 5},
+            {"motor_type": "XM430", "plate_length": 45, "plate_width": 45, "plate_thickness": 4},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="top",
+            holes=[
+                BoltHole(x=-15.5, y=-15.5, diameter=3.4),
+                BoltHole(x=15.5, y=-15.5, diameter=3.4),
+                BoltHole(x=-15.5, y=15.5, diameter=3.4),
+                BoltHole(x=15.5, y=15.5, diameter=3.4),
+            ],
+            bore_diameter=23.0,
+        ),
+    ),
+
+    "sensor_mount": PartTemplate(
+        id="sensor_mount",
+        name_en="Sensor Mount Bracket",
+        name_cn="传感器安装支架",
+        category="structural",
+        subcategory="bracket",
+        description="L型传感器安装支架，带传感器安装孔",
+        tags=["传感器", "支架", "sensor mount", "bracket", "structural"],
+        parameters=[
+            ParamDef("base_length", "底座长度", "mm", 30, 15, 80, 1),
+            ParamDef("base_width", "底座宽度", "mm", 25, 10, 60, 1),
+            ParamDef("thickness", "厚度", "mm", 3, 2, 8, 0.5),
+            ParamDef("bracket_height", "支架高度", "mm", 20, 5, 50, 1),
+            ParamDef("hole_diameter", "安装孔径", "mm", 3, 1.5, 5, 0.5),
+        ],
+        fc_script_template=_SENSOR_MOUNT_SCRIPT,
+        standard_sizes=[
+            {"base_length": 30, "base_width": 25, "thickness": 3,
+             "bracket_height": 20, "hole_diameter": 3},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="bottom",
+            holes=[
+                BoltHole(x=10, y=12.5, diameter=3.0),
+                BoltHole(x=20, y=12.5, diameter=3.0),
+            ],
+        ),
+    ),
+
+    "base_plate": PartTemplate(
+        id="base_plate",
+        name_en="Base Plate",
+        name_cn="底座板",
+        category="structural",
+        subcategory="plate",
+        description="矩形或圆形底座板，带安装孔和可选中心孔",
+        tags=["底板", "底座", "base plate", "mounting", "structural"],
+        parameters=[
+            ParamDef("shape", "形状", "", "rect", "rect", "circle", 1,
+                     param_type="string", choices=["rect", "circle"]),
+            ParamDef("length_or_diameter", "长度/直径", "mm", 120, 50, 300, 1),
+            ParamDef("width", "宽度", "mm", 80, 50, 300, 1),
+            ParamDef("thickness", "厚度", "mm", 5, 3, 15, 0.5),
+            ParamDef("center_bore", "中心孔径", "mm", 0, 0, 30, 1),
+            ParamDef("mounting_hole_diameter", "安装孔径", "mm", 4, 2, 8, 0.5),
+            ParamDef("num_holes", "安装孔数", "", 4, 0, 12, 1),
+        ],
+        fc_script_template=_BASE_PLATE_SCRIPT,
+        standard_sizes=[
+            {"shape": "rect", "length_or_diameter": 120, "width": 80,
+             "thickness": 5, "center_bore": 0, "mounting_hole_diameter": 4, "num_holes": 4},
+            {"shape": "circle", "length_or_diameter": 100, "width": 100,
+             "thickness": 6, "center_bore": 10, "mounting_hole_diameter": 5, "num_holes": 6},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="top",
+            holes=[
+                BoltHole(x=10, y=10, diameter=4.0),
+                BoltHole(x=110, y=10, diameter=4.0),
+                BoltHole(x=10, y=70, diameter=4.0),
+                BoltHole(x=110, y=70, diameter=4.0),
+            ],
+        ),
+    ),
+
+    "flange_coupling": PartTemplate(
+        id="flange_coupling",
+        name_en="Flange Coupling",
+        name_cn="法兰联轴器",
+        category="structural",
+        subcategory="bracket",
+        description="圆盘法兰联轴器，带中心孔和螺栓分布圆",
+        tags=["法兰", "联轴器", "flange", "coupling", "structural"],
+        parameters=[
+            ParamDef("outer_diameter", "外径", "mm", 50, 20, 120, 1),
+            ParamDef("inner_diameter", "内径", "mm", 10, 3, 50, 1),
+            ParamDef("thickness", "厚度", "mm", 8, 3, 20, 1),
+            ParamDef("bolt_hole_diameter", "螺栓孔径", "mm", 4, 2, 8, 0.5),
+            ParamDef("bolt_count", "螺栓数", "", 4, 3, 8, 1),
+            ParamDef("bolt_pcd", "螺栓PCD", "mm", 35, 10, 100, 1),
+        ],
+        fc_script_template=_FLANGE_COUPLING_SCRIPT,
+        standard_sizes=[
+            {"outer_diameter": 50, "inner_diameter": 10, "thickness": 8,
+             "bolt_hole_diameter": 4, "bolt_count": 4, "bolt_pcd": 35},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="top",
+            holes=[
+                BoltHole(x=17.5, y=0, diameter=4.0),
+                BoltHole(x=-17.5, y=0, diameter=4.0),
+            ],
+        ),
+    ),
+
+    "shaft_support": PartTemplate(
+        id="shaft_support",
+        name_en="Shaft Support / Bearing Block",
+        name_cn="轴支撑座（轴承座）",
+        category="structural",
+        subcategory="bracket",
+        description="轴支撑座，底板+两侧支撑+轴承压入孔",
+        tags=["轴承座", "支撑座", "shaft support", "bearing block", "pillow block", "structural"],
+        parameters=[
+            ParamDef("shaft_diameter", "轴径", "mm", 8, 3, 30, 1),
+            ParamDef("bearing_width", "轴承宽度", "mm", 7, 3, 20, 1),
+            ParamDef("base_width", "底板宽度", "mm", 30, 15, 80, 1),
+            ParamDef("base_length", "底板长度", "mm", 40, 20, 100, 1),
+            ParamDef("base_thickness", "底板厚度", "mm", 5, 3, 15, 0.5),
+        ],
+        fc_script_template=_SHAFT_SUPPORT_SCRIPT,
+        standard_sizes=[
+            {"shaft_diameter": 8, "bearing_width": 7, "base_width": 30,
+             "base_length": 40, "base_thickness": 5},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="press_fit",
+            contact_face="top",
+            bore_diameter=8.5,
+            holes=[
+                BoltHole(x=7, y=5, diameter=4.0),
+                BoltHole(x=33, y=5, diameter=4.0),
+                BoltHole(x=7, y=25, diameter=4.0),
+                BoltHole(x=33, y=25, diameter=4.0),
+            ],
+        ),
+    ),
+
+    "battery_box": PartTemplate(
+        id="battery_box",
+        name_en="Battery Box",
+        name_cn="电池仓",
+        category="structural",
+        subcategory="bracket",
+        description="参数化电池仓，支持18650/21700/26650，含盖板安装孔",
+        tags=["电池", "电池仓", "battery box", "18650", "21700", "structural"],
+        parameters=[
+            ParamDef("length", "长度", "mm", 75, 30, 200, 1),
+            ParamDef("width", "宽度", "mm", 55, 20, 150, 1),
+            ParamDef("height", "高度", "mm", 30, 15, 100, 1),
+            ParamDef("wall_thickness", "壁厚", "mm", 2, 1.5, 5, 0.5),
+            ParamDef("num_cells", "电池数", "", 2, 1, 8, 1),
+            ParamDef("cell_type", "电池型号", "", "18650", "18650", "26650", 1,
+                     param_type="string", choices=["18650", "21700", "26650"]),
+        ],
+        fc_script_template=_BATTERY_BOX_SCRIPT,
+        standard_sizes=[
+            {"length": 75, "width": 55, "height": 30, "wall_thickness": 2,
+             "num_cells": 2, "cell_type": "18650"},
+            {"length": 155, "width": 55, "height": 30, "wall_thickness": 2,
+             "num_cells": 4, "cell_type": "18650"},
+        ],
+        mounting_interface=MountingInterface(
+            interface_type="through_hole",
+            contact_face="top",
+            holes=[
+                BoltHole(x=4, y=4, diameter=3.0),
+                BoltHole(x=71, y=4, diameter=3.0),
+                BoltHole(x=4, y=51, diameter=3.0),
+                BoltHole(x=71, y=51, diameter=3.0),
+            ],
+        ),
     ),
 
     # ---- PCB Mount ----
@@ -3955,6 +4533,255 @@ PART_CATALOG: dict[str, PartTemplate] = {
         notes="额定电压250V，额定电流3A。间距2.5mm。常用于传感器、舵机、限位开关接线。"
               "白色外壳，带锁扣防松脱。",
     ),
+
+    # ---- ROBOTIS DYNAMIXEL & OpenMANIPULATOR-X parts ----
+
+    "dynamixel_xm430_w350": PartTemplate(
+        id="dynamixel_xm430_w350",
+        name_en="DYNAMIXEL XM430-W350-T",
+        name_cn="DYNAMIXEL XM430-W350-T 智能舵机",
+        category="actuator",
+        subcategory="servo",
+        description="ROBOTIS DYNAMIXEL XM430-W350-T 智能伺服舵机，OpenMANIPULATOR-X 标准执行器",
+        tags=["DYNAMIXEL", "XM430", "ROBOTIS", "servo", "智能舵机", "actuator",
+              "OpenMANIPULATOR", "伺服电机"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="ROBOTIS", model_number="XM430-W350-T",
+        parameters=[
+            ParamDef("body_width", "本体宽度", "mm", 28.0, 20, 40, 0.5, fixed=True),
+            ParamDef("body_height", "本体高度", "mm", 46.5, 30, 60, 0.5, fixed=True),
+            ParamDef("body_depth", "本体深度", "mm", 34.0, 20, 45, 0.5, fixed=True),
+            ParamDef("horn_diameter", "输出轴法兰直径", "mm", 22.0, 10, 30, 0.5, fixed=True),
+            ParamDef("shaft_diameter", "输出轴直径", "mm", 6.0, 3, 10, 0.5, fixed=True),
+        ],
+        fc_script_template=_XM430_SCRIPT,
+        standard_sizes=[
+            {"body_width": 28.0, "body_height": 46.5, "body_depth": 34.0,
+             "horn_diameter": 22.0, "shaft_diameter": 6.0},
+        ],
+        notes="XM430-W350-T: 额定扭矩 4.1 Nm @ 12V, 空载转速 46 RPM, "
+              "分辨率 0.088°, 质量 82g, TTL/RS485 通信, "
+              "供电 10.0~14.8V, 待机电流 52mA, "
+              "工作温度 -5~55°C, IP 等级无。"
+              "安装面: 4×M2.5 螺栓, 间距 16×16mm。",
+    ),
+
+    "robotis_fr12_h101": PartTemplate(
+        id="robotis_fr12_h101",
+        name_en="ROBOTIS FR12-H101-K Frame",
+        name_cn="ROBOTIS FR12-H101-K H型框架",
+        category="structural",
+        subcategory="bracket",
+        description="ROBOTIS FR12-H101-K 铝合金H型连接框架，连接两个XM430舵机",
+        tags=["ROBOTIS", "FR12", "frame", "bracket", "H型", "框架",
+              "DYNAMIXEL", "OpenMANIPULATOR"],
+        part_class="structural", scalable=False, real_part=True,
+        manufacturer="ROBOTIS", model_number="FR12-H101-K",
+        parameters=[
+            ParamDef("length", "长度", "mm", 28.0, 15, 60, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 28.0, 15, 40, 1, fixed=True),
+            ParamDef("height", "高度", "mm", 22.0, 10, 40, 1, fixed=True),
+        ],
+        fc_script_template="""\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("fr12_h101")
+# H-type block: 28x28x22mm
+body = Part.makeBox({length}, {width}, {height})
+# Front face: 4x M2.5 through holes at 16x16mm spacing
+hole_r = 2.9 / 2
+half = 8.0
+cx, cy = {length}/2, {width}/2
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {height} + 2)
+        hole.translate(FreeCAD.Vector(cx + dx, cy + dy, -1))
+        body = body.cut(hole)
+# Center shaft bore (Ø6mm)
+bore = Part.makeCylinder(3.0, {height} + 2)
+bore.translate(FreeCAD.Vector(cx, cy, -1))
+body = body.cut(bore)
+# Back face: same 4x M2.5 pattern (holes already through)
+obj = doc.addObject("Part::Feature", "FR12_H101")
+obj.Shape = body
+doc.recompute()
+""",
+        standard_sizes=[
+            {"length": 28.0, "width": 28.0, "height": 22.0},
+        ],
+        notes="铝合金切削件。两侧各4×M2.5安装孔，间距16×16mm，匹配XM430安装面。"
+              "用于OpenMANIPULATOR-X的link2和link5。",
+    ),
+
+    "robotis_fr12_h104": PartTemplate(
+        id="robotis_fr12_h104",
+        name_en="ROBOTIS FR12-H104-K Frame",
+        name_cn="ROBOTIS FR12-H104-K 长H型框架",
+        category="structural",
+        subcategory="bracket",
+        description="ROBOTIS FR12-H104-K 加长H型框架，连接XM430与夹爪机构",
+        tags=["ROBOTIS", "FR12", "frame", "bracket", "H型", "长", "框架",
+              "DYNAMIXEL", "OpenMANIPULATOR"],
+        part_class="structural", scalable=False, real_part=True,
+        manufacturer="ROBOTIS", model_number="FR12-H104-K",
+        parameters=[
+            ParamDef("length", "长度", "mm", 72.0, 30, 100, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 28.0, 15, 40, 1, fixed=True),
+            ParamDef("height", "高度", "mm", 22.0, 10, 40, 1, fixed=True),
+        ],
+        fc_script_template="""\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("fr12_h104")
+# Extended H-type block: 72x28x22mm
+body = Part.makeBox({length}, {width}, {height})
+# Left face: 4x M2.5 through holes at 16x16mm spacing (XM430 mount)
+hole_r = 2.9 / 2
+half = 8.0
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {height} + 2)
+        hole.translate(FreeCAD.Vector(14.0 + dx, 14.0 + dy, -1))
+        body = body.cut(hole)
+# Left center bore
+bore1 = Part.makeCylinder(3.0, {height} + 2)
+bore1.translate(FreeCAD.Vector(14.0, 14.0, -1))
+body = body.cut(bore1)
+# Right face: rail mounting slot (simplified as 2x M2.5 holes)
+for dx2 in [-6, 6]:
+    hole2 = Part.makeCylinder(hole_r, {height} + 2)
+    hole2.translate(FreeCAD.Vector({length} - 14.0 + dx2, 14.0, -1))
+    body = body.cut(hole2)
+# Right center bore
+bore2 = Part.makeCylinder(3.0, {height} + 2)
+bore2.translate(FreeCAD.Vector({length} - 14.0, 14.0, -1))
+body = body.cut(bore2)
+obj = doc.addObject("Part::Feature", "FR12_H104")
+obj.Shape = body
+doc.recompute()
+""",
+        standard_sizes=[
+            {"length": 72.0, "width": 28.0, "height": 22.0},
+        ],
+        notes="FR12-H104-K 铝合金切削件。一端4×M2.5匹配XM430，另一端导轨安装面。"
+              "用于OpenMANIPULATOR-X的link5（腕部+夹爪基座）。",
+    ),
+
+    "robotis_fr12_s101": PartTemplate(
+        id="robotis_fr12_s101",
+        name_en="ROBOTIS FR12-S101-K Frame",
+        name_cn="ROBOTIS FR12-S101-K 短连杆框架",
+        category="structural",
+        subcategory="bracket",
+        description="ROBOTIS FR12-S101-K U型短连杆框架，连接两个XM430",
+        tags=["ROBOTIS", "FR12", "frame", "bracket", "U型", "短连杆",
+              "DYNAMIXEL", "OpenMANIPULATOR"],
+        part_class="structural", scalable=False, real_part=True,
+        manufacturer="ROBOTIS", model_number="FR12-S101-K",
+        parameters=[
+            ParamDef("length", "长度", "mm", 48.0, 20, 80, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 28.0, 15, 40, 1, fixed=True),
+            ParamDef("height", "高度", "mm", 16.0, 8, 30, 1, fixed=True),
+        ],
+        fc_script_template="""\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("fr12_s101")
+# U-type short link: 48x28x16mm
+wall_t = 4.0
+flange = 6.0
+# Top flange
+top = Part.makeBox({length}, {width}, flange)
+# Bottom flange
+bottom = Part.makeBox({length}, {width}, flange)
+bottom.translate(FreeCAD.Vector(0, 0, {height} - flange))
+# Left web
+web_l = Part.makeBox(flange, {width}, {height} - 2 * flange)
+web_l.translate(FreeCAD.Vector(0, 0, flange))
+# Right web
+web_r = Part.makeBox(flange, {width}, {height} - 2 * flange)
+web_r.translate(FreeCAD.Vector({length} - flange, 0, flange))
+body = top.fuse(bottom).fuse(web_l).fuse(web_r)
+# Mounting holes on both flanges (4x M2.5 at 16x16mm spacing)
+hole_r = 2.9 / 2
+half = 8.0
+# Left end holes (through both flanges)
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {height} + 2)
+        hole.translate(FreeCAD.Vector(14.0 + dx, 14.0 + dy, -1))
+        body = body.cut(hole)
+# Right end holes
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {height} + 2)
+        hole.translate(FreeCAD.Vector({length} - 14.0 + dx, 14.0 + dy, -1))
+        body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "FR12_S101")
+obj.Shape = body
+doc.recompute()
+""",
+        standard_sizes=[
+            {"length": 48.0, "width": 28.0, "height": 16.0},
+        ],
+        notes="FR12-S101-K 铝合金切削件。用于OpenMANIPULATOR-X的link4（前臂）。",
+    ),
+
+    "robotis_fr12_s102": PartTemplate(
+        id="robotis_fr12_s102",
+        name_en="ROBOTIS FR12-S102-K Frame",
+        name_cn="ROBOTIS FR12-S102-K 长连杆框架",
+        category="structural",
+        subcategory="bracket",
+        description="ROBOTIS FR12-S102-K U型长连杆框架，连接两个XM430",
+        tags=["ROBOTIS", "FR12", "frame", "bracket", "U型", "长连杆",
+              "DYNAMIXEL", "OpenMANIPULATOR"],
+        part_class="structural", scalable=False, real_part=True,
+        manufacturer="ROBOTIS", model_number="FR12-S102-K",
+        parameters=[
+            ParamDef("length", "长度", "mm", 96.0, 40, 150, 1, fixed=True),
+            ParamDef("width", "宽度", "mm", 28.0, 15, 40, 1, fixed=True),
+            ParamDef("height", "高度", "mm", 16.0, 8, 30, 1, fixed=True),
+        ],
+        fc_script_template="""\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("fr12_s102")
+# U-type long link: 96x28x16mm
+wall_t = 4.0
+flange = 6.0
+# Top flange
+top = Part.makeBox({length}, {width}, flange)
+# Bottom flange
+bottom = Part.makeBox({length}, {width}, flange)
+bottom.translate(FreeCAD.Vector(0, 0, {height} - flange))
+# Left web
+web_l = Part.makeBox(flange, {width}, {height} - 2 * flange)
+web_l.translate(FreeCAD.Vector(0, 0, flange))
+# Right web
+web_r = Part.makeBox(flange, {width}, {height} - 2 * flange)
+web_r.translate(FreeCAD.Vector({length} - flange, 0, flange))
+body = top.fuse(bottom).fuse(web_l).fuse(web_r)
+# Mounting holes on both ends (4x M2.5 at 16x16mm spacing, through both flanges)
+hole_r = 2.9 / 2
+half = 8.0
+# Left end holes
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {height} + 2)
+        hole.translate(FreeCAD.Vector(14.0 + dx, 14.0 + dy, -1))
+        body = body.cut(hole)
+# Right end holes
+for dx in [-half, half]:
+    for dy in [-half, half]:
+        hole = Part.makeCylinder(hole_r, {height} + 2)
+        hole.translate(FreeCAD.Vector({length} - 14.0 + dx, 14.0 + dy, -1))
+        body = body.cut(hole)
+obj = doc.addObject("Part::Feature", "FR12_S102")
+obj.Shape = body
+doc.recompute()
+""",
+        standard_sizes=[
+            {"length": 96.0, "width": 28.0, "height": 16.0},
+        ],
+        notes="FR12-S102-K 铝合金切削件。用于OpenMANIPULATOR-X的link3（上臂）。",
+    ),
 }
 
 
@@ -4155,6 +4982,527 @@ MOUNTING_INTERFACES: dict[str, MountingInterface] = {
             BoltHole(x=-23.5, y=10, diameter=2.0),
             BoltHole(x=23.5, y=10, diameter=2.0),
         ],
+    ),
+
+    # ---- ROBOTIS DYNAMIXEL XM430 series ----
+    # XM430-W350-T has TWO mounting faces:
+    #   1) Body (back) face: 4×M2.5 tapped holes, 16×16mm grid — used to mount TO something
+    #   2) Horn (front) face: 4×M2.5 through holes on ⌀22mm bolt circle — something mounts TO it
+    # Reference: ROBOTIS e-Manual + OpenMANIPULATOR-X BOM
+
+    "dynamixel_xm430_w350_body": MountingInterface(
+        interface_type="threaded_hole",
+        contact_face="back",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-8.0, y=-8.0, diameter=2.8),   # M2.5 tap, 2.8mm clearance
+            BoltHole(x=8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=-8.0, y=8.0, diameter=2.8),
+            BoltHole(x=8.0, y=8.0, diameter=2.8),
+        ],
+        bore_diameter=0.0,
+        notes="4×M2.5 螺纹孔，间距 16×16mm，本体背面安装面。"
+              "XM430 本体 28×34×46.5mm，安装面 28×28mm。",
+    ),
+    "dynamixel_xm430_w350_horn": MountingInterface(
+        interface_type="through_hole",
+        contact_face="front",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-8.0, y=0.0, diameter=2.8),    # M2.5 clearance on ⌀22 PCD
+            BoltHole(x=8.0, y=0.0, diameter=2.8),
+            BoltHole(x=0.0, y=-8.0, diameter=2.8),
+            BoltHole(x=0.0, y=8.0, diameter=2.8),
+        ],
+        bore_diameter=6.0,    # ⌀6mm output shaft
+        bore_depth=0.0,
+        alignment_features=[
+            AlignmentFeature(
+                feature_type="d_cut",
+                diameter=6.0,
+                width=0.5,
+                depth=1.0,
+            ),
+        ],
+        notes="4×M2.5 通孔，⌀16mm PCD（简化为 ±8mm 十字分布），⌀6mm D-cut 输出轴。"
+              "法兰 ⌀22mm。用于连接 FR12 框架、舵盘、连杆等。",
+    ),
+
+    # ---- ROBOTIS FR12 frame brackets ----
+    # Each FR12 frame has XM430-compatible hole patterns on its mounting faces.
+
+    "robotis_fr12_h101": MountingInterface(
+        interface_type="through_hole",
+        contact_face="front",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            # Side A: matches XM430 body (4×M2.5, 16×16mm grid)
+            BoltHole(x=-8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=-8.0, y=8.0, diameter=2.8),
+            BoltHole(x=8.0, y=8.0, diameter=2.8),
+        ],
+        notes="FR12-H101-K H型框架。两侧各有 4×M2.5 通孔（16×16mm 间距），"
+              "分别连接两个 XM430 舵机（一个 body 面，一个 horn 面）。"
+              "用于 OpenMANIPULATOR-X 的 link2 和 link5。",
+    ),
+    "robotis_fr12_h104": MountingInterface(
+        interface_type="through_hole",
+        contact_face="front",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=-8.0, y=8.0, diameter=2.8),
+            BoltHole(x=8.0, y=8.0, diameter=2.8),
+        ],
+        notes="FR12-H104-K 加长 H 型框架。一端 4×M2.5 匹配 XM430，"
+              "另一端为导轨安装面。用于 link5（腕部+夹爪基座）。",
+    ),
+    "robotis_fr12_s101": MountingInterface(
+        interface_type="through_hole",
+        contact_face="front",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=-8.0, y=8.0, diameter=2.8),
+            BoltHole(x=8.0, y=8.0, diameter=2.8),
+        ],
+        notes="FR12-S101-K U 型短连杆。两端 4×M2.5 匹配 XM430。用于 link4（前臂）。",
+    ),
+    "robotis_fr12_s102": MountingInterface(
+        interface_type="through_hole",
+        contact_face="front",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=8.0, y=-8.0, diameter=2.8),
+            BoltHole(x=-8.0, y=8.0, diameter=2.8),
+            BoltHole(x=8.0, y=8.0, diameter=2.8),
+        ],
+        notes="FR12-S102-K U 型长连杆。两端 4×M2.5 匹配 XM430。用于 link3（上臂）。",
+    ),
+
+    # ---- P0-3: Functional part MountingInterfaces (12 parts) ----
+
+    "motor_tt": MountingInterface(
+        interface_type="through_hole",
+        contact_face="side",
+        contact_face_normal=(0.0, -1.0, 0.0),
+        holes=[
+            BoltHole(x=-8.0, y=9.0, diameter=2.0),
+            BoltHole(x=8.0, y=9.0, diameter=2.0),
+        ],
+        bore_diameter=3.2,
+        bore_depth=7.5,
+        notes="TT减速电机。齿轮箱端面 2×M2 安装孔，间距16mm。D型输出轴。",
+    ),
+    "motor_jgb37_520": MountingInterface(
+        interface_type="threaded_hole",
+        contact_face="back",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-11.0, y=0.0, diameter=4.0, hole_type="threaded_hole"),
+            BoltHole(x=11.0, y=0.0, diameter=4.0, hole_type="threaded_hole"),
+        ],
+        bore_diameter=6.2,
+        bore_depth=15.5,
+        notes="JGB37-520减速电机。齿轮箱背面 2×M4 螺纹孔，间距22mm。",
+    ),
+    "bldc_motor_5010": MountingInterface(
+        interface_type="through_hole",
+        contact_face="top",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-6.36, y=-6.36, diameter=3.0),
+            BoltHole(x=6.36, y=-6.36, diameter=3.0),
+            BoltHole(x=-6.36, y=6.36, diameter=3.0),
+            BoltHole(x=6.36, y=6.36, diameter=3.0),
+        ],
+        bore_diameter=5.2,
+        bore_depth=25.0,
+        notes="5010无刷电机。定子安装面 4×M3 孔，PCD≈18mm。",
+    ),
+    "bldc_motor_2208": MountingInterface(
+        interface_type="through_hole",
+        contact_face="top",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-4.24, y=-4.24, diameter=3.0),
+            BoltHole(x=4.24, y=-4.24, diameter=3.0),
+            BoltHole(x=-4.24, y=4.24, diameter=3.0),
+            BoltHole(x=4.24, y=4.24, diameter=3.0),
+        ],
+        bore_diameter=3.2,
+        bore_depth=15.0,
+        notes="2208无刷电机。定子安装面 4×M3 孔，PCD≈12mm。",
+    ),
+    "linear_bearing_lm8uu": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=15.0,
+        bore_depth=24.0,
+        press_fit_interference=0.02,
+        notes="LM8UU直线轴承。外径压入壳体孔。内径8mm配光轴。",
+    ),
+    "linear_bearing_lm10uu": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=19.0,
+        bore_depth=29.0,
+        press_fit_interference=0.02,
+        notes="LM10UU直线轴承。外径压入壳体孔。内径10mm配光轴。",
+    ),
+    "linear_bearing_lm12uu": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=21.0,
+        bore_depth=30.0,
+        press_fit_interference=0.02,
+        notes="LM12UU直线轴承。外径压入壳体孔。内径12mm配光轴。",
+    ),
+    "limit_switch_kw12": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-6.0, y=0.0, diameter=2.0),
+            BoltHole(x=6.0, y=0.0, diameter=2.0),
+        ],
+        notes="KW12-3微动限位开关。底部 2×M2 安装孔，间距12mm。",
+    ),
+    "driver_tb6612fng": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-7.0, y=0.0, diameter=2.0),
+            BoltHole(x=7.0, y=0.0, diameter=2.0),
+        ],
+        notes="TB6612FNG电机驱动模块。底部 2×M2 安装孔，间距14mm。",
+    ),
+    "power_lm2596_buck": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-15.5, y=-6.5, diameter=2.5),
+            BoltHole(x=15.5, y=-6.5, diameter=2.5),
+            BoltHole(x=-15.5, y=6.5, diameter=2.5),
+            BoltHole(x=15.5, y=6.5, diameter=2.5),
+        ],
+        notes="LM2596降压模块。4×M2.5安装孔，四角分布。",
+    ),
+    "gt2_pulley": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=5.0,
+        bore_depth=6.0,
+        holes=[
+            BoltHole(x=0.0, y=5.0, diameter=3.0, depth=4.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+        ],
+        notes="GT2同步轮。中心轴孔Ø5mm（配5mm轴），1×M3紧定螺钉。",
+    ),
+    "linear_shaft": MountingInterface(
+        interface_type="shaft",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=8.0,
+        bore_depth=0.0,
+        notes="直线光轴。靠直线轴承/支撑座定位，无独立安装孔。",
+    ),
+
+    # ---- P0-2: Structural part MountingInterfaces (11 parts) ----
+
+    "l_bracket": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            # Vertical face: 4×M4 holes
+            BoltHole(x=-10.0, y=10.0, diameter=4.2),
+            BoltHole(x=10.0, y=10.0, diameter=4.2),
+            # Horizontal face: 4×M4 holes
+            BoltHole(x=-10.0, y=-10.0, diameter=4.2),
+            BoltHole(x=10.0, y=-10.0, diameter=4.2),
+        ],
+        notes="L型角钢支架。垂直面和水平面各2×M4孔。默认50×30×50mm。",
+    ),
+    "mounting_plate": MountingInterface(
+        interface_type="through_hole",
+        contact_face="top",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-40.0, y=-30.0, diameter=4.5),
+            BoltHole(x=40.0, y=-30.0, diameter=4.5),
+            BoltHole(x=-40.0, y=30.0, diameter=4.5),
+            BoltHole(x=40.0, y=30.0, diameter=4.5),
+        ],
+        notes="安装板。四角4×M4.5孔，边距10mm。默认100×80mm板。",
+    ),
+    "motor_bracket_u": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            # Base mounting holes
+            BoltHole(x=-10.0, y=0.0, diameter=3.2),
+            BoltHole(x=10.0, y=0.0, diameter=3.2),
+            # Arm mounting holes
+            BoltHole(x=-10.0, y=-25.0, diameter=3.2),
+            BoltHole(x=10.0, y=-25.0, diameter=3.2),
+        ],
+        bore_diameter=12.0,
+        bore_depth=3.0,
+        notes="U型电机支架。底面2×M3安装孔+U型槽电机孔Ø12mm+臂端2×M3孔。",
+    ),
+    "chassis_plate": MountingInterface(
+        interface_type="through_hole",
+        contact_face="top",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-65.0, y=-40.0, diameter=4.5),
+            BoltHole(x=65.0, y=-40.0, diameter=4.5),
+            BoltHole(x=-65.0, y=40.0, diameter=4.5),
+            BoltHole(x=65.0, y=40.0, diameter=4.5),
+        ],
+        notes="底盘板。四角4×M4.5孔。默认150×100mm，网格安装孔系。",
+    ),
+    "corner_bracket": MountingInterface(
+        interface_type="through_hole",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        holes=[
+            BoltHole(x=-10.0, y=-10.0, diameter=4.2),
+            BoltHole(x=10.0, y=-10.0, diameter=4.2),
+            BoltHole(x=-10.0, y=10.0, diameter=4.2),
+            BoltHole(x=10.0, y=10.0, diameter=4.2),
+        ],
+        notes="角码。每面2×M4孔，共4孔。默认30mm边长。",
+    ),
+    "standoff_hex": MountingInterface(
+        interface_type="through_hole",
+        contact_face="top",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        bore_diameter=3.2,
+        bore_depth=0.0,
+        notes="六角铜柱。中心通孔M3(Ø3.2mm)，无独立螺栓孔。",
+    ),
+    "pcb_mount": MountingInterface(
+        interface_type="through_hole",
+        contact_face="top",
+        contact_face_normal=(0.0, 0.0, 1.0),
+        holes=[
+            BoltHole(x=-2.0, y=-2.0, diameter=3.0),
+            BoltHole(x=2.0, y=-2.0, diameter=3.0),
+            BoltHole(x=-2.0, y=2.0, diameter=3.0),
+            BoltHole(x=2.0, y=2.0, diameter=3.0),
+        ],
+        notes="PCB安装铜柱。上下M3螺纹孔。默认Ø6×15mm。",
+    ),
+    "battery_holder_18650": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-27.5, y=-17.5, diameter=3.2),
+            BoltHole(x=27.5, y=-17.5, diameter=3.2),
+            BoltHole(x=-27.5, y=17.5, diameter=3.2),
+            BoltHole(x=27.5, y=17.5, diameter=3.2),
+        ],
+        notes="18650电池盒。4×M3安装孔，间距≈55×35mm。默认75×55mm。",
+    ),
+    "wheel_simple": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=5.0,
+        bore_depth=26.0,
+        holes=[
+            BoltHole(x=0.0, y=10.0, diameter=3.0, depth=8.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+        ],
+        notes="实心轮。中心轮毂孔Ø5mm，1×M3紧定螺钉。默认Ø65×26mm。",
+    ),
+    "wheel_mecanum": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=8.0,
+        bore_depth=30.0,
+        notes="麦克纳姆轮。中心孔Ø8mm适配轮毂。默认Ø60×30mm。",
+    ),
+    "hub_adapter": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=6.0,
+        bore_depth=15.0,
+        holes=[
+            BoltHole(x=0.0, y=10.0, diameter=3.0, depth=5.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+        ],
+        notes="轮毂适配器。中心轴孔Ø6mm，1×M3紧定螺钉。默认Ø20×15mm。",
+    ),
+
+    # ---- Layer 2: Additional functional part MountingInterfaces (8) ----
+
+    "servo_mgmt995": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-12.0, y=-9.5, diameter=2.8),
+            BoltHole(x=12.0, y=-9.5, diameter=2.8),
+            BoltHole(x=-12.0, y=9.5, diameter=2.8),
+            BoltHole(x=12.0, y=9.5, diameter=2.8),
+        ],
+        bore_diameter=6.0,
+        bore_depth=0.0,
+        notes="MG995/MG996R大扭矩舵机。4×M2.5安装孔（四角），输出轴Ø6mm。",
+    ),
+    "imu_mpu6050": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-8.0, y=-5.0, diameter=2.2),
+            BoltHole(x=8.0, y=-5.0, diameter=2.2),
+            BoltHole(x=-8.0, y=5.0, diameter=2.2),
+            BoltHole(x=8.0, y=5.0, diameter=2.2),
+        ],
+        notes="MPU6050 IMU模块。4×M2.5安装孔（四角）。PCB约21×16mm。",
+    ),
+    "ultrasonic_hcsr04": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-15.0, y=0.0, diameter=2.0),
+            BoltHole(x=15.0, y=0.0, diameter=2.0),
+        ],
+        notes="HC-SR04超声波传感器。2×M2安装孔，间距30mm。PCB约45×20mm。",
+    ),
+    "oled_128x64": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-12.5, y=-9.5, diameter=2.0),
+            BoltHole(x=12.5, y=-9.5, diameter=2.0),
+            BoltHole(x=-12.5, y=9.5, diameter=2.0),
+            BoltHole(x=12.5, y=9.5, diameter=2.0),
+        ],
+        notes="0.96寸OLED 128×64显示模块。4×M2安装孔（四角）。PCB约27×27mm。",
+    ),
+    "spur_gear": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=5.0,
+        bore_depth=8.0,
+        holes=[
+            BoltHole(x=0.0, y=8.0, diameter=3.0, depth=5.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+        ],
+        notes="直齿轮。中心轴孔Ø5mm（压入配合），1×M3紧定螺钉。",
+    ),
+    "flexible_coupling": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=5.0,
+        bore_depth=25.0,
+        holes=[
+            BoltHole(x=0.0, y=10.0, diameter=3.0, depth=5.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+            BoltHole(x=0.0, y=-10.0, diameter=3.0, depth=5.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+        ],
+        notes="柔性联轴器。双端轴孔Ø5mm，各1×M3紧定螺钉。默认Ø25×25mm。",
+    ),
+    "t8_nut": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-12.0, y=0.0, diameter=3.4),
+            BoltHole(x=12.0, y=0.0, diameter=3.4),
+            BoltHole(x=0.0, y=-12.0, diameter=3.4),
+            BoltHole(x=0.0, y=12.0, diameter=3.4),
+        ],
+        bore_diameter=8.0,
+        bore_depth=0.0,
+        notes="T8丝杆螺母（法兰型）。法兰4×M3安装孔，中心孔Ø8mm配T8丝杆。",
+    ),
+
+    # ---- Layer 2: Additional structural part MountingInterfaces (6) ----
+
+    "linear_guide_mgn12": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=-15.0, y=0.0, diameter=3.4),
+            BoltHole(x=15.0, y=0.0, diameter=3.4),
+            BoltHole(x=0.0, y=0.0, diameter=3.4),
+        ],
+        notes="MGN12直线导轨滑块。底部3×M3安装槽。导轨靠安装面定位。",
+    ),
+    "t8_leadscrew": MountingInterface(
+        interface_type="shaft",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=8.0,
+        bore_depth=0.0,
+        notes="T8丝杆。轴径Ø8mm，靠螺母/支撑座定位，无独立安装孔。",
+    ),
+    "compression_spring": MountingInterface(
+        interface_type="shaft",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=2.0,
+        bore_depth=0.0,
+        notes="压缩弹簧。柔性件，靠两端座孔定位。线径约2mm。",
+    ),
+    "damper_foot": MountingInterface(
+        interface_type="through_hole",
+        contact_face="bottom",
+        contact_face_normal=(0.0, 0.0, -1.0),
+        holes=[
+            BoltHole(x=0.0, y=0.0, diameter=6.6),
+        ],
+        bore_diameter=0.0,
+        bore_depth=0.0,
+        notes="减震脚垫。中心1×M6安装孔，法兰Ø25mm。",
+    ),
+    "gt2_belt": MountingInterface(
+        interface_type="belt",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=0.0,
+        bore_depth=0.0,
+        notes="GT2同步带。柔性件，无物理安装接口。靠张紧轮/惰轮定位。",
+    ),
+    "shaft_coupling": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=5.0,
+        bore_depth=25.0,
+        holes=[
+            BoltHole(x=0.0, y=10.0, diameter=3.0, depth=5.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+            BoltHole(x=0.0, y=-10.0, diameter=3.0, depth=5.0,
+                     direction=(1.0, 0.0, 0.0), hole_type="threaded_hole"),
+        ],
+        notes="刚性轴联轴器。双端轴孔Ø5mm，各1×M3紧定螺钉。默认Ø25×25mm。",
     ),
 }
 

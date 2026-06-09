@@ -126,6 +126,95 @@ class AttachmentPoint:
 
 
 @dataclass
+class BoltHole:
+    """A single bolt hole definition for bolted connections."""
+
+    position: tuple[float, float, float]  # 3D position on the face (mm)
+    diameter: float = 3.0                 # Bolt hole diameter (mm), e.g. M3=3.4, M4=4.5
+    depth: float = 0.0                    # Hole depth (mm), 0 = through hole
+    bolt_size: str = "M3"                 # Bolt specification
+
+
+@dataclass
+class ConnectionMethod:
+    """Physical connection method between two parts.
+
+    Describes HOW parts are physically joined, as opposed to the
+    kinematic Joint type which describes the resulting DOF.
+    """
+
+    type: str  # "bolted" | "press_fit" | "snap_fit" | "adhesive" | "welded" | "magnetic"
+
+    # --- Bolted connection ---
+    bolt_size: str = "M3"                  # e.g. "M3", "M4", "M5", "M6"
+    bolt_count: int = 0                    # Number of bolts
+    bolt_holes: list[BoltHole] = field(default_factory=list)  # Hole positions
+    torque_nm: float = 0.0                 # Recommended tightening torque (N·m)
+
+    # --- Press-fit connection ---
+    interference_mm: float = 0.0           # Interference amount (mm), e.g. 0.05-0.15
+
+    # --- Snap-fit connection ---
+    snap_count: int = 0                    # Number of snap features
+    snap_force_n: float = 0.0              # Insertion/removal force (N)
+
+    # --- Adhesive connection ---
+    adhesive_type: str = ""                # "epoxy" | "cyanoacrylate" | "structural_acrylic" | "hot_melt"
+    bond_area_mm2: float = 0.0            # Bonding surface area (mm²)
+
+    # --- Welded connection ---
+    weld_type: str = ""                    # "butt" | "fillet" | "spot" | "tig" | "mig"
+
+    # --- Bolted connection ---
+    hole_type: str = "through_hole"  # "through_hole" | "threaded_hole" | "nut_pocket" | "thread_insert"
+
+    # --- Set screw connection ---
+    set_screw_size: str = "M3"  # Set screw / grub screw specification
+
+    # --- Feature generation tracking ---
+    features_generated: bool = False       # True after ConnectionFeatureEngine processes this
+
+    # Required geometric constraints for each connection type
+    @property
+    def required_constraints(self) -> list[str]:
+        """Return the geometric constraints required for this connection type."""
+        _CONSTRAINT_MAP = {
+            "bolted": ["coincident", "concentric"],    # Face flush + holes aligned
+            "press_fit": ["concentric", "distance"],    # Shaft-hole concentric + axial position
+            "snap_fit": ["coincident"],                 # Face flush, snap geometry aligned
+            "adhesive": ["coincident"],                  # Faces in contact
+            "welded": ["coincident"],                    # Weld seam faces in contact
+            "magnetic": ["coincident"],                  # Faces in contact
+        }
+        return _CONSTRAINT_MAP.get(self.type, ["coincident"])
+
+    @property
+    def required_parts(self) -> list[str]:
+        """Return additional parts needed for this connection type."""
+        _PARTS_MAP = {
+            "bolted": ["bolt", "nut", "washer"],       # bolt + nut + optional washer
+            "press_fit": [],                             # No additional parts
+            "snap_fit": [],                              # Integrated into part geometry
+            "adhesive": ["adhesive"],                    # Glue/epoxy
+            "welded": [],                                # No additional parts
+            "magnetic": ["magnet"],                      # Magnet inserts
+        }
+        return _PARTS_MAP.get(self.type, [])
+
+    def describe(self) -> str:
+        """Human-readable description of the connection method."""
+        descriptions = {
+            "bolted": f"螺栓连接({self.bolt_size}×{self.bolt_count}, 扭矩{self.torque_nm}N·m)",
+            "press_fit": f"压入配合(过盈{self.interference_mm}mm)",
+            "snap_fit": f"卡扣连接({self.snap_count}处, 插入力{self.snap_force_n}N)",
+            "adhesive": f"黏结({self.adhesive_type}, 面积{self.bond_area_mm2}mm²)",
+            "welded": f"焊接({self.weld_type})",
+            "magnetic": "磁吸连接",
+        }
+        return descriptions.get(self.type, self.type)
+
+
+@dataclass
 class Joint:
     """A joint connecting two parts."""
 
@@ -154,6 +243,8 @@ class Joint:
     constraint_type: str = ""               # "coincident"/"concentric"/"distance"/"angle"/"parallel"
     constraint_distance: float = 0.0        # distance 约束参数（mm）
     constraint_angle_deg: float = 0.0       # angle 约束参数（度）
+    # --- Task 69: 物理连接方式 ---
+    connection: ConnectionMethod | None = None  # How parts are physically fastened
 
 
 @dataclass
@@ -164,6 +255,8 @@ class Assembly:
     parts: list[Part] = field(default_factory=list)
     joints: list[Joint] = field(default_factory=list)
     description: str = ""
+    # Default joint angles for initial pose (child_part_name -> angle_degrees)
+    default_angles: dict[str, float] = field(default_factory=dict)
     # Assembly mass properties (Task 45)
     total_mass: float = 0.0  # kg, 0 = not yet computed
     center_of_mass: tuple[float, float, float] = (0.0, 0.0, 0.0)  # mm from origin
@@ -257,6 +350,189 @@ ROBOTIC_ARM_ASSEMBLY = Assembly(
     ],
 )
 
+
+# ============================================================================
+# OpenMANIPULATOR-X (ROBOTIS) — Reverse-engineered from URDF + BOM
+# ============================================================================
+#
+# Source: ROBOTIS OpenMANIPULATOR-X
+#   URDF:  github.com/ROBOTIS-GIT/open_manipulator (main branch)
+#   Manual: emanual.robotis.com/docs/en/platform/openmanipulator_x/
+#
+# Specs:
+#   Actuators:  5 × DYNAMIXEL XM430-W350-T
+#   DOF:        5  (4 revolute arm joints + 1 gripper prismatic DOF)
+#   Payload:    500 g
+#   Reach:      380 mm
+#   Mass:       ~711 g
+#   Repeatability: < 0.2 mm
+#
+# Kinematic chain (URDF joint origin offsets, converted to mm):
+#   world → link1 (fixed)
+#   link1 → link2  joint1  revolute Z  ±180°   offset (12, 0, 0)
+#   link2 → link3  joint2  revolute Y  ±86°    offset (0, 0, 59.5)
+#   link3 → link4  joint3  revolute Y  -86/+80°  offset (24, 0, 128)
+#   link4 → link5  joint4  revolute Y  -97/+113° offset (124, 0, 0)
+#   link5 → end_effector        fixed            offset (126, 0, 0)
+#   link5 → gripper_left   prismatic Y ±11/+20   offset (81.7, 21, 0)
+#   link5 → gripper_right  prismatic -Y (mimic)  offset (81.7, -21, 0)
+#
+# BOM highlights:
+#   5 × XM430-W350-T
+#   FR12-H101-K × 2, FR12-H104-K × 1, FR12-S101-K × 1, FR12-S102-K × 2
+#   LINK FRAME (LONG/SHORT), RAIL BRACKET (LEFT/RIGHT), PALM GRIPPER × 2
+#   Fasteners: M2 × 38, M2.5 × 52 (various lengths), M3 × 4
+#   Spacers: X-SP × 24
+#   Idler pulleys: DC12-IDLER × 3
+
+OPEN_MANIPULATOR_X_PARTS: list[Part] = [
+    # --- link1: Base mounting plate + XM430 joint1 ---
+    Part(
+        name="omx_link1",
+        category="structural",
+        description="底座安装板，含 XM430-W350 底部关节",
+        material="Aluminum",
+        dimensions={"diameter": 60, "height": 30},
+        mass=0.07912,
+        density=MaterialDensity.Aluminum,
+        notes="XM430-W350-T 内置，4×M3 安装孔",
+    ),
+    # --- link2: Shoulder sub-assembly (servo + FR12-H101 frame) ---
+    Part(
+        name="omx_link2",
+        category="structural",
+        description="肩部子组件（XM430 + FR12-H101 框架），关节1输出",
+        material="Aluminum",
+        dimensions={"length": 50, "width": 50, "height": 78},
+        mass=0.09841,
+        density=MaterialDensity.Aluminum,
+        notes="视觉 Z 偏移 19mm，关节2 位于顶部",
+    ),
+    # --- link3: Upper arm (FR12-S102 + link rod long) ---
+    Part(
+        name="omx_link3",
+        category="structural",
+        description="上臂连杆（FR12-S102 + 长连杆），肩到肘",
+        material="Aluminum",
+        dimensions={"length": 36, "width": 36, "height": 128},
+        mass=0.13851,
+        density=MaterialDensity.Aluminum,
+        notes="含 XM430-W350 关节3",
+    ),
+    # --- link4: Forearm (FR12-S101 + link rod short) ---
+    Part(
+        name="omx_link4",
+        category="structural",
+        description="前臂连杆（FR12-S101 + 短连杆），肘到腕",
+        material="Aluminum",
+        dimensions={"length": 124, "width": 36, "height": 36},
+        mass=0.13275,
+        density=MaterialDensity.Aluminum,
+        notes="含 XM430-W350 关节4，水平延伸",
+    ),
+    # --- link5: Wrist / gripper base (FR12-H104 + FR12-H101) ---
+    Part(
+        name="omx_link5",
+        category="structural",
+        description="腕部子组件（FR12-H104 + FR12-H101），夹爪基座",
+        material="Aluminum",
+        dimensions={"length": 90, "width": 40, "height": 30},
+        mass=0.14328,
+        density=MaterialDensity.Aluminum,
+        notes="含 XM430-W350 关节5（夹爪驱动），安装导轨和夹爪",
+    ),
+    # --- Gripper finger (left) ---
+    Part(
+        name="omx_gripper_left",
+        category="structural",
+        description="夹爪左手指（PALM GRIPPER）",
+        material="Aluminum",
+        dimensions={"length": 30, "width": 8, "height": 15},
+        mass=0.001,
+        notes="导轨滑块驱动，橡胶垫附着面",
+    ),
+    # --- Gripper finger (right) ---
+    Part(
+        name="omx_gripper_right",
+        category="structural",
+        description="夹爪右手指（PALM GRIPPER）",
+        material="Aluminum",
+        dimensions={"length": 30, "width": 8, "height": 15},
+        mass=0.001,
+        notes="导轨滑块驱动，与左手指镜像",
+    ),
+    # --- End-effector reference point (virtual) ---
+    Part(
+        name="omx_end_effector",
+        category="structural",
+        description="末端执行器参考点（虚拟标记）",
+        dimensions={"length": 10, "width": 10, "height": 10},
+        notes="URDF 虚拟 link，仅用于 TCP 定位",
+    ),
+]
+
+OPEN_MANIPULATOR_X_ASSEMBLY = Assembly(
+    name="OpenMANIPULATOR-X",
+    description="ROBOTIS OpenMANIPULATOR-X 5-DOF 机械臂，5×XM430-W350-T 驱动，380mm 臂展",
+    parts=OPEN_MANIPULATOR_X_PARTS,
+    joints=[
+        # --- joint1: Base rotation (Z-axis, ±180°) ---
+        # URDF origin: (12, 0, 0) mm — small forward offset
+        Joint("revolute", "omx_link1", "omx_link2",
+              range_deg=(-180, 180), description="底座旋转 (joint1)",
+              parent_anchor="top", child_anchor="bottom",
+              offset=(12, 0, 0), axis="z"),
+
+        # --- joint2: Shoulder pitch (Y-axis, ±86°) ---
+        # URDF origin: (0, 0, 59.5) mm — vertical rise
+        Joint("revolute", "omx_link2", "omx_link3",
+              range_deg=(-86, 86), description="肩部俯仰 (joint2)",
+              parent_anchor="top", child_anchor="bottom",
+              offset=(0, 0, 59.5), axis="y"),
+
+        # --- joint3: Elbow pitch (Y-axis, -86° to +80°) ---
+        # URDF origin: (24, 0, 128) mm — upper arm length
+        Joint("revolute", "omx_link3", "omx_link4",
+              range_deg=(-86, 80), description="肘部俯仰 (joint3)",
+              parent_anchor="top", child_anchor="bottom",
+              offset=(24, 0, 128), axis="y"),
+
+        # --- joint4: Wrist pitch (Y-axis, -97° to +113°) ---
+        # URDF origin: (124, 0, 0) mm — forearm extends horizontally
+        Joint("revolute", "omx_link4", "omx_link5",
+              range_deg=(-97, 113), description="腕部俯仰 (joint4)",
+              parent_anchor="right", child_anchor="left",
+              offset=(0, 0, 0), axis="y"),
+
+        # --- end_effector: Fixed TCP marker ---
+        # URDF origin: (126, 0, 0) mm from link5
+        Joint("fixed", "omx_link5", "omx_end_effector",
+              description="末端执行器参考点",
+              parent_anchor="right", child_anchor="left",
+              offset=(36, 0, 0)),
+
+        # --- gripper_left: Prismatic finger (Y-axis, -11 to +20 mm) ---
+        # URDF origin: (81.7, 21, 0) mm
+        Joint("prismatic", "omx_link5", "omx_gripper_left",
+              range_deg=(-11, 20), description="夹爪左手指",
+              parent_anchor="right", child_anchor="left",
+              offset=(42, 21, 0), axis="y"),
+
+        # --- gripper_right: Prismatic finger (-Y-axis, mimic left) ---
+        # URDF origin: (81.7, -21, 0) mm
+        Joint("prismatic", "omx_link5", "omx_gripper_right",
+              range_deg=(-11, 20), description="夹爪右手指（镜像）",
+              parent_anchor="right", child_anchor="left",
+              offset=(42, -21, 0), axis="y"),
+    ],
+    default_angles={
+        "omx_link2": 0.0,   # joint1: home
+        "omx_link3": 0.0,   # joint2: home
+        "omx_link4": 0.0,   # joint3: home
+        "omx_link5": 0.0,   # joint4: home
+    },
+)
+
 # Standard tolerances for 3D printing
 PRINT_TOLERANCES = {
     "tight_fit": 0.15,  # mm - for press fits
@@ -275,21 +551,23 @@ STANDARD_SCREWS = {
 
 
 def get_part(name: str) -> Part | None:
-    """Get a part by name."""
-    for part in ROBOTIC_ARM_PARTS:
+    """Get a part by name across all built-in assemblies."""
+    for part in ROBOTIC_ARM_PARTS + OPEN_MANIPULATOR_X_PARTS:
         if part.name == name:
             return part
     return None
 
 
 def get_all_categories() -> list[str]:
-    """Get all part categories."""
-    return sorted(set(p.category for p in ROBOTIC_ARM_PARTS))
+    """Get all part categories across all built-in assemblies."""
+    all_parts = ROBOTIC_ARM_PARTS + OPEN_MANIPULATOR_X_PARTS
+    return sorted(set(p.category for p in all_parts))
 
 
 def get_parts_by_category(category: str) -> list[Part]:
-    """Get all parts in a category."""
-    return [p for p in ROBOTIC_ARM_PARTS if p.category == category]
+    """Get all parts in a category across all built-in assemblies."""
+    all_parts = ROBOTIC_ARM_PARTS + OPEN_MANIPULATOR_X_PARTS
+    return [p for p in all_parts if p.category == category]
 
 
 # ============================================================================

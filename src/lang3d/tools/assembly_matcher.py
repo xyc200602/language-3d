@@ -315,23 +315,44 @@ class AssemblyMatcher:
     def _estimate_grip_length(
         self, struct_part: Part, func_part: Part, result: AssemblyMatchResult
     ) -> float:
-        """Estimate the total grip length for bolt selection."""
+        """Estimate the total grip length for bolt selection.
+
+        Grip = structural thickness + functional interface depth + pocket depth
+               + washer thickness + 1mm margin.
+        """
         thickness_keys = ["thickness", "height"]
+
+        # 1. Structural part thickness
         struct_t = 0.0
         for k in thickness_keys:
             if k in struct_part.dimensions:
                 struct_t = struct_part.dimensions[k]
                 break
 
+        # 2. Functional part mounting face thickness
         func_t = 0.0
         for k in thickness_keys:
             if k in func_part.dimensions:
                 func_t = func_part.dimensions[k]
                 break
 
-        # Minimum grip = structural thickness (functional part is on top)
-        # Add washer thickness if present
-        return max(struct_t + 1.0, 3.0)  # At least 3mm grip
+        # 3. Pocket depth from MountingInterface
+        pocket_d = 0.0
+        func_id = self._find_catalog_id(func_part)
+        if func_id:
+            mi = get_mounting_interface(func_id)
+            if mi and mi.pocket_height > 0:
+                pocket_d = mi.pocket_height
+
+        # 4. Washer thickness (~1mm for M3, lookup from catalog)
+        washer_t = 1.0
+        from ..knowledge.fastener_catalog import get_washer_spec
+        bolt_size = result.fastener_selection.bolt_size or "M3"
+        w_spec = get_washer_spec(bolt_size)
+        if w_spec:
+            washer_t = w_spec.thickness
+
+        return max(struct_t + func_t + pocket_d + washer_t, 3.0)
 
     # ------------------------------------------------------------------
     # Step 4: Setup constraints

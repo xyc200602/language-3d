@@ -60,6 +60,7 @@ class ToleranceDimension:
 class StackupResult:
     """Result from tolerance stackup computation."""
 
+    method: str = "worst_case"    # "worst_case" | "rss"
     nominal: float = 0.0        # Sum of nominals
     upper_dev: float = 0.0      # Worst-case positive deviation
     lower_dev: float = 0.0      # Worst-case negative deviation
@@ -206,6 +207,7 @@ class ToleranceStackup:
                 total_lower += -dim.upper_dev
 
         return StackupResult(
+            method="worst_case",
             nominal=total_nominal,
             upper_dev=total_upper,
             lower_dev=total_lower,
@@ -215,11 +217,46 @@ class ToleranceStackup:
             dimensions=list(self._dimensions),
         )
 
+    def compute_rss(self) -> StackupResult:
+        """Root Sum Square statistical tolerance analysis.
+
+        Assumes normal distribution with ±3σ tolerance bounds.
+        RSS deviation = sqrt(sum of squared deviations).
+        """
+        total_nominal = 0.0
+        rss_upper = 0.0
+        rss_lower = 0.0
+
+        for dim in self._dimensions:
+            if dim.direction == "+":
+                total_nominal += dim.nominal
+                rss_upper += dim.upper_dev ** 2
+                rss_lower += dim.lower_dev ** 2
+            else:
+                total_nominal -= dim.nominal
+                rss_upper += (-dim.lower_dev) ** 2
+                rss_lower += (-dim.upper_dev) ** 2
+
+        rss_upper = rss_upper ** 0.5
+        rss_lower = rss_lower ** 0.5
+
+        return StackupResult(
+            method="rss",
+            nominal=total_nominal,
+            upper_dev=rss_upper,
+            lower_dev=-rss_lower,
+            max_value=total_nominal + rss_upper,
+            min_value=total_nominal - rss_lower,
+            total_tolerance=rss_upper + rss_lower,
+            dimensions=list(self._dimensions),
+        )
+
     def check_acceptable(
         self,
         allowed_upper: float = 0.0,
         allowed_lower: float = 0.0,
         allowed_total: float = 0.0,
+        method: str = "worst_case",
     ) -> bool:
         """Check if the stackup is within acceptable limits.
 
@@ -227,11 +264,15 @@ class ToleranceStackup:
             allowed_upper: Maximum acceptable upper deviation (mm).
             allowed_lower: Maximum acceptable lower deviation magnitude (mm, positive).
             allowed_total: Maximum acceptable total tolerance band (mm).
+            method: "worst_case" or "rss" — which analysis method to use.
 
         Returns:
             True if all specified limits are satisfied.
         """
-        result = self.compute_stackup()
+        if method == "rss":
+            result = self.compute_rss()
+        else:
+            result = self.compute_stackup()
         if allowed_upper > 0 and result.upper_dev > allowed_upper:
             return False
         if allowed_lower > 0 and abs(result.lower_dev) > allowed_lower:

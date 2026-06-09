@@ -18,6 +18,7 @@ from typing import Any
 from ..knowledge.actuators import get_actuator
 from ..knowledge.mechanics import Assembly, Part, STANDARD_SCREWS
 from ..knowledge.sensors import get_sensor
+from ..knowledge.fastener_catalog import recommend_bolt_length
 from ..models.base import ToolDefinition
 from .assembly_solver import _resolve_assembly
 from .base import Tool
@@ -175,32 +176,35 @@ def _part_to_bom_entry(part: Part) -> dict[str, Any]:
 
 
 def _infer_standard_parts(assembly: Assembly) -> list[dict[str, Any]]:
-    """Infer standard parts needed from assembly notes and structure."""
+    """Infer standard parts needed from assembly joints and ConnectionMethod data."""
     std_parts: list[dict[str, Any]] = []
 
-    # Count joints that need screws
     revolute_joints = [j for j in assembly.joints if j.type == "revolute"]
     fixed_joints = [j for j in assembly.joints if j.type == "fixed"]
 
-    # Each joint needs mounting screws (4x M3x10 per joint)
-    joint_count = len(revolute_joints) + len(fixed_joints)
-    if joint_count > 0:
-        std_parts.append({
-            "type": "screw",
-            "name": "M3×10 螺丝",
-            "spec": "M3×10 不锈钢十字盘头",
-            "quantity": joint_count * 4,
-            "unit_price_cny": 0.1,
-            "price_cny": 0.1,
-        })
-        std_parts.append({
-            "type": "nut",
-            "name": "M3 螺母",
-            "spec": "M3 不锈钢六角螺母",
-            "quantity": joint_count * 4,
-            "unit_price_cny": 0.05,
-            "price_cny": 0.05,
-        })
+    # Per-joint fastener inference from ConnectionMethod
+    for joint in assembly.joints:
+        cm = getattr(joint, 'connection', None)
+        if cm is None:
+            # Fallback: default M3×10 per joint
+            _add_default_fasteners(std_parts)
+            continue
+
+        if cm.type == "bolted":
+            bolt_size = cm.bolt_size or "M3"
+            bolt_count = cm.bolt_count or 4
+
+            # Estimate grip from part dimensions if available
+            grip = _estimate_joint_grip(assembly, joint)
+            bolt_length = recommend_bolt_length(grip)
+            _add_bolt_nut_washer(std_parts, bolt_size, bolt_length, bolt_count)
+
+        elif cm.type == "set_screw":
+            size = getattr(cm, 'set_screw_size', None) or cm.bolt_size or "M3"
+            _add_set_screw(std_parts, size, 1)
+
+        elif cm.type == "dowel_pin":
+            _add_dowel_pins(std_parts)
 
     # Scan notes for specific screw mentions
     for part in assembly.parts:
@@ -226,7 +230,119 @@ def _infer_standard_parts(assembly: Assembly) -> list[dict[str, Any]]:
             "price_cny": 1.5,
         })
 
-    return std_parts
+    # Consolidate duplicate entries
+    return _consolidate_parts(std_parts)
+
+
+def _estimate_joint_grip(assembly: Assembly, joint) -> float:
+    """Estimate grip length for a joint from part dimensions."""
+    parts_by_name = {p.name: p for p in assembly.parts}
+    parent = parts_by_name.get(joint.parent)
+    child = parts_by_name.get(joint.child)
+
+    grip = 0.0
+    for p in (parent, child):
+        if p is None:
+            continue
+        for k in ("thickness", "height"):
+            if k in p.dimensions:
+                grip += p.dimensions[k]
+                break
+    return max(grip, 3.0) if grip > 0 else 10.0
+
+
+def _add_default_fasteners(std_parts: list[dict[str, Any]]) -> None:
+    """Add default M3×10 fastener set."""
+    std_parts.append({
+        "type": "screw",
+        "name": "M3×10 螺丝",
+        "spec": "M3×10 不锈钢十字盘头",
+        "quantity": 4,
+        "unit_price_cny": 0.1,
+        "price_cny": 0.1,
+    })
+    std_parts.append({
+        "type": "nut",
+        "name": "M3 螺母",
+        "spec": "M3 不锈钢六角螺母",
+        "quantity": 4,
+        "unit_price_cny": 0.05,
+        "price_cny": 0.05,
+    })
+
+
+def _add_bolt_nut_washer(
+    std_parts: list[dict[str, Any]],
+    bolt_size: str,
+    bolt_length: float,
+    count: int,
+) -> None:
+    """Add bolt + nut + washer standard parts."""
+    length_str = f"{bolt_length:.0f}" if bolt_length == int(bolt_length) else f"{bolt_length}"
+    std_parts.append({
+        "type": "screw",
+        "name": f"{bolt_size}×{length_str} 螺丝",
+        "spec": f"{bolt_size}×{length_str} 不锈钢内六角",
+        "quantity": count,
+        "unit_price_cny": 0.1,
+        "price_cny": 0.1,
+    })
+    std_parts.append({
+        "type": "nut",
+        "name": f"{bolt_size} 螺母",
+        "spec": f"{bolt_size} 不锈钢六角螺母",
+        "quantity": count,
+        "unit_price_cny": 0.05,
+        "price_cny": 0.05,
+    })
+    std_parts.append({
+        "type": "washer",
+        "name": f"{bolt_size} 平垫圈",
+        "spec": f"{bolt_size} 不锈钢平垫圈",
+        "quantity": count,
+        "unit_price_cny": 0.03,
+        "price_cny": 0.03,
+    })
+
+
+def _add_set_screw(
+    std_parts: list[dict[str, Any]],
+    size: str,
+    count: int,
+) -> None:
+    """Add set screw / grub screw."""
+    std_parts.append({
+        "type": "screw",
+        "name": f"{size} 紧定螺钉",
+        "spec": f"{size} 不锈钢内六角紧定螺钉",
+        "quantity": count,
+        "unit_price_cny": 0.08,
+        "price_cny": 0.08,
+    })
+
+
+def _add_dowel_pins(std_parts: list[dict[str, Any]]) -> None:
+    """Add dowel pins."""
+    std_parts.append({
+        "type": "pin",
+        "name": "D5×20 定位销",
+        "spec": "Ø5×20mm 碳钢定位销",
+        "quantity": 2,
+        "unit_price_cny": 0.5,
+        "price_cny": 0.5,
+    })
+
+
+def _consolidate_parts(parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Merge duplicate standard part entries by name."""
+    by_name: dict[str, dict[str, Any]] = {}
+    for p in parts:
+        name = p["name"]
+        if name in by_name:
+            by_name[name]["quantity"] += p["quantity"]
+        else:
+            by_name[name] = dict(p)
+    return list(by_name.values())
 
 
 def format_bom_markdown(bom: dict[str, Any]) -> str:

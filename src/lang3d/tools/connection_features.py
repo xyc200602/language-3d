@@ -36,14 +36,19 @@ from ..knowledge.fastener_catalog import (
     WASHER_SPECS,
     THREAD_INSERT_SPECS,
     CLEARANCE_HOLE_SPECS,
+    TAP_HOLE_SPECS,
+    SET_SCREW_SPECS,
     TORQUE_PLA,
     TORQUE_STEEL,
     get_clearance_hole as _get_clearance_hole,
+    get_tap_hole as _get_tap_hole,
     get_torque as _get_torque,
     get_bolt_spec as _get_bolt_spec,
     get_nut_spec as _get_nut_spec,
     get_washer_spec as _get_washer_spec,
     get_thread_insert_spec as _get_thread_insert_spec,
+    get_set_screw_spec as _get_set_screw_spec,
+    get_nut_spec as _get_nut_spec,
     recommend_bolt_length as _recommend_bolt_length,
 )
 from ..knowledge.tolerance import (
@@ -222,6 +227,8 @@ class ConnectionFeatureEngine:
             "adhesive": self._generate_adhesive_features,
             "welded": self._generate_welded_features,
             "magnetic": self._generate_magnetic_features,
+            "dowel_pin": self._generate_dowel_pin_features,
+            "set_screw": self._generate_set_screw_features,
         }
 
         handler = dispatch.get(connection.type)
@@ -297,6 +304,17 @@ class ConnectionFeatureEngine:
         thickness: float,
     ) -> ConnectionFeatureResult:
         """Generate bolt holes and fastener models for a bolted connection."""
+        hole_type = getattr(conn, 'hole_type', 'through_hole') or 'through_hole'
+
+        # Dispatch to specialized hole-type handlers
+        if hole_type == "threaded_hole":
+            return self._generate_threaded_hole(part, conn, anchor, thickness)
+        elif hole_type == "nut_pocket":
+            return self._generate_nut_pocket(part, conn, anchor, thickness)
+        elif hole_type == "thread_insert":
+            return self._generate_thread_insert_pocket(part, conn, anchor, thickness)
+
+        # Default: through_hole (original logic)
         result = ConnectionFeatureResult()
         d = part.dimensions
         ops: list[dict] = []
@@ -651,6 +669,97 @@ class ConnectionFeatureEngine:
         return result
 
     # ------------------------------------------------------------------
+    # Dowel pin alignment
+    # ------------------------------------------------------------------
+
+    def _generate_dowel_pin_features(
+        self,
+        part: Part,
+        conn: ConnectionMethod,
+        anchor: str,
+        thickness: float,
+    ) -> ConnectionFeatureResult:
+        """Generate dowel pin H7 slip-fit holes and pin models for alignment."""
+        result = ConnectionFeatureResult()
+        d = part.dimensions
+        ops: list[dict] = []
+        fastener_ops: list[dict] = []
+
+        # Determine pin specs from connection metadata or defaults
+        pin_diameter = getattr(conn, 'bolt_size', None)
+        if pin_diameter:
+            # Try to parse pin diameter from metadata
+            try:
+                pin_d = float(pin_diameter.replace("D", "").split("x")[0])
+            except (ValueError, AttributeError):
+                pin_d = 5.0
+        else:
+            pin_d = 5.0
+
+        pin_length = thickness
+        hole_d = pin_d + 0.01  # H7 slip-fit
+        hole_r = hole_d / 2
+
+        # Default: 2 dowel pins on opposite sides of the face center
+        cx, cy, cz = self._anchor_center(anchor, d, thickness)
+        face_l = self._face_length(anchor, d)
+        offset = min(face_l * 0.2, 15.0)
+
+        pin_positions = []
+        if anchor in ("top", "bottom"):
+            pin_positions = [
+                (cx - offset, cy, cz),
+                (cx + offset, cy, cz),
+            ]
+        elif anchor in ("front", "back"):
+            pin_positions = [
+                (cx, cy, cz - offset),
+                (cx, cy, cz + offset),
+            ]
+        else:  # left, right
+            pin_positions = [
+                (cx, cy, cz - offset),
+                (cx, cy, cz + offset),
+            ]
+
+        for i, (px, py, pz) in enumerate(pin_positions):
+            # H7 slip-fit hole
+            hole_name = f"{part.name}_dowel_hole_{i}"
+            ops.append({
+                "type": "make_cylinder",
+                "radius": hole_r,
+                "height": thickness + 4,
+                "name": hole_name,
+            })
+            ops.append({
+                "type": "move",
+                "object": hole_name,
+                "dx": px, "dy": py, "dz": pz - 2,
+            })
+
+            # Dowel pin model (cylinder)
+            pin_name = f"dowel_pin_{pin_d:.0f}x{pin_length:.0f}_{i}"
+            fastener_ops.append({
+                "type": "make_cylinder",
+                "radius": pin_d / 2,
+                "height": pin_length,
+                "name": pin_name,
+            })
+            fastener_ops.append({
+                "type": "move",
+                "object": pin_name,
+                "dx": px, "dy": py, "dz": pz,
+            })
+
+        result.features_generated.append(
+            f"{len(pin_positions)}× dowel pin Ø{pin_d:.1f}mm holes "
+            f"(H7 slip-fit Ø{hole_d:.2f}mm) for alignment"
+        )
+        result.ops = ops
+        result.fastener_ops = fastener_ops
+        return result
+
+    # ------------------------------------------------------------------
     # Magnetic connection
     # ------------------------------------------------------------------
 
@@ -697,6 +806,291 @@ class ConnectionFeatureEngine:
             f"(for Ø{magnet_od}×{magnet_height}mm disc magnet)"
         )
         result.ops = ops
+        return result
+
+    # ------------------------------------------------------------------
+    # Threaded hole (tap drill hole for machine screws)
+    # ------------------------------------------------------------------
+
+    def _generate_threaded_hole(
+        self,
+        part: Part,
+        conn: ConnectionMethod,
+        anchor: str,
+        thickness: float,
+    ) -> ConnectionFeatureResult:
+        """Generate tapped/threaded holes instead of through holes + counterbore."""
+        result = ConnectionFeatureResult()
+        d = part.dimensions
+        ops: list[dict] = []
+
+        bolt_size = conn.bolt_size or "M3"
+        tap_d = _get_tap_hole(bolt_size)
+        if tap_d <= 0:
+            tap_d = float(bolt_size.replace("M", "")) - 0.5
+
+        # Determine hole positions
+        if conn.bolt_holes:
+            positions = [(bh.position, bh.diameter) for bh in conn.bolt_holes]
+        elif conn.bolt_count > 0:
+            positions = self._auto_layout_bolts(
+                conn.bolt_count, d, anchor, tap_d,
+            )
+        else:
+            positions = self._auto_layout_bolts(4, d, anchor, tap_d)
+
+        for pos, dia in positions:
+            r = tap_d / 2
+            hole_name = f"{part.name}_tap_hole"
+            ops.append({
+                "type": "make_cylinder",
+                "radius": r,
+                "height": thickness + 4,
+                "name": hole_name,
+                "hole_type": "threaded",
+                "thread_size": bolt_size,
+            })
+            x, y, z = self._position_on_face(pos, anchor, d, thickness)
+            ops.append({
+                "type": "move",
+                "object": hole_name,
+                "dx": x, "dy": y, "dz": z - 2,
+            })
+
+        result.features_generated.append(
+            f"{len(positions)}× {bolt_size} threaded holes "
+            f"(tap drill Ø{tap_d}mm, depth {thickness:.1f}mm)"
+        )
+        result.ops = ops
+        return result
+
+    # ------------------------------------------------------------------
+    # Nut pocket (through hole + hex pocket for nut)
+    # ------------------------------------------------------------------
+
+    def _generate_nut_pocket(
+        self,
+        part: Part,
+        conn: ConnectionMethod,
+        anchor: str,
+        thickness: float,
+    ) -> ConnectionFeatureResult:
+        """Generate through hole with hexagonal nut pocket on the back side."""
+        result = ConnectionFeatureResult()
+        d = part.dimensions
+        ops: list[dict] = []
+
+        bolt_size = conn.bolt_size or "M3"
+
+        # Through hole diameter (clearance)
+        hole_nominal, _, _ = get_clearance_hole_with_tolerance(bolt_size)
+        hole_r = hole_nominal / 2
+
+        # Nut pocket dimensions from catalog
+        nut_spec = _get_nut_spec(bolt_size)
+        if nut_spec:
+            nut_w = nut_spec.width_across_flats
+            nut_h = nut_spec.height
+        else:
+            nut_w = 5.5
+            nut_h = 2.4
+
+        # Hex pocket: approximated as cylinder using width_across_corners
+        # (hex inscribed in circle)
+        pocket_r = nut_w / 2 * 1.1  # 10% clearance
+        pocket_depth = nut_h + 0.5   # slight extra depth
+
+        # Determine hole positions
+        if conn.bolt_holes:
+            positions = [(bh.position, bh.diameter) for bh in conn.bolt_holes]
+        elif conn.bolt_count > 0:
+            positions = self._auto_layout_bolts(
+                conn.bolt_count, d, anchor, hole_nominal,
+            )
+        else:
+            positions = self._auto_layout_bolts(4, d, anchor, hole_nominal)
+
+        for pos, dia in positions:
+            # Through hole
+            hole_name = f"{part.name}_bolt_hole"
+            ops.append({
+                "type": "make_cylinder",
+                "radius": hole_r,
+                "height": thickness + 4,
+                "name": hole_name,
+            })
+            x, y, z = self._position_on_face(pos, anchor, d, thickness)
+            ops.append({
+                "type": "move",
+                "object": hole_name,
+                "dx": x, "dy": y, "dz": z - 2,
+            })
+
+            # Nut pocket (hex approximation on opposite face)
+            pocket_name = f"{part.name}_nut_pocket"
+            ops.append({
+                "type": "make_cylinder",
+                "radius": pocket_r,
+                "height": pocket_depth,
+                "name": pocket_name,
+                "hole_type": "nut_pocket",
+                "nut_size": bolt_size,
+            })
+            ops.append({
+                "type": "move",
+                "object": pocket_name,
+                "dx": x, "dy": y, "dz": z - pocket_depth,
+            })
+
+        result.features_generated.append(
+            f"{len(positions)}× {bolt_size} through holes (Ø{hole_nominal}mm) "
+            f"with Ø{nut_w}mm hex nut pockets ({pocket_depth:.1f}mm deep)"
+        )
+        result.ops = ops
+        return result
+
+    # ------------------------------------------------------------------
+    # Thread insert pocket (for heat-set brass inserts)
+    # ------------------------------------------------------------------
+
+    def _generate_thread_insert_pocket(
+        self,
+        part: Part,
+        conn: ConnectionMethod,
+        anchor: str,
+        thickness: float,
+    ) -> ConnectionFeatureResult:
+        """Generate pilot hole + pocket for heat-set brass thread insert."""
+        result = ConnectionFeatureResult()
+        d = part.dimensions
+        ops: list[dict] = []
+
+        bolt_size = conn.bolt_size or "M3"
+        insert_spec = _get_thread_insert_spec(bolt_size)
+        if insert_spec:
+            install_d = insert_spec.install_hole_diameter
+            insert_len = insert_spec.length
+        else:
+            install_d = float(bolt_size.replace("M", "")) + 1.5
+            insert_len = 5.6
+
+        # Determine hole positions
+        if conn.bolt_holes:
+            positions = [(bh.position, bh.diameter) for bh in conn.bolt_holes]
+        elif conn.bolt_count > 0:
+            positions = self._auto_layout_bolts(
+                conn.bolt_count, d, anchor, install_d,
+            )
+        else:
+            positions = self._auto_layout_bolts(4, d, anchor, install_d)
+
+        for pos, dia in positions:
+            # Insert pocket (cylinder for brass insert)
+            pocket_name = f"{part.name}_insert_pocket"
+            ops.append({
+                "type": "make_cylinder",
+                "radius": install_d / 2,
+                "height": insert_len + 1.0,
+                "name": pocket_name,
+                "hole_type": "thread_insert",
+                "insert_size": bolt_size,
+            })
+            x, y, z = self._position_on_face(pos, anchor, d, thickness)
+            ops.append({
+                "type": "move",
+                "object": pocket_name,
+                "dx": x, "dy": y, "dz": z,
+            })
+
+        result.features_generated.append(
+            f"{len(positions)}× {bolt_size} thread insert pockets "
+            f"(Ø{install_d}mm, depth {insert_len + 1.0:.1f}mm)"
+        )
+        result.ops = ops
+        return result
+
+    # ------------------------------------------------------------------
+    # Set screw / grub screw connection
+    # ------------------------------------------------------------------
+
+    def _generate_set_screw_features(
+        self,
+        part: Part,
+        conn: ConnectionMethod,
+        anchor: str,
+        thickness: float,
+    ) -> ConnectionFeatureResult:
+        """Generate radial threaded hole for set screw / grub screw.
+
+        The set screw passes radially through the hub wall to lock onto a shaft.
+        """
+        result = ConnectionFeatureResult()
+        d = part.dimensions
+        ops: list[dict] = []
+        fastener_ops: list[dict] = []
+
+        size = getattr(conn, 'set_screw_size', None) or conn.bolt_size or "M3"
+        tap_d = _get_tap_hole(size)
+        if tap_d <= 0:
+            tap_d = float(size.replace("M", "")) - 0.5
+
+        # Determine radial hole depth: hub wall thickness
+        # If part has outer_diameter and bore_diameter, wall = (OD - bore) / 2
+        od = d.get("outer_diameter", d.get("diameter", 0))
+        bore = d.get("bore_diameter", d.get("inner_diameter", 0))
+        if od > 0 and bore > 0:
+            wall_t = (od - bore) / 2
+        else:
+            wall_t = thickness / 2
+
+        hole_depth = wall_t + 2.0  # penetrate through wall + margin
+
+        # Position: center of anchor face
+        cx, cy, cz = self._anchor_center(anchor, d, thickness)
+
+        # Radial threaded hole
+        hole_name = f"{part.name}_set_screw_hole"
+        ops.append({
+            "type": "make_cylinder",
+            "radius": tap_d / 2,
+            "height": hole_depth,
+            "name": hole_name,
+            "hole_type": "threaded",
+            "thread_size": size,
+        })
+        # Position from the outer surface inward
+        if anchor in ("top", "bottom"):
+            offset_x = od / 2 if od > 0 else d.get("length", 20) / 2
+            ops.append({
+                "type": "move",
+                "object": hole_name,
+                "dx": cx + offset_x, "dy": cy, "dz": cz,
+            })
+        else:
+            ops.append({
+                "type": "move",
+                "object": hole_name,
+                "dx": cx, "dy": cy, "dz": cz + thickness / 2,
+            })
+
+        # Set screw model
+        set_spec = _get_set_screw_spec(size)
+        thread_d = float(size.replace("M", ""))
+        screw_length = wall_t + 1.0
+        screw_name = f"set_screw_{size}_0"
+        fastener_ops.append({
+            "type": "make_cylinder",
+            "radius": thread_d / 2,
+            "height": screw_length,
+            "name": screw_name,
+        })
+
+        result.features_generated.append(
+            f"1× {size} set screw hole (tap Ø{tap_d}mm, radial, "
+            f"wall {wall_t:.1f}mm)"
+        )
+        result.ops = ops
+        result.fastener_ops = fastener_ops
         return result
 
     # ------------------------------------------------------------------

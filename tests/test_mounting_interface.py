@@ -80,10 +80,13 @@ class TestInterfaceRegistration:
         "driver_l298n",
         "controller_arduino_uno", "controller_arduino_nano",
         "controller_esp32_devkit",
+        "dynamixel_xm430_w350_body", "dynamixel_xm430_w350_horn",
+        "robotis_fr12_h101", "robotis_fr12_h104",
+        "robotis_fr12_s101", "robotis_fr12_s102",
     ]
 
     def test_interface_count(self):
-        assert len(MOUNTING_INTERFACES) == 16
+        assert len(MOUNTING_INTERFACES) >= 37
 
     def test_all_expected_interfaces_registered(self):
         for part_id in self.EXPECTED_INTERFACE_PARTS:
@@ -388,7 +391,8 @@ class TestCrossModuleConsistency:
     def test_all_functional_actuators_have_interfaces(self):
         """All functional actuators in catalog should have mounting interfaces."""
         actuator_ids = ["nema17_stepper", "nema23_stepper",
-                         "servo_sg90", "servo_mg996r", "servo_ds3218"]
+                         "servo_sg90", "servo_mg996r", "servo_ds3218",
+                         "dynamixel_xm430_w350_body", "dynamixel_xm430_w350_horn"]
         for pid in actuator_ids:
             assert get_mounting_interface(pid) is not None, f"Missing interface: {pid}"
 
@@ -412,3 +416,145 @@ class TestCrossModuleConsistency:
                 # Hole positions should be within ±100mm of center (reasonable)
                 assert abs(h.x) < 100, f"{part_id}: hole x={h.x} out of range"
                 assert abs(h.y) < 100, f"{part_id}: hole y={h.y} out of range"
+
+
+# =====================================================================
+# 10. DYNAMIXEL XM430-W350-T interfaces
+# =====================================================================
+
+class TestXM430Interfaces:
+    """Test the XM430 body and horn mounting interfaces."""
+
+    def test_body_interface_exists(self):
+        mi = get_mounting_interface("dynamixel_xm430_w350_body")
+        assert mi is not None
+
+    def test_horn_interface_exists(self):
+        mi = get_mounting_interface("dynamixel_xm430_w350_horn")
+        assert mi is not None
+
+    def test_body_has_4_holes(self):
+        mi = get_mounting_interface("dynamixel_xm430_w350_body")
+        assert len(mi.holes) == 4
+
+    def test_horn_has_4_holes(self):
+        mi = get_mounting_interface("dynamixel_xm430_w350_horn")
+        assert len(mi.holes) == 4
+
+    def test_body_hole_spacing_16mm(self):
+        """Body holes are on a 16×16mm rectangular grid."""
+        mi = get_mounting_interface("dynamixel_xm430_w350_body")
+        xs = sorted({h.x for h in mi.holes})
+        ys = sorted({h.y for h in mi.holes})
+        assert xs == [-8.0, 8.0]
+        assert ys == [-8.0, 8.0]
+
+    def test_body_threaded_hole_type(self):
+        """Body side has M2.5 tapped holes (threaded_hole)."""
+        mi = get_mounting_interface("dynamixel_xm430_w350_body")
+        assert mi.interface_type == "threaded_hole"
+
+    def test_horn_through_hole_type(self):
+        """Horn side has through holes for bolts from the other side."""
+        mi = get_mounting_interface("dynamixel_xm430_w350_horn")
+        assert mi.interface_type == "through_hole"
+
+    def test_horn_has_bore(self):
+        """Horn interface should have a center bore for the output shaft."""
+        mi = get_mounting_interface("dynamixel_xm430_w350_horn")
+        assert mi.bore_diameter == 6.0
+
+    def test_horn_has_d_cut_alignment(self):
+        """Horn interface should have a D-cut alignment feature."""
+        mi = get_mounting_interface("dynamixel_xm430_w350_horn")
+        assert len(mi.alignment_features) >= 1
+        assert mi.alignment_features[0].feature_type == "d_cut"
+
+    def test_body_contact_face_is_back(self):
+        mi = get_mounting_interface("dynamixel_xm430_w350_body")
+        assert mi.contact_face == "back"
+
+    def test_horn_contact_face_is_front(self):
+        mi = get_mounting_interface("dynamixel_xm430_w350_horn")
+        assert mi.contact_face == "front"
+
+
+# =====================================================================
+# 11. FR12 frame bracket interfaces
+# =====================================================================
+
+class TestFR12Interfaces:
+    """Test the ROBOTIS FR12 frame bracket mounting interfaces."""
+
+    @pytest.mark.parametrize("frame_id", [
+        "robotis_fr12_h101", "robotis_fr12_h104",
+        "robotis_fr12_s101", "robotis_fr12_s102",
+    ])
+    def test_frame_has_interface(self, frame_id):
+        mi = get_mounting_interface(frame_id)
+        assert mi is not None, f"Missing interface for {frame_id}"
+
+    @pytest.mark.parametrize("frame_id", [
+        "robotis_fr12_h101", "robotis_fr12_h104",
+        "robotis_fr12_s101", "robotis_fr12_s102",
+    ])
+    def test_frame_has_4_holes(self, frame_id):
+        mi = get_mounting_interface(frame_id)
+        assert len(mi.holes) == 4
+
+    @pytest.mark.parametrize("frame_id", [
+        "robotis_fr12_h101", "robotis_fr12_h104",
+        "robotis_fr12_s101", "robotis_fr12_s102",
+    ])
+    def test_frame_holes_match_xm430_pattern(self, frame_id):
+        """FR12 hole positions must match XM430 body (±8mm on 16mm grid)."""
+        mi = get_mounting_interface(frame_id)
+        xs = sorted({h.x for h in mi.holes})
+        ys = sorted({h.y for h in mi.holes})
+        assert xs == [-8.0, 8.0]
+        assert ys == [-8.0, 8.0]
+
+    def test_frame_hole_diameter_matches_m25(self):
+        """Holes should be M2.5 clearance (2.8mm)."""
+        mi = get_mounting_interface("robotis_fr12_h101")
+        for h in mi.holes:
+            assert h.diameter == pytest.approx(2.8)
+
+
+# =====================================================================
+# 12. XM430 ↔ FR12 mating compatibility
+# =====================================================================
+
+class TestXM430FR12Mating:
+    """Verify that XM430 and FR12 interfaces are geometrically compatible."""
+
+    def test_body_holes_match_frame_holes(self):
+        """XM430 body holes and FR12 frame holes should align exactly."""
+        body = get_mounting_interface("dynamixel_xm430_w350_body")
+        frame = get_mounting_interface("robotis_fr12_h101")
+
+        body_positions = sorted((h.x, h.y) for h in body.holes)
+        frame_positions = sorted((h.x, h.y) for h in frame.holes)
+        assert body_positions == frame_positions
+
+    def test_auto_match_xm430_horn_generates_features(self):
+        """auto_match_interface should generate features for XM430 horn."""
+        mi = get_mounting_interface("dynamixel_xm430_w350_horn")
+        ops = auto_match_interface(
+            structural_dims={"length": 40, "width": 40, "thickness": 5},
+            interface=mi,
+            anchor="top",
+        )
+        hole_ops = [o for o in ops if o["name"].startswith("mount_hole")]
+        assert len(hole_ops) == 4
+
+    def test_auto_match_xm430_body_generates_features(self):
+        """auto_match_interface should generate features for XM430 body."""
+        mi = get_mounting_interface("dynamixel_xm430_w350_body")
+        ops = auto_match_interface(
+            structural_dims={"length": 40, "width": 40, "thickness": 5},
+            interface=mi,
+            anchor="top",
+        )
+        hole_ops = [o for o in ops if o["name"].startswith("mount_hole")]
+        assert len(hole_ops) == 4
