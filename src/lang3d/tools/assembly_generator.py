@@ -768,7 +768,9 @@ _VLM_VERIFY_PROMPT = (
     "3. Wheels not near the ground level\n"
     "4. Arms pointing in impossible directions (e.g. going through the body)\n"
     "5. Critical parts missing (no base plate, no wheels, etc.)\n"
-    "6. Overall structural coherence\n\n"
+    "6. Overall structural coherence\n"
+    "7. Parts with WRONG ORIENTATION (e.g. wheels lying flat instead of upright, "
+    "cylinders oriented along wrong axis)\n\n"
     "Reply with JSON only:\n"
     '{"passed": true/false, '
     '"problems": ["list of specific issues found"], '

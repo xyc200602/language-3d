@@ -518,7 +518,7 @@ def export_engineering_package(
 
     # ---- Step 4: Generate URDF + ROS2 package ----
     from .urdf_export import AssemblyToURDF, ROS2PackageBuilder
-    converter = AssemblyToURDF(assembly)
+    converter = AssemblyToURDF(assembly, positions=positions)
     urdf_xml = converter.convert()
     (output_dir / "urdf.xml").write_text(urdf_xml, encoding="utf-8")
     generated_files.append(str(output_dir / "urdf.xml"))

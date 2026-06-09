@@ -143,6 +143,58 @@ def _pick_material_color(part: Part) -> str:
     return "gray"
 
 
+def _axis_angle_to_rpy(aa: list[float]) -> tuple[float, float, float]:
+    """Convert axis-angle [ax, ay, az, angle_deg] to roll-pitch-yaw (radians).
+
+    Uses Rodrigues' rotation formula to build a rotation matrix,
+    then extracts ZYX Euler angles (roll, pitch, yaw).
+    """
+    if len(aa) < 4 or abs(aa[3]) < 1e-6:
+        return (0.0, 0.0, 0.0)
+
+    ax, ay, az = aa[0], aa[1], aa[2]
+    deg = aa[3]
+    norm = math.sqrt(ax * ax + ay * ay + az * az)
+    if norm < 1e-10:
+        return (0.0, 0.0, 0.0)
+    ax /= norm
+    ay /= norm
+    az /= norm
+
+    angle_rad = math.radians(deg)
+    c = math.cos(angle_rad)
+    s = math.sin(angle_rad)
+    t = 1 - c
+
+    # Rodrigues' rotation matrix
+    r00 = t * ax * ax + c
+    r01 = t * ax * ay - s * az
+    r02 = t * ax * az + s * ay
+    r10 = t * ax * ay + s * az
+    r11 = t * ay * ay + c
+    r12 = t * ay * az - s * ax
+    r20 = t * ax * az - s * ay
+    r21 = t * ay * az + s * ax
+    r22 = t * az * az + c
+
+    # Extract ZYX Euler angles from rotation matrix
+    # pitch (Y rotation) from -r20
+    sin_pitch = -r20
+    sin_pitch = max(-1.0, min(1.0, sin_pitch))
+
+    if abs(cos_pitch := math.cos(math.asin(sin_pitch))) > 1e-6:
+        roll = math.atan2(r21, r22)
+        pitch = math.asin(sin_pitch)
+        yaw = math.atan2(r10, r00)
+    else:
+        # Gimbal lock: set yaw = 0
+        roll = math.atan2(-r12, r11)
+        pitch = math.asin(sin_pitch)
+        yaw = 0.0
+
+    return (roll, pitch, yaw)
+
+
 # ============================================================================
 # AssemblyToURDF — core converter
 # ============================================================================
@@ -198,10 +250,12 @@ class AssemblyToURDF:
         assembly: Assembly,
         meshes_dir: str = "meshes",
         package_name: str = "",
+        positions: dict[str, dict] | None = None,
     ) -> None:
         self.assembly = assembly
         self.meshes_dir = meshes_dir
         self.package_name = package_name or _sanitize_name(assembly.name)
+        self.positions = positions or {}
 
         self._links: list[URDFLink] = []
         self._joints: list[URDFJoint] = []
@@ -280,25 +334,31 @@ class AssemblyToURDF:
             parent_name = _sanitize_name(joint.parent)
             child_name = _sanitize_name(joint.child)
 
-            # Origin: use joint offset (converted mm→m)
-            joint_offset = joint.offset or (0, 0, 0)
-            origin_xyz = (
-                _mm_to_m(joint_offset[0]),
-                _mm_to_m(joint_offset[1]),
-                _mm_to_m(joint_offset[2]),
-            )
+            # Try solver positions first for computing joint origin
+            origin_xyz, origin_rpy = self._compute_joint_origin(joint)
 
-            # For non-root children, estimate origin from parent part dimensions
-            parent_part = self._part_index.get(joint.parent)
-            if parent_part and origin_xyz == (0.0, 0.0, 0.0):
-                h = parent_part.dimensions.get(
-                    "height",
-                    parent_part.dimensions.get("thickness", 0.0),
+            # Fallback: use joint offset + parent part dimensions
+            if origin_xyz is None:
+                joint_offset = joint.offset or (0, 0, 0)
+                origin_xyz = (
+                    _mm_to_m(joint_offset[0]),
+                    _mm_to_m(joint_offset[1]),
+                    _mm_to_m(joint_offset[2]),
                 )
-                if h > 0:
-                    anchor = joint.parent_anchor.lower()
-                    if anchor == "top":
-                        origin_xyz = (0.0, 0.0, _mm_to_m(h))
+
+                # For non-root children, estimate origin from parent part dimensions
+                parent_part = self._part_index.get(joint.parent)
+                if parent_part and origin_xyz == (0.0, 0.0, 0.0):
+                    h = parent_part.dimensions.get(
+                        "height",
+                        parent_part.dimensions.get("thickness", 0.0),
+                    )
+                    if h > 0:
+                        anchor = joint.parent_anchor.lower()
+                        if anchor == "top":
+                            origin_xyz = (0.0, 0.0, _mm_to_m(h))
+
+                origin_rpy = (0.0, 0.0, 0.0)
 
             axis_vec = _resolve_axis(joint)
             lower_rad = math.radians(joint.range_deg[0])
@@ -310,11 +370,32 @@ class AssemblyToURDF:
                 parent=parent_name,
                 child=child_name,
                 origin_xyz=origin_xyz,
-                origin_rpy=(0.0, 0.0, 0.0),
+                origin_rpy=origin_rpy,
                 axis=tuple(axis_vec),  # type: ignore[arg-type]
                 lower=round(lower_rad, 4),
                 upper=round(upper_rad, 4),
             ))
+
+    def _compute_joint_origin(self, joint) -> tuple[tuple[float, float, float] | None, tuple[float, float, float] | None]:
+        """Compute joint origin (xyz, rpy) from solver positions.
+
+        Returns (None, None) if solver positions are unavailable for either
+        the parent or child part, signalling the caller to use fallback logic.
+        """
+        parent_pos = self.positions.get(joint.parent, {}).get("position")
+        child_pos = self.positions.get(joint.child, {}).get("position")
+
+        if not parent_pos or not child_pos:
+            return None, None
+
+        # Relative displacement: child - parent (mm → m)
+        rel_xyz = tuple(_mm_to_m(child_pos[i] - parent_pos[i]) for i in range(3))
+
+        # Rotation from parent part (axis-angle → RPY)
+        parent_rot = self.positions.get(joint.parent, {}).get("rotation", [0, 0, 1, 0])
+        rpy = _axis_angle_to_rpy(parent_rot)
+
+        return rel_xyz, rpy
 
     def _auto_add_gazebo_plugins(self) -> None:
         """Auto-detect drive train type and add Gazebo plugins."""

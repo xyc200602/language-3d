@@ -999,6 +999,7 @@ def build_assembly_script(
 
         pos_data = positions.get(name, {})
         pos = pos_data.get("position", [0, 0, 0])
+        rot = pos_data.get("rotation", [0, 0, 1, 0])
 
         if exploded:
             # Offset along position vector from center
@@ -1022,7 +1023,11 @@ def build_assembly_script(
             h = dims.get("height", 10)
             lines.append(f"_shape = Part.makeCylinder({r}, {h})")
 
-        # Translate to position
+        # Apply rotation around origin, then translate to position
+        if rot and len(rot) == 4 and abs(rot[3]) > 1e-6:
+            ax, ay, az, angle = rot
+            lines.append(f"_shape.rotate(FreeCAD.Vector(0,0,0), FreeCAD.Vector({ax},{ay},{az}), {angle:.4f})")
+
         lines.append(f"_shape.translate(FreeCAD.Vector({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f}))")
 
         # Add to document

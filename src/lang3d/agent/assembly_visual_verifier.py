@@ -86,7 +86,7 @@ def _build_assembly_prompt(
         "Step 2: Check for the following assembly problems:\n"
         "  - **Collision**: Parts overlapping or intersecting\n"
         "  - **Floating**: Parts not connected to anything (unsupported)\n"
-        "  - **Wrong orientation**: Parts rotated incorrectly\n"
+        "  - **Wrong orientation**: Parts rotated incorrectly (e.g. wheels should be vertical cylinders, not horizontal)\n"
         "  - **Unreasonable layout**: Parts too far apart or in illogical positions\n\n"
         "Step 3: Compare with the expected layout description.\n\n"
         f"Assembly: {assembly.name} ({len(assembly.parts)} parts)\n"
