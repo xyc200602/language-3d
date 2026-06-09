@@ -582,10 +582,23 @@ def _parse_elements_json(raw: str) -> list[dict[str, Any]]:
     import re
 
     # Try extracting JSON array from response
-    arr_match = re.search(r'\[.*?\]', raw, re.DOTALL)
-    if arr_match:
+    # Use greedy match to handle nested arrays correctly (e.g., [[1,2],[3,4]])
+    # Find the outermost balanced brackets
+    start = raw.find("[")
+    if start >= 0:
+        depth = 0
+        end = start
+        for i in range(start, len(raw)):
+            if raw[i] == "[":
+                depth += 1
+            elif raw[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+        candidate = raw[start:end]
         try:
-            data = json.loads(arr_match.group())
+            data = json.loads(candidate)
             if isinstance(data, list):
                 elements = []
                 for item in data:

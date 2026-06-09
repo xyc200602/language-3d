@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any, Callable
 
 from ..knowledge.mechanics import Assembly
@@ -50,6 +51,7 @@ class OrchestratorAgent:
         self._active_agents: dict[str, SubAgent] = {}
         self._results: dict[str, SubAgentResult] = {}
         self._dag: TaskDAG | None = None
+        self._step_lock = threading.Lock()
 
         # Callbacks for UI updates
         self._on_sub_agent_update: Callable[[str, str, str], None] | None = None
@@ -212,6 +214,12 @@ class OrchestratorAgent:
         context: dict[str, Any],
     ) -> SubAgentResult:
         """Run a single node with retry logic."""
+        result = SubAgentResult(
+            agent_id="orchestrator",
+            step_id=node.step.id,
+            success=False,
+            error="No attempts made",
+        )
         for attempt in range(self.max_retries):
             sub_agent = self._spawn_sub_agent(node)
 
@@ -250,8 +258,9 @@ class OrchestratorAgent:
                     self._on_thinking(f"反思结果：{reflection[:200]}")
 
                 # Reset step for retry
-                node.step.status = StepStatus.PENDING
-                node.step.attempts = attempt + 1
+                with self._step_lock:
+                    node.step.status = StepStatus.PENDING
+                    node.step.attempts = attempt + 1
 
         if self._on_sub_agent_update:
             self._on_sub_agent_update(

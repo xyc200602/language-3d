@@ -511,8 +511,9 @@ class IKSolveTool(Tool):
 
     name = "ik_solve"
     description = (
-        "求解逆向运动学：给定目标末端位置，计算各关节角度。"
-        "支持解析解（3-DOF）和 CCD 数值解（任意构型）。"
+        "Solve inverse kinematics: given a target end-effector position, "
+        "compute joint angles. Supports analytic solution (3-DOF) and CCD "
+        "numerical solution (arbitrary configurations)."
     )
 
     def get_definition(self) -> ToolDefinition:
@@ -524,25 +525,25 @@ class IKSolveTool(Tool):
                 "properties": {
                     "assembly_name": {
                         "type": "string",
-                        "description": "装配体名称（如 'robotic_arm'）或 JSON 字符串",
+                        "description": "Assembly name (e.g. 'robotic_arm') or JSON string",
                     },
                     "target": {
                         "type": "array",
                         "items": {"type": "number"},
-                        "description": "目标末端位置 [x, y, z]（毫米）",
+                        "description": "Target end-effector position [x, y, z] in mm",
                     },
                     "approach": {
                         "type": "string",
                         "enum": ["auto", "analytic", "ccd"],
-                        "description": "求解方法：auto（先解析后CCD）、analytic（仅解析）、ccd（仅CCD）",
+                        "description": "Solving method: auto (analytic first, then CCD), analytic (analytic only), ccd (CCD only)",
                     },
                     "tolerance_mm": {
                         "type": "number",
-                        "description": "可接受的误差（毫米），默认 0.5",
+                        "description": "Acceptable error in mm (default 0.5)",
                     },
                     "max_iterations": {
                         "type": "integer",
-                        "description": "CCD 最大迭代次数，默认 200",
+                        "description": "Maximum CCD iterations (default 200)",
                     },
                 },
                 "required": ["target"],
@@ -953,8 +954,9 @@ class DualArmIKTool(Tool):
 
     name = "dual_arm_ik"
     description = (
-        "双臂协调逆运动学求解：同时求解左臂和右臂的关节角度，"
-        "支持独立/协调/主从模式，含碰撞检测。"
+        "Dual-arm coordinated inverse kinematics solving: simultaneously solve "
+        "joint angles for both left and right arms. Supports "
+        "independent/coordinated/master-slave modes with collision detection."
     )
 
     def get_definition(self) -> ToolDefinition:
@@ -966,30 +968,30 @@ class DualArmIKTool(Tool):
                 "properties": {
                     "arm1_assembly": {
                         "type": "string",
-                        "description": "左臂装配体名称或 JSON",
+                        "description": "Left arm assembly name or JSON",
                     },
                     "arm2_assembly": {
                         "type": "string",
-                        "description": "右臂装配体名称或 JSON",
+                        "description": "Right arm assembly name or JSON",
                     },
                     "target1": {
                         "type": "array",
                         "items": {"type": "number"},
-                        "description": "左臂目标位置 [x, y, z] mm",
+                        "description": "Left arm target position [x, y, z] mm",
                     },
                     "target2": {
                         "type": "array",
                         "items": {"type": "number"},
-                        "description": "右臂目标位置 [x, y, z] mm",
+                        "description": "Right arm target position [x, y, z] mm",
                     },
                     "mode": {
                         "type": "string",
                         "enum": ["independent", "coordinated", "master_slave"],
-                        "description": "双臂模式：independent/coordinated/master_slave",
+                        "description": "Dual-arm mode: independent/coordinated/master_slave",
                     },
                     "tolerance_mm": {
                         "type": "number",
-                        "description": "可接受误差 mm（默认 1.0）",
+                        "description": "Acceptable error in mm (default 1.0)",
                     },
                 },
                 "required": ["target1", "target2"],

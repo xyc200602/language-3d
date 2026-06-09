@@ -151,35 +151,36 @@ class SubAgent:
             context_text = self._format_context(context)
             step.description = f"{original_desc}\n\n{context_text}"
 
-        executor = Executor(
-            self.router,
-            self.tools,
-            max_turns_per_step=self.max_turns,
-        )
+        try:
+            executor = Executor(
+                self.router,
+                self.tools,
+                max_turns_per_step=self.max_turns,
+            )
 
-        # Execute with callbacks that include agent_id
-        def _on_tool_call(name: str, args: dict) -> None:
-            if self._on_tool_call:
-                self._on_tool_call(self.agent_id, name, args)
+            # Execute with callbacks that include agent_id
+            def _on_tool_call(name: str, args: dict) -> None:
+                if self._on_tool_call:
+                    self._on_tool_call(self.agent_id, name, args)
 
-        def _on_tool_result(name: str, result: str) -> None:
-            if self._on_tool_result:
-                self._on_tool_result(self.agent_id, name, result)
+            def _on_tool_result(name: str, result: str) -> None:
+                if self._on_tool_result:
+                    self._on_tool_result(self.agent_id, name, result)
 
-        def _on_thinking(text: str) -> None:
-            if self._on_thinking:
-                self._on_thinking(self.agent_id, text)
+            def _on_thinking(text: str) -> None:
+                if self._on_thinking:
+                    self._on_thinking(self.agent_id, text)
 
-        result_text = executor.execute_step(
-            step,
-            self._state,
-            on_tool_call=_on_tool_call,
-            on_tool_result=_on_tool_result,
-            on_thinking=_on_thinking,
-        )
-
-        # Restore original description
-        step.description = original_desc
+            result_text = executor.execute_step(
+                step,
+                self._state,
+                on_tool_call=_on_tool_call,
+                on_tool_result=_on_tool_result,
+                on_thinking=_on_thinking,
+            )
+        finally:
+            # Always restore original description even on exception
+            step.description = original_desc
 
         success = step.status == StepStatus.COMPLETED
 

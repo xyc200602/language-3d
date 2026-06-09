@@ -44,17 +44,19 @@ _BASIC_SIZE_RANGES: list[tuple[float, float]] = [
 def _size_range_index(nominal_d: float) -> int:
     """Return the index into _BASIC_SIZE_RANGES for a given nominal diameter.
 
+    ISO 286-1:2010 ranges have **exclusive** lower and **inclusive** upper
+    bounds, i.e. (lo, hi].  The first range (1-3) additionally includes
+    the lower bound 1.0 itself.
     Clamps to the nearest valid range for values outside 1-500 mm.
     """
     for i, (lo, hi) in enumerate(_BASIC_SIZE_RANGES):
-        if nominal_d > lo and nominal_d <= hi:
+        if lo < nominal_d <= hi:
             return i
-        # Handle the lower bound edge: nominal_d exactly on boundary
-        if nominal_d == lo and i > 0:
-            # Belongs to previous range (upper bound inclusive)
-            return i - 1
+        # First range also includes the exact lower bound (1.0)
+        if i == 0 and nominal_d == lo:
+            return 0
     # Outside table: clamp
-    if nominal_d <= 1:
+    if nominal_d <= _BASIC_SIZE_RANGES[0][0]:
         return 0
     return len(_BASIC_SIZE_RANGES) - 1
 

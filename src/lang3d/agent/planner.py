@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..models.base import Message
 from ..models.router import ModelRouter, TaskType
@@ -466,7 +469,9 @@ class Planner:
                 parent_step_id = name_to_step_id.get(parent)
                 if child_step_id and parent_step_id:
                     if parent_step_id not in dependencies_dict.get(child_step_id, []):
-                        step = next(s for s in steps if s.id == child_step_id)
+                        step = next((s for s in steps if s.id == child_step_id), None)
+                        if step is None:
+                            continue
                         if parent_step_id not in step.dependencies:
                             step.dependencies.append(parent_step_id)
                         dependencies_dict.setdefault(child_step_id, []).append(parent_step_id)

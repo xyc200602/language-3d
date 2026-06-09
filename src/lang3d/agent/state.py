@@ -169,33 +169,66 @@ class AgentState:
         """Save state to JSON file."""
         save_path = path or self.workspace / ".lang3d_state.json"
         save_path.parent.mkdir(parents=True, exist_ok=True)
+        plan_data = None
+        if self.plan:
+            if isinstance(self.plan, HierarchicalPlan):
+                plan_data = self._serialize_hierarchical_plan(self.plan)
+            else:
+                plan_data = {
+                    "type": "flat",
+                    "goal": self.plan.goal,
+                    "steps": [self._serialize_step(s) for s in self.plan.steps],
+                }
         data = {
             "session_id": self.session_id,
             "created_at": self.created_at,
             "workspace": str(self.workspace),
-            "plan": {
-                "goal": self.plan.goal,
-                "steps": [
-                    {
-                        "id": s.id,
-                        "description": s.description,
-                        "expected_tools": s.expected_tools,
-                        "verification": s.verification,
-                        "status": s.status.value,
-                        "result": s.result,
-                        "attempts": s.attempts,
-                        "dependencies": s.dependencies,
-                        "assigned_agent": s.assigned_agent,
-                    }
-                    for s in self.plan.steps
-                ],
-            }
-            if self.plan
-            else None,
+            "plan": plan_data,
             "tool_history": self.tool_history[-100:],  # Keep last 100
             "metadata": self.metadata,
         }
         save_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    @staticmethod
+    def _serialize_step(s: PlanStep) -> dict[str, Any]:
+        return {
+            "id": s.id,
+            "description": s.description,
+            "expected_tools": s.expected_tools,
+            "verification": s.verification,
+            "status": s.status.value,
+            "result": s.result,
+            "attempts": s.attempts,
+            "dependencies": s.dependencies,
+            "assigned_agent": s.assigned_agent,
+        }
+
+    @staticmethod
+    def _serialize_hierarchical_plan(plan: HierarchicalPlan) -> dict[str, Any]:
+        return {
+            "type": "hierarchical",
+            "goal": plan.goal,
+            "subsystems": [
+                {
+                    "name": ss.name,
+                    "description": ss.description,
+                    "parts": ss.parts,
+                    "joints": ss.joints,
+                    "constraints": ss.constraints,
+                    "steps": [AgentState._serialize_step(s) for s in ss.steps],
+                    "status": ss.status.value,
+                    "mirror_of": ss.mirror_of,
+                    "instance_count": ss.instance_count,
+                    "interface_points": ss.interface_points,
+                }
+                for ss in plan.subsystems
+            ],
+            "system_dependencies": [
+                {"source": d.source, "target": d.target, "reason": d.reason}
+                for d in plan.system_dependencies
+            ],
+            "integration_steps": [AgentState._serialize_step(s) for s in plan.integration_steps],
+        }
 
     @classmethod
     def load(cls, path: Path) -> AgentState:
@@ -208,22 +241,74 @@ class AgentState:
         state.metadata = data.get("metadata", {})
 
         if plan_data := data.get("plan"):
-            state.plan = Plan(
-                goal=plan_data["goal"],
-                steps=[
-                    PlanStep(
-                        id=s["id"],
-                        description=s["description"],
-                        expected_tools=s.get("expected_tools", []),
-                        verification=s.get("verification", ""),
-                        status=StepStatus(s["status"]),
-                        result=s.get("result", ""),
-                        attempts=s.get("attempts", 0),
-                        dependencies=s.get("dependencies", []),
-                        assigned_agent=s.get("assigned_agent", ""),
-                    )
-                    for s in plan_data["steps"]
-                ],
-            )
+            plan_type = plan_data.get("type", "flat")
+            if plan_type == "hierarchical":
+                state.plan = cls._deserialize_hierarchical_plan(plan_data)
+            else:
+                state.plan = Plan(
+                    goal=plan_data["goal"],
+                    steps=[
+                        PlanStep(
+                            id=s["id"],
+                            description=s["description"],
+                            expected_tools=s.get("expected_tools", []),
+                            verification=s.get("verification", ""),
+                            status=StepStatus(s["status"]),
+                            result=s.get("result", ""),
+                            attempts=s.get("attempts", 0),
+                            dependencies=s.get("dependencies", []),
+                            assigned_agent=s.get("assigned_agent", ""),
+                        )
+                        for s in plan_data["steps"]
+                    ],
+                )
 
         return state
+
+    @staticmethod
+    def _deserialize_step(s: dict[str, Any]) -> PlanStep:
+        return PlanStep(
+            id=s["id"],
+            description=s["description"],
+            expected_tools=s.get("expected_tools", []),
+            verification=s.get("verification", ""),
+            status=StepStatus(s["status"]),
+            result=s.get("result", ""),
+            attempts=s.get("attempts", 0),
+            dependencies=s.get("dependencies", []),
+            assigned_agent=s.get("assigned_agent", ""),
+        )
+
+    @classmethod
+    def _deserialize_hierarchical_plan(cls, data: dict[str, Any]) -> HierarchicalPlan:
+        subsystems = []
+        for ss_data in data.get("subsystems", []):
+            ss = SubSystem(
+                name=ss_data["name"],
+                description=ss_data.get("description", ""),
+                parts=ss_data.get("parts", []),
+                joints=ss_data.get("joints", []),
+                constraints=ss_data.get("constraints", {}),
+                steps=[cls._deserialize_step(s) for s in ss_data.get("steps", [])],
+                status=StepStatus(ss_data.get("status", "pending")),
+                mirror_of=ss_data.get("mirror_of", ""),
+                instance_count=ss_data.get("instance_count", 1),
+                interface_points=ss_data.get("interface_points", {}),
+            )
+            subsystems.append(ss)
+
+        system_deps = [
+            SystemDependency(
+                source=d.get("source", ""),
+                target=d.get("target", ""),
+                reason=d.get("reason", ""),
+            )
+            for d in data.get("system_dependencies", [])
+        ]
+
+        return HierarchicalPlan(
+            goal=data.get("goal", ""),
+            subsystems=subsystems,
+            system_dependencies=system_deps,
+            integration_steps=[cls._deserialize_step(s) for s in data.get("integration_steps", [])],
+        )

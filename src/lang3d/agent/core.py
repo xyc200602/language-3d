@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from ..config import Config
 from ..models.base import Message, ModelResponse, ToolCall
@@ -553,9 +556,10 @@ class Agent:
                      "motion_vlm_analyze", "cfd_vlm_analyze", "slice_vlm_analyze"):
             # Extract the prompt from recent tool calls in state
             prompt = ""
-            for tc_name, tc_args, _ in reversed(self.state.tool_history):
-                if tc_name == name:
-                    prompt = str(tc_args.get("prompt", tc_args.get("expected", "")))
+            for tc in reversed(self.state.tool_history):
+                if tc.get("name") == name:
+                    args = tc.get("arguments", {})
+                    prompt = str(args.get("prompt", args.get("expected", "")))
                     break
             add_vlm_result(name, prompt, result)
 
@@ -653,6 +657,11 @@ class Agent:
         if self.state.plan is None:
             return
         plan = self.state.plan
+        # Get steps from plan (flat) or all_steps (hierarchical)
+        if isinstance(plan, HierarchicalPlan):
+            all_steps = plan.all_steps()
+        else:
+            all_steps = plan.steps
         payload = {
             "goal": plan.goal,
             "steps": [
@@ -667,7 +676,7 @@ class Agent:
                     "dependencies": list(s.dependencies),
                     "assigned_agent": s.assigned_agent,
                 }
-                for s in plan.steps
+                for s in all_steps
             ],
         }
         # Add subsystem info if this is a hierarchical plan
@@ -720,9 +729,21 @@ class Agent:
 
         # Phase 2: Execute each step
         max_retries = getattr(self.config.agent, "max_plan_retries", 3)
+        global_retry_count = 0
+        max_global_retries = max_retries * 10  # Safety: prevent infinite retry loops
+        max_plan_size = 50  # Maximum number of steps to prevent unbounded growth
+
         while True:
             step = self.state.plan.current_step()
             if step is None:
+                break
+
+            # Safety: check plan hasn't grown too large
+            if isinstance(self.state.plan, HierarchicalPlan):
+                step_count = len(self.state.plan.all_steps())
+            else:
+                step_count = len(self.state.plan.steps)
+            if step_count > max_plan_size:
                 break
 
             if self._on_step_update:
@@ -751,7 +772,8 @@ class Agent:
             self._broadcast_plan()
 
             # Phase 4: Reflect and retry if failed
-            if step.status == StepStatus.FAILED and step.attempts < max_retries:
+            if step.status == StepStatus.FAILED and step.attempts < max_retries and global_retry_count < max_global_retries:
+                global_retry_count += 1
                 reflection = self.reflector.reflect(
                     self.state.plan, step, result, self.state.tool_history
                 )

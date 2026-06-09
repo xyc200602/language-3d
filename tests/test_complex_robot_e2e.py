@@ -941,8 +941,8 @@ class TestExportPackageE2E:
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["part_count"] > 0
 
-    def test_subsystem_ipc(self, export_result):
-        path = export_result / "subsystems" / "ipc.json"
+    def test_subsystem_electronics(self, export_result):
+        path = export_result / "subsystems" / "electronics.json"
         assert path.exists()
         data = json.loads(path.read_text(encoding="utf-8"))
         assert data["part_count"] > 0

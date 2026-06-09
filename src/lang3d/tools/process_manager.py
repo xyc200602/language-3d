@@ -138,20 +138,6 @@ class FreeCADProcessManager:
             self._gui_pid = None
             self._gui_proc = None
 
-            # Also try to kill any leftover FreeCAD.exe processes
-            try:
-                result = subprocess.run(
-                    ["taskkill", "/F", "/IM", "FreeCAD.exe"],
-                    capture_output=True,
-                    timeout=5,
-                    encoding="utf-8",
-                    errors="replace",
-                )
-                if result.returncode == 0:
-                    logger.info("Cleaned up remaining FreeCAD.exe processes")
-            except Exception:
-                pass
-
             return True
 
     def is_running(self) -> bool:

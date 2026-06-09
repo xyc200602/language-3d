@@ -188,7 +188,7 @@ class TestBearingInterfaces:
     def test_608_press_fit(self):
         mi = get_mounting_interface("bearing_608")
         assert mi.interface_type == "press_fit"
-        assert mi.bore_diameter == 22.0
+        assert mi.bore_diameter == 21.95
         assert mi.press_fit_interference > 0
 
     def test_623_press_fit(self):
@@ -206,12 +206,14 @@ class TestBearingInterfaces:
         assert mi.shoulder_diameter > mi.bore_diameter
 
     def test_bearing_dimensions_match_catalog(self):
-        """Bearing interface bore diameter should match catalog outer diameter."""
+        """Bearing interface bore diameter should be slightly under catalog outer diameter (press fit interference)."""
         mi = get_mounting_interface("bearing_608")
         t = get_template("bearing_608")
         od_param = next((p for p in t.parameters if p.name == "outer_diameter"), None)
         assert od_param is not None
-        assert mi.bore_diameter == od_param.default
+        # Press fit bore is slightly smaller than outer diameter for interference
+        assert mi.bore_diameter < od_param.default
+        assert mi.bore_diameter >= od_param.default - 0.1
 
 
 # =====================================================================

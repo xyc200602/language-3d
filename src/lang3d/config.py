@@ -122,7 +122,12 @@ def load_config() -> Config:
     # Start with persistent config if it exists
     config_data: dict[str, Any] = {}
     if CONFIG_FILE.exists():
-        config_data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        try:
+            config_data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError) as e:
+            # Corrupted config file — start fresh but log warning
+            import logging
+            logging.getLogger(__name__).warning("Config file %s is invalid JSON: %s", CONFIG_FILE, e)
 
     # Override with environment variables
     env_overrides = _build_env_config()
@@ -132,9 +137,19 @@ def load_config() -> Config:
 
 
 def save_config(config: Config) -> None:
-    """Persist configuration to ~/.lang3d/config.json."""
+    """Persist configuration to ~/.lang3d/config.json.
+
+    API keys are masked (first 4 chars + ***) to prevent accidental exposure.
+    """
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(config.model_dump_json(indent=2), encoding="utf-8")
+    data = config.model_dump()
+    # Mask API keys
+    for section in ("glm", "openai"):
+        if section in data and isinstance(data[section], dict):
+            key = data[section].get("api_key", "")
+            if key and len(key) > 4:
+                data[section]["api_key"] = key[:4] + "***"
+    CONFIG_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _build_env_config() -> dict[str, Any]:

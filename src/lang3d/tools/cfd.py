@@ -155,19 +155,33 @@ def _run_openfoam_command(
     Returns:
         Combined stdout+stderr output
     """
+    import shlex
+
+    # Validate cmd: only allow known OpenFOAM executables
+    _ALLOWED_COMMANDS = {
+        "blockMesh", "simpleFoam", "icoFoam", "pimpleFoam", "rasInterFoam",
+        "interFoam", "rhoSimpleFoam", "potentialFoam", "snappyHexMesh",
+        "checkMesh", "paraFoam", "foamListTimes", "foamCalc",
+    }
+    for c in cmd:
+        base = c.split()[0] if " " in c else c
+        if base not in _ALLOWED_COMMANDS:
+            return f"Error: Blocked OpenFOAM command: {base}"
+
     if mode == "wsl":
         wsl_case = _win_to_wsl_path(case_dir)
-        wsl_cmd = " ".join(cmd) + f" -case {wsl_case}"
-        full_cmd = ["wsl", "bash", "-c", wsl_cmd]
+        # Use shlex.quote to prevent shell injection
+        safe_case = shlex.quote(wsl_case)
+        safe_cmd = " ".join(shlex.quote(c) for c in cmd)
+        full_cmd = ["wsl", "bash", "-c", f"{safe_cmd} -case {safe_case}"]
     elif mode == "docker":
         # Mount case dir and run in container
-        wsl_case = _win_to_wsl_path(case_dir) if platform.system() == "Windows" else case_dir
         full_cmd = [
             "docker", "run", "--rm",
             "-v", f"{case_dir}:/case",
             "openfoam/openfoam:latest",
             "bash", "-c",
-            " ".join(cmd) + " -case /case",
+            " ".join(shlex.quote(c) for c in cmd) + " -case /case",
         ]
     else:
         # Native
@@ -536,6 +550,83 @@ boundaryField
         encoding="utf-8",
     )
 
+    # Generate blockMeshDict for basic mesh generation
+    # Use default pipe-flow domain: 1m long, 0.05m diameter
+    domain_length = 1.0
+    domain_width = 0.05
+    n_cells = mesh_info.get("cells", 20000)
+    nx = int(n_cells ** (1 / 3) * 2)   # finer in flow direction
+    ny = int(n_cells ** (1 / 3))
+    nz = int(n_cells ** (1 / 3))
+    (case_path / "system" / "blockMeshDict").write_text(
+        f"""FoamFile
+{{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    object      blockMeshDict;
+}}
+convertToMeters 1;
+
+vertices
+(
+    (0              0                0)
+    ({domain_length} 0                0)
+    ({domain_length} {domain_width}    0)
+    (0              {domain_width}    0)
+    (0              0                {domain_width})
+    ({domain_length} 0                {domain_width})
+    ({domain_length} {domain_width}    {domain_width})
+    (0              {domain_width}    {domain_width})
+);
+
+blocks
+(
+    hex (0 1 2 3 4 5 6 7) ({nx} {ny} {nz}) simpleGrading (1 1 1)
+);
+
+edges
+(
+);
+
+boundary
+(
+    inlet
+    {{
+        type patch;
+        faces
+        (
+            (0 4 7 3)
+        );
+    }}
+    outlet
+    {{
+        type patch;
+        faces
+        (
+            (1 2 6 5)
+        );
+    }}
+    walls
+    {{
+        type wall;
+        faces
+        (
+            (0 1 5 4)
+            (3 7 6 2)
+            (0 3 2 1)
+            (4 5 6 7)
+        );
+    }}
+);
+
+mergePatchPairs
+(
+)
+""",
+        encoding="utf-8",
+    )
+
     return str(case_path)
 
 
@@ -711,7 +802,18 @@ class CFDRunTool(Tool):
                 "--- Case files generated ---",
             ]
 
-            # Try running the solver
+            # Step 1: Generate mesh with blockMesh
+            lines.append("")
+            lines.append("--- Running blockMesh ---")
+            mesh_output = _run_openfoam_command(
+                ["blockMesh"],
+                case_dir,
+                of_mode,
+                timeout=120,
+            )
+            lines.append(mesh_output)
+
+            # Step 2: Run the solver
             solver_output = _run_openfoam_command(
                 [cfd_pattern.solver],
                 case_dir,

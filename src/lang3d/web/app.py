@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import mimetypes
+import os
 import subprocess
 import tempfile
 import threading
@@ -19,6 +20,27 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Language-3D Agent Monitor")
+
+# Optional API key authentication middleware
+_API_KEY: str | None = os.environ.get("LANG3D_API_KEY")
+
+
+@app.middleware("http")
+async def api_key_middleware(request, call_next):
+    """Require API key for mutation endpoints when LANG3D_API_KEY is set."""
+    if _API_KEY is None:
+        return await call_next(request)
+    # Only enforce on mutation endpoints (POST/DELETE)
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return await call_next(request)
+    # Allow WebSocket upgrades
+    if request.url.path.startswith("/ws"):
+        return await call_next(request)
+    key = request.headers.get("X-API-Key", "")
+    if key != _API_KEY:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=401, content={"detail": "Invalid or missing API key"})
+    return await call_next(request)
 
 # Project root (…/language-3d) — used to build a safe data-root for file serving.
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -221,36 +243,51 @@ def _run_task_background(task: str, mode: str = "run") -> None:
     """Background-thread task executor."""
     global _current_task
     _task_stop_flag.clear()
-    _current_task = {
-        "task": task,
-        "mode": mode,
-        "started_at": datetime.now().isoformat(),
-        "status": "running",
-    }
+    with _state_lock:
+        _current_task = {
+            "task": task,
+            "mode": mode,
+            "started_at": datetime.now().isoformat(),
+            "status": "running",
+        }
     update_agent_state(status="running")
     add_log(f"Task started ({mode}): {task[:120]}", level="info")
     try:
         if _agent_instance is None:
             raise RuntimeError("No agent registered")
+
+        if _task_stop_flag.is_set():
+            raise RuntimeError("Task cancelled before start")
+
         if mode == "direct":
             result = _agent_instance.run_task(task, use_planning=False)
         else:
             result = _agent_instance.run_task(task, use_planning=True)
-        _current_task["status"] = "complete"
-        _current_task["result"] = result[:500] if isinstance(result, str) else str(result)[:500]
+
+        if _task_stop_flag.is_set():
+            add_log("Task was stopped by user", level="warning")
+        with _state_lock:
+            if _current_task:
+                _current_task["status"] = "complete"
+                _current_task["result"] = result[:500] if isinstance(result, str) else str(result)[:500]
         update_agent_state(status="complete")
-        add_log(f"Task completed: {_current_task['result'][:120]}", level="success")
+        with _state_lock:
+            add_log(f"Task completed: {_current_task.get('result', '')[:120]}", level="success")
     except Exception as e:
-        _current_task["status"] = "error"
-        _current_task["error"] = str(e)
+        with _state_lock:
+            if _current_task:
+                _current_task["status"] = "error"
+                _current_task["error"] = str(e)
         update_agent_state(status="error")
         add_log(f"Task error: {e}", level="error")
     finally:
-        _current_task["finished_at"] = datetime.now().isoformat()
-        _task_history.append(dict(_current_task))
-        # Keep last 50 entries
-        del _task_history[:-50]
-        _current_task = None
+        with _state_lock:
+            if _current_task:
+                _current_task["finished_at"] = datetime.now().isoformat()
+                _task_history.append(dict(_current_task))
+                # Keep last 50 entries
+                del _task_history[:-50]
+                _current_task = None
 
 
 # ---------------------------------------------------------------------------
@@ -702,19 +739,24 @@ def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str
         _convert_queue[job_id]["status"] = "running"
 
     try:
+        # Use JSON sidecar to pass paths safely (avoids f-string injection)
+        import json as _json
+        paths_json = _json.dumps({"src": str(src_path), "out": str(output_path)})
         if src_ext == ".step" or src_ext == ".stp":
             script = (
-                "import sys, FreeCAD, Part, Mesh, MeshPart\n"
-                f"shape = Part.Shape()\n"
-                f"shape.read(r'{src_path}')\n"
-                f"mesh = MeshPart.meshFromShape(shape, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
-                f"mesh.write(r'{output_path}')\n"
-                f"print('OK', mesh.CountPoints, mesh.CountFacets)\n"
+                "import sys, json, FreeCAD, Part, Mesh, MeshPart\n"
+                "_paths = json.loads(r'" + paths_json.replace("'", "\\'") + "')\n"
+                "shape = Part.Shape()\n"
+                "shape.read(_paths['src'])\n"
+                "mesh = MeshPart.meshFromShape(shape, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
+                "mesh.write(_paths['out'])\n"
+                "print('OK', mesh.CountPoints, mesh.CountFacets)\n"
             )
         elif src_ext == ".fcstd":
             script = (
-                "import sys, FreeCAD, Part, Mesh, MeshPart\n"
-                f"doc = FreeCAD.openDocument(r'{src_path}')\n"
+                "import sys, json, FreeCAD, Part, Mesh, MeshPart\n"
+                "_paths = json.loads(r'" + paths_json.replace("'", "\\'") + "')\n"
+                "doc = FreeCAD.openDocument(_paths['src'])\n"
                 "shapes = []\n"
                 "for obj in doc.Objects:\n"
                 "    if hasattr(obj, 'Visibility') and not obj.Visibility:\n"
@@ -728,9 +770,9 @@ def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str
                 "    print('ERR no shapes')\n"
                 "    sys.exit(1)\n"
                 "compound = Part.makeCompound(shapes) if len(shapes) > 1 else shapes[0]\n"
-                f"mesh = MeshPart.meshFromShape(compound, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
-                f"mesh.write(r'{output_path}')\n"
-                f"print('OK', mesh.CountPoints, mesh.CountFacets)\n"
+                "mesh = MeshPart.meshFromShape(compound, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
+                "mesh.write(_paths['out'])\n"
+                "print('OK', mesh.CountPoints, mesh.CountFacets)\n"
             )
         else:
             raise ValueError(f"Unsupported format: {src_ext}")
@@ -813,6 +855,15 @@ async def api_convert_async(path: str = Query(...), format: str = Query("stl")) 
     job_id = str(uuid.uuid4())[:8]
     with _convert_lock:
         _convert_queue[job_id] = {"status": "pending", "created_at": _time.time()}
+        # Cleanup old entries (keep last 100)
+        if len(_convert_queue) > 100:
+            now = _time.time()
+            old_keys = [
+                k for k, v in _convert_queue.items()
+                if v.get("status") in ("done", "failed") and now - v.get("created_at", 0) > 3600
+            ]
+            for k in old_keys:
+                del _convert_queue[k]
 
     thread = threading.Thread(
         target=_run_conversion,
@@ -1178,7 +1229,7 @@ if _export_list:
 
     try:
         proc = subprocess.run(
-            [fc_python, "-c", f"exec(open(r'{script_path}').read())"],
+            [fc_python, script_path],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=120,
         )
@@ -1688,7 +1739,7 @@ if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8765) -> None:
+def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     """Run the web server."""
     import uvicorn
 

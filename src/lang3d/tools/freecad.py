@@ -28,6 +28,54 @@ from .base import Tool
 from .process_manager import _process_manager
 
 
+# --- Security helpers ---
+
+import re as _re
+
+def _safe_name(name: str) -> str:
+    """Sanitize a FreeCAD object/document name to prevent script injection.
+
+    Only allows alphanumeric, underscore, hyphen, dot, and CJK characters.
+    """
+    if not name:
+        return "Unnamed"
+    sanitized = _re.sub(r"[^A-Za-z0-9_\-.]", "_", name)
+    if not sanitized or sanitized.startswith("_"):
+        sanitized = "obj_" + sanitized
+    return sanitized[:64]
+
+
+def _safe_path(path: str) -> str:
+    """Sanitize a file path to prevent script injection in f-string contexts.
+
+    Rejects paths containing quotes or other dangerous characters.
+    NOTE: The returned path is used inside r"..." raw strings in generated
+    scripts, so backslashes must NOT be escaped (r-strings treat them literally).
+    """
+    p = str(path)
+    # Block characters that could escape string contexts in generated scripts
+    if any(c in p for c in ('"', "'", "\n", "\r", ";", "`", "$")):
+        raise ValueError(f"Path contains dangerous characters: {path!r}")
+    return p
+
+
+def _validate_raw_script(script: str) -> None:
+    """Validate a raw_script operation to block dangerous FreeCAD API calls."""
+    blocked_patterns = [
+        r"\bos\.system\b",
+        r"\bsubprocess\b",
+        r"\bexec\s*\(",
+        r"\beval\s*\(",
+        r"\b__import__\b",
+        r"\bopen\s*\([^)]*['\"]w",
+        r"\bshutil\b",
+        r"\bctypes\b",
+    ]
+    for pat in blocked_patterns:
+        if _re.search(pat, script):
+            raise ValueError(f"Raw script contains blocked pattern: {pat}")
+
+
 # --- FreeCAD subprocess bridge ---
 
 def _find_freecad_python() -> str | None:
@@ -75,7 +123,7 @@ def _run_freecad_script(script: str, timeout: int = 300) -> str:
 
     try:
         result = subprocess.run(
-            [fc_python, "-c", f"exec(open(r'{script_path}').read())"],
+            [fc_python, script_path],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -83,7 +131,8 @@ def _run_freecad_script(script: str, timeout: int = 300) -> str:
             errors="replace",
         )
         if result.returncode != 0:
-            raise RuntimeError(f"FreeCAD script error:\n{result.stderr}")
+            error_msg = result.stderr or result.stdout or "Unknown error"
+            raise RuntimeError(f"FreeCAD script error:\n{error_msg}")
         return result.stdout.strip()
     except subprocess.TimeoutExpired:
         raise RuntimeError("FreeCAD script timed out")
@@ -118,6 +167,7 @@ def _build_script(operations: list[dict]) -> str:
     """
     lines = [
         "import FreeCAD",
+        "import FreeCAD as App",
         "import Part",
         "import Mesh",
         "import json",
@@ -130,38 +180,38 @@ def _build_script(operations: list[dict]) -> str:
         lines.append(f"# Operation: {op_type}")
 
         if op_type == "new_doc":
-            name = op.get("name", "Unnamed")
+            name = _safe_name(op.get("name", "Unnamed"))
             lines.append(f'doc = FreeCAD.newDocument("{name}")')
 
         elif op_type == "make_box":
-            l, w, h = op["length"], op["width"], op["height"]
-            name = op.get("name", "Box")
+            l, w, h = float(op["length"]), float(op["width"]), float(op["height"])
+            name = _safe_name(op.get("name", "Box"))
             lines.append(f'box = Part.makeBox({l}, {w}, {h})')
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
             lines.append("obj.Shape = box")
             lines.append("doc.recompute()")
 
         elif op_type == "make_cylinder":
-            r, h = op["radius"], op["height"]
-            name = op.get("name", "Cylinder")
+            r, h = float(op["radius"]), float(op["height"])
+            name = _safe_name(op.get("name", "Cylinder"))
             lines.append(f'cyl = Part.makeCylinder({r}, {h})')
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
             lines.append("obj.Shape = cyl")
             lines.append("doc.recompute()")
 
         elif op_type == "make_sphere":
-            r = op["radius"]
-            name = op.get("name", "Sphere")
+            r = float(op["radius"])
+            name = _safe_name(op.get("name", "Sphere"))
             lines.append(f'sphere = Part.makeSphere({r})')
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
             lines.append("obj.Shape = sphere")
             lines.append("doc.recompute()")
 
         elif op_type == "make_cone":
-            r1 = op["radius1"]
-            r2 = op.get("radius2", 0)
-            h = op["height"]
-            name = op.get("name", "Cone")
+            r1 = float(op["radius1"])
+            r2 = float(op.get("radius2", 0))
+            h = float(op["height"])
+            name = _safe_name(op.get("name", "Cone"))
             lines.append(f'cone = Part.makeCone({r1}, {r2}, {h})')
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
             lines.append("obj.Shape = cone")
@@ -169,9 +219,9 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "boolean":
             operation = op["operation"]  # union, cut, intersection
-            obj1_name = op["object1"]
-            obj2_name = op["object2"]
-            result_name = op.get("result_name", "Result")
+            obj1_name = _safe_name(op["object1"])
+            obj2_name = _safe_name(op["object2"])
+            result_name = _safe_name(op.get("result_name", "Result"))
             bool_map = {"union": "fuse", "cut": "cut", "intersection": "common"}
             method = bool_map[operation]
             lines.append(f'o1 = doc.getObject("{obj1_name}")')
@@ -182,8 +232,8 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "move":
-            obj_name = op["object"]
-            dx, dy, dz = op["dx"], op["dy"], op["dz"]
+            obj_name = _safe_name(op["object"])
+            dx, dy, dz = float(op["dx"]), float(op["dy"]), float(op["dz"])
             lines.append(f'_obj = doc.getObject("{obj_name}")')
             lines.append("_moved = _obj.Shape.copy()")
             lines.append(f"_moved.translate(FreeCAD.Vector({dx}, {dy}, {dz}))")
@@ -191,10 +241,10 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "cylinder_with_hole":
-            orad = op["outer_radius"]
-            irad = op["inner_radius"]
-            h = op["height"]
-            name = op.get("name", "CylinderWithHole")
+            orad = float(op["outer_radius"])
+            irad = float(op["inner_radius"])
+            h = float(op["height"])
+            name = _safe_name(op.get("name", "CylinderWithHole"))
             lines.append(f'_outer = Part.makeCylinder({orad}, {h})')
             lines.append(f'_inner = Part.makeCylinder({irad}, {h})')
             lines.append("_result = _outer.cut(_inner)")
@@ -203,14 +253,14 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "plate_with_holes":
-            length = op["length"]
-            width = op["width"]
-            thickness = op["thickness"]
-            hole_radius = op["hole_radius"]
-            nx = op.get("hole_count_x", 2)
-            ny = op.get("hole_count_y", 2)
-            margin = op.get("margin", 0)
-            name = op.get("name", "PlateWithHoles")
+            length = float(op["length"])
+            width = float(op["width"])
+            thickness = float(op["thickness"])
+            hole_radius = float(op["hole_radius"])
+            nx = int(float(op.get("hole_count_x", 2)))
+            ny = int(float(op.get("hole_count_y", 2)))
+            margin = float(op.get("margin", 0))
+            name = _safe_name(op.get("name", "PlateWithHoles"))
             if margin == 0:
                 margin = min(length, width) * 0.1
             sx = (length - 2 * margin) / max(nx - 1, 1) if nx > 1 else 0
@@ -229,23 +279,23 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "fillet":
-            obj_name = op["object"]
-            radius = op["radius"]
+            obj_name = _safe_name(op["object"])
+            radius = float(op["radius"])
             lines.append(f'_obj = doc.getObject("{obj_name}")')
             lines.append(f"_fillet = _obj.Shape.makeFillet({radius}, _obj.Shape.Edges)")
             lines.append("_obj.Shape = _fillet")
             lines.append("doc.recompute()")
 
         elif op_type == "chamfer":
-            obj_name = op["object"]
-            size = op["size"]
+            obj_name = _safe_name(op["object"])
+            size = float(op["size"])
             lines.append(f'_obj = doc.getObject("{obj_name}")')
             lines.append(f"_chamfer = _obj.Shape.makeChamfer({size}, _obj.Shape.Edges)")
             lines.append("_obj.Shape = _chamfer")
             lines.append("doc.recompute()")
 
         elif op_type == "save":
-            path = op["path"].replace("\\", "\\\\")
+            path = _safe_path(op["path"])
             # Make all objects visible before saving so they show in GUI
             lines.append("for _o in doc.Objects:")
             lines.append("    try:")
@@ -254,12 +304,12 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("    except Exception:")
             lines.append("        pass")
             lines.append("doc.recompute()")
-            lines.append(f'doc.saveAs(r"{op["path"]}")')
+            lines.append(f'doc.saveAs(r"{path}")')
 
         elif op_type == "export_stl":
-            path = op["path"]
-            obj_name = op.get("object", "")
-            tolerance = op.get("tolerance", 0.1)
+            path = _safe_path(op["path"])
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
+            tolerance = float(op.get("tolerance", 0.1))
             # Use Mesh.export which is more robust than Mesh.Mesh(shape.tessellate())
             if obj_name:
                 lines.append(f'_export_list = [doc.getObject("{obj_name}")]')
@@ -271,13 +321,15 @@ def _build_script(operations: list[dict]) -> str:
             lines.append('print(f"STL exported: {os.path.getsize(_stl_path):,} bytes")')
 
         elif op_type == "export_step":
-            path = op["path"]
-            obj_name = op.get("object", "")
+            path = _safe_path(op["path"])
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
             if obj_name:
                 lines.append(f'_obj = doc.getObject("{obj_name}")')
                 lines.append(f'_obj.Shape.exportStep(r"{path}")')
             else:
                 lines.append("_shapes = [o.Shape for o in doc.Objects if hasattr(o, 'Shape')]")
+                lines.append("if not _shapes:")
+                lines.append("    raise RuntimeError('No shapes found to export')")
                 lines.append("_compound = _shapes[0]")
                 lines.append("for s in _shapes[1:]:")
                 lines.append("    _compound = _compound.fuse(s)")
@@ -296,7 +348,7 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("    print('No active document')")
 
         elif op_type == "object_info":
-            obj_name = op["object"]
+            obj_name = _safe_name(op["object"])
             lines.append(f'_obj = doc.getObject("{obj_name}")')
             lines.append("if _obj and hasattr(_obj, 'Shape'):")
             lines.append("    s = _obj.Shape")
@@ -307,19 +359,19 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("    print(f'Edges: {len(s.Edges)}, Faces: {len(s.Faces)}, Vertices: {len(s.Vertexes)}')")
 
         elif op_type == "delete_object":
-            obj_name = op["object"]
+            obj_name = _safe_name(op["object"])
             lines.append(f'doc.removeObject("{obj_name}")')
             lines.append("doc.recompute()")
 
         elif op_type == "volume_check":
             # Lightweight verification: load file and check all object
             # dimensions without opening GUI or using VLM.
-            path = op.get("path", "").replace("\\", "\\\\")
+            path = _safe_path(op.get("path", "")) if op.get("path", "") else ""
             checks = op.get("checks", {})
             # Expected dims, volume range, etc.
             expected_dims = checks.get("dimensions", {})
-            min_volume = checks.get("min_volume", 0)
-            max_volume = checks.get("max_volume", float("inf"))
+            min_volume = float(checks.get("min_volume", 0))
+            max_volume = float(checks.get("max_volume", float("inf")))
             if path:
                 lines.append(f'_vc_doc = FreeCAD.openDocument(r"{path}")')
                 lines.append("if not _vc_doc:")
@@ -353,10 +405,11 @@ def _build_script(operations: list[dict]) -> str:
                 lines.append("                _vc_pass = False")
             if expected_dims:
                 for dim_name, dim_val in expected_dims.items():
+                    dim_val = float(dim_val)
                     dim_map = {"length": "XLength", "width": "YLength", "height": "ZLength",
                                "x": "XLength", "y": "YLength", "z": "ZLength"}
                     attr = dim_map.get(dim_name.lower(), dim_name)
-                    tol = checks.get("tolerance_mm", 1.0)
+                    tol = float(checks.get("tolerance_mm", 1.0))
                     lines.append(f'            _vc_actual = getattr(_vc_bb, "{attr}", 0)')
                     lines.append(f"            if abs(_vc_actual - {dim_val}) > {tol}:")
                     lines.append(f'                _vc_info["dim_warning"] = "{dim_name}: expected {dim_val}, got " + str(round(_vc_actual, 2))')
@@ -371,9 +424,9 @@ def _build_script(operations: list[dict]) -> str:
                 lines.append("FreeCAD.closeDocument(_vc_doc.Name)")
 
         elif op_type == "rotate":
-            obj_name = op["object"]
+            obj_name = _safe_name(op["object"])
             axis = op["axis"]  # x, y, z
-            angle = op["angle"]
+            angle = float(op["angle"])
             lines.append("import math")
             lines.append(f'_obj = doc.getObject("{obj_name}")')
             lines.append(f'_axis_map = {{"x": FreeCAD.Vector(1,0,0), "y": FreeCAD.Vector(0,1,0), "z": FreeCAD.Vector(0,0,1)}}')
@@ -386,13 +439,14 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "raw_script":
+            _validate_raw_script(op["script"])
             lines.append(op["script"])
 
         elif op_type == "compute_mass":
             # Compute mass properties for all solid objects in the document
-            obj_name = op.get("object", "")
-            density = op.get("density", 1240)  # kg/m³, default PLA
-            path = op.get("path", "").replace("\\", "\\\\")
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
+            density = float(op.get("density", 1240))  # kg/m³, default PLA
+            path = _safe_path(op.get("path", "")) if op.get("path", "") else ""
             if path:
                 lines.append(f'_cm_doc = FreeCAD.openDocument(r"{path}")')
             else:
@@ -434,21 +488,21 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "sweep":
             # Sweep a profile along a path (e.g. spring, thread, pipe bend)
-            name = op.get("name", "Sweep")
+            name = _safe_name(op.get("name", "Sweep"))
             profile_type = op.get("profile", "circle")  # circle, rectangle, custom
-            profile_radius = op.get("profile_radius", 2.0)
-            profile_width = op.get("profile_width", 4.0)
-            profile_height = op.get("profile_height", 4.0)
+            profile_radius = float(op.get("profile_radius", 2.0))
+            profile_width = float(op.get("profile_width", 4.0))
+            profile_height = float(op.get("profile_height", 4.0))
             path_type = op.get("path_type", "helix")  # helix, circle, line, custom
             # Helix params
-            pitch = op.get("pitch", 5.0)
-            height = op.get("height", 20.0)
-            helix_radius = op.get("helix_radius", 10.0)
-            turns = op.get("turns", 0)
+            pitch = float(op.get("pitch", 5.0))
+            height = float(op.get("height", 20.0))
+            helix_radius = float(op.get("helix_radius", 10.0))
+            turns = float(op.get("turns", 0))
             # Circle path params
-            path_radius = op.get("path_radius", 15.0)
+            path_radius = float(op.get("path_radius", 15.0))
             # Line path params
-            line_length = op.get("line_length", 30.0)
+            line_length = float(op.get("line_length", 30.0))
             line_dir = op.get("line_direction", [1, 0, 0])
             solid = op.get("solid", True)  # True = solid, False = hollow pipe
             frenet = op.get("frenet", True)
@@ -483,7 +537,7 @@ def _build_script(operations: list[dict]) -> str:
                 lines.append(f"_path = Part.Wire(Part.makeCircle({path_radius}))")
                 lines.append(f"_prof.translate(FreeCAD.Vector({path_radius}, 0, 0))")
             elif path_type == "line":
-                dx, dy, dz = line_dir
+                dx, dy, dz = float(line_dir[0]), float(line_dir[1]), float(line_dir[2])
                 lines.append(f"_path = Part.Wire(Part.makeLine(FreeCAD.Vector(0,0,0), FreeCAD.Vector({dx * line_length}, {dy * line_length}, {dz * line_length})))")
             else:
                 custom_path = op.get("custom_path_script", "_path = Part.Wire(Part.makeLine(FreeCAD.Vector(0,0,0), FreeCAD.Vector(30,0,0)))")
@@ -496,7 +550,7 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "loft":
             # Loft between multiple profiles (e.g. transitions, brackets)
-            name = op.get("name", "Loft")
+            name = _safe_name(op.get("name", "Loft"))
             profiles = op.get("profiles", [])
             solid = op.get("solid", True)
             ruled = op.get("ruled", False)
@@ -505,13 +559,14 @@ def _build_script(operations: list[dict]) -> str:
                 # Each profile: {type: "circle"|"rectangle", radius, center:[x,y,z], ...}
                 for i, prof in enumerate(profiles):
                     ptype = prof.get("type", "circle")
-                    cx, cy, cz = prof.get("center", [0, 0, 0])
+                    _c = prof.get("center", [0, 0, 0])
+                    cx, cy, cz = float(_c[0]), float(_c[1]), float(_c[2])
                     if ptype == "circle":
-                        r = prof.get("radius", 5.0)
+                        r = float(prof.get("radius", 5.0))
                         lines.append(f"_loft_p{i} = Part.Wire(Part.makeCircle({r}, FreeCAD.Vector({cx},{cy},{cz})))")
                     elif ptype == "rectangle":
-                        w = prof.get("width", 10.0)
-                        h = prof.get("height", 10.0)
+                        w = float(prof.get("width", 10.0))
+                        h = float(prof.get("height", 10.0))
                         hw, hh = w / 2, h / 2
                         lines.append(f"_loft_p{i} = Part.Wire(Part.makePolygon([")
                         lines.append(f"    FreeCAD.Vector({cx - hw},{cy - hh},{cz}),")
@@ -521,8 +576,8 @@ def _build_script(operations: list[dict]) -> str:
                         lines.append(f"    FreeCAD.Vector({cx - hw},{cy - hh},{cz}),")
                         lines.append("]))")
                     elif ptype == "polygon":
-                        r = prof.get("radius", 5.0)
-                        sides = prof.get("sides", 6)
+                        r = float(prof.get("radius", 5.0))
+                        sides = int(float(prof.get("sides", 6)))
                         import math as _math
                         pts = []
                         for s in range(sides + 1):
@@ -531,16 +586,16 @@ def _build_script(operations: list[dict]) -> str:
                         lines.append(f"_loft_p{i} = Part.Wire(Part.makePolygon([{', '.join(pts)}]))")
                     else:
                         # ellipse
-                        r1 = prof.get("radius1", 10.0)
-                        r2 = prof.get("radius2", 5.0)
+                        r1 = float(prof.get("radius1", 10.0))
+                        r2 = float(prof.get("radius2", 5.0))
                         lines.append(f"_loft_p{i} = Part.Wire(Part.makeEllipse({r1}, {r2}, FreeCAD.Vector({cx},{cy},{cz})))")
                 profile_list = ", ".join(f"_loft_p{i}" for i in range(len(profiles)))
                 lines.append(f"_loft_shapes = [{profile_list}]")
             else:
                 # Two simple circles at z=0 and z=height
-                r1 = op.get("radius1", 10.0)
-                r2 = op.get("radius2", 5.0)
-                h = op.get("height", 20.0)
+                r1 = float(op.get("radius1", 10.0))
+                r2 = float(op.get("radius2", 5.0))
+                h = float(op.get("height", 20.0))
                 lines.append(f"_loft_p0 = Part.Wire(Part.makeCircle({r1}, FreeCAD.Vector(0,0,0)))")
                 lines.append(f"_loft_p1 = Part.Wire(Part.makeCircle({r2}, FreeCAD.Vector(0,0,{h})))")
                 lines.append("_loft_shapes = [_loft_p0, _loft_p1]")
@@ -551,19 +606,19 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "polar_pattern":
             # Circular array: replicate a feature around an axis
-            obj_name = op.get("object", "")
-            count = op.get("count", 6)
-            angle = op.get("angle", 360.0)
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
+            count = int(op.get("count", 6))
+            angle = float(op.get("angle", 360.0))
             axis_vec = op.get("axis", [0, 0, 1])
             center = op.get("center", [0, 0, 0])
-            result_name = op.get("result_name", "PolarPattern")
+            result_name = _safe_name(op.get("result_name", "PolarPattern"))
             if obj_name:
                 lines.append(f"_src = doc.getObject('{obj_name}').Shape")
             else:
                 lines.append("_src = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids][-1].Shape")
             lines.append(f"_pattern_shapes = []")
-            ax_x, ax_y, ax_z = axis_vec
-            cx, cy, cz = center
+            ax_x, ax_y, ax_z = float(axis_vec[0]), float(axis_vec[1]), float(axis_vec[2])
+            cx, cy, cz = float(center[0]), float(center[1]), float(center[2])
             lines.append(f"for _i in range({count}):")
             lines.append(f"    _a = {angle} * _i / {count}")
             lines.append("    _copy = _src.copy()")
@@ -578,16 +633,16 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "linear_pattern":
             # Linear array: replicate a feature along a direction
-            obj_name = op.get("object", "")
-            count = op.get("count", 4)
-            spacing = op.get("spacing", 10.0)
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
+            count = int(op.get("count", 4))
+            spacing = float(op.get("spacing", 10.0))
             direction = op.get("direction", [1, 0, 0])
-            result_name = op.get("result_name", "LinearPattern")
+            result_name = _safe_name(op.get("result_name", "LinearPattern"))
             if obj_name:
                 lines.append(f"_src = doc.getObject('{obj_name}').Shape")
             else:
                 lines.append("_src = [o for o in doc.Objects if hasattr(o, 'Shape') and o.Shape.Solids][-1].Shape")
-            dx, dy, dz = direction
+            dx, dy, dz = float(direction[0]), float(direction[1]), float(direction[2])
             lines.append(f"_lin_shapes = []")
             lines.append(f"for _i in range({count}):")
             lines.append("    _copy = _src.copy()")
@@ -602,9 +657,9 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "mirror":
             # Mirror a feature across a plane
-            obj_name = op.get("object", "")
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
             plane = op.get("plane", "YZ")  # XY, YZ, XZ
-            result_name = op.get("result_name", "Mirror")
+            result_name = _safe_name(op.get("result_name", "Mirror"))
             if obj_name:
                 lines.append(f"_mir_src = doc.getObject('{obj_name}').Shape")
             else:
@@ -619,6 +674,7 @@ def _build_script(operations: list[dict]) -> str:
             else:
                 # Custom plane normal
                 nx, ny, nz = op.get("plane_normal", [1, 0, 0])
+                nx, ny, nz = float(nx), float(ny), float(nz)
                 lines.append(f"_mir = _mir_src.mirror(FreeCAD.Vector(0,0,0), FreeCAD.Vector({nx},{ny},{nz}))")
             lines.append(f'obj = doc.addObject("Part::Feature", "{result_name}")')
             lines.append("obj.Shape = _mir")
@@ -626,11 +682,11 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "shell":
             # Hollow out a solid by removing faces
-            obj_name = op.get("object", "")
-            thickness = op.get("thickness", 2.0)
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
+            thickness = float(op.get("thickness", 2.0))
             # faces_to_remove: list of face indices to open
             faces_to_remove = op.get("faces_to_remove", [])
-            result_name = op.get("result_name", "Shell")
+            result_name = _safe_name(op.get("result_name", "Shell"))
             if obj_name:
                 lines.append(f"_shell_obj = doc.getObject('{obj_name}')")
             else:
@@ -648,13 +704,13 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "draft":
             # Apply draft angle to faces (taper for injection molding)
-            obj_name = op.get("object", "")
-            angle = op.get("angle", 2.0)
+            obj_name = _safe_name(op["object"]) if op.get("object") else ""
+            angle = float(op.get("angle", 2.0))
             # direction: the pull direction
             direction = op.get("direction", [0, 0, 1])
             face_indices = op.get("faces", [])
             neutral_plane_origin = op.get("neutral_plane", [0, 0, 0])
-            result_name = op.get("result_name", "Draft")
+            result_name = _safe_name(op.get("result_name", "Draft"))
             if obj_name:
                 lines.append(f"_draft_obj = doc.getObject('{obj_name}')")
             else:
@@ -664,8 +720,8 @@ def _build_script(operations: list[dict]) -> str:
             else:
                 # Apply to all side faces (skip top and bottom)
                 lines.append("_draft_faces = [f for f in _draft_obj.Shape.Faces]")
-            dx, dy, dz = direction
-            no_x, no_y, no_z = neutral_plane_origin
+            dx, dy, dz = float(direction[0]), float(direction[1]), float(direction[2])
+            no_x, no_y, no_z = float(neutral_plane_origin[0]), float(neutral_plane_origin[1]), float(neutral_plane_origin[2])
             lines.append(f"_draft_angle = {angle}")
             lines.append(f"_draft_dir = FreeCAD.Vector({dx},{dy},{dz})")
             lines.append("# Apply draft using makeDraftShape (FreeCAD Part API)")
@@ -691,10 +747,10 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "create_sketch":
             # Create a 2D sketch from points/lines/arcs/circles
-            name = op.get("name", "Sketch")
+            name = _safe_name(op.get("name", "Sketch"))
             elements = op.get("elements", [])
             plane = op.get("plane", "XY")  # XY, XZ, YZ
-            offset = op.get("offset", 0.0)
+            offset = float(op.get("offset", 0.0))
             lines.append("import Sketcher")
             lines.append(f'_sketch_obj = doc.addObject("Sketcher::SketchObject", "{name}")')
             # Set sketch plane — AttachmentSupport expects [(obj, (sub,))]
@@ -710,34 +766,34 @@ def _build_script(operations: list[dict]) -> str:
             for idx_el, el in enumerate(elements):
                 etype = el.get("type", "")
                 if etype == "point":
-                    px, py = el.get("x", 0), el.get("y", 0)
+                    px, py = float(el.get("x", 0)), float(el.get("y", 0))
                     lines.append(f"_sketch_obj.addGeometry(Part.Point(App.Vector({px},{py},0)), False)")
                 elif etype == "line":
-                    x1, y1 = el.get("x1", 0), el.get("y1", 0)
-                    x2, y2 = el.get("x2", 0), el.get("y2", 0)
+                    x1, y1 = float(el.get("x1", 0)), float(el.get("y1", 0))
+                    x2, y2 = float(el.get("x2", 0)), float(el.get("y2", 0))
                     lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({x1},{y1},0), App.Vector({x2},{y2},0)), False)")
                 elif etype == "circle":
-                    cx, cy = el.get("cx", 0), el.get("cy", 0)
-                    r = el.get("radius", 5)
+                    cx, cy = float(el.get("cx", 0)), float(el.get("cy", 0))
+                    r = float(el.get("radius", 5))
                     lines.append(f"_sketch_obj.addGeometry(Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}), False)")
                 elif etype == "arc":
-                    cx, cy = el.get("cx", 0), el.get("cy", 0)
-                    r = el.get("radius", 5)
-                    a1 = el.get("start_angle", 0)
-                    a2 = el.get("end_angle", 360)
+                    cx, cy = float(el.get("cx", 0)), float(el.get("cy", 0))
+                    r = float(el.get("radius", 5))
+                    a1 = float(el.get("start_angle", 0))
+                    a2 = float(el.get("end_angle", 360))
                     lines.append(f"_sketch_obj.addGeometry(Part.ArcOfCircle(Part.Circle(App.Vector({cx},{cy},0), App.Vector(0,0,1), {r}), {a1}, {a2}), False)")
                 elif etype == "rectangle":
-                    rx, ry = el.get("x", 0), el.get("y", 0)
-                    rw, rh = el.get("width", 10), el.get("height", 10)
+                    rx, ry = float(el.get("x", 0)), float(el.get("y", 0))
+                    rw, rh = float(el.get("width", 10)), float(el.get("height", 10))
                     lines.append(f"# Rectangle at ({rx},{ry}) {rw}x{rh}")
                     lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx},{ry},0), App.Vector({rx + rw},{ry},0)), False)")
                     lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx + rw},{ry},0), App.Vector({rx + rw},{ry + rh},0)), False)")
                     lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx + rw},{ry + rh},0), App.Vector({rx},{ry + rh},0)), False)")
                     lines.append(f"_sketch_obj.addGeometry(Part.LineSegment(App.Vector({rx},{ry + rh},0), App.Vector({rx},{ry},0)), False)")
                 elif etype == "polygon":
-                    cx, cy = el.get("cx", 0), el.get("cy", 0)
-                    r = el.get("radius", 10)
-                    n = el.get("sides", 6)
+                    cx, cy = float(el.get("cx", 0)), float(el.get("cy", 0))
+                    r = float(el.get("radius", 10))
+                    n = int(float(el.get("sides", 6)))
                     lines.append(f"import math")
                     lines.append(f"for _pi in range({n}):")
                     lines.append(f"    _a1 = 2 * math.pi * _pi / {n}")
@@ -750,9 +806,9 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "extrude_sketch":
             # Extrude a sketch into a 3D solid
-            sketch_name = op.get("sketch", "Sketch")
-            height = op.get("height", 10.0)
-            result_name = op.get("name", "Extrusion")
+            sketch_name = _safe_name(op.get("sketch", "Sketch"))
+            height = float(op.get("height", 10.0))
+            result_name = _safe_name(op.get("name", "Extrusion"))
             direction = op.get("direction", "z")  # x, y, z
             midplane = op.get("midplane", False)
             reverse = op.get("reverse", False)
@@ -791,11 +847,12 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "revolve_sketch":
             # Revolve a sketch around an axis to create a solid of revolution
-            sketch_name = op.get("sketch", "Sketch")
-            result_name = op.get("name", "Revolution")
+            sketch_name = _safe_name(op.get("sketch", "Sketch"))
+            result_name = _safe_name(op.get("name", "Revolution"))
             axis = op.get("axis", "z")  # x, y, z
-            angle = op.get("angle", 360.0)  # degrees
+            angle = float(op.get("angle", 360.0))  # degrees
             base_pt = op.get("base", [0, 0, 0])
+            base_pt = [float(base_pt[0]), float(base_pt[1]), float(base_pt[2])]
             if axis == "x":
                 ax_vec = "App.Vector(1, 0, 0)"
             elif axis == "y":
@@ -817,11 +874,12 @@ def _build_script(operations: list[dict]) -> str:
 
         elif op_type == "pocket":
             # Cut a pocket (pocket) from a solid using a sketch profile
-            sketch_name = op.get("sketch", "Sketch")
-            target = op.get("target", "")  # target solid object name
-            depth = op.get("depth", 5.0)
+            sketch_name = _safe_name(op.get("sketch", "Sketch"))
+            raw_target = op.get("target", "")
+            target = _safe_name(raw_target) if raw_target else ""
+            depth = float(op.get("depth", 5.0))
             through_all = op.get("through_all", False)
-            result_name = op.get("name", "PocketResult")
+            result_name = _safe_name(op.get("name", "PocketResult"))
             direction = op.get("direction", "z")
             reverse = op.get("reverse", False)
             if direction == "x":
@@ -875,6 +933,7 @@ def _build_batch_script(all_ops: list[list[dict]]) -> str:
     """
     header = [
         "import FreeCAD",
+        "import FreeCAD as App",
         "import Part",
         "import Mesh",
         "import json",
@@ -890,36 +949,36 @@ def _build_batch_script(all_ops: list[list[dict]]) -> str:
             part_lines.append(f"# Operation: {op_type}")
 
             if op_type == "new_doc":
-                name = op.get("name", "Unnamed")
+                name = _safe_name(op.get("name", "Unnamed"))
                 part_lines.append(f'doc = FreeCAD.newDocument("{name}")')
 
             elif op_type == "make_box":
-                l, w, h = op["length"], op["width"], op["height"]
-                name = op.get("name", "Box")
+                l, w, h = float(op["length"]), float(op["width"]), float(op["height"])
+                name = _safe_name(op.get("name", "Box"))
                 part_lines.append(f'box = Part.makeBox({l}, {w}, {h})')
                 part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
                 part_lines.append("obj.Shape = box")
                 part_lines.append("doc.recompute()")
 
             elif op_type == "make_cylinder":
-                r, h = op["radius"], op["height"]
-                name = op.get("name", "Cylinder")
+                r, h = float(op["radius"]), float(op["height"])
+                name = _safe_name(op.get("name", "Cylinder"))
                 part_lines.append(f'cyl = Part.makeCylinder({r}, {h})')
                 part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
                 part_lines.append("obj.Shape = cyl")
                 part_lines.append("doc.recompute()")
 
             elif op_type == "make_sphere":
-                r = op["radius"]
-                name = op.get("name", "Sphere")
+                r = float(op["radius"])
+                name = _safe_name(op.get("name", "Sphere"))
                 part_lines.append(f'sphere = Part.makeSphere({r})')
                 part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
                 part_lines.append("obj.Shape = sphere")
                 part_lines.append("doc.recompute()")
 
             elif op_type == "export_stl":
-                path = op["path"]
-                name = op.get("name", "")
+                path = _safe_path(op["path"])
+                name = _safe_name(op.get("name", ""))
                 part_lines.append(f"_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]")
                 part_lines.append(f'Mesh.export(_export_list, r"{path}")')
                 part_lines.append(f'print(f"Exported: {path}")')

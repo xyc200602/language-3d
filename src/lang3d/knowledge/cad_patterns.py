@@ -20,44 +20,44 @@ COMMON_PATTERNS: dict[str, ModelingPattern] = {
         name="Box (立方体)",
         description="创建一个立方体",
         steps=[
-            "选择前视基准面，进入草图模式",
+            "选择 XY_Plane 基准面，进入草图模式",
             "绘制矩形，标注尺寸",
             "退出草图，拉伸到指定深度",
         ],
-        required_tools=["sw_sketch_rectangle", "sw_extrude"],
+        required_tools=["fc_batch"],
     ),
     "cylinder": ModelingPattern(
         name="Cylinder (圆柱体)",
         description="创建一个圆柱体",
         steps=[
-            "选择前视基准面，进入草图模式",
+            "选择 XY_Plane 基准面，进入草图模式",
             "绘制圆，标注半径",
             "退出草图，拉伸到指定高度",
         ],
-        required_tools=["sw_sketch_circle", "sw_extrude"],
+        required_tools=["fc_batch"],
     ),
     "plate_with_holes": ModelingPattern(
         name="Plate with Holes (带孔板)",
         description="创建一块带安装孔的板",
         steps=[
-            "选择前视基准面，进入草图模式",
+            "选择 XY_Plane 基准面，进入草图模式",
             "绘制矩形轮廓",
             "在四角绘制圆形（安装孔位置）",
-            "使用剪裁去掉圆形区域",
+            "使用布尔减去圆形区域",
             "退出草图，拉伸到板厚",
         ],
-        required_tools=["sw_sketch_rectangle", "sw_sketch_circle", "sw_extrude"],
+        required_tools=["fc_batch"],
     ),
     "hollow_cylinder": ModelingPattern(
         name="Hollow Cylinder (空心圆柱)",
         description="创建一个空心圆柱（管状）",
         steps=[
-            "选择前视基准面，进入草图模式",
+            "选择 XY_Plane 基准面，进入草图模式",
             "绘制外圆",
             "绘制内圆（同心）",
             "退出草图，拉伸到指定高度",
         ],
-        required_tools=["sw_sketch_circle", "sw_extrude"],
+        required_tools=["fc_batch"],
     ),
     "servo_mount": ModelingPattern(
         name="Servo Mount (舵机安装座)",
@@ -69,7 +69,7 @@ COMMON_PATTERNS: dict[str, ModelingPattern] = {
             "在侧板上钻螺丝孔",
             "倒角处理",
         ],
-        required_tools=["sw_sketch_rectangle", "sw_sketch_circle", "sw_extrude"],
+        required_tools=["fc_batch"],
     ),
 }
 

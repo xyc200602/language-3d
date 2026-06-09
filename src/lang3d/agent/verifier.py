@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..models.base import Message
 from ..models.router import ModelRouter, TaskType
@@ -30,10 +33,17 @@ class Verifier:
             checks.append(heuristics_result)
 
         # If execution result contains errors
+        # Exclude common false-positive phrases
+        _error_exclude = {
+            "no error", "error_log", "error_message",
+            "error handling", "error_code: 0", "error_code:0",
+            "exit code: 0",
+        }
         if "Error:" in execution_result or "error" in execution_result.lower():
             error_lines = [
                 line for line in execution_result.split("\n")
                 if "error" in line.lower()
+                and not any(phrase in line.lower() for phrase in _error_exclude)
             ]
             if error_lines and "exit code: 0" not in execution_result.lower():
                 return False, f"Execution contained errors: {error_lines[0][:200]}"
@@ -92,4 +102,4 @@ class Verifier:
                 return False, content
             return True, content
         except Exception as e:
-            return True, f"LLM verification skipped: {e}"
+            return False, f"LLM verification failed: {e}"

@@ -132,6 +132,10 @@ Parts fall into two classes with DIFFERENT dimension rules:
     parent_anchor="front" / child_anchor="back" so the link extends along its length axis
 13. **ARM DEFAULT ANGLES**: Provide non-zero default_angles (e.g., -45, -30, 15) so the arm
     has a bent posture instead of a straight vertical tower
+14. **WHEEL ORIENTATION**: Wheels MUST use child_anchor='center', axis='y',
+    parent_anchor='left' or 'right'. This ensures correct cylinder orientation.
+15. **WHEEL-MOTOR CHAIN**: Always use base_plate→motor→wheel topology.
+    Never attach wheels directly to base_plate.
 
 ## Connection Methods (physical joining)
 
@@ -787,6 +791,46 @@ _VLM_FIX_PROMPT = (
 )
 
 
+def _geometric_prevalidation(
+    parts: list[dict],
+    positions: dict[str, dict],
+) -> list[str]:
+    """Deterministic geometric checks. Returns problem descriptions."""
+    import math as _math
+    problems = []
+
+    # 1. Collision proxy: parts at same position
+    seen: dict[str, str] = {}
+    for name, pdata in positions.items():
+        pos = pdata.get("position", [0, 0, 0])
+        key = f"{pos[0]:.0f},{pos[1]:.0f},{pos[2]:.0f}"
+        if key in seen:
+            problems.append(f"Parts '{name}' and '{seen[key]}' at same position")
+        else:
+            seen[key] = name
+
+    # 2. Outlier: parts >500mm from centroid
+    if positions:
+        vals = list(positions.values())
+        cx = sum(v["position"][0] for v in vals) / len(vals)
+        cy = sum(v["position"][1] for v in vals) / len(vals)
+        cz = sum(v["position"][2] for v in vals) / len(vals)
+        for name, pdata in positions.items():
+            p = pdata["position"]
+            dist = _math.sqrt((p[0]-cx)**2 + (p[1]-cy)**2 + (p[2]-cz)**2)
+            if dist > 500:
+                problems.append(f"Part '{name}' is {dist:.0f}mm from center - misplaced")
+
+    # 3. Wheels near ground
+    wheel_names = [n for n in positions if "wheel" in n.lower()]
+    if wheel_names:
+        min_z = min(positions[n]["position"][2] for n in wheel_names)
+        if min_z > 100:
+            problems.append(f"All wheels above Z={min_z:.0f}mm - should be near ground")
+
+    return problems
+
+
 def _vlm_check_assembly(
     positions: dict[str, dict],
     parts: list[dict],
@@ -815,7 +859,8 @@ def _vlm_check_assembly(
     backend = GLMBackend(api_key=api_key, base_url=base_url,
                           vision_model=vision_model)
     all_problems: list[str] = []
-    any_passed = False
+    pass_count = 0
+    total_views = len(rendered)
 
     for view_path in rendered:
         try:
@@ -825,22 +870,32 @@ def _vlm_check_assembly(
             )
             text = str(resp).lower()
             if '"passed": true' in text or '"passed":true' in text:
-                any_passed = True
-            else:
-                # Extract problem list
-                try:
-                    start = str(resp).find("{")
-                    end = str(resp).rfind("}") + 1
-                    data = json.loads(str(resp)[start:end])
-                    for p in data.get("problems", []):
-                        if p and p not in all_problems:
-                            all_problems.append(p)
-                except (json.JSONDecodeError, ValueError):
-                    pass
+                pass_count += 1
+            # Always extract problems (even from "passed" views)
+            try:
+                start = str(resp).find("{")
+                end = str(resp).rfind("}") + 1
+                data = json.loads(str(resp)[start:end])
+                for p in data.get("problems", []):
+                    if p and p not in all_problems:
+                        all_problems.append(p)
+            except (json.JSONDecodeError, ValueError):
+                pass
         except Exception as e:
             logger.warning("VLM check failed for %s: %s", view_path, e)
 
-    return any_passed, all_problems
+    # Majority vote: >50% of views must pass
+    passed = pass_count > total_views / 2
+
+    # Geometric pre-validation as safety net
+    geo_problems = _geometric_prevalidation(parts, positions)
+    if geo_problems:
+        passed = False
+        for p in geo_problems:
+            if p not in all_problems:
+                all_problems.append(p)
+
+    return passed, all_problems
 
 
 def generate_assembly_with_vlm_loop(

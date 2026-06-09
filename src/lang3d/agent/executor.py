@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 from ..models.base import Message, ModelResponse, ToolCall
 from ..models.router import ModelRouter, TaskType
 from ..tools.base import ToolRegistry
 from .context import truncate_messages, truncate_tool_result
+from .fix_strategy import classify_failure, check_convergence, extract_fix_commands, generate_fix_hint
 from .state import AgentState, PlanStep, StepStatus
 
 
@@ -95,6 +99,9 @@ class Executor:
         """
         step.status = StepStatus.IN_PROGRESS
         step.attempts += 1
+        # Explicitly initialize per-step state (thread safety)
+        self._verify_fail_count = 0
+        self._fix_history = []
 
         messages: list[Message] = [
             Message(
@@ -192,7 +199,6 @@ class Executor:
 
                 # Auto-fix: detect cad_verify MATCH:False and inject fix hint
                 if tc.name == "cad_verify" and "MATCH: False" in result:
-                    from .fix_strategy import classify_failure, generate_fix_hint, extract_fix_commands, check_convergence
                     self._verify_fail_count = getattr(self, "_verify_fail_count", 0) + 1
                     max_verify_retries = 3  # same as core._run_direct default
                     if self._verify_fail_count <= max_verify_retries:

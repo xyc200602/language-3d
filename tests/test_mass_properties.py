@@ -47,7 +47,7 @@ class TestMaterialDensity:
         assert MaterialDensity.Copper == 8960
 
     def test_titanium(self):
-        assert MaterialDensity.Titanium == 4500
+        assert MaterialDensity.Titanium == 4430
 
     def test_carbon_fiber(self):
         assert MaterialDensity.CarbonFiber == 1600
@@ -105,8 +105,10 @@ class TestPartMassFields:
             name="cyl", category="test", description="",
             dimensions={"diameter": 80, "height": 40},
         )
-        # diameter=80, no width/length → falls back to product: 80*40=3200
-        assert p.compute_volume_mm3() == 3200
+        # diameter=80 → radius=40, height=40 → cylinder volume π*r²*h = π*1600*40 ≈ 201062
+        import math
+        expected = math.pi * 40 * 40 * 40
+        assert abs(p.compute_volume_mm3() - expected) < 1.0
 
     def test_compute_estimated_mass_pla(self):
         p = Part(

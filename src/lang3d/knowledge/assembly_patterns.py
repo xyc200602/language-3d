@@ -239,7 +239,7 @@ ROBOT_PROFILES: dict[str, RobotAssemblyProfile] = {
     "anymal_b": RobotAssemblyProfile(
         name="ANYmal B",
         project_url="https://github.com/ANYbotics/anymal_b_simple_description",
-        dof=12,                    # 3× 4-DOF legs (hip_abduction + hip_flexion + knee)
+        dof=12,                    # 4× 3-DOF legs (hip_abduction + hip_flexion + knee)
         total_parts=45,
         structural_parts=25,       # Body frame, leg links, foot shells
         functional_parts=12,       # 12× SEAs (Series Elastic Actuators)

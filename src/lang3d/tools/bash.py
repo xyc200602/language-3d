@@ -2,12 +2,47 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from typing import Any
 
 from ..models.base import ToolDefinition
 from .base import Tool
+
+# Dangerous command patterns that should be blocked
+_DANGEROUS_PATTERNS = [
+    r"\brm\s+-rf\s+/",
+    r"\brm\s+-rf\s+[A-Za-z]:",
+    r"\bformat\s+[A-Za-z]:",
+    r"\bdd\s+if=",
+    r"\bmkfs\b",
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r"\bhalt\b",
+    r"\bpowershell\b.*-command.*Remove-Item",
+    r"\breg\s+(delete|add)\b",
+    r"\bnet\s+(user|localgroup)\b",
+    r"\btaskkill\s+/f\s+/pid\s+0\b",
+    r">/dev/sd",
+    r"\bsudo\s+rm\b",
+]
+
+
+def _is_dangerous_command(command: str) -> str | None:
+    """Check if a command matches a dangerous pattern. Returns the matched pattern or None."""
+    cmd_lower = command.lower()
+    for pattern in _DANGEROUS_PATTERNS:
+        if re.search(pattern, cmd_lower):
+            return pattern
+    return None
+
+
+# Dangerous Python modules that should not be importable in python_exec
+_BLOCKED_MODULES = {
+    "subprocess", "os.system", "shutil.rmtree",
+    "ctypes", "winreg",
+}
 
 
 class BashTool(Tool):
@@ -46,6 +81,10 @@ class BashTool(Tool):
         cwd: str | None = None,
         **kwargs: Any,
     ) -> str:
+        # Security: block dangerous commands
+        dangerous = _is_dangerous_command(command)
+        if dangerous:
+            return f"Error: Command blocked (matches dangerous pattern: {dangerous})"
         try:
             result = subprocess.run(
                 command,
@@ -107,6 +146,10 @@ class PythonExecTool(Tool):
         )
 
     def execute(self, *, code: str, timeout: int = 30, **kwargs: Any) -> str:
+        # Security: block dangerous imports
+        for mod in _BLOCKED_MODULES:
+            if mod in code:
+                return f"Error: Code contains blocked module/reference: {mod}"
         try:
             result = subprocess.run(
                 [sys.executable, "-c", code],

@@ -44,6 +44,7 @@ class AssemblyContext:
             self.positions = solver.solve()
             # Adjust ground contact: find lowest part considering geometry
             self._adjust_ground_contact()
+            self._validate_positions()
             self.solved = True
         return self.positions
 
@@ -114,6 +115,47 @@ class AssemblyContext:
                 placement["position"][2] = round(
                     placement["position"][2] + shift, 4
                 )
+
+    def _validate_positions(self) -> list[str]:
+        """Validate solved positions. Returns warnings."""
+        import math
+        warnings = []
+
+        # 1. NaN/Inf
+        for name, pdata in self.positions.items():
+            pos = pdata.get("position", [0, 0, 0])
+            if any(not math.isfinite(v) for v in pos):
+                warnings.append(f"Part '{name}' has non-finite position: {pos}")
+
+        # 2. Duplicate positions
+        seen: dict[str, str] = {}
+        for name, pdata in self.positions.items():
+            pos = pdata.get("position", [0, 0, 0])
+            key = f"{pos[0]:.1f},{pos[1]:.1f},{pos[2]:.1f}"
+            if key in seen:
+                warnings.append(f"Parts '{name}' and '{seen[key]}' at same position")
+            else:
+                seen[key] = name
+
+        # 3. Symmetry: parts with matching suffixes (_fl/_fr/_rl/_rr) should have similar Z
+        suffixes = {"_fl": "wheels", "_fr": "wheels", "_rl": "wheels", "_rr": "wheels",
+                    "_l": "lr_pair", "_r": "lr_pair"}
+        groups: dict[str, list[str]] = {}
+        for part in self.assembly.parts:
+            for suf, grp in suffixes.items():
+                if part.name.endswith(suf):
+                    groups.setdefault(grp, []).append(part.name)
+                    break
+        for grp_name, names in groups.items():
+            if len(names) >= 2:
+                zs = [self.positions[n]["position"][2] for n in names if n in self.positions]
+                if zs and max(zs) - min(zs) > 20:
+                    warnings.append(f"Symmetry group '{grp_name}' Z variation: {max(zs)-min(zs):.1f}mm")
+
+        if warnings:
+            import logging
+            logging.getLogger(__name__).warning("Position validation: %s", "; ".join(warnings))
+        return warnings
 
     def ensure_mass(self) -> dict[str, Any]:
         """Compute mass properties if not already done."""

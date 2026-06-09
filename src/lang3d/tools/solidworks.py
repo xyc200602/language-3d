@@ -77,7 +77,7 @@ class SWExtrudeTool(Tool):
                 "properties": {
                     "depth": {
                         "type": "number",
-                        "description": "Extrusion depth in meters",
+                        "description": "Extrusion depth in document units",
                     },
                     "reverse": {
                         "type": "boolean",
@@ -137,10 +137,10 @@ class SWSketchLineTool(Tool):
             parameters={
                 "type": "object",
                 "properties": {
-                    "x1": {"type": "number", "description": "Start X (meters)"},
-                    "y1": {"type": "number", "description": "Start Y (meters)"},
-                    "x2": {"type": "number", "description": "End X (meters)"},
-                    "y2": {"type": "number", "description": "End Y (meters)"},
+                    "x1": {"type": "number", "description": "Start X (document units)"},
+                    "y1": {"type": "number", "description": "Start Y (document units)"},
+                    "x2": {"type": "number", "description": "End X (document units)"},
+                    "y2": {"type": "number", "description": "End Y (document units)"},
                 },
                 "required": ["x1", "y1", "x2", "y2"],
             },
@@ -170,9 +170,9 @@ class SWSketchCircleTool(Tool):
             parameters={
                 "type": "object",
                 "properties": {
-                    "cx": {"type": "number", "description": "Center X (meters)"},
-                    "cy": {"type": "number", "description": "Center Y (meters)"},
-                    "radius": {"type": "number", "description": "Radius (meters)"},
+                    "cx": {"type": "number", "description": "Center X (document units)"},
+                    "cy": {"type": "number", "description": "Center Y (document units)"},
+                    "radius": {"type": "number", "description": "Radius (document units)"},
                 },
                 "required": ["cx", "cy", "radius"],
             },
@@ -202,10 +202,10 @@ class SWSketchRectangleTool(Tool):
             parameters={
                 "type": "object",
                 "properties": {
-                    "x1": {"type": "number", "description": "Corner 1 X (meters)"},
-                    "y1": {"type": "number", "description": "Corner 1 Y (meters)"},
-                    "x2": {"type": "number", "description": "Corner 2 X (meters)"},
-                    "y2": {"type": "number", "description": "Corner 2 Y (meters)"},
+                    "x1": {"type": "number", "description": "Corner 1 X (document units)"},
+                    "y1": {"type": "number", "description": "Corner 1 Y (document units)"},
+                    "x2": {"type": "number", "description": "Corner 2 X (document units)"},
+                    "y2": {"type": "number", "description": "Corner 2 Y (document units)"},
                 },
                 "required": ["x1", "y1", "x2", "y2"],
             },

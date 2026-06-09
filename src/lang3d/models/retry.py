@@ -127,6 +127,8 @@ def call_with_retry(
             return fn(*args, **kwargs)
         except BaseException as exc:
             last_exc = exc
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             if attempt >= cfg.max_retries or not _is_retryable_error(exc, cfg):
                 raise
 
@@ -213,6 +215,8 @@ class AdaptiveRetryHandler:
                 return result
             except BaseException as exc:
                 last_exc = exc
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
                 self.record_failure(exc)
                 if attempt >= self.config.max_retries or not _is_retryable_error(exc, self.config):
                     raise

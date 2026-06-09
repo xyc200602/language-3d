@@ -112,7 +112,7 @@ class TestVLMDefaultAngles:
         import inspect
         sig = inspect.signature(CADVerifyTool.execute)
         angles_param = sig.parameters["angles"]
-        assert angles_param.default == "isometric,front,top"
+        assert angles_param.default == "isometric,front,top,right"
 
     def test_default_angles_not_empty(self):
         """Default should not be empty string (which disables multi-angle)."""

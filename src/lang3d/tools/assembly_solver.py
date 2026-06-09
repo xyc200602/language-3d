@@ -246,6 +246,38 @@ def _anchor_alignment_rotation(parent_anchor: str, child_anchor: str) -> list[li
 # Rotation helpers
 # ---------------------------------------------------------------------------
 
+def _is_cylindrical_part(part: Part) -> bool:
+    """Check if a part has cylindrical dimensions."""
+    dims = part.dimensions
+    return "diameter" in dims or "outer_diameter" in dims
+
+
+def _cylinder_base_orientation(axis: tuple[float, float, float]) -> list[list[float]]:
+    """Rotation to align a cylinder's default Z axis with the given joint axis.
+
+    VTK add_cylinder creates Y-aligned, then RotateX(90) → Z-aligned.
+    For a wheel on axis=y: need to rotate Z→Y = R_x(90deg).
+    """
+    ax, ay, az = axis
+    norm = math.sqrt(ax*ax + ay*ay + az*az)
+    if norm < 1e-10:
+        return _identity_matrix()
+    ax, ay, az = ax/norm, ay/norm, az/norm
+
+    if abs(az - 1.0) < 1e-10 or abs(az + 1.0) < 1e-10:
+        return _identity_matrix()  # Z axis, already aligned
+    elif abs(ay - 1.0) < 1e-10 or abs(ay + 1.0) < 1e-10:
+        return _rotation_matrix_axis_angle((1, 0, 0), -math.pi / 2 * (1 if ay > 0 else -1))
+    elif abs(ax - 1.0) < 1e-10 or abs(ax + 1.0) < 1e-10:
+        return _rotation_matrix_axis_angle((0, 1, 0), math.pi / 2 * (1 if ax > 0 else -1))
+    else:
+        # General: rotate Z to target via cross product
+        z = (0, 0, 1)
+        cross = (z[1]*az - z[2]*ay, z[2]*ax - z[0]*az, z[0]*ay - z[1]*ax)
+        dot = az  # z · axis_normalized
+        return _rotation_matrix_axis_angle(cross, math.acos(max(-1, min(1, dot))))
+
+
 def _rotation_matrix_axis_angle(axis: tuple[float, float, float], angle_rad: float) -> list[list[float]]:
     """Rodrigues' rotation formula → 3×3 matrix."""
     x, y, z = axis
@@ -775,9 +807,17 @@ class AssemblySolver:
         # Anchor alignment: rotate child so its anchor faces the parent's anchor
         align_rot = _anchor_alignment_rotation(joint.parent_anchor, joint.child_anchor)
 
-        # Compute child rotation: parent_rot @ joint_rot @ align_rot
+        # Cylinder base orientation: for cylindrical parts on revolute joints
+        # with child_anchor="center", rotate from default Z-axis to joint axis.
+        rot_axis_local = _revolute_axis(joint) if joint.type in ("revolute", "gear", "belt") else (0, 0, 1)
+        cylinder_orient = _identity_matrix()
+        if (joint.type in ("revolute", "gear", "belt")
+                and joint.child_anchor == "center"
+                and _is_cylindrical_part(child_part)):
+            cylinder_orient = _cylinder_base_orientation(rot_axis_local)
+
+        # Compute child rotation: parent_rot @ joint_rot @ align_rot @ cylinder_orient
         if joint.type in ("revolute", "gear", "belt"):
-            rot_axis_local = _revolute_axis(joint)
             rot_axis_global = _mat_vec(parent_rot, rot_axis_local)
 
             # Support eccentric rotation: apply rotation about an offset axis
@@ -787,7 +827,7 @@ class AssemblySolver:
                 parent_anchor_global = _vec_add(parent_anchor_global, eccentric)
 
             joint_rot = _rotation_matrix_axis_angle(rot_axis_global, angle_rad)
-            child_rot = _mat_mul(joint_rot, _mat_mul(parent_rot, align_rot))
+            child_rot = _mat_mul(joint_rot, _mat_mul(parent_rot, _mat_mul(align_rot, cylinder_orient)))
         elif joint.type == "prismatic":
             # Translation along the anchor direction, alignment only
             slide_dir = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
@@ -796,10 +836,10 @@ class AssemblySolver:
                       slide_global[1] * angle_rad * 100,
                       slide_global[2] * angle_rad * 100)
             parent_anchor_global = _vec_add(parent_anchor_global, offset)
-            child_rot = _mat_mul(parent_rot, align_rot)
+            child_rot = _mat_mul(parent_rot, _mat_mul(align_rot, cylinder_orient))
         else:
             # Fixed joint: inherit parent rotation + anchor alignment
-            child_rot = _mat_mul(parent_rot, align_rot)
+            child_rot = _mat_mul(parent_rot, _mat_mul(align_rot, cylinder_orient))
 
         # Child center = parent anchor point + rotated child anchor offset
         child_center = _vec_add(
@@ -1269,8 +1309,9 @@ class AssemblySolveTool(Tool):
 
     name = "assembly_solve"
     description = (
-        "根据装配约束自动计算每个零件的全局位置和旋转。"
-        "输入装配体名称和可选的关节角度，输出每个零件的 Placement。"
+        "Automatically compute the global position and rotation of each part "
+        "based on assembly constraints. Takes an assembly name and optional "
+        "joint angles, returns the Placement for each part."
     )
 
     def get_definition(self) -> ToolDefinition:
@@ -1282,20 +1323,20 @@ class AssemblySolveTool(Tool):
                 "properties": {
                     "assembly_name": {
                         "type": "string",
-                        "description": "装配体名称（使用内置定义，如 'robotic_arm'）或 JSON 路径",
+                        "description": "Assembly name (using built-in definitions such as 'robotic_arm') or JSON path",
                     },
                     "assembly_json": {
                         "type": "string",
-                        "description": "装配体定义的 JSON 字符串（可选，优先于 assembly_name）",
+                        "description": "JSON string of assembly definition (optional, takes priority over assembly_name)",
                     },
                     "joint_angles": {
                         "type": "object",
-                        "description": "关节角度映射 {零件名或关节描述: 角度(度)}，默认全零",
+                        "description": "Joint angle mapping {part name or joint description: angle(degrees)}, default all zeros",
                     },
                     "base_position": {
                         "type": "array",
                         "items": {"type": "number"},
-                        "description": "根零件的全局位置 [x, y, z]（默认 [0,0,0]）",
+                        "description": "Global position of the root part [x, y, z] (default [0,0,0])",
                     },
                 },
                 "required": [],

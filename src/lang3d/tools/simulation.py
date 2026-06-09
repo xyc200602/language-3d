@@ -1228,7 +1228,7 @@ class ToleranceAnalysisTool(Tool):
                 return f"Error: Each dimension needs name, nominal, and tolerance. Got: {dim}"
 
         # Run Monte Carlo simulation
-        random.seed(42)  # Reproducible
+        rng = random.Random(42)  # Reproducible, local instance (doesn't affect global state)
         results = []
         for _ in range(samples):
             total = 0.0
@@ -1237,10 +1237,10 @@ class ToleranceAnalysisTool(Tool):
                 tol = dim["tolerance"]
                 dist = dim.get("distribution", "normal")
                 if dist == "uniform":
-                    value = random.uniform(nominal - tol, nominal + tol)
+                    value = rng.uniform(nominal - tol, nominal + tol)
                 else:  # normal (default)
                     sigma = tol / 3.0  # 3-sigma process
-                    value = random.gauss(nominal, sigma)
+                    value = rng.gauss(nominal, sigma)
                 total += value
             results.append(total)
 
@@ -1459,8 +1459,30 @@ class MotionSimTool(Tool):
     ) -> str:
         from .motion import _build_trajectory_script, _run_freecad_script as _motion_run
 
-        # Use target position offset as end angles (approximation)
-        end_angles = {k: v + 30.0 for k, v in start_angles.items()}
+        # Compute end_angles from target_position using IK if available,
+        # otherwise fall back to heuristic angle offsets toward target.
+        end_angles: dict[str, float] = {}
+        if target_position and len(target_position) == 3:
+            tx, ty, tz = target_position
+            # Heuristic: distribute angular change proportionally to
+            # the displacement in each relevant axis, clamped to ±60°.
+            for joint_name, start_val in start_angles.items():
+                # Simple proportional mapping based on displacement
+                # This is an approximation; real IK would be more accurate.
+                name_lower = joint_name.lower()
+                if "base" in name_lower or "yaw" in name_lower:
+                    offset = min(60.0, max(-60.0, tx * 10.0))
+                elif "shoulder" in name_lower or "pitch" in name_lower or "elbow" in name_lower:
+                    offset = min(60.0, max(-60.0, tz * 5.0))
+                elif "wrist" in name_lower or "roll" in name_lower:
+                    offset = min(30.0, max(-30.0, ty * 5.0))
+                else:
+                    # Default: proportional to average displacement
+                    avg_disp = (abs(tx) + abs(ty) + abs(tz)) / 3.0
+                    offset = min(45.0, max(-45.0, avg_disp * 5.0))
+                end_angles[joint_name] = start_val + offset
+        else:
+            end_angles = {k: v + 30.0 for k, v in start_angles.items()}
         script = _build_trajectory_script(document_path, start_angles, end_angles, steps)
         try:
             output = _motion_run(script, timeout=120)

@@ -158,8 +158,8 @@ class ModelRouter:
 
         if detail is not None:
             model_name, default_mt = VISION_DETAIL_MODELS[detail]
-            # Use the higher of user-specified vs model default
-            effective_mt = max(max_tokens, default_mt)
+            # Use the lower of user-specified vs model default (cap to model limit)
+            effective_mt = min(max_tokens, default_mt)
             return backend.vision(
                 image_path, prompt,
                 max_tokens=effective_mt,

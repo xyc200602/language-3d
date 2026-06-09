@@ -228,8 +228,9 @@ class CollisionCheckTool(Tool):
 
     name = "collision_check"
     description = (
-        "碰撞检测：使用胶囊体模型检测机器人臂的自碰撞和双臂间碰撞。"
-        "支持 GJK 距离算法和安全边距设置。"
+        "Collision detection: uses capsule models to detect self-collision and "
+        "inter-arm collision for robotic arms. Supports GJK distance algorithm "
+        "and safety margin settings."
     )
 
     def get_definition(self) -> ToolDefinition:
@@ -241,17 +242,17 @@ class CollisionCheckTool(Tool):
                 "properties": {
                     "arm1_capsules": {
                         "type": "array",
-                        "description": "左臂胶囊体列表 [{name, start:[x,y,z], end:[x,y,z], radius}]",
+                        "description": "List of capsules for arm 1 [{name, start:[x,y,z], end:[x,y,z], radius}]",
                         "items": {"type": "object"},
                     },
                     "arm2_capsules": {
                         "type": "array",
-                        "description": "右臂胶囊体列表（可选，用于双臂碰撞检测）",
+                        "description": "List of capsules for arm 2 (optional, for dual-arm collision detection)",
                         "items": {"type": "object"},
                     },
                     "safety_margin": {
                         "type": "number",
-                        "description": "安全间距 mm（默认 10）",
+                        "description": "Safety margin in mm (default 10)",
                     },
                 },
                 "required": ["arm1_capsules"],

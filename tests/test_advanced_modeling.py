@@ -67,7 +67,7 @@ class TestSweepScriptGeneration:
             {"type": "sweep", "path_type": "helix", "turns": 5,
              "pitch": 2.0, "height": 10.0, "helix_radius": 5.0},
         ])
-        assert "makeHelix(2.0, 10.0, 5.0, 0, 5)" in script
+        assert "makeHelix(2.0, 10.0, 5.0, 0, 5.0)" in script
 
 
 class TestLoftScriptGeneration:

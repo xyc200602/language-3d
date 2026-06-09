@@ -54,15 +54,6 @@ class GLMBackend(ModelBackend):
             )
         return self._alt_client
 
-    @property
-    def client(self) -> OpenAI:
-        if self._client is None:
-            self._client = OpenAI(
-                api_key=self.api_key,
-                base_url=self.base_url,
-            )
-        return self._client
-
     def chat(
         self,
         messages: list[Message],

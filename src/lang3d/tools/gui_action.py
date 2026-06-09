@@ -118,7 +118,16 @@ class GUITypeTool(Tool):
     ) -> str:
         try:
             if text:
-                pyautogui.typewrite(text, interval=interval)
+                # pyautogui.typewrite only supports ASCII; for non-ASCII text,
+                # fall back to clipboard paste
+                try:
+                    text.encode("ascii")
+                    pyautogui.typewrite(text, interval=interval)
+                except UnicodeEncodeError:
+                    import pyperclip
+                    pyperclip.copy(text)
+                    pyautogui.hotkey("ctrl", "v")
+                    time.sleep(0.1)
             time.sleep(pause)
             return f"Typed: '{text[:50]}{'...' if len(text) > 50 else ''}' ({len(text)} chars)"
         except Exception as e:

@@ -276,7 +276,7 @@ ENCODER_SPECS: dict[str, EncoderSpec] = {
         category="magnetic", ppr=4096, quadrature=False,
         interface="i2c", max_rpm=3000,
         voltage=3.3,
-        notes="14-bit 绝对角度，I2C 读取，适合精确速度/位置控制",
+        notes="12-bit ABI (PPR=4096)，14-bit 绝对角度 (I2C)，适合精确速度/位置控制",
     ),
 }
 

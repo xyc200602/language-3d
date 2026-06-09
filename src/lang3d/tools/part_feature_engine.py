@@ -89,11 +89,14 @@ def _classify(name: str) -> str:
     if n in ("imu_mount", "lidar_mount"):
         return "sensor_mount"
 
-    # --- Arm joints: arm_[lr]_joint OR *_joint with actuator category ---
+    # --- Arm joints: arm_[lr]_joint OR specific joint patterns ---
     if re.match(r"arm_[lr]_(base|shoulder|elbow|wrist)", n):
         return "arm_joint"
-    # Generic joint name patterns (shoulder_joint, elbow_joint, *_rot_joint, etc.)
-    if "joint" in n and not n.startswith("arm_link"):
+    # Specific joint name patterns (shoulder_joint, elbow_joint, *_rot_joint, etc.)
+    # but NOT generic words like "joint_housing" which should use default geometry
+    if re.search(r"_(joint|rot_joint|revolute_joint)$", n):
+        return "arm_joint"
+    if n.endswith("_joint") and not n.startswith("arm_link"):
         return "arm_joint"
 
     # --- Arm links: arm_[lr]_(upper_link|forearm) OR generic link patterns ---

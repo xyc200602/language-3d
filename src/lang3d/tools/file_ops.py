@@ -68,6 +68,14 @@ class FileWriteTool(Tool):
     name = "file_write"
     description = "Write content to a file (creates parent directories if needed)"
 
+    # Workspace boundary — if set, writes are restricted to this directory tree.
+    _workspace: Path | None = None
+
+    @classmethod
+    def set_workspace(cls, workspace: str | Path | None) -> None:
+        """Set the allowed workspace root. Writes outside this tree are rejected."""
+        cls._workspace = Path(workspace).resolve() if workspace else None
+
     def get_definition(self) -> ToolDefinition:
         return ToolDefinition(
             name=self.name,
@@ -90,7 +98,13 @@ class FileWriteTool(Tool):
 
     def execute(self, *, path: str, content: str, **kwargs: Any) -> str:
         try:
-            p = Path(path)
+            p = Path(path).resolve()
+            # Workspace boundary check
+            if self._workspace is not None:
+                try:
+                    p.relative_to(self._workspace)
+                except ValueError:
+                    return f"Error: Path escapes workspace boundary: {path}"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} characters to {path}"
@@ -178,6 +192,10 @@ class FileSearchTool(Tool):
         import re
 
         try:
+            # Security: limit regex length to prevent ReDoS
+            if len(pattern) > 500:
+                return "Error: Regex pattern too long (max 500 characters)"
+
             search_path = Path(path)
             if not search_path.exists():
                 return f"Error: Path not found: {path}"

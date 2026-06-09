@@ -59,11 +59,11 @@ def test_freecad_ops_for_part() -> None:
     assert ops1[1]["type"] == "make_cylinder"
     assert ops1[1]["radius"] == 30.0
 
-    # Box part
+    # Box part (plain structural part not matching any special family)
     p2 = Part("plate", "structural", "test",
               dimensions=dict(length=300, width=200, height=5))
     ops2 = _freecad_ops_for_part(p2)
-    assert ops2[1]["type"] == "make_box"
+    assert ops2[1]["type"] == "plate_with_holes"
     assert ops2[1]["length"] == 300
 
     # Cylinder with diameter (no length)
@@ -234,7 +234,7 @@ def test_subsystem_json_files(
         "chassis.json",
         "arm_left.json",
         "arm_right.json",
-        "ipc.json",
+        "electronics.json",
         "sensor_tower.json",
     ]
     for fname in expected_subsystems:

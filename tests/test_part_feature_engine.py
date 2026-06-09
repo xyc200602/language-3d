@@ -250,28 +250,38 @@ class TestOperationGeneration:
         assert "boolean" in types  # shaft bore cut
         assert "chamfer" in types
 
-    def test_arm_joint_uses_cylinder_with_hole(self):
+    def test_arm_joint_uses_raw_script_with_cylinder(self):
         p = Part("arm_l_base", "joint", "test",
                  dimensions=dict(outer_diameter=80, height=40))
-        types = self._op_types(p)
-        assert "cylinder_with_hole" in types
-        assert "shell" in types
-        assert "fillet" in types
-        assert "boolean" in types  # bearing seat + mount holes
+        ops = generate_ops(p)
+        types = {op["type"] for op in ops}
+        # arm_joint uses specialized raw_script with cylinder geometry
+        assert "raw_script" in types
+        raw = next(op for op in ops if op["type"] == "raw_script")
+        assert "makeCylinder" in raw["script"]
+        # Also verify the raw script contains bore + holes + fillet
+        assert "cut" in raw["script"]
+        assert "fillet" in raw["script"].lower() or "makeFillet" in raw["script"]
 
-    def test_arm_joint_uses_polar_pattern(self):
+    def test_arm_joint_raw_script_has_polar_holes(self):
         p = Part("arm_l_base", "joint", "test",
                  dimensions=dict(outer_diameter=80, height=40))
-        types = self._op_types(p)
-        assert "polar_pattern" in types
+        ops = generate_ops(p)
+        raw = next(op for op in ops if op["type"] == "raw_script")
+        # 4x M3 mounting holes in a polar pattern
+        assert "range(4)" in raw["script"] or "for i in range(4)" in raw["script"]
 
-    def test_link_uses_make_box(self):
+    def test_link_uses_raw_script_with_box(self):
         p = Part("arm_l_upper_link", "structural", "test",
                  dimensions=dict(length=150, width=40, height=30))
-        types = self._op_types(p)
-        assert "make_box" in types
-        assert "boolean" in types  # cable channel via box + boolean cut
-        assert "fillet" in types
+        ops = generate_ops(p)
+        types = {op["type"] for op in ops}
+        # arm_link uses specialized raw_script with C-channel box geometry
+        assert "raw_script" in types
+        raw = next(op for op in ops if op["type"] == "raw_script")
+        assert "makeBox" in raw["script"]
+        assert "cut" in raw["script"]  # pockets and holes
+        assert "fillet" in raw["script"].lower() or "makeFillet" in raw["script"]
 
     def test_battery_box_uses_inner_box(self):
         p = Part("battery_box", "battery", "test",
@@ -292,12 +302,16 @@ class TestOperationGeneration:
         assert "cylinder_with_hole" in types
         assert "polar_pattern" in types
 
-    def test_gripper_uses_make_box_and_chamfer(self):
+    def test_gripper_uses_raw_script_with_box_and_chamfer(self):
         p = Part("arm_l_gripper", "structural", "test",
                  dimensions=dict(length=60, width=30, height=20))
-        types = self._op_types(p)
-        assert "make_box" in types
-        assert "chamfer" in types
+        ops = generate_ops(p)
+        types = {op["type"] for op in ops}
+        # gripper uses specialized raw_script with parallel-jaw geometry
+        assert "raw_script" in types
+        raw = next(op for op in ops if op["type"] == "raw_script")
+        assert "makeBox" in raw["script"]
+        assert "chamfer" in raw["script"].lower() or "Chamfer" in raw["script"]
 
     def test_bracket_uses_fillets(self):
         p = Part("ipc_bracket", "structural", "test",
@@ -435,10 +449,16 @@ class TestBodyNameChain:
         Returns the set of names that exist in the document after all ops.
         Raises AssertionError if any op references a non-existent object.
         """
+        import re as _re
         existing: set[str] = set()
+        part_name = ""
 
         for op in ops:
             t = op["type"]
+
+            if t == "new_doc":
+                existing.clear()
+                part_name = op.get("name", "")
 
             if t == "new_doc":
                 existing.clear()
@@ -534,6 +554,18 @@ class TestBodyNameChain:
                 assert result not in existing, f"Duplicate pocket result: {result}"
                 existing.add(result)
 
+            elif t == "raw_script":
+                # Parse addObject calls from raw script to track document names
+                script = op.get("script", "")
+                # Replace {name} placeholder with actual part name
+                if part_name:
+                    script = script.replace("{name}", part_name)
+                # Match addObject("Type", "name") — capture the second argument (name)
+                for m in _re.finditer(r'addObject\(\s*"[^"]*"\s*,\s*"([^"]+)"', script):
+                    obj_name = m.group(1)
+                    if obj_name:
+                        existing.add(obj_name)
+
             elif t in ("export_stl", "export_step", "save",
                        "status", "object_info", "volume_check", "compute_mass"):
                 pass  # no name changes
@@ -541,7 +573,7 @@ class TestBodyNameChain:
         return existing
 
     def test_arm_base_body_chain(self):
-        """arm_l_base: cylinder_with_hole → bearing seat cut → polar holes → shell → fillet."""
+        """arm_l_base: raw_script with cylinder → bore → holes → fillet."""
         p = Part("arm_l_base", "joint", "test",
                  dimensions=dict(outer_diameter=80, height=40))
         ops = generate_ops(p)
@@ -562,7 +594,7 @@ class TestBodyNameChain:
         self._simulate_doc_names(ops)
 
     def test_arm_link_body_chain(self):
-        """arm_l_upper_link: make_box → end holes → pocket → fillet."""
+        """arm_l_upper_link: raw_script with C-channel → holes → fillet."""
         p = Part("arm_l_upper_link", "structural", "test",
                  dimensions=dict(length=150, width=40, height=30))
         ops = generate_ops(p)

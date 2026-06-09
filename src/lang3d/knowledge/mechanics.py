@@ -23,7 +23,7 @@ class MaterialDensity:
     StainlessSteel = 8000
     Copper = 8960
     Brass = 8500
-    Titanium = 4500
+    Titanium = 4430
     CarbonFiber = 1600
 
     @classmethod
@@ -91,21 +91,89 @@ class Part:
         return MaterialDensity.get(self.material)
 
     def compute_volume_mm3(self) -> float:
-        """Estimate volume in mm³ from dimensions (rough bounding box)."""
+        """Estimate volume in mm³ from dimensions.
+
+        Uses the correct formula based on detected shape type:
+        - Box: length * width * height
+        - Cylinder: pi * radius^2 * height
+        - Sphere: 4/3 * pi * radius^3
+        - Tube: pi * (outer_radius^2 - inner_radius^2) * height
+
+        Shape detection order:
+        1. Explicit "shape" key in dimensions
+        2. Category name match
+        3. Heuristic from available dimension keys (e.g. radius/diameter → cylinder)
+        """
         if not self.dimensions:
             return 0.0
-        # Try common dimension names
+
+        shape = self.dimensions.get("shape", self.category).lower()
+        has_radius = (
+            "radius" in self.dimensions
+            or "diameter" in self.dimensions
+            or "outer_diameter" in self.dimensions
+        )
+        has_height = "height" in self.dimensions or "length" in self.dimensions
+
+        # Cylinder: pi * r^2 * h
+        if "cylinder" in shape or "圆" in shape or "shaft" in shape or "axle" in shape:
+            r = self.dimensions.get("radius", 0)
+            if r == 0 and "diameter" in self.dimensions:
+                r = self.dimensions["diameter"] / 2.0
+            h = self.dimensions.get("height", self.dimensions.get("length", 0))
+            if r > 0 and h > 0:
+                return math.pi * r * r * h
+
+        # Sphere: 4/3 * pi * r^3
+        if "sphere" in shape or "球" in shape:
+            r = self.dimensions.get("radius", 0)
+            if r == 0 and "diameter" in self.dimensions:
+                r = self.dimensions["diameter"] / 2.0
+            if r > 0:
+                return (4.0 / 3.0) * math.pi * r * r * r
+
+        # Tube / hollow cylinder: pi * (r_outer^2 - r_inner^2) * h
+        if "tube" in shape or "管" in shape or "hollow" in shape:
+            outer_r = self.dimensions.get("outer_radius", self.dimensions.get("radius", 0))
+            inner_r = self.dimensions.get("inner_radius", 0)
+            h = self.dimensions.get("height", self.dimensions.get("length", 0))
+            if outer_r > 0 and h > 0:
+                return math.pi * (outer_r * outer_r - inner_r * inner_r) * h
+
+        # Heuristic: if we have radius/diameter but no width, treat as cylinder
+        if has_radius and "width" not in self.dimensions and has_height:
+            r = self.dimensions.get("radius", 0)
+            if r == 0 and "diameter" in self.dimensions:
+                r = self.dimensions["diameter"] / 2.0
+            if r == 0 and "outer_diameter" in self.dimensions:
+                r = self.dimensions["outer_diameter"] / 2.0
+            h = self.dimensions.get("height", self.dimensions.get("length", 0))
+            if r > 0 and h > 0:
+                return math.pi * r * r * h
+
+        # Box / default: l * w * h
         l = self.dimensions.get("length", self.dimensions.get("diameter", 0))
         w = self.dimensions.get("width", 0)
         h = self.dimensions.get("height", self.dimensions.get("thickness", 0))
         if l > 0 and w > 0 and h > 0:
             return l * w * h
-        # Multiply all dimension values as a fallback
-        vals = list(self.dimensions.values())
-        result = vals[0]
-        for v in vals[1:]:
-            result *= v
-        return result
+
+        # Fallback: multiply all numeric dimension values
+        vals = [v for v in self.dimensions.values() if isinstance(v, (int, float))]
+        if len(vals) >= 3:
+            result = vals[0]
+            for v in vals[1:3]:
+                result *= v
+            return result
+        elif len(vals) >= 2 and has_radius:
+            r = self.dimensions.get("radius", 0)
+            if r == 0 and "diameter" in self.dimensions:
+                r = self.dimensions["diameter"] / 2.0
+            if r == 0 and "outer_diameter" in self.dimensions:
+                r = self.dimensions["outer_diameter"] / 2.0
+            h = vals[0] if not ("height" in self.dimensions) else self.dimensions["height"]
+            return math.pi * r * r * h if r > 0 and h > 0 else 0.0
+        return 0.0
 
     def compute_estimated_mass(self) -> float:
         """Estimate mass (kg) from volume and density."""

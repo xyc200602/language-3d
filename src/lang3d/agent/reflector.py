@@ -79,15 +79,17 @@ class Reflector:
 
 请分析失败原因并提出修复建议。"""
 
-        response = self.router.chat(
-            messages=[Message(role="user", content=prompt)],
-            system=REFLECTOR_SYSTEM_PROMPT,
-            task_type=TaskType.REASONING,
-            max_tokens=2048,
-            temperature=0.5,
-        )
-
-        return response.content
+        try:
+            response = self.router.chat(
+                messages=[Message(role="user", content=prompt)],
+                system=REFLECTOR_SYSTEM_PROMPT,
+                task_type=TaskType.REASONING,
+                max_tokens=2048,
+                temperature=0.5,
+            )
+            return response.content
+        except Exception as e:
+            return f"[反思失败: {e}] 请尝试不同的建模方法。"
 
     def _extract_vlm_feedback(
         self,

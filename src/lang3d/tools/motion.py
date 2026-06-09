@@ -67,7 +67,7 @@ def _run_freecad_script(script: str, timeout: int = 120) -> str:
 
     try:
         result = subprocess.run(
-            [fc_python, "-c", f"exec(open(r'{script_path}').read())"],
+            [fc_python, script_path],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -121,12 +121,24 @@ for obj in doc.Objects:
 angles = json.loads(r'{angles_json}')
 for obj_name, angle_deg in angles.items():
     obj = doc.getObject(obj_name)
+    if not obj:
+        for o in doc.Objects:
+            if o.Label == obj_name:
+                obj = o
+                break
     if obj and hasattr(obj, "Placement"):
         import FreeCAD as FC
         pl = obj.Placement
         base = pl.Base
-        # Rotate around Z axis by angle_deg degrees
-        new_rot = FC.Rotation(FC.Vector(0, 0, 1), angle_deg)
+        # Determine rotation axis from object properties or naming convention
+        name_lower = obj_name.lower()
+        axis = FC.Vector(0, 0, 1)  # default Z
+        if "_x" in name_lower or "pitch" in name_lower or "shoulder" in name_lower:
+            axis = FC.Vector(1, 0, 0)
+        elif "_y" in name_lower or "yaw" in name_lower or "base" in name_lower:
+            axis = FC.Vector(0, 1, 0)
+        # else: default Z for "roll", "wrist", "elbow", "knee", etc.
+        new_rot = FC.Rotation(axis, angle_deg)
         obj.Placement = FC.Placement(base, new_rot)
 
 doc.recompute()
@@ -173,13 +185,35 @@ if not obj:
 else:
     positions = []
     step_size = ({max_val} - {min_val}) / max({steps} - 1, 1)
+    # Determine rotation axis based on joint type
+    name_lower = "{joint_name}".lower()
+    jtype = "{joint_type}".lower()
+    import FreeCAD as FC
+    if jtype == "prismatic":
+        # Linear joint: translate along axis
+        axis_vec = FC.Vector(0, 0, 1)
+        if "_x" in name_lower:
+            axis_vec = FC.Vector(1, 0, 0)
+        elif "_y" in name_lower:
+            axis_vec = FC.Vector(0, 1, 0)
+    else:
+        # Revolute / spherical: rotate around axis
+        axis_vec = FC.Vector(0, 0, 1)  # default Z
+        if "_x" in name_lower or "pitch" in name_lower or "shoulder" in name_lower:
+            axis_vec = FC.Vector(1, 0, 0)
+        elif "_y" in name_lower or "yaw" in name_lower or "base" in name_lower:
+            axis_vec = FC.Vector(0, 1, 0)
+
     for i in range({steps}):
         angle = {min_val} + i * step_size
-        import FreeCAD as FC
         if hasattr(obj, "Placement"):
             base = obj.Placement.Base
-            new_rot = FC.Rotation(FC.Vector(0, 0, 1), angle)
-            obj.Placement = FC.Placement(base, new_rot)
+            if jtype == "prismatic":
+                new_base = base.add(axis_vec * angle)
+                obj.Placement = FC.Placement(new_base, obj.Placement.Rotation)
+            else:
+                new_rot = FC.Rotation(axis_vec, angle)
+                obj.Placement = FC.Placement(base, new_rot)
             doc.recompute()
             pos = obj.Placement.Base
             positions.append({{
@@ -236,7 +270,13 @@ for i in range({steps} + 1):
         if obj and hasattr(obj, "Placement"):
             import FreeCAD as FC
             base = obj.Placement.Base
-            new_rot = FC.Rotation(FC.Vector(0, 0, 1), angle)
+            name_lower = j_name.lower()
+            axis = FC.Vector(0, 0, 1)
+            if "_x" in name_lower or "pitch" in name_lower or "shoulder" in name_lower:
+                axis = FC.Vector(1, 0, 0)
+            elif "_y" in name_lower or "yaw" in name_lower or "base" in name_lower:
+                axis = FC.Vector(0, 1, 0)
+            new_rot = FC.Rotation(axis, angle)
             obj.Placement = FC.Placement(base, new_rot)
 
     doc.recompute()
