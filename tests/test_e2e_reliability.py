@@ -291,12 +291,12 @@ def run_single_case(case: dict[str, Any], tmp_path: str | Path) -> CaseResult:
             result.verify_result = "MISMATCH"
         else:
             # If verify was called but we can't parse, check error
-            result.verify_result = "MATCH" if result.file_created else "UNKNOWN"
+            result.verify_result = "UNKNOWN"
 
     # Overall success: file created (+ verify pass if expected)
     if result.file_created:
         if case["expect_verify"]:
-            result.success = result.verify_result in ("MATCH", "UNKNOWN")
+            result.success = result.verify_result == "MATCH"
         else:
             result.success = True
 
@@ -329,6 +329,8 @@ def print_report(results: list[CaseResult]) -> None:
     for r in results:
         success_str = "YES" if r.success else "NO"
         verify_str = r.verify_result or "-"
+        if r.verify_result == "UNKNOWN":
+            verify_str = "UNKNOWN (!)"
         if r.error and not r.success:
             verify_str = f"{verify_str} (ERR)"
         time_str = f"{r.elapsed_seconds:.1f}s"
@@ -423,41 +425,73 @@ class TestE2EReliability:
         """Level 1: 正方体"""
         result = run_single_case(E2E_CASES[0], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[0]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
     def test_cylinder(self, tmp_path):
         """Level 1: 圆柱体"""
         result = run_single_case(E2E_CASES[1], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[1]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
     def test_plate_with_hole(self, tmp_path):
         """Level 2: 带孔平板"""
         result = run_single_case(E2E_CASES[2], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[2]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
     def test_l_bracket(self, tmp_path):
         """Level 2: L型支架"""
         result = run_single_case(E2E_CASES[3], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[3]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
     def test_cantilever_bracket(self, tmp_path):
         """Level 3: 悬臂支架"""
         result = run_single_case(E2E_CASES[4], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[4]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
     def test_stepped_shaft(self, tmp_path):
         """Level 3: 阶梯轴"""
         result = run_single_case(E2E_CASES[5], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[5]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
     def test_flange_coupling(self, tmp_path):
         """Level 4: 法兰联轴器"""
         result = run_single_case(E2E_CASES[6], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[6]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
     def test_bearing_block(self, tmp_path):
         """Level 4: 轴承座"""
         result = run_single_case(E2E_CASES[7], tmp_path)
         assert result.file_created, f"Files not created: {result.error}"
+        if E2E_CASES[7]["expect_verify"]:
+            assert result.verify_result == "MATCH", (
+                f"VLM verify failed: {result.verify_result} | extra: {result.extra_info[:300]}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -503,4 +537,4 @@ if __name__ == "__main__":
         sys.exit(0)
     else:
         print(f"\n  {passed}/{total} CASES PASSED ({total - passed} FAILED)")
-        sys.exit(0)  # Don't fail exit — report is the goal
+        sys.exit(1)

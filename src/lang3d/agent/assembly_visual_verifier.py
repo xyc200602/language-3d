@@ -516,6 +516,8 @@ def _render_vtk(
         dims = p.dimensions
         pos_data = positions.get(p.name, {})
         pos = pos_data.get("position", [0, 0, 0])
+        rot = pos_data.get("rotation", None)
+        rot_tuple = tuple(rot) if rot and rot[3] != 0.0 else None
         subsystem = _get_subsystem(p.name)
         color = SUBSYSTEM_COLORS.get(subsystem, _default_color(idx))
 
@@ -526,7 +528,8 @@ def _render_vtk(
                 continue
             stl_path = os.path.join(candidate_dir, f"{p.name}.stl")
             if os.path.isfile(stl_path):
-                renderer.load_stl(stl_path, color=color, position=tuple(pos))
+                renderer.load_stl(stl_path, color=color, position=tuple(pos),
+                                  rotation=rot_tuple)
                 stl_loaded = True
                 break
 
@@ -535,14 +538,17 @@ def _render_vtk(
             if "diameter" in dims or "outer_diameter" in dims:
                 r = dims.get("diameter", dims.get("outer_diameter", 10)) / 2
                 h = dims.get("height", dims.get("length", 10))
-                renderer.add_cylinder(radius=r, height=h, color=color, position=tuple(pos))
+                renderer.add_cylinder(radius=r, height=h, color=color,
+                                      position=tuple(pos), rotation=rot_tuple)
             else:
                 l = dims.get("length", 10)
                 w = dims.get("width", 10)
                 h = dims.get("height", dims.get("thickness", 5))
-                renderer.add_box(length=l, width=w, height=h, color=color, position=tuple(pos))
+                renderer.add_box(length=l, width=w, height=h, color=color,
+                                 position=tuple(pos), rotation=rot_tuple)
 
     renderer.add_axes(length=25)
+    renderer.add_floor_grid(size=400, spacing=50, z_position=0)
     os.makedirs(output_dir, exist_ok=True)
     return renderer.render_all_views(output_dir, prefix="assembly")
 

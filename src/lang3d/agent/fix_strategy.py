@@ -7,6 +7,7 @@ targeted repair hints instead of generic prompts.
 from __future__ import annotations
 
 import difflib
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -147,8 +148,40 @@ _FIX_HINTS: dict[FailureType, str] = {
 }
 
 
-def generate_fix_hint(ctx: FixContext) -> str:
-    """Generate a targeted fix hint based on failure type."""
+def extract_fix_commands(result: str) -> str:
+    """Extract FIX_COMMANDS from a cad_verify result string.
+
+    Handles both single-angle format (FIX_COMMANDS: ...) and
+    multi-angle format (looking for fix_commands in raw VLM output).
+
+    Returns empty string for "None", "null", or missing FIX_COMMANDS.
+    """
+    for line in result.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("FIX_COMMANDS:"):
+            value = stripped[len("FIX_COMMANDS:"):].strip()
+            if value.lower() in ("none", "null", ""):
+                return ""
+            return value
+
+    # Try to find fix_commands in JSON-like structures within raw VLM output
+    match = re.search(r'"fix_commands"\s*:\s*"([^"]+)"', result)
+    if match:
+        value = match.group(1).strip()
+        if value.lower() in ("none", "null", ""):
+            return ""
+        return value
+
+    return ""
+
+
+def generate_fix_hint(ctx: FixContext, fix_commands: str = "") -> str:
+    """Generate a targeted fix hint based on failure type.
+
+    Args:
+        ctx: The failure context with classification info.
+        fix_commands: Optional FIX_COMMANDS extracted from VLM cad_verify result.
+    """
     base_hint = _FIX_HINTS.get(ctx.failure_type, _FIX_HINTS[FailureType.UNKNOWN])
     parts = [f"[系统提示] {base_hint}"]
 
@@ -158,8 +191,21 @@ def generate_fix_hint(ctx: FixContext) -> str:
         parts.append(f"当前状态：{ctx.actual_value}")
     if ctx.expected_value:
         parts.append(f"期望结果：{ctx.expected_value}")
+    if fix_commands:
+        parts.append(f"VLM 建议的具体修复操作：\n{fix_commands}")
 
     return "\n".join(parts)
+
+
+def parse_cad_verify_failure(result: str, expected: str = "") -> tuple[FixContext, str]:
+    """Convenience function: classify failure and extract FIX_COMMANDS in one call.
+
+    Returns:
+        A tuple of (FixContext, fix_commands_string).
+    """
+    ctx = classify_failure(result, expected)
+    fix_commands = extract_fix_commands(result)
+    return ctx, fix_commands
 
 
 def check_convergence(previous_fixes: list[str], current_result: str, threshold: float = 0.8) -> bool:

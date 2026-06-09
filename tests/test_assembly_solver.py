@@ -20,8 +20,11 @@ import pytest
 
 from lang3d.knowledge.mechanics import (
     Assembly,
+    ConnectionMethod,
     Joint,
     Part,
+    OPEN_MANIPULATOR_X_ASSEMBLY,
+    OPEN_MANIPULATOR_X_PARTS,
     ROBOTIC_ARM_ASSEMBLY,
     ROBOTIC_ARM_PARTS,
 )
@@ -38,6 +41,7 @@ from lang3d.tools.assembly_solver import (
     _rot_mat_to_axis_angle_deg,
     _rotation_matrix_axis_angle,
     _vec_add,
+    connection_to_constraints,
     register_assembly_solver_tools,
 )
 from lang3d.tools.base import ToolRegistry
@@ -688,3 +692,567 @@ class TestJointNewFields:
         # New fields have defaults
         assert j1.parent_attachment is None
         assert j1.constraint_type == ""
+
+
+# ============================================================================
+# Test: Connection method → constraint derivation
+# ============================================================================
+
+class TestConnectionToConstraints:
+    """Test connection method to constraint derivation."""
+
+    def test_bolted_produces_face_contact_and_alignment(self):
+        """Bolted connection → coincident constraint."""
+        j = Joint("fixed", "a", "b",
+                  parent_anchor="top", child_anchor="bottom",
+                  connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=4))
+        constraints = connection_to_constraints(j)
+        assert len(constraints) >= 1
+        assert constraints[0]["type"] == "coincident"
+        assert constraints[0]["parent_anchor"] == "top"
+        assert constraints[0]["child_anchor"] == "bottom"
+
+    def test_bolted_with_attachment_produces_concentric(self):
+        """Bolted with attachment points → coincident + concentric."""
+        j = Joint("fixed", "a", "b",
+                  parent_anchor="top", child_anchor="bottom",
+                  parent_attachment=(10, 0, 0),
+                  child_attachment=(5, 0, 0),
+                  connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=4))
+        constraints = connection_to_constraints(j)
+        assert len(constraints) == 2
+        assert constraints[0]["type"] == "coincident"
+        assert constraints[1]["type"] == "concentric"
+
+    def test_press_fit_produces_concentric(self):
+        """Press-fit → concentric + distance(0)."""
+        j = Joint("fixed", "a", "b",
+                  parent_anchor="top", child_anchor="bottom",
+                  connection=ConnectionMethod(type="press_fit", interference_mm=0.05))
+        constraints = connection_to_constraints(j)
+        assert len(constraints) == 2
+        types = [c["type"] for c in constraints]
+        assert "concentric" in types
+        assert "distance" in types
+
+    def test_welded_produces_coincident(self):
+        """Welded → coincident only."""
+        j = Joint("fixed", "a", "b",
+                  parent_anchor="top", child_anchor="bottom",
+                  connection=ConnectionMethod(type="welded", weld_type="fillet"))
+        constraints = connection_to_constraints(j)
+        assert len(constraints) == 1
+        assert constraints[0]["type"] == "coincident"
+
+    def test_no_connection_uses_anchor_fallback(self):
+        """No connection → legacy coincident."""
+        j = Joint("fixed", "a", "b",
+                  parent_anchor="left", child_anchor="right")
+        constraints = connection_to_constraints(j)
+        assert len(constraints) == 1
+        assert constraints[0]["type"] == "coincident"
+        assert constraints[0]["parent_anchor"] == "left"
+        assert constraints[0]["child_anchor"] == "right"
+
+    def test_explicit_constraint_type_overrides_connection(self):
+        """Explicit constraint_type takes priority over connection."""
+        j = Joint("fixed", "a", "b",
+                  parent_anchor="top", child_anchor="bottom",
+                  constraint_type="distance", constraint_distance=5.0,
+                  connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=4))
+        constraints = connection_to_constraints(j)
+        assert len(constraints) == 1
+        assert constraints[0]["type"] == "distance"
+        assert constraints[0]["distance"] == 5.0
+
+    def test_snap_fit_produces_coincident(self):
+        """Snap-fit → coincident."""
+        j = Joint("fixed", "a", "b",
+                  parent_anchor="top", child_anchor="bottom",
+                  connection=ConnectionMethod(type="snap_fit", snap_count=2))
+        constraints = connection_to_constraints(j)
+        assert len(constraints) == 1
+        assert constraints[0]["type"] == "coincident"
+
+
+# ============================================================================
+# Test: Multi-parent topology handling
+# ============================================================================
+
+class TestMultiParentTopology:
+    """Test multi-parent part handling in AssemblySolver."""
+
+    def test_part_with_two_parents_gets_averaged_position(self):
+        """Part with two parents should get averaged position."""
+        parts = [
+            Part(name="root", category="s", description="",
+                 dimensions={"length": 100, "width": 100, "height": 10}),
+            Part(name="support_l", category="s", description="",
+                 dimensions={"length": 10, "width": 10, "height": 50}),
+            Part(name="support_r", category="s", description="",
+                 dimensions={"length": 10, "width": 10, "height": 50}),
+            Part(name="plate", category="s", description="",
+                 dimensions={"length": 80, "width": 80, "height": 5}),
+        ]
+        assembly = Assembly(
+            name="Multi-Parent Test",
+            parts=parts,
+            joints=[
+                Joint("fixed", "root", "support_l",
+                      parent_anchor="top", child_anchor="bottom",
+                      offset=(-40, 0, 0)),
+                Joint("fixed", "root", "support_r",
+                      parent_anchor="top", child_anchor="bottom",
+                      offset=(40, 0, 0)),
+                # Plate connects to both supports (multi-parent)
+                Joint("fixed", "support_l", "plate",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+                Joint("fixed", "support_r", "plate",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+            ],
+        )
+
+        solver = AssemblySolver(assembly)
+        placements = solver.solve()
+
+        # Plate should be centered between the two supports
+        plate_x = placements["plate"]["position"][0]
+        # The plate should be closer to x=0 than to either support's position
+        support_l_x = placements["support_l"]["position"][0]
+        support_r_x = placements["support_r"]["position"][0]
+        # Averaged x should be between the two supports
+        avg_x = (support_l_x + support_r_x) / 2
+        assert plate_x == pytest.approx(avg_x, abs=1.0), \
+            f"plate_x={plate_x} should be near avg_x={avg_x}"
+
+    def test_single_parent_unchanged(self):
+        """Single-parent parts should work the same as before."""
+        parts = [
+            Part(name="base", category="s", description="",
+                 dimensions={"height": 20}),
+            Part(name="pillar", category="s", description="",
+                 dimensions={"height": 100}),
+        ]
+        assembly = Assembly(
+            name="Single Parent",
+            parts=parts,
+            joints=[
+                Joint("fixed", "base", "pillar",
+                      parent_anchor="top", child_anchor="bottom"),
+            ],
+        )
+
+        solver = AssemblySolver(assembly)
+        placements = solver.solve()
+
+        assert "base" in placements
+        assert "pillar" in placements
+        # Pillar should be above base
+        assert placements["pillar"]["position"][2] > placements["base"]["position"][2]
+
+    def test_four_parent_averaging(self):
+        """Part with four parents (like top_plate on standoffs) gets centered."""
+        parts = [
+            Part(name="root", category="s", description="",
+                 dimensions={"length": 200, "width": 200, "height": 5}),
+            Part(name="leg_fl", category="s", description="",
+                 dimensions={"diameter": 10, "height": 50}),
+            Part(name="leg_fr", category="s", description="",
+                 dimensions={"diameter": 10, "height": 50}),
+            Part(name="leg_bl", category="s", description="",
+                 dimensions={"diameter": 10, "height": 50}),
+            Part(name="leg_br", category="s", description="",
+                 dimensions={"diameter": 10, "height": 50}),
+            Part(name="shelf", category="s", description="",
+                 dimensions={"length": 180, "width": 180, "height": 3}),
+        ]
+        assembly = Assembly(
+            name="Four Parent Shelf",
+            parts=parts,
+            joints=[
+                Joint("fixed", "root", "leg_fl",
+                      parent_anchor="top", child_anchor="bottom",
+                      distribution_group="legs", offset=(-90, 90, 0)),
+                Joint("fixed", "root", "leg_fr",
+                      parent_anchor="top", child_anchor="bottom",
+                      distribution_group="legs", offset=(90, 90, 0)),
+                Joint("fixed", "root", "leg_bl",
+                      parent_anchor="top", child_anchor="bottom",
+                      distribution_group="legs", offset=(-90, -90, 0)),
+                Joint("fixed", "root", "leg_br",
+                      parent_anchor="top", child_anchor="bottom",
+                      distribution_group="legs", offset=(90, -90, 0)),
+                # Shelf connects to all 4 legs
+                Joint("fixed", "leg_fl", "shelf",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+                Joint("fixed", "leg_fr", "shelf",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+                Joint("fixed", "leg_bl", "shelf",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+                Joint("fixed", "leg_br", "shelf",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+            ],
+        )
+
+        solver = AssemblySolver(assembly)
+        placements = solver.solve()
+
+        # Shelf should be centered at x=0, y=0 (averaged from 4 legs)
+        shelf_pos = placements["shelf"]["position"]
+        # The averaged position should be near origin in x,y
+        assert abs(shelf_pos[0]) < 5.0, \
+            f"shelf x={shelf_pos[0]} should be near 0"
+        assert abs(shelf_pos[1]) < 5.0, \
+            f"shelf y={shelf_pos[1]} should be near 0"
+        # Shelf should be above legs
+        assert shelf_pos[2] > placements["root"]["position"][2]
+
+
+# ============================================================================
+# Test: Center anchor support
+# ============================================================================
+
+class TestCenterAnchor:
+    """Test center anchor support."""
+
+    def test_center_in_anchor_directions(self):
+        assert "center" in ANCHOR_DIRECTIONS
+        assert ANCHOR_DIRECTIONS["center"] == (0, 0, 0)
+
+    def test_center_offset_is_zero(self):
+        part = Part(name="test", category="s", description="",
+                    dimensions={"height": 20, "width": 30, "length": 40})
+        offset = _anchor_offset_for_part(part, "center")
+        assert offset == (0, 0, 0)
+
+    def test_joint_with_center_anchor_solves(self):
+        """Joint using center anchor should still solve correctly."""
+        parts = [
+            Part(name="motor", category="actuator", description="",
+                 dimensions={"length": 40, "width": 30, "height": 25}),
+            Part(name="wheel", category="mechanical", description="",
+                 dimensions={"diameter": 65, "height": 26}),
+        ]
+        assembly = Assembly(
+            name="Wheel Test",
+            parts=parts,
+            joints=[
+                Joint("revolute", "motor", "wheel",
+                      parent_anchor="left", child_anchor="center",
+                      axis="y", range_deg=(-360, 360)),
+            ],
+        )
+
+        solver = AssemblySolver(assembly)
+        placements = solver.solve()
+        assert "wheel" in placements
+        assert len(placements["wheel"]["position"]) == 3
+
+
+# ============================================================================
+# Test: Apply delta propagates to grandchildren
+# ============================================================================
+
+class TestApplyDeltaGrandchildren:
+    """Test that _apply_delta propagates position changes to grandchildren."""
+
+    def test_apply_delta_propagates_to_grandchildren(self):
+        """Multi-parent part repositioning should propagate to grandchildren."""
+        parts = [
+            Part(name="root", category="s", description="",
+                 dimensions={"length": 100, "width": 100, "height": 10}),
+            Part(name="support_l", category="s", description="",
+                 dimensions={"length": 10, "width": 10, "height": 50}),
+            Part(name="support_r", category="s", description="",
+                 dimensions={"length": 10, "width": 10, "height": 50}),
+            Part(name="plate", category="s", description="",
+                 dimensions={"length": 80, "width": 80, "height": 5}),
+            Part(name="tower", category="s", description="",
+                 dimensions={"length": 20, "width": 20, "height": 40}),
+        ]
+        assembly = Assembly(
+            name="Multi-Parent with Grandchild",
+            parts=parts,
+            joints=[
+                Joint("fixed", "root", "support_l",
+                      parent_anchor="top", child_anchor="bottom",
+                      offset=(-40, 0, 0)),
+                Joint("fixed", "root", "support_r",
+                      parent_anchor="top", child_anchor="bottom",
+                      offset=(40, 0, 0)),
+                # Plate connects to both supports (multi-parent)
+                Joint("fixed", "support_l", "plate",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+                Joint("fixed", "support_r", "plate",
+                      parent_anchor="top", child_anchor="bottom",
+                      no_distribute=True),
+                # Tower on top of plate (grandchild of supports)
+                Joint("fixed", "plate", "tower",
+                      parent_anchor="top", child_anchor="bottom"),
+            ],
+        )
+
+        solver = AssemblySolver(assembly)
+        placements = solver.solve()
+
+        # Tower should be above plate
+        assert placements["tower"]["position"][2] > placements["plate"]["position"][2]
+
+        # Plate should be centered (averaged from two supports)
+        plate_x = placements["plate"]["position"][0]
+        assert abs(plate_x) < 5.0, f"plate_x={plate_x} should be near 0 (averaged)"
+
+        # Tower should also be centered (inherits from plate)
+        tower_x = placements["tower"]["position"][0]
+        assert abs(tower_x - plate_x) < 1.0, \
+            f"tower_x={tower_x} should be near plate_x={plate_x}"
+
+
+# ============================================================================
+# Test: Connection constraint affects position
+# ============================================================================
+
+class TestConnectionAffectsPosition:
+    """Test that connection constraints affect child position."""
+
+    def test_connection_affects_position(self):
+        """Joint with constraint_type='distance' and constraint_distance=10.0
+        should place child 10mm further from parent than without the constraint."""
+        parts = [
+            Part(name="base", category="s", description="",
+                 dimensions={"height": 20}),
+            Part(name="arm", category="s", description="",
+                 dimensions={"height": 100}),
+        ]
+
+        # Without constraint
+        assembly_no_constraint = Assembly(
+            name="No Constraint",
+            parts=parts,
+            joints=[
+                Joint("fixed", "base", "arm",
+                      parent_anchor="top", child_anchor="bottom"),
+            ],
+        )
+        solver_no = AssemblySolver(assembly_no_constraint)
+        p_no = solver_no.solve()
+
+        # With distance constraint
+        assembly_with_constraint = Assembly(
+            name="With Distance Constraint",
+            parts=parts,
+            joints=[
+                Joint("fixed", "base", "arm",
+                      parent_anchor="top", child_anchor="bottom",
+                      constraint_type="distance", constraint_distance=10.0),
+            ],
+        )
+        solver_yes = AssemblySolver(assembly_with_constraint)
+        p_yes = solver_yes.solve()
+
+        # The child with distance constraint should be further in Z
+        # (anchor direction for "top" is +Z)
+        z_no = p_no["arm"]["position"][2]
+        z_yes = p_yes["arm"]["position"][2]
+        diff = z_yes - z_no
+        assert diff == pytest.approx(10.0, abs=0.1), \
+            f"Expected ~10mm gap from constraint, got {diff:.2f}mm"
+
+
+# ============================================================================
+# Test: Tool output rotation format
+# ============================================================================
+
+class TestToolOutputRotationFormat:
+    """Test that the tool output has correct rotation format."""
+
+    def test_tool_output_rotation_format(self):
+        """Verify the text output has the correct rotation angle in the 4th field."""
+        tool = AssemblySolveTool()
+        result = tool.execute(assembly_name="robotic_arm")
+
+        # The output should contain rotation entries like:
+        # rot=(0.000, 0.000, 1.000, 0.0 deg)
+        # The 4th field should be the angle (rot[3]), not a duplicate of rot[1]
+        import re
+        # Find all rot= entries
+        rot_pattern = re.compile(r'rot=\(([^)]+)\)')
+        matches = rot_pattern.findall(result)
+        assert len(matches) > 0, "No rotation entries found in tool output"
+
+        for match in matches:
+            parts = [p.strip() for p in match.split(',')]
+            assert len(parts) == 4, f"Expected 4 fields in rot=, got {len(parts)}: {parts}"
+            # The 4th field should end with 'deg' — no duplicate of field 2
+            assert parts[3].endswith('deg'), f"4th field should end with 'deg': {parts[3]}"
+            # Extract numeric values: fields 0-2 are axis components, field 3 is angle
+            axis_vals = [float(parts[i].split()[0]) for i in range(3)]
+            angle_val = float(parts[3].replace('deg', '').strip())
+            # Angle should be a finite number
+            assert math.isfinite(angle_val), f"Angle should be finite, got {angle_val}"
+            # Verify axis is normalized (length ~1.0 or all zero for identity)
+            axis_len = math.sqrt(sum(v * v for v in axis_vals))
+            if axis_len > 1e-6:
+                assert axis_len == pytest.approx(1.0, abs=0.01), \
+                    f"Axis should be unit length, got {axis_len:.3f}"
+
+
+# ============================================================================
+# Test: OpenMANIPULATOR-X (reverse-engineered from ROBOTIS URDF)
+# ============================================================================
+
+class TestOpenManipulatorXDefinition:
+    """Test the OpenMANIPULATOR-X assembly definition."""
+
+    def test_has_8_parts(self):
+        assert len(OPEN_MANIPULATOR_X_PARTS) == 8
+
+    def test_has_7_joints(self):
+        assert len(OPEN_MANIPULATOR_X_ASSEMBLY.joints) == 7
+
+    def test_all_joint_refs_valid(self):
+        part_names = {p.name for p in OPEN_MANIPULATOR_X_PARTS}
+        for j in OPEN_MANIPULATOR_X_ASSEMBLY.joints:
+            assert j.parent in part_names, f"Joint parent '{j.parent}' not in parts"
+            assert j.child in part_names, f"Joint child '{j.child}' not in parts"
+
+    def test_all_part_names_unique(self):
+        names = [p.name for p in OPEN_MANIPULATOR_X_PARTS]
+        assert len(names) == len(set(names))
+
+    def test_joint_types_correct(self):
+        """4 revolute + 2 prismatic + 1 fixed = 7."""
+        joints = OPEN_MANIPULATOR_X_ASSEMBLY.joints
+        revolute = [j for j in joints if j.type == "revolute"]
+        prismatic = [j for j in joints if j.type == "prismatic"]
+        fixed = [j for j in joints if j.type == "fixed"]
+        assert len(revolute) == 4
+        assert len(prismatic) == 2
+        assert len(fixed) == 1
+
+    def test_joint_limits_match_urdf(self):
+        """Verify joint limits match the reverse-engineered URDF values."""
+        joints = {j.description: j for j in OPEN_MANIPULATOR_X_ASSEMBLY.joints}
+
+        # joint1: Z-axis, ±180°
+        j1 = joints["底座旋转 (joint1)"]
+        assert j1.range_deg == (-180, 180)
+        assert j1.axis == "z"
+
+        # joint2: Y-axis, ±86°
+        j2 = joints["肩部俯仰 (joint2)"]
+        assert j2.range_deg == (-86, 86)
+        assert j2.axis == "y"
+
+        # joint3: Y-axis, -86° to +80°
+        j3 = joints["肘部俯仰 (joint3)"]
+        assert j3.range_deg == (-86, 80)
+        assert j3.axis == "y"
+
+        # joint4: Y-axis, -97° to +113°
+        j4 = joints["腕部俯仰 (joint4)"]
+        assert j4.range_deg == (-97, 113)
+        assert j4.axis == "y"
+
+    def test_mass_properties_present(self):
+        """All non-virtual parts should have mass data from URDF."""
+        for p in OPEN_MANIPULATOR_X_PARTS:
+            if "虚拟" not in p.description:
+                assert p.mass > 0, f"Part '{p.name}' should have mass > 0"
+
+
+class TestOpenManipulatorXSolving:
+    """Test solving the OpenMANIPULATOR-X assembly."""
+
+    def test_all_parts_placed(self):
+        solver = AssemblySolver(OPEN_MANIPULATOR_X_ASSEMBLY)
+        placements = solver.solve()
+        assert len(placements) == 8
+
+    def test_base_at_origin(self):
+        solver = AssemblySolver(OPEN_MANIPULATOR_X_ASSEMBLY)
+        placements = solver.solve()
+        pos = placements["omx_link1"]["position"]
+        assert pos[0] == pytest.approx(0, abs=0.01)
+        assert pos[1] == pytest.approx(0, abs=0.01)
+        assert pos[2] == pytest.approx(0, abs=0.01)
+
+    def test_kinematic_chain_ascending(self):
+        """In home position (all zeros), links should form a vertical chain
+        (link1 → link2 → link3) then bend forward (link4 → link5)."""
+        solver = AssemblySolver(OPEN_MANIPULATOR_X_ASSEMBLY)
+        placements = solver.solve()
+
+        # link2 is above link1 (joint1 offset is 12mm forward + anchor offsets)
+        p1 = placements["omx_link1"]["position"]
+        p2 = placements["omx_link2"]["position"]
+        # link2 should be higher than link1
+        assert p2[2] > p1[2], f"link2 z={p2[2]} should be > link1 z={p1[2]}"
+
+        # link3 is above link2
+        p3 = placements["omx_link3"]["position"]
+        assert p3[2] > p2[2], f"link3 z={p3[2]} should be > link2 z={p2[2]}"
+
+    def test_joint_angles_affect_position(self):
+        """Rotating joint1 should move all downstream parts."""
+        solver = AssemblySolver(OPEN_MANIPULATOR_X_ASSEMBLY)
+
+        p_home = solver.solve()
+        p_rotated = solver.solve(joint_angles={"omx_link2": 90})
+
+        # link2 (joint1 child) rotation should change
+        assert p_home["omx_link2"]["rotation"][3] == pytest.approx(0, abs=0.1)
+        assert p_rotated["omx_link2"]["rotation"][3] == pytest.approx(90, abs=0.1)
+
+        # Downstream parts should also rotate
+        assert p_rotated["omx_link3"]["rotation"][3] == pytest.approx(90, abs=0.1)
+
+    def test_resolve_as_builtin(self):
+        """OpenMANIPULATOR-X should be resolvable by name."""
+        asm = _resolve_assembly("open_manipulator_x", "")
+        assert asm is not None
+        assert asm.name == "OpenMANIPULATOR-X"
+
+        # Also test alternate names
+        assert _resolve_assembly("openmanipulator_x", "") is not None
+        assert _resolve_assembly("openmanipulatorx", "") is not None
+
+    def test_tool_execute(self):
+        """AssemblySolveTool should solve OpenMANIPULATOR-X."""
+        tool = AssemblySolveTool()
+        result = tool.execute(assembly_name="open_manipulator_x")
+        assert "OpenMANIPULATOR-X" in result
+        assert "omx_link1" in result
+        assert "omx_link5" in result
+        assert "omx_end_effector" in result
+
+    def test_gripper_fingers_placed(self):
+        """Gripper fingers should be positioned on opposite sides of link5."""
+        solver = AssemblySolver(OPEN_MANIPULATOR_X_ASSEMBLY)
+        placements = solver.solve()
+
+        left = placements["omx_gripper_left"]["position"]
+        right = placements["omx_gripper_right"]["position"]
+
+        # Both should be placed
+        assert len(left) == 3
+        assert len(right) == 3
+
+        # Fingers should be on opposite sides (Y-axis) of the wrist
+        # link5's Y position should be between left and right finger Y positions
+        p5 = placements["omx_link5"]["position"]
+        assert left[1] != right[1], "Fingers should be on opposite sides"
+
+    def test_total_mass_reasonable(self):
+        """Total mass of all parts should be close to 711g (rated)."""
+        total = sum(p.mass for p in OPEN_MANIPULATOR_X_PARTS)
+        # Expected ~711g, allowing for the virtual end-effector (0g) and
+        # placeholder gripper fingers (1g each)
+        assert 0.5 < total < 1.0, f"Total mass {total:.3f}kg seems unreasonable"

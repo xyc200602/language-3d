@@ -16,9 +16,13 @@ from ..knowledge.parts_catalog import (
     PartTemplate,
     format_fc_script,
     get_all_templates,
+    get_functional_parts,
+    get_structural_parts,
+    get_fastener_parts,
     get_template,
     resolve_parameters,
     search_parts,
+    validate_functional_params,
 )
 from ..models.base import ToolDefinition
 from .base import Tool
@@ -158,28 +162,39 @@ class PartSearchTool(Tool):
                         "items": {"type": "string"},
                         "description": "标签过滤",
                     },
+                    "part_class": {
+                        "type": "string",
+                        "description": "零件分类：functional(功能件-不可缩放), structural(结构件-可缩放), fastener(紧固件-标准尺寸)",
+                    },
                 },
                 "required": [],
             },
         )
 
     def execute(self, *, query: str = "", category: str | None = None,
-                tags: list[str] | None = None, **kwargs: Any) -> str:
-        results = search_parts(query=query, category=category, tags=tags)
+                tags: list[str] | None = None, part_class: str | None = None,
+                **kwargs: Any) -> str:
+        results = search_parts(query=query, category=category, tags=tags, part_class=part_class)
         if not results:
             return "未找到匹配的零件。可用的类别：" + ", ".join(CATEGORY_TREE.keys())
 
         lines = [f"找到 {len(results)} 个零件："]
         for t in results:
+            cls_icon = {"functional": "[F]", "structural": "[S]", "fastener": "[H]"}.get(t.part_class, "[?]")
             standard = ""
             if t.standard_sizes:
                 first = t.standard_sizes[0]
                 dims = "x".join(str(v) for v in first.values())
                 standard = f" (标准尺寸: {dims})"
+            scalable_tag = "可缩放" if t.scalable else "固定尺寸"
+            model_info = f" ({t.model_number})" if t.model_number else ""
             lines.append(
-                f"  [{t.id}] {t.name_cn} ({t.name_en}) — {t.category}/{t.subcategory}{standard}"
+                f"  {cls_icon} [{t.id}] {t.name_cn} ({t.name_en}){model_info} — "
+                f"{t.category}/{t.subcategory} [{scalable_tag}]{standard}"
             )
             lines.append(f"    {t.description[:80]}")
+        lines.append("")
+        lines.append("图例: [F]=功能件(电机/舵机/轴承,尺寸固定) [S]=结构件(可缩放) [H]=紧固件(标准规格)")
         return "\n".join(lines)
 
 
@@ -286,6 +301,31 @@ class PartGenerateTool(Tool):
         template = get_template(part_id)
         if template is None:
             return f"错误：未找到零件模板 '{part_id}'"
+
+        # For functional parts, warn if parameters deviate from real specs
+        if template.part_class == "functional" and parameters:
+            warnings = validate_functional_params(part_id, parameters)
+            if warnings:
+                # Auto-correct: fall back to standard sizes for functional parts
+                if template.standard_sizes:
+                    best = template.standard_sizes[0]
+                    corrected = {**best}
+                    corrected.update(parameters)  # user overrides
+                    # Re-validate
+                    new_warnings = validate_functional_params(part_id, corrected)
+                    if new_warnings:
+                        return (
+                            f"警告：功能件 '{template.name_en}' ({template.model_number}) "
+                            f"的尺寸不可自由缩放。\n"
+                            + "\n".join(warnings)
+                            + f"\n\n标准尺寸：{json.dumps(best, ensure_ascii=False)}"
+                            + f"\n请使用 variant_index 选择标准型号，或使用标准尺寸参数。"
+                        )
+
+        # For functional parts without parameters, auto-select standard size
+        if template.part_class == "functional" and not parameters and variant_index is None:
+            if template.standard_sizes:
+                variant_index = 0  # Use first standard size by default
 
         # Resolve parameters: variant_index overrides individual parameters
         if variant_index is not None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,7 @@ ANCHOR_DIRECTIONS: dict[str, tuple[float, float, float]] = {
     "right":  (1, 0, 0),
     "front":  (0, -1, 0),
     "back":   (0, 1, 0),
+    "center": (0, 0, 0),
 }
 
 # Default dimension keys for estimating anchor offset from part dimensions.
@@ -46,6 +48,7 @@ ANCHOR_DIM_KEYS: dict[str, list[str]] = {
     "right":  ["width", "diameter"],
     "front":  ["length", "depth"],
     "back":   ["length", "depth"],
+    "center": [],
 }
 
 # Tangent vectors for each anchor face — the two axes that lie within the face.
@@ -57,6 +60,7 @@ ANCHOR_TANGENTS: dict[str, tuple[tuple[float, float, float], tuple[float, float,
     "right":  ((0, 0, 1), (0, 1, 0)),   # Z and Y
     "front":  ((1, 0, 0), (0, 0, 1)),   # X and Z
     "back":   ((1, 0, 0), (0, 0, 1)),   # X and Z
+    "center": ((1, 0, 0), (0, 1, 0)),   # X and Y
 }
 
 # For each anchor, which dimension keys give the face width and depth?
@@ -282,6 +286,88 @@ def _identity_matrix() -> list[list[float]]:
     return [[1, 0, 0], [0, 1, 0], [0, 0, 1]]
 
 
+def _quaternion_from_matrix(m: list[list[float]]) -> tuple[float, float, float, float]:
+    """Convert a 3x3 rotation matrix to a quaternion (w, x, y, z)."""
+    trace = m[0][0] + m[1][1] + m[2][2]
+    if trace > 0:
+        s = 0.5 / math.sqrt(trace + 1.0)
+        w = 0.25 / s
+        x = (m[2][1] - m[1][2]) * s
+        y = (m[0][2] - m[2][0]) * s
+        z = (m[1][0] - m[0][1]) * s
+    elif m[0][0] > m[1][1] and m[0][0] > m[2][2]:
+        s = 2.0 * math.sqrt(1.0 + m[0][0] - m[1][1] - m[2][2])
+        w = (m[2][1] - m[1][2]) / s
+        x = 0.25 * s
+        y = (m[0][1] + m[1][0]) / s
+        z = (m[0][2] + m[2][0]) / s
+    elif m[1][1] > m[2][2]:
+        s = 2.0 * math.sqrt(1.0 + m[1][1] - m[0][0] - m[2][2])
+        w = (m[0][2] - m[2][0]) / s
+        x = (m[0][1] + m[1][0]) / s
+        y = 0.25 * s
+        z = (m[1][2] + m[2][1]) / s
+    else:
+        s = 2.0 * math.sqrt(1.0 + m[2][2] - m[0][0] - m[1][1])
+        w = (m[1][0] - m[0][1]) / s
+        x = (m[0][2] + m[2][0]) / s
+        y = (m[1][2] + m[2][1]) / s
+        z = 0.25 * s
+    norm = math.sqrt(w * w + x * x + y * y + z * z)
+    if norm < 1e-10:
+        return (1.0, 0.0, 0.0, 0.0)
+    return (w / norm, x / norm, y / norm, z / norm)
+
+
+def _matrix_from_quaternion(q: tuple[float, float, float, float]) -> list[list[float]]:
+    """Convert a quaternion (w, x, y, z) to a 3x3 rotation matrix."""
+    w, x, y, z = q
+    return [
+        [1 - 2*(y*y + z*z), 2*(x*y - w*z),     2*(x*z + w*y)],
+        [2*(x*y + w*z),     1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+        [2*(x*z - w*y),     2*(y*z + w*x),     1 - 2*(x*x + y*y)],
+    ]
+
+
+def _matrix_transpose(m: list[list[float]]) -> list[list[float]]:
+    """Transpose a 3x3 matrix. For rotation matrices, this equals inverse."""
+    return [
+        [m[0][0], m[1][0], m[2][0]],
+        [m[0][1], m[1][1], m[2][1]],
+        [m[0][2], m[1][2], m[2][2]],
+    ]
+
+
+def _average_rotations(matrices: list[list[list[float]]]) -> list[list[float]]:
+    """Average multiple rotation matrices via quaternion averaging.
+
+    Converts each matrix to a quaternion, averages the quaternion
+    components, normalizes, and converts back.
+    """
+    if not matrices:
+        return _identity_matrix()
+    if len(matrices) == 1:
+        return matrices[0]
+
+    # Accumulate quaternion components
+    aw, ax, ay, az = 0.0, 0.0, 0.0, 0.0
+    for m in matrices:
+        qw, qx, qy, qz = _quaternion_from_matrix(m)
+        # Ensure consistent hemisphere (dot with accumulator)
+        if qw * aw + qx * ax + qy * ay + qz * az < 0:
+            qw, qx, qy, qz = -qw, -qx, -qy, -qz
+        aw += qw
+        ax += qx
+        ay += qy
+        az += qz
+
+    norm = math.sqrt(aw * aw + ax * ax + ay * ay + az * az)
+    if norm < 1e-10:
+        return _identity_matrix()
+    avg_q = (aw / norm, ax / norm, ay / norm, az / norm)
+    return _matrix_from_quaternion(avg_q)
+
+
 # Revolute joints rotate around the axis perpendicular to the parent anchor face.
 # If the joint has an explicit axis field ("x"/"y"/"z"), use that instead.
 _EXPLICIT_AXES: dict[str, tuple[float, float, float]] = {
@@ -298,6 +384,102 @@ def _revolute_axis(joint: Joint) -> tuple[float, float, float]:
     # Fall back: infer from parent anchor normal
     d = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
     return d
+
+
+# ---------------------------------------------------------------------------
+# Connection method → constraint derivation
+# ---------------------------------------------------------------------------
+
+def connection_to_constraints(joint: Joint) -> list[dict[str, Any]]:
+    """Derive geometric constraint dicts from a joint's connection method.
+
+    Maps ConnectionMethod types to constraint dicts that describe the
+    geometric requirements for the joint:
+
+    - bolted → coincident (face contact) + optional concentric (hole alignment)
+    - press_fit → concentric (shaft-hole) + distance(0)
+    - welded/snap_fit/adhesive/magnetic → coincident (face contact)
+    - No connection → legacy anchor-based coincident
+
+    Returns:
+        List of constraint dicts with keys:
+            type: "coincident"/"concentric"/"distance"/"angle"/"parallel"/"perpendicular"
+            parent_anchor: str (anchor face name)
+            child_anchor: str (anchor face name)
+            distance: float (for distance constraints)
+            angle_deg: float (for angle constraints)
+    """
+    constraints: list[dict[str, Any]] = []
+
+    # Priority 1: explicit constraint_type on the joint
+    if joint.constraint_type:
+        c: dict[str, Any] = {
+            "type": joint.constraint_type,
+            "parent_anchor": joint.parent_anchor,
+            "child_anchor": joint.child_anchor,
+        }
+        if joint.parent_attachment:
+            c["parent_attachment"] = joint.parent_attachment
+        if joint.child_attachment:
+            c["child_attachment"] = joint.child_attachment
+        if joint.constraint_type == "distance":
+            c["distance"] = joint.constraint_distance
+        elif joint.constraint_type == "angle":
+            c["angle_deg"] = joint.constraint_angle_deg
+        constraints.append(c)
+        return constraints
+
+    # Priority 2: connection method
+    if joint.connection is not None:
+        conn_type = joint.connection.type
+        if conn_type == "bolted":
+            # Face-to-face contact
+            constraints.append({
+                "type": "coincident",
+                "parent_anchor": joint.parent_anchor,
+                "child_anchor": joint.child_anchor,
+            })
+            # Bolt hole alignment (if attachment points specified)
+            if joint.parent_attachment and joint.child_attachment:
+                constraints.append({
+                    "type": "concentric",
+                    "parent_attachment": joint.parent_attachment,
+                    "child_attachment": joint.child_attachment,
+                })
+        elif conn_type == "press_fit":
+            # Shaft-in-hole alignment
+            constraints.append({
+                "type": "concentric",
+                "parent_anchor": joint.parent_anchor,
+                "child_anchor": joint.child_anchor,
+            })
+            constraints.append({
+                "type": "distance",
+                "parent_anchor": joint.parent_anchor,
+                "child_anchor": joint.child_anchor,
+                "distance": 0,
+            })
+        elif conn_type in ("welded", "snap_fit", "adhesive", "magnetic"):
+            constraints.append({
+                "type": "coincident",
+                "parent_anchor": joint.parent_anchor,
+                "child_anchor": joint.child_anchor,
+            })
+        else:
+            constraints.append({
+                "type": "coincident",
+                "parent_anchor": joint.parent_anchor,
+                "child_anchor": joint.child_anchor,
+            })
+        return constraints
+
+    # Priority 3: fallback to anchor-based (legacy)
+    constraints.append({
+        "type": "coincident",
+        "parent_anchor": joint.parent_anchor,
+        "child_anchor": joint.child_anchor,
+    })
+    return constraints
 
 
 # ---------------------------------------------------------------------------
@@ -319,6 +501,11 @@ class AssemblySolver:
     ) -> dict[str, dict[str, Any]]:
         """Solve for every part's global Placement.
 
+        Uses constraint-based positioning with multi-parent topology support.
+        Parts that are children of multiple parents (e.g., a plate bolted to
+        four standoffs) get their positions averaged from all parent
+        suggestions.
+
         Args:
             joint_angles: Optional mapping of {joint_description: angle_degrees}
                           or {child_part_name: angle_degrees}.
@@ -326,15 +513,23 @@ class AssemblySolver:
             base_position: Global position for the root part.
 
         Returns:
-            Dict mapping part_name → {"position": [x,y,z], "rotation": [ax,ay,az,angle_deg]}
+            Dict mapping part_name -> {"position": [x,y,z], "rotation": [ax,ay,az,angle_deg]}
         """
         if joint_angles is None:
-            joint_angles = {}
+            joint_angles = dict(self.assembly.default_angles)
 
-        # Build adjacency: parent → list of (joint, child)
+        # Build adjacency: parent -> list of (joint, child)
         children_of: dict[str, list[tuple[Joint, str]]] = {}
+        parent_of: dict[str, list[tuple[Joint, str]]] = {}
         for j in self._joints:
             children_of.setdefault(j.parent, []).append((j, j.child))
+            parent_of.setdefault(j.child, []).append((j, j.parent))
+
+        # Multi-parent parts: children referenced by more than one parent
+        multi_parent_parts = {
+            child for child, parents in parent_of.items()
+            if len(parents) > 1
+        }
 
         # Group children by (parent, parent_anchor, distribution_group) to compute
         # sibling distribution.  Joints sharing the same key are spread across the
@@ -355,9 +550,10 @@ class AssemblySolver:
             # Fallback: use the first part
             roots = {self.assembly.parts[0].name} if self.assembly.parts else set()
 
-        placements: dict[str, dict[str, Any]] = {}
+        # Phase 1: BFS from roots
+        positions: dict[str, tuple[float, float, float]] = {}
+        rot_mats: dict[str, list[list[float]]] = {}
 
-        # BFS/DFS from each root
         stack: list[tuple[str, tuple[float, float, float], list[list[float]]]] = []
         for root_name in roots:
             stack.append((root_name, base_position, _identity_matrix()))
@@ -370,10 +566,8 @@ class AssemblySolver:
                 continue
             visited.add(part_name)
 
-            placements[part_name] = {
-                "position": [round(pos[0], 4), round(pos[1], 4), round(pos[2], 4)],
-                "rotation": _rot_mat_to_axis_angle_deg(rot_mat),
-            }
+            positions[part_name] = pos
+            rot_mats[part_name] = rot_mat
 
             # Process children with sibling distribution
             child_list = children_of.get(part_name, [])
@@ -387,7 +581,6 @@ class AssemblySolver:
 
                 # Find this child's index within its sibling group
                 if joint.no_distribute:
-                    # Skip auto-distribution for this child
                     sibling_index, total_siblings = 0, 1
                 else:
                     group_key = (part_name, joint.parent_anchor, joint.distribution_group)
@@ -407,15 +600,123 @@ class AssemblySolver:
                 )
                 stack.append((child_name, child_pos, child_rot))
 
-        # Parts not in any joint get placed at origin
+        # Phase 2: Multi-parent position and rotation averaging
+        for child_name in multi_parent_parts:
+            if child_name not in positions:
+                continue
+
+            pos_suggestions: list[tuple[float, float, float]] = []
+            rot_suggestions: list[list[list[float]]] = []
+            for joint, parent_name in parent_of[child_name]:
+                if parent_name not in positions:
+                    continue
+                parent_part = self._parts_by_name.get(parent_name)
+                child_part = self._parts_by_name.get(child_name)
+                if not parent_part or not child_part:
+                    continue
+
+                suggested_pos, suggested_rot = self._compute_child_transform(
+                    parent_part=parent_part,
+                    child_part=child_part,
+                    joint=joint,
+                    parent_pos=positions[parent_name],
+                    parent_rot=rot_mats[parent_name],
+                    joint_angles=joint_angles,
+                )
+                pos_suggestions.append(suggested_pos)
+                rot_suggestions.append(suggested_rot)
+
+            if len(pos_suggestions) > 1:
+                n = len(pos_suggestions)
+                avg_pos = (
+                    sum(s[0] for s in pos_suggestions) / n,
+                    sum(s[1] for s in pos_suggestions) / n,
+                    sum(s[2] for s in pos_suggestions) / n,
+                )
+                old_pos = positions[child_name]
+                delta = (
+                    avg_pos[0] - old_pos[0],
+                    avg_pos[1] - old_pos[1],
+                    avg_pos[2] - old_pos[2],
+                )
+                self._apply_delta(child_name, delta, positions, children_of)
+
+                # Average rotations via quaternion averaging and propagate
+                avg_rot = _average_rotations(rot_suggestions)
+                old_rot = rot_mats[child_name]
+                rot_mats[child_name] = avg_rot
+                # Compute the rotation delta and apply to all descendants
+                # delta_rot = avg_rot @ inv(old_rot)
+                old_rot_inv = _matrix_transpose(old_rot)
+                delta_rot = _mat_mul(avg_rot, old_rot_inv)
+                self._apply_rotation_delta(
+                    child_name, delta_rot, rot_mats, children_of,
+                )
+
+        # Phase 3: Convert to output format
+        placements: dict[str, dict[str, Any]] = {}
         for pname in self._parts_by_name:
-            if pname not in placements:
+            if pname in positions:
+                p = positions[pname]
+                r = rot_mats.get(pname, _identity_matrix())
+                placements[pname] = {
+                    "position": [round(p[0], 4), round(p[1], 4), round(p[2], 4)],
+                    "rotation": _rot_mat_to_axis_angle_deg(r),
+                }
+            else:
                 placements[pname] = {
                     "position": [base_position[0], base_position[1], base_position[2]],
                     "rotation": [0, 0, 1, 0],
                 }
 
         return placements
+
+    @staticmethod
+    def _apply_delta(
+        root_name: str,
+        delta: tuple[float, float, float],
+        positions: dict[str, tuple[float, float, float]],
+        children_of: dict[str, list[tuple[Joint, str]]],
+    ) -> None:
+        """Apply a position delta to a part and all its BFS descendants."""
+        queue: deque[str] = deque([root_name])
+        visited: set[str] = set()
+        while queue:
+            name = queue.popleft()
+            if name in visited:
+                continue
+            visited.add(name)
+            if name in positions:
+                old = positions[name]
+                positions[name] = (
+                    old[0] + delta[0],
+                    old[1] + delta[1],
+                    old[2] + delta[2],
+                )
+            for _, child in children_of.get(name, []):
+                if child not in visited:
+                    queue.append(child)
+
+    @staticmethod
+    def _apply_rotation_delta(
+        root_name: str,
+        delta_rot: list[list[float]],
+        rot_mats: dict[str, list[list[float]]],
+        children_of: dict[str, list[tuple[Joint, str]]],
+    ) -> None:
+        """Apply a rotation delta to a part and all its BFS descendants."""
+        queue: deque[str] = deque([root_name])
+        visited: set[str] = set()
+        while queue:
+            name = queue.popleft()
+            if name in visited:
+                continue
+            visited.add(name)
+            if name in rot_mats:
+                rot_mats[name] = _mat_mul(delta_rot, rot_mats[name])
+            for _, child in children_of.get(name, []):
+                if child not in visited:
+                    queue.append(child)
 
     def _compute_child_transform(
         self,
@@ -506,13 +807,66 @@ class AssemblySolver:
             _mat_vec(child_rot, child_anchor_neg),
         )
         # Add explicit offset (rotated by child rotation so it moves with the joint)
-        rotated_offset = _mat_vec(child_rot, joint.offset)
+        joint_offset = joint.offset or (0, 0, 0)
+        rotated_offset = _mat_vec(child_rot, joint_offset)
         child_center = _vec_add(
             child_center,
             rotated_offset,
         )
 
+        # Apply constraint refinements from connection_to_constraints()
+        child_center = self._apply_constraint_refinement(
+            joint, child_center, parent_rot,
+        )
+
         return child_center, child_rot
+
+    def _apply_constraint_refinement(
+        self,
+        joint: Joint,
+        child_pos: tuple[float, float, float],
+        parent_rot: list[list[float]],
+    ) -> tuple[float, float, float]:
+        """Adjust child position based on connection-derived constraints.
+
+        Applies positional refinements from ``connection_to_constraints()``.
+        Iterates **all** constraints (a bolted joint produces both coincident
+        and concentric).
+
+        - bolted with attachment points: concentric alignment offset
+        - distance constraint: add gap/offset along anchor direction
+        """
+        constraints = connection_to_constraints(joint)
+        if not constraints:
+            return child_pos
+
+        for c in constraints:
+            ctype = c.get("type", "")
+
+            if ctype == "distance" and "distance" in c:
+                dist = c["distance"]
+                # Apply offset along the anchor direction (from parent toward child)
+                parent_dir = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
+                global_dir = _mat_vec(parent_rot, parent_dir)
+                child_pos = _vec_add(
+                    child_pos,
+                    (global_dir[0] * dist, global_dir[1] * dist, global_dir[2] * dist),
+                )
+
+            elif ctype == "concentric":
+                # For bolted connections with attachment points: align bolt holes
+                pa = c.get("parent_attachment")
+                ca = c.get("child_attachment")
+                if pa and ca:
+                    align_offset = (
+                        (pa[0] - ca[0]) * 0.5,
+                        (pa[1] - ca[1]) * 0.5,
+                        (pa[2] - ca[2]) * 0.5,
+                    )
+                    global_align = _mat_vec(parent_rot, align_offset)
+                    child_pos = _vec_add(child_pos, global_align)
+
+        return child_pos
 
     def get_joint_chain(self) -> list[dict[str, Any]]:
         """Return the ordered joint chain for this assembly.
@@ -977,7 +1331,7 @@ class AssemblySolveTool(Tool):
             rot = p["rotation"]
             lines.append(
                 f"  {pname}: pos=({pos[0]:.2f}, {pos[1]:.2f}, {pos[2]:.2f})  "
-                f"rot=({rot[0]:.3f}, {rot[1]:.3f}, {rot[2]:.3f}, {rot[1]:.1f} deg)"
+                f"rot=({rot[0]:.3f}, {rot[1]:.3f}, {rot[2]:.3f}, {rot[3]:.1f} deg)"
             )
 
         lines.append("")
@@ -996,11 +1350,17 @@ def _resolve_assembly(name: str, json_str: str) -> Assembly | None:
             pass
 
     # Built-in assemblies
-    from ..knowledge.mechanics import ROBOTIC_ARM_ASSEMBLY
+    from ..knowledge.mechanics import (
+        OPEN_MANIPULATOR_X_ASSEMBLY,
+        ROBOTIC_ARM_ASSEMBLY,
+    )
 
     builtins: dict[str, Assembly] = {
         "robotic_arm": ROBOTIC_ARM_ASSEMBLY,
         "3-dof_robotic_arm": ROBOTIC_ARM_ASSEMBLY,
+        "open_manipulator_x": OPEN_MANIPULATOR_X_ASSEMBLY,
+        "openmanipulator_x": OPEN_MANIPULATOR_X_ASSEMBLY,
+        "openmanipulatorx": OPEN_MANIPULATOR_X_ASSEMBLY,
     }
     key = name.lower().replace(" ", "_").replace("-", "_")
     if key in builtins:

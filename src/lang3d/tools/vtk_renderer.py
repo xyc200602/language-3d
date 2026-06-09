@@ -19,10 +19,10 @@ from typing import Any
 # Camera presets (Z-up coordinate system matching FreeCAD)
 # ---------------------------------------------------------------------------
 VIEW_PRESETS: dict[str, dict[str, tuple[float, float, float]]] = {
-    "isometric": {"position": (130, 130, 100), "focal": (0, 0, 50), "up": (0, 0, 1)},
-    "front": {"position": (0, -200, 50), "focal": (0, 0, 50), "up": (0, 0, 1)},
-    "top": {"position": (0, 1, 250), "focal": (0, 0, 0), "up": (0, 1, 0)},
-    "right": {"position": (200, 0, 50), "focal": (0, 0, 50), "up": (0, 0, 1)},
+    "isometric": {"position": (350, -350, 250), "focal": (0, 0, 50), "up": (0, 0, 1)},
+    "front": {"position": (0, -450, 50), "focal": (0, 0, 50), "up": (0, 0, 1)},
+    "top": {"position": (0, 0, 500), "focal": (0, 0, 0), "up": (0, -1, 0)},
+    "right": {"position": (450, 0, 50), "focal": (0, 0, 50), "up": (0, 0, 1)},
 }
 
 # Default subsystem colors (RGB, 0-1)
@@ -33,6 +33,24 @@ SUBSYSTEM_COLORS: dict[str, tuple[float, float, float]] = {
     "ipc": (0.75, 0.55, 0.10),
     "sensor_tower": (0.60, 0.20, 0.75),
     "default": (0.65, 0.65, 0.65),
+}
+
+# Category-based colors for better visual distinction of part types
+CATEGORY_COLORS: dict[str, tuple[float, float, float]] = {
+    "structural": (0.20, 0.45, 0.80),   # blue
+    "actuator": (0.85, 0.25, 0.20),     # red
+    "mechanical": (0.15, 0.70, 0.25),   # green
+    "electronics": (0.85, 0.65, 0.10),  # amber
+    "sensor": (0.60, 0.20, 0.75),       # purple
+}
+
+# Category-based material properties (specular, specular_power, ambient, diffuse)
+CATEGORY_MATERIALS: dict[str, dict[str, float]] = {
+    "structural": {"specular": 0.4, "specular_power": 30, "ambient": 0.15, "diffuse": 0.85},
+    "actuator": {"specular": 0.3, "specular_power": 20, "ambient": 0.10, "diffuse": 0.80},
+    "mechanical": {"specular": 0.5, "specular_power": 40, "ambient": 0.15, "diffuse": 0.85},
+    "electronics": {"specular": 0.1, "specular_power": 5, "ambient": 0.20, "diffuse": 0.80},
+    "sensor": {"specular": 0.2, "specular_power": 15, "ambient": 0.15, "diffuse": 0.80},
 }
 
 
@@ -59,6 +77,21 @@ def _default_color(index: int) -> tuple[float, float, float]:
     return (r + m, g + m, b + m)
 
 
+def _infer_subsystem(part_name: str) -> str:
+    """Infer subsystem from part name for color mapping."""
+    n = part_name.lower()
+    if n.startswith("arm_l_"):
+        return "arm_left"
+    if n.startswith("arm_r_"):
+        return "arm_right"
+    if "ipc" in n:
+        return "ipc"
+    if "sensor" in n or "imu" in n or "lidar" in n or "camera" in n:
+        return "sensor_tower"
+    # Everything else is chassis
+    return "chassis"
+
+
 # ---------------------------------------------------------------------------
 # VTKOffscreenRenderer
 # ---------------------------------------------------------------------------
@@ -79,11 +112,58 @@ class VTKOffscreenRenderer:
         self.width = width
         self.height = height
         self._actors: list[Any] = []
+        self._content_actors: list[Any] = []  # assembly parts only (excludes grid/axes)
         self._has_content = False
 
     # ------------------------------------------------------------------
     # Adding geometry
     # ------------------------------------------------------------------
+
+    def _apply_transform(
+        self,
+        actor: Any,
+        position: tuple[float, float, float] = (0, 0, 0),
+        rotation: tuple[float, float, float, float] | None = None,
+    ) -> None:
+        """Apply rotation then translation to a VTK actor via UserTransform.
+
+        VTK's default is PostMultiply, where each new operation is
+        post-multiplied: M = M_old * Op.  To get the effective matrix
+        T(pos) * R (rotate around local origin, then translate), we must
+        call Translate *first* and RotateWXYZ *second*:
+
+            M = I * T(pos)       →  M = T(pos)
+            M = T(pos) * R       →  M = T(pos) * R
+
+        Applied to vertex v: T(pos) * R * v  (rotate first, translate second).
+        """
+        import vtk
+
+        if rotation is None or (rotation[3] == 0.0):
+            actor.SetPosition(*position)
+            return
+
+        ax, ay, az, angle_deg = rotation
+        transform = vtk.vtkTransform()
+        # PostMultiply (VTK default): each new op is post-multiplied.
+        # To get T(pos) * R, call Translate first, then RotateWXYZ.
+        transform.Translate(*position)
+        transform.RotateWXYZ(angle_deg, ax, ay, az)
+        actor.SetUserTransform(transform)
+
+    def _apply_material(self, actor: Any, category: str = "") -> None:
+        """Apply category-based material properties to an actor."""
+        mat = CATEGORY_MATERIALS.get(category)
+        if mat:
+            actor.GetProperty().SetSpecular(mat["specular"])
+            actor.GetProperty().SetSpecularPower(mat["specular_power"])
+            actor.GetProperty().SetAmbient(mat["ambient"])
+            actor.GetProperty().SetDiffuse(mat["diffuse"])
+        else:
+            actor.GetProperty().SetSpecular(0.2)
+            actor.GetProperty().SetSpecularPower(10)
+            actor.GetProperty().SetAmbient(0.15)
+            actor.GetProperty().SetDiffuse(0.85)
 
     def load_stl(
         self,
@@ -91,6 +171,8 @@ class VTKOffscreenRenderer:
         color: tuple[float, float, float] = (0.65, 0.65, 0.65),
         opacity: float = 1.0,
         position: tuple[float, float, float] | None = None,
+        rotation: tuple[float, float, float, float] | None = None,
+        category: str = "",
     ) -> None:
         """Load an STL file and add it to the scene."""
         import vtk  # lazy import — only needed when rendering
@@ -102,9 +184,24 @@ class VTKOffscreenRenderer:
         reader.SetFileName(stl_path)
         reader.Update()
 
+        # Center the mesh so its bounding box center is at the origin.
+        # FreeCAD generates STL with corner at (0,0,0), but the solver
+        # and VTK's box/cylinder approximations assume centered geometry.
+        center_filter = vtk.vtkCenterOfMass()
+        center_filter.SetInputConnection(reader.GetOutputPort())
+        center_filter.Update()
+        cx, cy, cz = center_filter.GetCenter()
+
+        shift = vtk.vtkTransform()
+        shift.Translate(-cx, -cy, -cz)
+        shift_filter = vtk.vtkTransformPolyDataFilter()
+        shift_filter.SetInputConnection(reader.GetOutputPort())
+        shift_filter.SetTransform(shift)
+        shift_filter.Update()
+
         # Smooth normals for nice shading
         normals = vtk.vtkPolyDataNormals()
-        normals.SetInputConnection(reader.GetOutputPort())
+        normals.SetInputConnection(shift_filter.GetOutputPort())
         normals.ComputePointNormalsOn()
         normals.SplittingOff()
         normals.Update()
@@ -116,14 +213,13 @@ class VTKOffscreenRenderer:
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(*color)
         actor.GetProperty().SetOpacity(opacity)
-        actor.GetProperty().SetSpecular(0.3)
-        actor.GetProperty().SetSpecularPower(20)
+        self._apply_material(actor, category)
         actor.GetProperty().SetInterpolationToPhong()
 
-        if position is not None:
-            actor.SetPosition(*position)
+        self._apply_transform(actor, position or (0, 0, 0), rotation)
 
         self._actors.append(actor)
+        self._content_actors.append(actor)
         self._has_content = True
 
     def add_box(
@@ -134,8 +230,10 @@ class VTKOffscreenRenderer:
         color: tuple[float, float, float] = (0.65, 0.65, 0.65),
         opacity: float = 1.0,
         position: tuple[float, float, float] = (0, 0, 0),
+        rotation: tuple[float, float, float, float] | None = None,
+        category: str = "",
     ) -> None:
-        """Add an axis-aligned box (approximation from dimensions)."""
+        """Add a box (approximation from dimensions)."""
         import vtk
 
         source = vtk.vtkCubeSource()
@@ -152,12 +250,12 @@ class VTKOffscreenRenderer:
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(*color)
         actor.GetProperty().SetOpacity(opacity)
-        actor.GetProperty().SetSpecular(0.2)
-        actor.GetProperty().SetSpecularPower(10)
+        self._apply_material(actor, category)
         actor.GetProperty().SetInterpolationToPhong()
-        actor.SetPosition(*position)
+        self._apply_transform(actor, position, rotation)
 
         self._actors.append(actor)
+        self._content_actors.append(actor)
         self._has_content = True
 
     def add_cylinder(
@@ -168,6 +266,8 @@ class VTKOffscreenRenderer:
         color: tuple[float, float, float] = (0.65, 0.65, 0.65),
         opacity: float = 1.0,
         position: tuple[float, float, float] = (0, 0, 0),
+        rotation: tuple[float, float, float, float] | None = None,
+        category: str = "",
     ) -> None:
         """Add a cylinder along the Z axis (approximation from dimensions)."""
         import vtk
@@ -194,12 +294,12 @@ class VTKOffscreenRenderer:
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(*color)
         actor.GetProperty().SetOpacity(opacity)
-        actor.GetProperty().SetSpecular(0.2)
-        actor.GetProperty().SetSpecularPower(10)
+        self._apply_material(actor, category)
         actor.GetProperty().SetInterpolationToPhong()
-        actor.SetPosition(*position)
+        self._apply_transform(actor, position, rotation)
 
         self._actors.append(actor)
+        self._content_actors.append(actor)
         self._has_content = True
 
     def add_axes(self, length: float = 30, label_offset: float = 5) -> None:
@@ -215,9 +315,9 @@ class VTKOffscreenRenderer:
         # Don't set _has_content for axes
 
     def add_floor_grid(
-        self, size: float = 400, spacing: float = 50, y_position: float = 0
+        self, size: float = 400, spacing: float = 50, z_position: float = 0
     ) -> None:
-        """Add a ground-plane grid at y=y_position."""
+        """Add a ground-plane grid (XY plane) at z=z_position."""
         import vtk
 
         points = vtk.vtkPoints()
@@ -226,20 +326,22 @@ class VTKOffscreenRenderer:
         half = size / 2
         n_lines = int(size / spacing) + 1
         idx = 0
+        # Lines parallel to Y axis (at various X positions)
         for i in range(n_lines):
             x = -half + i * spacing
-            points.InsertNextPoint(x, y_position, -half)
-            points.InsertNextPoint(x, y_position, half)
+            points.InsertNextPoint(x, -half, z_position)
+            points.InsertNextPoint(x, half, z_position)
             line = vtk.vtkLine()
             line.GetPointIds().SetId(0, idx)
             line.GetPointIds().SetId(1, idx + 1)
             lines.InsertNextCell(line)
             idx += 2
 
+        # Lines parallel to X axis (at various Y positions)
         for i in range(n_lines):
-            z = -half + i * spacing
-            points.InsertNextPoint(-half, y_position, z)
-            points.InsertNextPoint(half, y_position, z)
+            y = -half + i * spacing
+            points.InsertNextPoint(-half, y, z_position)
+            points.InsertNextPoint(half, y, z_position)
             line = vtk.vtkLine()
             line.GetPointIds().SetId(0, idx)
             line.GetPointIds().SetId(1, idx + 1)
@@ -255,9 +357,9 @@ class VTKOffscreenRenderer:
 
         actor = vtk.vtkActor()
         actor.SetMapper(mapper)
-        actor.GetProperty().SetColor(0.75, 0.75, 0.75)
-        actor.GetProperty().SetLineWidth(0.5)
-        actor.GetProperty().SetOpacity(0.4)
+        actor.GetProperty().SetColor(0.55, 0.55, 0.55)
+        actor.GetProperty().SetLineWidth(1.0)
+        actor.GetProperty().SetOpacity(0.5)
 
         self._actors.append(actor)
 
@@ -270,7 +372,9 @@ class VTKOffscreenRenderer:
         import vtk
 
         renderer = vtk.vtkRenderer()
-        renderer.SetBackground(0.96, 0.96, 0.96)
+        renderer.SetBackground(0.95, 0.95, 0.97)    # top
+        renderer.SetBackground2(0.85, 0.85, 0.88)    # bottom
+        renderer.GradientBackgroundOn()
         renderer.SetAmbient(0.25, 0.25, 0.25)
 
         # Key light
@@ -289,13 +393,42 @@ class VTKOffscreenRenderer:
         light2.SetLightTypeToSceneLight()
         renderer.AddLight(light2)
 
+        # Rim light (back-top, for edge definition)
+        light3 = vtk.vtkLight()
+        light3.SetPosition(0, 0, 200)
+        light3.SetFocalPoint(0, 0, 50)
+        light3.SetIntensity(0.3)
+        light3.SetLightTypeToSceneLight()
+        renderer.AddLight(light3)
+
         for actor in self._actors:
             renderer.AddActor(actor)
 
         return renderer
 
+    def _compute_bounds(self, renderer: Any) -> tuple[float, float, float, float, float, float]:
+        """Compute bounding box of content actors only (excludes floor grid/axes).
+
+        This ensures the auto-framing camera positions itself to show the
+        assembly, not the reference grid.
+        """
+        import vtk
+
+        # Build a temporary renderer with only content actors for bounds
+        temp = vtk.vtkRenderer()
+        for actor in self._content_actors:
+            temp.AddActor(actor)
+        temp.ResetCamera()
+        return temp.ComputeVisiblePropBounds()
+
     def render_to_file(self, view_name: str, output_path: str) -> str:
-        """Render a single view to a PNG file. Returns the output path."""
+        """Render a single view to a PNG file. Returns the output path.
+
+        Uses auto-framing: the camera focal point is set to the center of the
+        scene bounding box, and the camera distance is computed from the scene
+        size so the entire assembly is always visible.  The viewing *direction*
+        and up vector come from VIEW_PRESETS.
+        """
         import vtk
 
         if not self._has_content:
@@ -305,16 +438,47 @@ class VTKOffscreenRenderer:
 
         renderer = self._build_renderer()
 
+        # --- Auto-frame based on actual actor bounds ---
+        xmin, xmax, ymin, ymax, zmin, zmax = self._compute_bounds(renderer)
+
+        cx = (xmin + xmax) / 2
+        cy = (ymin + ymax) / 2
+        cz = (zmin + zmax) / 2
+
+        # Scene extent
+        sx = xmax - xmin
+        sy = ymax - ymin
+        sz = zmax - zmin
+        max_extent = max(sx, sy, sz)
+
+        # View direction from preset (unit vector)
+        px, py, pz = preset["position"]
+        fx, fy, fz = preset["focal"]
+        dx, dy, dz = px - fx, py - fy, pz - fz
+        norm = math.sqrt(dx * dx + dy * dy + dz * dz)
+        dir_x, dir_y, dir_z = dx / norm, dy / norm, dz / norm
+
+        # Camera distance: enough to fit the full scene with padding.
+        # Factor accounts for perspective FOV and ensures padding.
+        distance = max_extent * 1.8
+
         camera = renderer.GetActiveCamera()
-        camera.SetPosition(*preset["position"])
-        camera.SetFocalPoint(*preset["focal"])
+        camera.SetPosition(cx + dir_x * distance, cy + dir_y * distance, cz + dir_z * distance)
+        camera.SetFocalPoint(cx, cy, cz)
         camera.SetViewUp(*preset["up"])
-        camera.SetParallelProjection(0)  # perspective
-        renderer.ResetCamera()
+
+        # Use parallel (orthographic) projection for engineering renders.
+        # This avoids perspective distortion where distant parts appear tiny.
+        # ParallelScale = half the visible world height.
+        # For 1200x900 image (aspect 4:3), visible height = 2*scale,
+        # visible width = 2*scale * 4/3.  With 20% padding:
+        camera.SetParallelProjection(1)
+        camera.SetParallelScale(max(max_extent * 0.6, 50))  # at least 50mm visible
 
         rw = vtk.vtkRenderWindow()
         rw.SetOffScreenRendering(1)
         rw.SetSize(self.width, self.height)
+        rw.SetMultiSamples(4)  # MSAA 4x
         rw.AddRenderer(renderer)
         rw.Render()
 
@@ -362,6 +526,7 @@ class VTKOffscreenRenderer:
     def clear(self) -> None:
         """Remove all actors, reset for reuse."""
         self._actors.clear()
+        self._content_actors.clear()
         self._has_content = False
 
 
@@ -415,24 +580,34 @@ def render_assembly_from_positions(
     for idx, part in enumerate(parts):
         name = part.get("name", f"part_{idx}")
         dims = part.get("dimensions", {})
-        subsystem = part.get("category", "")
+        category = part.get("category", "")
+        # Use category-based color for better visual distinction,
+        # fall back to subsystem inference then index-based color
+        if category in CATEGORY_COLORS:
+            color = CATEGORY_COLORS[category]
+        else:
+            subsystem = _infer_subsystem(name)
+            color = SUBSYSTEM_COLORS.get(subsystem, _default_color(idx))
         pos_data = positions.get(name, {})
         pos = pos_data.get("position", [0, 0, 0])
-        color = SUBSYSTEM_COLORS.get(subsystem, _default_color(idx))
+        rot = pos_data.get("rotation", None)
+        # Convert rotation list to tuple if present
+        rot_tuple = tuple(rot) if rot and rot[3] != 0.0 else None
 
         # Try STL first (real geometry)
         stl_loaded = False
         if stl_dir:
             stl_path = os.path.join(stl_dir, f"{name}.stl")
             if os.path.isfile(stl_path):
-                r.load_stl(stl_path, color=color, position=tuple(pos))
+                r.load_stl(stl_path, color=color, position=tuple(pos), rotation=rot_tuple, category=category)
                 stl_loaded = True
 
         # Fallback to dimension-based approximation
         if not stl_loaded:
-            _add_dimension_approximation(r, dims, color, pos)
+            _add_dimension_approximation(r, dims, color, pos, rot_tuple, category=category)
 
     r.add_axes(length=25)
+    r.add_floor_grid(size=400, spacing=50, z_position=0)
     return r.render_all_views(output_dir, views=views)
 
 
@@ -441,21 +616,39 @@ def _add_dimension_approximation(
     dims: dict[str, float],
     color: tuple[float, float, float],
     position: list[float],
+    rotation: tuple[float, float, float, float] | None = None,
+    category: str = "",
 ) -> None:
-    """Add a box or cylinder approximation based on dimension dict."""
+    """Add a box or cylinder approximation based on dimension dict.
+
+    For box parts with a significant Y-axis rotation (typical of arm joints),
+    the length and height dimensions are swapped so the long axis ends up
+    horizontal after the actor rotation is applied.
+    """
     if "outer_diameter" in dims or "diameter" in dims:
         d = dims.get("outer_diameter", dims.get("diameter", 10))
         h = dims.get("height", dims.get("length", 10))
         renderer.add_cylinder(
-            radius=d / 2, height=h, color=color, position=tuple(position)
+            radius=d / 2, height=h, color=color, position=tuple(position),
+            rotation=rotation, category=category,
         )
     elif "length" in dims and "width" in dims:
         l = dims["length"]
         w = dims["width"]
         h = dims.get("height", dims.get("thickness", 5))
+        # Detect Y-axis rotation (arm joints rotate around Y).
+        # R_Y(±90°) swaps X and Z, so swap length↔height so the
+        # long axis (length) ends up horizontal after rotation.
+        swap_axes = False
+        if rotation is not None and abs(rotation[1]) > 0.5 and abs(rotation[3]) > 30:
+            swap_axes = True
+        if swap_axes:
+            l, h = h, l
         renderer.add_box(
-            length=l, width=w, height=h, color=color, position=tuple(position)
+            length=l, width=w, height=h, color=color, position=tuple(position),
+            rotation=rotation, category=category,
         )
     else:
         # Minimal fallback
-        renderer.add_box(10, 10, 10, color=color, position=tuple(position))
+        renderer.add_box(10, 10, 10, color=color, position=tuple(position),
+                         rotation=rotation, category=category)

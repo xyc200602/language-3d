@@ -281,10 +281,11 @@ class AssemblyToURDF:
             child_name = _sanitize_name(joint.child)
 
             # Origin: use joint offset (converted mm→m)
+            joint_offset = joint.offset or (0, 0, 0)
             origin_xyz = (
-                _mm_to_m(joint.offset[0]),
-                _mm_to_m(joint.offset[1]),
-                _mm_to_m(joint.offset[2]),
+                _mm_to_m(joint_offset[0]),
+                _mm_to_m(joint_offset[1]),
+                _mm_to_m(joint_offset[2]),
             )
 
             # For non-root children, estimate origin from parent part dimensions

@@ -190,6 +190,29 @@ class Executor:
                     )
                 )
 
+                # Auto-fix: detect cad_verify MATCH:False and inject fix hint
+                if tc.name == "cad_verify" and "MATCH: False" in result:
+                    from .fix_strategy import classify_failure, generate_fix_hint, extract_fix_commands, check_convergence
+                    self._verify_fail_count = getattr(self, "_verify_fail_count", 0) + 1
+                    max_verify_retries = 3  # same as core._run_direct default
+                    if self._verify_fail_count <= max_verify_retries:
+                        expected = tc.arguments.get("expected", "")
+                        fix_ctx = classify_failure(result, expected)
+                        fix_commands = extract_fix_commands(result)
+                        self._fix_history = getattr(self, "_fix_history", [])
+                        if check_convergence(self._fix_history, result):
+                            fix_hint = (
+                                "[系统提示] 检测到修复陷入循环（连续多次失败原因相似）。"
+                                "请尝试完全不同的建模方法，或删除当前模型从头开始重建。"
+                            )
+                        else:
+                            fix_hint = generate_fix_hint(fix_ctx, fix_commands=fix_commands)
+                        self._fix_history.append(result)
+                        messages.append(Message(role="user", content=fix_hint))
+                elif tc.name == "cad_verify" and "MATCH: True" in result:
+                    # Reset counter on success
+                    self._verify_fail_count = 0
+
             # Apply sliding window when messages grow too large
             if len(messages) > 12:
                 messages = truncate_messages(messages, keep_first=1, keep_last=2)

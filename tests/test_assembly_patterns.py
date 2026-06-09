@@ -23,7 +23,8 @@ class TestRobotProfiles:
     def test_all_profiles_loaded(self):
         from lang3d.knowledge.assembly_patterns import ROBOT_PROFILES
         assert len(ROBOT_PROFILES) >= 5
-        expected = {"bcn3d_moveo", "thor", "parol6", "leo_rover", "anymal_b"}
+        expected = {"bcn3d_moveo", "thor", "parol6", "leo_rover", "anymal_b",
+                    "berkeley_humanoid_lite", "solo12"}
         assert set(ROBOT_PROFILES.keys()) == expected
 
     def test_bcn3d_moveo_profile(self):
@@ -326,3 +327,115 @@ class TestRealisticExample:
         structural = [p for p in data["parts"] if p["category"] == "structural"]
         pla_parts = [p for p in structural if p["material"] == "PLA"]
         assert len(pla_parts) >= 5  # Most structural parts should be PLA
+
+
+# ---------------------------------------------------------------------------
+# Phase 3: New robot profiles + connection patterns
+# ---------------------------------------------------------------------------
+
+
+class TestNewRobotProfiles:
+    """Tests for Berkeley Humanoid Lite and Solo12 profiles."""
+
+    def test_berkeley_humanoid_lite_profile(self):
+        from lang3d.knowledge.assembly_patterns import ROBOT_PROFILES
+        p = ROBOT_PROFILES["berkeley_humanoid_lite"]
+        assert p.name == "Berkeley Humanoid Lite"
+        assert p.dof == 10
+        assert p.total_parts == 60
+        assert p.structural_parts == 30
+        assert "bolted" in p.connection_methods
+        assert "dowel_pin" in p.connection_methods
+        assert "press_fit" in p.connection_methods
+        assert p.key_dimensions["weight_kg"] == 6.5
+        assert "QDD" in p.actuators_used[0]
+
+    def test_solo12_profile(self):
+        from lang3d.knowledge.assembly_patterns import ROBOT_PROFILES
+        p = ROBOT_PROFILES["solo12"]
+        assert p.name == "Solo12 (Open Dynamic Robot Initiative)"
+        assert p.dof == 12
+        assert p.total_parts == 50
+        assert p.structural_parts == 25
+        assert "bolted" in p.connection_methods
+        assert "dowel_pin" in p.connection_methods
+        assert p.key_dimensions["weight_kg"] == 2.3
+        assert "ODRI" in p.actuators_used[0]
+
+    def test_new_profiles_have_urls(self):
+        from lang3d.knowledge.assembly_patterns import ROBOT_PROFILES
+        for name in ("berkeley_humanoid_lite", "solo12"):
+            p = ROBOT_PROFILES[name]
+            assert p.project_url, f"{name} missing project_url"
+            assert "http" in p.project_url
+
+    def test_new_profiles_have_notes(self):
+        from lang3d.knowledge.assembly_patterns import ROBOT_PROFILES
+        for name in ("berkeley_humanoid_lite", "solo12"):
+            p = ROBOT_PROFILES[name]
+            assert p.notes, f"{name} missing notes"
+
+    def test_new_profiles_parts_add_up(self):
+        from lang3d.knowledge.assembly_patterns import ROBOT_PROFILES
+        for name in ("berkeley_humanoid_lite", "solo12"):
+            p = ROBOT_PROFILES[name]
+            classified = p.structural_parts + p.functional_parts + p.fastener_parts
+            assert classified <= p.total_parts
+
+    def test_list_profiles_returns_seven(self):
+        from lang3d.knowledge.assembly_patterns import list_profiles
+        profiles = list_profiles()
+        assert len(profiles) == 7
+        assert "berkeley_humanoid_lite" in profiles
+        assert "solo12" in profiles
+
+
+class TestNewConnectionPatterns:
+    """Tests for 3 new connection patterns (Phase 3)."""
+
+    def test_qdd_actuator_pattern(self):
+        from lang3d.knowledge.assembly_patterns import get_connection_pattern
+        p = get_connection_pattern("housing", "servo")
+        # May find the new qdd pattern or existing dynamixel pattern
+        assert p is not None
+
+    def test_qdd_actuator_pattern_bolted(self):
+        from lang3d.knowledge.assembly_patterns import CONNECTION_PATTERNS
+        patterns = [p for p in CONNECTION_PATTERNS if p.name == "qdd_actuator_to_housing_bolted"]
+        assert len(patterns) == 1
+        p = patterns[0]
+        assert p.connection_method == "bolted"
+        assert p.typical_bolt_count == 6
+        assert p.typical_bolt_size == "M4"
+        assert "berkeley_humanoid_lite" in p.source_projects
+
+    def test_carbon_plate_sandwich_pattern(self):
+        from lang3d.knowledge.assembly_patterns import CONNECTION_PATTERNS
+        patterns = [p for p in CONNECTION_PATTERNS if p.name == "carbon_plate_to_joint_sandwich_bolted"]
+        assert len(patterns) == 1
+        p = patterns[0]
+        assert p.connection_method == "bolted"
+        assert p.typical_bolt_size == "M3"
+        assert "berkeley_humanoid_lite" in p.source_projects
+
+    def test_modular_actuator_pattern(self):
+        from lang3d.knowledge.assembly_patterns import CONNECTION_PATTERNS
+        patterns = [p for p in CONNECTION_PATTERNS if p.name == "modular_actuator_to_link_bolted"]
+        assert len(patterns) == 1
+        p = patterns[0]
+        assert p.connection_method == "bolted"
+        assert p.typical_bolt_size == "M2.5"
+        assert p.typical_bolt_count == 4
+        assert "solo12" in p.source_projects
+
+    def test_alignment_interface_rules(self):
+        from lang3d.knowledge.assembly_patterns import INTERFACE_RULES
+        assert "flange_dowel_alignment" in INTERFACE_RULES
+        assert "shaft_taper_pin_alignment" in INTERFACE_RULES
+        rule = INTERFACE_RULES["flange_dowel_alignment"]
+        assert rule["constraint"] == "dowel_pin"
+        assert len(rule["features"]) >= 1
+
+    def test_pattern_count_increased(self):
+        from lang3d.knowledge.assembly_patterns import CONNECTION_PATTERNS
+        assert len(CONNECTION_PATTERNS) >= 18

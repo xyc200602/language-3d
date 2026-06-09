@@ -113,9 +113,13 @@ def build_complex_robot() -> Assembly:
     for s in ["fl", "fr", "rl", "rr"]:
         joints.append(Joint("fixed", "base_plate", f"motor_{s}",
                             parent_anchor="bottom", child_anchor="top"))
-        joints.append(Joint("revolute", f"motor_{s}", f"wheel_{s}", axis="z",
+        # Left-side wheels extend outward via motor's front (-Y) face
+        # Right-side wheels extend outward via motor's back (+Y) face
+        # This produces R(X, ±90°) alignment → wheel axle along Y (upright)
+        wheel_anchor = "front" if s.endswith("l") else "back"
+        joints.append(Joint("revolute", f"motor_{s}", f"wheel_{s}", axis="y",
                             range_deg=(-360, 360),
-                            parent_anchor="left", child_anchor="bottom"))
+                            parent_anchor=wheel_anchor, child_anchor="bottom"))
         joints.append(Joint("fixed", f"motor_{s}", f"encoder_{s}",
                             parent_anchor="right", child_anchor="bottom"))
     joints.append(Joint("fixed", "base_plate", "battery_box",
@@ -152,6 +156,16 @@ def build_complex_robot() -> Assembly:
     # along X (tangent1 of the top face).  We keep explicit offsets to shift them
     # symmetrically along Y instead (left arm at Y=-70, right arm at Y=+70).
     arm_offsets = {"arm_l": (0, -70, 0), "arm_r": (0, 70, 0)}
+    # Default arm angles: shoulders pitch 90° so arms extend horizontally
+    # outward. Left arm needs -90° (extends toward -X), right arm needs +90° (extends toward +X).
+    # Elbows: left elbow -30° (cumulative -120° = 30° below horizontal),
+    # right elbow +30° (cumulative +120° = 30° below horizontal, symmetric).
+    default_angles = {
+        "arm_l_shoulder": -90.0,
+        "arm_l_elbow": -30.0,
+        "arm_r_shoulder": 90.0,
+        "arm_r_elbow": 30.0,
+    }
     for side, prefix in [("左", "arm_l"), ("右", "arm_r")]:
         arm_parts = [
             Part(f"{prefix}_base", "joint", f"{side}臂底座旋转关节",
@@ -220,6 +234,7 @@ def build_complex_robot() -> Assembly:
         description="4轮差速底盘移动机器人 + 工控机 + 双 3-DOF 机械臂",
         parts=parts,
         joints=joints,
+        default_angles=default_angles,
     )
 
 
@@ -243,33 +258,47 @@ def _build_subsystems(
     assembly: Assembly,
     positions: dict[str, Any],
 ) -> dict[str, list[str]]:
-    """Decompose assembly into subsystems.
+    """Decompose assembly into subsystems dynamically.
 
-    Returns a dict mapping subsystem name -> list of part names.
-    Default decomposition works for the complex_robot assembly pattern.
+    Uses naming conventions (arm_l_, arm_r_) when available, then falls
+    back to part category for the rest.  Works for any assembly type:
+    mobile robots, robotic arms, legged robots, etc.
     """
-    subsystems: dict[str, list[str]] = {
-        "chassis": [
-            p.name for p in assembly.parts
-            if p.name in ["base_plate", "top_plate"]
-            or p.name.startswith(("standoff_", "motor_", "wheel_", "encoder_"))
-            or p.name in ("battery_box", "motor_driver_board")
-        ],
-        "arm_left": [
-            p.name for p in assembly.parts if p.name.startswith("arm_l_")
-        ],
-        "arm_right": [
-            p.name for p in assembly.parts if p.name.startswith("arm_r_")
-        ],
-        "ipc": [
-            p.name for p in assembly.parts if "ipc" in p.name
-        ],
-        "sensor_tower": [
-            p.name for p in assembly.parts
-            if p.category == "sensor" or "sensor" in p.name
-            or "lidar" in p.name or "camera" in p.name
-        ],
-    }
+    subsystems: dict[str, list[str]] = {}
+
+    # 1. Detect named arms (arm_l_*, arm_r_* or left_*, right_*)
+    for prefix, label in [("arm_l_", "arm_left"), ("arm_r_", "arm_right"),
+                           ("left_", "arm_left"), ("right_", "arm_right")]:
+        parts = [p.name for p in assembly.parts if p.name.startswith(prefix)]
+        if parts:
+            subsystems.setdefault(label, []).extend(parts)
+
+    # 2. Detect sensors
+    sensor_parts = [
+        p.name for p in assembly.parts
+        if p.category == "sensor"
+        or any(kw in p.name.lower() for kw in ("sensor", "lidar", "camera", "imu"))
+    ]
+    if sensor_parts:
+        subsystems["sensor_tower"] = sensor_parts
+
+    # 3. Detect electronics / controllers
+    electronics = [
+        p.name for p in assembly.parts
+        if p.category in ("electronics", "controller", "battery")
+        or any(kw in p.name.lower() for kw in ("ipc", "battery", "driver", "controller", "pcb"))
+    ]
+    if electronics:
+        subsystems["electronics"] = electronics
+
+    # 4. Everything else → chassis / main structure
+    assigned = set()
+    for parts_list in subsystems.values():
+        assigned.update(parts_list)
+    remaining = [p.name for p in assembly.parts if p.name not in assigned]
+    if remaining:
+        subsystems["chassis"] = remaining
+
     return subsystems
 
 
@@ -298,7 +327,13 @@ def export_engineering_package(
         Dict with generated file list and key metrics.
     """
     if actuator_ids is None:
-        actuator_ids = ["TT_MOTOR"] * 4 + ["MG996R"] * 6
+        # Derive from assembly: count revolute joints as servos, motors by naming
+        n_motors = sum(1 for p in assembly.parts
+                       if "motor" in p.name.lower() or "wheel" in p.name.lower())
+        n_servos = sum(1 for j in assembly.joints if j.type == "revolute")
+        actuator_ids = ["TT_MOTOR"] * n_motors + ["MG996R"] * n_servos
+        if not actuator_ids:
+            actuator_ids = ["MG996R"] * len(assembly.joints)
 
     output_dir = Path(output_dir)
     generated_files: list[str] = []
@@ -335,10 +370,10 @@ def export_engineering_package(
                 positions=positions,
                 model_backend=vlm_backend,
                 expected_layout=(
-                    "4-wheeled differential mobile robot with: "
-                    "rectangular chassis at origin, 4 wheels at corners, "
-                    "dual 3-DOF arms symmetrically on left (Y=-70) and right (Y=+70), "
-                    "IPC centered on top, sensor tower at rear"
+                    assembly.description
+                    or f"{assembly.name}: {len(assembly.parts)}-part assembly "
+                    f"with {sum(1 for j in assembly.joints if j.type == 'revolute')} "
+                    f"revolute joints"
                 ),
                 max_iterations=3,
                 detail_level="detailed",
@@ -488,7 +523,7 @@ def export_engineering_package(
     (output_dir / "urdf.xml").write_text(urdf_xml, encoding="utf-8")
     generated_files.append(str(output_dir / "urdf.xml"))
 
-    builder = ROS2PackageBuilder("mobile_robot_dual_arm", urdf_xml)
+    builder = ROS2PackageBuilder(assembly.name, urdf_xml)
     ros2_dir = output_dir / "ros2_package"
     builder.write(str(ros2_dir))
     generated_files.append(str(ros2_dir))
@@ -524,39 +559,57 @@ def export_engineering_package(
     fw_dir = output_dir / "firmware"
     fw_dir.mkdir(parents=True, exist_ok=True)
 
-    arm_parts = [p for p in assembly.parts if p.name.startswith("arm_l_")]
-    arm_joints = [j for j in assembly.joints
-                  if j.parent.startswith("arm_l_") and j.child.startswith("arm_l_")]
-    arm_assembly = Assembly(name="Left Arm", parts=arm_parts, joints=arm_joints)
+    # Collect all actuator joints (revolute) for firmware
+    revolute_joints = [j for j in assembly.joints if j.type == "revolute"]
+    actuator_names = [j.child for j in revolute_joints]
+    # Also include parts explicitly categorized as actuator
+    actuator_parts = [p for p in assembly.parts if p.category == "actuator"]
+    actuator_names_set = set(actuator_names) | {p.name for p in actuator_parts}
+    servo_ids = ["MG996R"] * len(actuator_names_set) if actuator_names_set else ["MG996R"]
+
+    arm_sub_assembly = Assembly(
+        name=assembly.name + "_actuators",
+        parts=[p for p in assembly.parts if p.name in actuator_names_set],
+        joints=revolute_joints,
+    )
 
     firmware = generate_firmware(
-        arm_assembly,
-        actuator_ids=["MG996R", "MG996R", "MG996R"],
+        arm_sub_assembly,
+        actuator_ids=servo_ids,
         controller=controller,
     )
     for fname, content in firmware.items():
         (fw_dir / fname).write_text(content, encoding="utf-8")
         generated_files.append(str(fw_dir / fname))
 
-    motors = [
-        dict(motor_id="TT_MOTOR", encoder_id="HALL_TT_7PPR",
-             pwm_pin=5 + i * 2, dir_pin1=6 + i * 2, dir_pin2=7 + i * 2,
-             enc_a_pin=18 + i * 2, enc_b_pin=19 + i * 2)
-        for i in range(4)
+    # Motor driver code: only generate if there are wheel/drive motors
+    drive_motor_parts = [
+        p for p in assembly.parts
+        if "motor" in p.name.lower() and "servo" not in p.name.lower()
     ]
-    motor_code = gen_motor_driver_code(motors)
-    for fname, content in motor_code.items():
-        (fw_dir / fname).write_text(content, encoding="utf-8")
-        generated_files.append(str(fw_dir / fname))
+    n_drive_motors = len(drive_motor_parts)
+    if n_drive_motors > 0:
+        motors = [
+            dict(motor_id="TT_MOTOR", encoder_id="HALL_TT_7PPR",
+                 pwm_pin=5 + i * 2, dir_pin1=6 + i * 2, dir_pin2=7 + i * 2,
+                 enc_a_pin=18 + i * 2, enc_b_pin=19 + i * 2)
+            for i in range(n_drive_motors)
+        ]
+        motor_code = gen_motor_driver_code(motors)
+        for fname, content in motor_code.items():
+            (fw_dir / fname).write_text(content, encoding="utf-8")
+            generated_files.append(str(fw_dir / fname))
 
-    odo_code = gen_odometry_code(
-        wheel_radius_mm=32.5,
-        wheel_base_mm=200.0,
-        encoder_ppr=7,
-        gear_ratio=48.0,
-    )
-    (fw_dir / "odometry.cpp").write_text(odo_code, encoding="utf-8")
-    generated_files.append(str(fw_dir / "odometry.cpp"))
+        # Odometry only makes sense for wheeled robots
+        if any("wheel" in p.name.lower() for p in assembly.parts):
+            odo_code = gen_odometry_code(
+                wheel_radius_mm=32.5,
+                wheel_base_mm=200.0,
+                encoder_ppr=7,
+                gear_ratio=48.0,
+            )
+            (fw_dir / "odometry.cpp").write_text(odo_code, encoding="utf-8")
+            generated_files.append(str(fw_dir / "odometry.cpp"))
 
     # ---- Step 8: Generate wiring diagram ----
     wiring = generate_wiring(
@@ -592,11 +645,19 @@ def export_engineering_package(
 
     # ---- Step 10: Generate power budget report ----
     from .power_budget import PowerBudgetCalculator
-    calc = PowerBudgetCalculator("MobileRobotDualArm")
-    calc.add_motor("Drive Motor", "TT_MOTOR", duty_cycle=0.5, quantity=4)
-    calc.add_servo("Arm Servos", "MG996R", duty_cycle=0.3, quantity=6)
-    calc.add_controller("IPC", tdp_w=15.0)
-    calc.add_sensor_load("Sensors", power_w=2.0, quantity=3)
+    calc = PowerBudgetCalculator(assembly.name)
+    if n_drive_motors > 0:
+        calc.add_motor("Drive Motor", "TT_MOTOR", duty_cycle=0.5, quantity=n_drive_motors)
+    n_servos = len(revolute_joints)
+    if n_servos > 0:
+        calc.add_servo("Servos", "MG996R", duty_cycle=0.3, quantity=n_servos)
+    # Add controller if electronics present
+    if any(p.category in ("electronics", "controller") for p in assembly.parts):
+        calc.add_controller("Main Controller", tdp_w=15.0)
+    # Add sensor load if sensors present
+    n_sensors = sum(1 for p in assembly.parts if p.category == "sensor")
+    if n_sensors > 0:
+        calc.add_sensor_load("Sensors", power_w=2.0, quantity=n_sensors)
     power_report = calc.generate_report()
     (output_dir / "power_report.md").write_text(power_report, encoding="utf-8")
     generated_files.append(str(output_dir / "power_report.md"))
@@ -612,9 +673,27 @@ def export_engineering_package(
         check_tip_over_risk,
     )
     contacts = []
-    for s in ["fl", "fr", "rl", "rr"]:
-        pos = positions[f"wheel_{s}"]["position"]
-        contacts.append([pos[0], pos[1], pos[2]])
+    # Support any assembly type: prefer wheel contacts for mobile robots,
+    # fall back to lowest-Z parts (e.g., base_plate for arms)
+    wheel_suffixes = ["fl", "fr", "rl", "rr"]
+    has_wheels = all(f"wheel_{s}" in positions for s in wheel_suffixes)
+    if has_wheels:
+        for s in wheel_suffixes:
+            pos = positions[f"wheel_{s}"]["position"]
+            contacts.append([pos[0], pos[1], pos[2]])
+    else:
+        # Use parts whose Z-center is near the ground (bottom 10% of Z range)
+        z_vals = [p["position"][2] for p in positions.values()]
+        z_min, z_max = min(z_vals), max(z_vals)
+        z_range = z_max - z_min if z_max > z_min else 1.0
+        for pname, pdata in positions.items():
+            z = pdata["position"][2]
+            if z <= z_min + z_range * 0.1:
+                contacts.append(pdata["position"][:3])
+        # If still empty, use the first part (root)
+        if not contacts and positions:
+            first_pos = next(iter(positions.values()))["position"]
+            contacts.append([first_pos[0], first_pos[1], first_pos[2]])
 
     com = list(mass_result["center_of_mass_mm"])
     polygon = compute_support_polygon(contacts)
@@ -664,7 +743,7 @@ def export_engineering_package(
 
     # Design report JSON
     report = {
-        "requirement": "4-wheel differential mobile robot + IPC + dual 3-DOF arms",
+        "requirement": getattr(assembly, "description", assembly.name),
         "total_parts": len(assembly.parts),
         "total_joints": len(assembly.joints),
         "total_mass_kg": round(mass_result["total_mass_kg"], 3),
@@ -713,11 +792,7 @@ def export_engineering_package(
 
 | 子系统 | 零件数 | 说明 |
 |--------|--------|------|
-| 底盘 (chassis) | {len(subsystems['chassis'])} | 底板 + 顶板 + 4 铜柱 + 4 电机 + 4 轮 + 4 编码器 + 电池 + 驱动板 |
-| 左臂 (arm_left) | {len(subsystems['arm_left'])} | 底座旋转 → 肩 → 上臂 → 肘 → 前臂 → 腕 → 末端执行器 |
-| 右臂 (arm_right) | {len(subsystems['arm_right'])} | 左臂镜像 |
-| 工控机 (ipc) | {len(subsystems['ipc'])} | 支架 + 主体 + 散热风扇 |
-| 传感器塔 (sensor_tower) | {len(subsystems['sensor_tower'])} | 立柱 + IMU + LiDAR + 摄像头 |
+{chr(10).join(f"| {name} | {len(parts)} | {', '.join(parts[:5])}{'...' if len(parts) > 5 else ''} |" for name, parts in subsystems.items())}
 
 ## 工程包内容
 
@@ -845,22 +920,27 @@ def _resolve_assembly_input(
             joints = []
             for jd in data.get("joints", []):
                 joints.append(Joint(
-                    joint_type=jd.get("type", jd.get("joint_type", "fixed")),
+                    type=jd.get("type", jd.get("joint_type", "fixed")),
                     parent=jd["parent"],
                     child=jd["child"],
-                    range_deg=jd.get("range_deg"),
+                    range_deg=tuple(jd["range_deg"]) if "range_deg" in jd else (-180, 180),
                     description=jd.get("description", ""),
-                    axis=jd.get("axis"),
-                    parent_anchor=jd.get("parent_anchor"),
-                    child_anchor=jd.get("child_anchor"),
+                    axis=jd.get("axis", "auto"),
+                    parent_anchor=jd.get("parent_anchor", "top"),
+                    child_anchor=jd.get("child_anchor", "bottom"),
                     offset=tuple(jd["offset"]) if "offset" in jd else None,
+                    no_distribute=jd.get("no_distribute", False),
+                    distribution_group=jd.get("distribution_group", ""),
                 ))
-            return Assembly(
+            assembly = Assembly(
                 name=data.get("name", "Custom Assembly"),
                 parts=parts,
                 joints=joints,
                 description=data.get("description", ""),
             )
+            if "default_angles" in data:
+                assembly.default_angles = data["default_angles"]
+            return assembly
         except Exception:
             pass
 

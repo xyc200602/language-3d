@@ -9,6 +9,7 @@ Each tool accepts an optional 'detail' parameter to control the vision model:
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
 from typing import Any

@@ -6,6 +6,7 @@ import re
 
 from ..models.base import Message
 from ..models.router import ModelRouter, TaskType
+from .fix_strategy import extract_fix_commands
 from .state import Plan, PlanStep
 
 
@@ -107,5 +108,8 @@ class Reflector:
                     result = t.get("result", "")
                     if "MATCH: False" in result or "MATCH: false" in result or '"match": false' in result:
                         parts.append(f"cad_verify 结果:\n{result[:500]}")
+                        fix_commands = extract_fix_commands(result)
+                        if fix_commands:
+                            parts.append(f"VLM 修复建议:\n{fix_commands}")
 
         return "\n".join(parts) if parts else ""

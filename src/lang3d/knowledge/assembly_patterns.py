@@ -269,6 +269,82 @@ ROBOT_PROFILES: dict[str, RobotAssemblyProfile] = {
               "Leg attachment: 6× M8 bolts per hip flange. "
               "Bearings: sealed deep-groove ball bearings in hip/knee joints.",
     ),
+
+    "berkeley_humanoid_lite": RobotAssemblyProfile(
+        name="Berkeley Humanoid Lite",
+        project_url="https://github.com/hybridrobotics/berkeley-humanoid-lite",
+        dof=10,
+        total_parts=60,
+        structural_parts=30,       # Carbon fiber + aluminum plates
+        functional_parts=12,       # 10× QDD actuators + 2× IMU
+        fastener_parts=18,         # M3/M4 structural bolts + dowel pins
+        connection_methods={
+            "bolted": 35,          # M3/M4 SHCS for structural assembly
+            "press_fit": 8,        # Bearing seats + shaft couplings
+            "dowel_pin": 6,        # Alignment pins for precision joints
+            "adhesive": 2,         # Carbon fiber bonding
+        },
+        materials={
+            "carbon_fiber": 15,    # Structural plates and links
+            "aluminum": 15,        # Motor mounts, joint housings
+            "steel": 18,           # Fasteners, actuators
+            "electronics": 5,      # MCU, IMU, motor drivers
+            "plastic": 7,          # Covers, cable guides
+        },
+        key_dimensions={
+            "height_mm": 850,      # Standing height
+            "leg_length_mm": 400,  # Leg reach
+            "arm_reach_mm": 300,   # Arm reach (if applicable)
+            "weight_kg": 6.5,
+            "payload_kg": 2.0,
+        },
+        actuators_used=["QDD_Actuator"] * 10,
+        notes="Open-source humanoid robot from UC Berkeley Hybrid Robotics. "
+              "Uses quasi-direct-drive (QDD) actuators for high backdrivability. "
+              "Carbon fiber + aluminum hybrid structure for weight reduction. "
+              "10 DOF: 2×5 per leg (hip×3 + knee×1 + ankle×2). "
+              "Dowel pins ensure precise alignment between carbon plates and aluminum joints. "
+              "Structural bolts: M3×8 for links, M4×12 for hip/knee joints. "
+              "Control: model predictive control (MPC) + reinforcement learning.",
+    ),
+
+    "solo12": RobotAssemblyProfile(
+        name="Solo12 (Open Dynamic Robot Initiative)",
+        project_url="https://github.com/open-dynamic-robot-initiative/open_robot_actuator_hardware",
+        dof=12,
+        total_parts=50,
+        structural_parts=25,       # 3D-printed + aluminum plates
+        functional_parts=12,       # 12× ODRI actuator modules
+        fastener_parts=13,         # M2.5/M3 structural bolts
+        connection_methods={
+            "bolted": 30,          # M2.5/M3 SHCS for structural assembly
+            "press_fit": 8,        # Bearing seats in joint housings
+            "dowel_pin": 4,        # Alignment pins for precision joints
+        },
+        materials={
+            "PLA": 15,             # 3D-printed structural parts
+            "aluminum": 10,        # Motor mounts, link plates
+            "steel": 12,           # Actuators, fasteners
+            "electronics": 5,      # MCU, IMU, motor drivers
+            "rubber": 8,           # Feet
+        },
+        key_dimensions={
+            "body_length_mm": 350,
+            "body_width_mm": 250,
+            "leg_length_mm": 250,
+            "weight_kg": 2.3,
+            "payload_kg": 1.0,
+        },
+        actuators_used=["ODRI_Actuator"] * 12,
+        notes="Open-source quadruped from the Open Dynamic Robot Initiative (Max Planck IS). "
+              "12 DOF: 3 per leg (hip_abduction + hip_flexion + knee). "
+              "Uses modular ODRI actuator modules with integrated motor + encoder + MTP driver. "
+              "3D-printed + aluminum hybrid construction for rapid prototyping. "
+              "M2.5×6 bolts for actuator mounting, M3×8 for structural joints. "
+              "MR105 (5×10×4mm) bearings press-fit into printed joint housings. "
+              "Control: torque control via MTP driver board + ROS2. "
+              "Designed as a research platform for locomotion and perception.",
+    ),
 }
 
 
@@ -559,6 +635,65 @@ CONNECTION_PATTERNS: list[ConnectionPattern] = [
               "to form complex structural assemblies.",
         source_projects=["bcn3d_moveo", "thor"],
     ),
+
+    # Pattern 16: QDD actuator to housing bolted (Berkeley Humanoid Lite)
+    ConnectionPattern(
+        name="qdd_actuator_to_housing_bolted",
+        parent_part_class="structural",
+        child_part_class="functional",
+        parent_part_type="housing",
+        child_part_type="servo",
+        connection_method="bolted",
+        constraints=["coincident", "concentric"],
+        typical_bolt_size="M4",
+        typical_bolt_count=6,
+        typical_tolerance_mm=0.1,
+        notes="QDD actuator to joint housing: 6× M4 bolts + 2× D5 dowel pins for alignment. "
+              "Actuator output shaft Ø8mm with D-cut connects to joint shaft. "
+              "Dowel pins ensure repeatable positioning for disassembly/reassembly. "
+              "Used in Berkeley Humanoid Lite hip and knee joints.",
+        source_projects=["berkeley_humanoid_lite"],
+    ),
+
+    # Pattern 17: Carbon plate to joint sandwich bolted (Berkeley Humanoid Lite)
+    ConnectionPattern(
+        name="carbon_plate_to_joint_sandwich_bolted",
+        parent_part_class="structural",
+        child_part_class="structural",
+        parent_part_type="plate",
+        child_part_type="frame",
+        connection_method="bolted",
+        constraints=["coincident"],
+        typical_bolt_size="M3",
+        typical_bolt_count=4,
+        typical_tolerance_mm=0.15,
+        notes="Carbon fiber plate sandwiched between two aluminum joint housings. "
+              "4× M3 through bolts clamp the carbon plate between the housings. "
+              "2× D6 dowel pins through the stack ensure precise alignment. "
+              "Carbon fiber plate is typically 2-3mm thick. "
+              "Used in Berkeley Humanoid Lite leg links.",
+        source_projects=["berkeley_humanoid_lite"],
+    ),
+
+    # Pattern 18: Modular actuator to link bolted (Solo12 / ODRI)
+    ConnectionPattern(
+        name="modular_actuator_to_link_bolted",
+        parent_part_class="structural",
+        child_part_class="functional",
+        parent_part_type="link",
+        child_part_type="servo",
+        connection_method="bolted",
+        constraints=["coincident", "concentric"],
+        typical_bolt_size="M2.5",
+        typical_bolt_count=4,
+        typical_tolerance_mm=0.15,
+        notes="ODRI modular actuator to 3D-printed or aluminum link: 4× M2.5 bolts. "
+              "Actuator has integrated mounting flange with 4× M2.5 threaded holes. "
+              "Link has matching 4× Ø2.9mm through holes. "
+              "MR105 (5×10×4mm) bearing press-fit into link housing bore. "
+              "Used in Solo12 quadruped.",
+        source_projects=["solo12"],
+    ),
 ]
 
 
@@ -668,6 +803,26 @@ INTERFACE_RULES: dict[str, dict] = {
         "constraint": "set_screw",
         "notes": "GT2 16T/20T pulley mounted on NEMA17 shaft. "
                  "Secured with M3 grub screw perpendicular to shaft.",
+    },
+    "flange_dowel_alignment": {
+        "part_type": "frame",
+        "features": [
+            {"type": "through_hole", "diameter": 5.01, "count": 2,
+             "pattern": "opposite", "spacing_x": 30.0},
+        ],
+        "constraint": "dowel_pin",
+        "notes": "Flange dowel pin alignment: 2× Ø5mm H7 slip-fit holes. "
+                 "Used for precision alignment of structural flanges before bolting.",
+    },
+    "shaft_taper_pin_alignment": {
+        "part_type": "housing",
+        "features": [
+            {"type": "through_hole", "diameter": 4.0, "count": 1,
+             "pattern": "radial"},
+        ],
+        "constraint": "dowel_pin",
+        "notes": "Shaft-to-hub taper pin for anti-rotation. "
+                 "1× Ø4mm through hole at 90° to shaft axis.",
     },
 }
 

@@ -195,6 +195,15 @@ def _build_dual_arm_wheeled_robot() -> Assembly:
         Joint("fixed", "standoff_fl", "top_plate", parent_anchor="top",
               child_anchor="bottom", no_distribute=True,
               connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=1)),
+        Joint("fixed", "standoff_fr", "top_plate", parent_anchor="top",
+              child_anchor="bottom", no_distribute=True,
+              connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=1)),
+        Joint("fixed", "standoff_rl", "top_plate", parent_anchor="top",
+              child_anchor="bottom", no_distribute=True,
+              connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=1)),
+        Joint("fixed", "standoff_rr", "top_plate", parent_anchor="top",
+              child_anchor="bottom", no_distribute=True,
+              connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=1)),
 
         # ---- Drive ----
         Joint("fixed", "base_plate", "motor_fl", parent_anchor="bottom",
@@ -207,16 +216,16 @@ def _build_dual_arm_wheeled_robot() -> Assembly:
               child_anchor="top", distribution_group="motors", connection=bolted_m3),
         Joint("revolute", "motor_fl", "wheel_fl", parent_anchor="left",
               child_anchor="center", axis="y", range_deg=(-360, 360)),
-        Joint("revolute", "motor_fr", "wheel_fr", parent_anchor="left",
+        Joint("revolute", "motor_fr", "wheel_fr", parent_anchor="right",
               child_anchor="center", axis="y", range_deg=(-360, 360)),
         Joint("revolute", "motor_rl", "wheel_rl", parent_anchor="left",
               child_anchor="center", axis="y", range_deg=(-360, 360)),
-        Joint("revolute", "motor_rr", "wheel_rr", parent_anchor="left",
+        Joint("revolute", "motor_rr", "wheel_rr", parent_anchor="right",
               child_anchor="center", axis="y", range_deg=(-360, 360)),
 
         # ---- Left arm ----
         Joint("fixed", "top_plate", "arm_l_base", parent_anchor="top",
-              child_anchor="bottom", connection=bolted_m3_2),
+              child_anchor="bottom", distribution_group="arms", connection=bolted_m3_2),
         Joint("revolute", "arm_l_base", "arm_l_shoulder", axis="z",
               range_deg=(-180, 180), parent_anchor="top", child_anchor="bottom"),
         Joint("revolute", "arm_l_shoulder", "arm_l_upper", axis="y",
@@ -232,7 +241,7 @@ def _build_dual_arm_wheeled_robot() -> Assembly:
 
         # ---- Right arm (mirror) ----
         Joint("fixed", "top_plate", "arm_r_base", parent_anchor="top",
-              child_anchor="bottom", connection=bolted_m3_2),
+              child_anchor="bottom", distribution_group="arms", connection=bolted_m3_2),
         Joint("revolute", "arm_r_base", "arm_r_shoulder", axis="z",
               range_deg=(-180, 180), parent_anchor="top", child_anchor="bottom"),
         Joint("revolute", "arm_r_shoulder", "arm_r_upper", axis="y",
@@ -288,10 +297,10 @@ class TestAssemblyDefinition:
         assembly = _build_dual_arm_wheeled_robot()
         assert len(assembly.parts) == 34
 
-    def test_robot_has_33_joints(self):
-        """34 parts → 33 joints for connected tree."""
+    def test_robot_has_36_joints(self):
+        """34 parts → 36 joints (33 tree + 3 extra multi-parent for top_plate)."""
         assembly = _build_dual_arm_wheeled_robot()
-        assert len(assembly.joints) == 33
+        assert len(assembly.joints) == 36
 
     def test_all_part_names_unique(self):
         assembly = _build_dual_arm_wheeled_robot()
@@ -794,7 +803,7 @@ class TestJSONExport:
             loaded = json.load(f)
 
         assert loaded["total_parts"] == 34
-        assert loaded["total_joints"] == 33
+        assert loaded["total_joints"] == 36
         assert loaded["part_categories"]["actuator"] >= 10
         assert loaded["part_categories"]["structural"] >= 10
 

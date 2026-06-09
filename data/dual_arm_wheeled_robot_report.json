@@ -2,7 +2,7 @@
   "robot_name": "Dual-Arm 4-Wheel Robot",
   "description": "4轮差速底盘+双5自由度机械臂+传感器塔的移动操作机器人",
   "total_parts": 34,
-  "total_joints": 33,
+  "total_joints": 36,
   "part_categories": {
     "actuator": 10,
     "electronics": 2,
@@ -11,7 +11,7 @@
     "structural": 14
   },
   "connection_method_distribution": {
-    "bolted": 13,
+    "bolted": 16,
     "default": 20
   },
   "default_angles": {
@@ -24,12 +24,12 @@
     "overall_pass": false,
     "collision_free": false,
     "fcl_available": true,
-    "mating_surface_checks": 33,
-    "bolt_alignment_checks": 13,
-    "sequence_checks": 33,
-    "tolerance_chain_checks": 13,
-    "verification_items_total": 620,
-    "verification_items_passed": 586
+    "mating_surface_checks": 36,
+    "bolt_alignment_checks": 16,
+    "sequence_checks": 36,
+    "tolerance_chain_checks": 10,
+    "verification_items_total": 623,
+    "verification_items_passed": 585
   },
   "key_placements": {
     "base_plate": {
@@ -45,11 +45,11 @@
         0
       ]
     },
-    "battery_box": {
+    "top_plate": {
       "position": [
         0.0,
         0.0,
-        17.5
+        54.0
       ],
       "rotation": [
         0,
@@ -58,127 +58,10 @@
         0
       ]
     },
-    "motor_rr": {
-      "position": [
-        105.0,
-        70.0,
-        -15.0
-      ],
-      "rotation": [
-        0,
-        0,
-        1,
-        0
-      ]
-    },
-    "wheel_rr": {
-      "position": [
-        90.0,
-        70.0,
-        -15.0
-      ],
-      "rotation": [
-        0.0,
-        1.0,
-        0.0,
-        90.0
-      ]
-    },
-    "motor_rl": {
-      "position": [
-        -105.0,
-        70.0,
-        -15.0
-      ],
-      "rotation": [
-        0,
-        0,
-        1,
-        0
-      ]
-    },
-    "wheel_rl": {
-      "position": [
-        -120.0,
-        70.0,
-        -15.0
-      ],
-      "rotation": [
-        0.0,
-        1.0,
-        0.0,
-        90.0
-      ]
-    },
-    "motor_fr": {
-      "position": [
-        105.0,
-        -70.0,
-        -15.0
-      ],
-      "rotation": [
-        0,
-        0,
-        1,
-        0
-      ]
-    },
-    "wheel_fr": {
-      "position": [
-        90.0,
-        -70.0,
-        -15.0
-      ],
-      "rotation": [
-        0.0,
-        1.0,
-        0.0,
-        90.0
-      ]
-    },
-    "motor_fl": {
+    "standoff_fl": {
       "position": [
         -105.0,
         -70.0,
-        -15.0
-      ],
-      "rotation": [
-        0,
-        0,
-        1,
-        0
-      ]
-    },
-    "wheel_fl": {
-      "position": [
-        -120.0,
-        -70.0,
-        -15.0
-      ],
-      "rotation": [
-        0.0,
-        1.0,
-        0.0,
-        90.0
-      ]
-    },
-    "standoff_rr": {
-      "position": [
-        105.0,
-        70.0,
-        27.5
-      ],
-      "rotation": [
-        0,
-        0,
-        1,
-        0
-      ]
-    },
-    "standoff_rl": {
-      "position": [
-        -105.0,
-        70.0,
         27.5
       ],
       "rotation": [
@@ -201,10 +84,10 @@
         0
       ]
     },
-    "standoff_fl": {
+    "standoff_rl": {
       "position": [
         -105.0,
-        -70.0,
+        70.0,
         27.5
       ],
       "rotation": [
@@ -214,11 +97,24 @@
         0
       ]
     },
-    "top_plate": {
+    "standoff_rr": {
+      "position": [
+        105.0,
+        70.0,
+        27.5
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "motor_fl": {
       "position": [
         -105.0,
         -70.0,
-        54.0
+        -15.0
       ],
       "rotation": [
         0,
@@ -227,11 +123,24 @@
         0
       ]
     },
-    "lidar_mount": {
+    "motor_fr": {
+      "position": [
+        105.0,
+        -70.0,
+        -15.0
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "motor_rl": {
       "position": [
         -105.0,
-        -70.0,
-        63.0
+        70.0,
+        -15.0
       ],
       "rotation": [
         0,
@@ -240,11 +149,11 @@
         0
       ]
     },
-    "lidar_sensor": {
+    "motor_rr": {
       "position": [
-        -105.0,
-        -70.0,
-        89.5
+        105.0,
+        70.0,
+        -15.0
       ],
       "rotation": [
         0,
@@ -253,11 +162,11 @@
         0
       ]
     },
-    "imu_mount": {
+    "wheel_fl": {
       "position": [
-        -105.0,
+        -120.0,
         -70.0,
-        60.5
+        -15.0
       ],
       "rotation": [
         0,
@@ -266,11 +175,11 @@
         0
       ]
     },
-    "imu_sensor": {
+    "wheel_fr": {
       "position": [
-        -105.0,
+        120.0,
         -70.0,
-        67.0
+        -15.0
       ],
       "rotation": [
         0,
@@ -279,11 +188,11 @@
         0
       ]
     },
-    "controller_board": {
+    "wheel_rl": {
       "position": [
-        -105.0,
-        -70.0,
-        61.5
+        -120.0,
+        70.0,
+        -15.0
       ],
       "rotation": [
         0,
@@ -292,101 +201,23 @@
         0
       ]
     },
-    "arm_r_base": {
+    "wheel_rr": {
       "position": [
-        -7.0,
-        -70.0,
-        63.0
+        120.0,
+        70.0,
+        -15.0
       ],
       "rotation": [
         0,
         0,
         1,
         0
-      ]
-    },
-    "arm_r_shoulder": {
-      "position": [
-        -7.0,
-        -70.0,
-        86.0
-      ],
-      "rotation": [
-        0,
-        0,
-        1,
-        0
-      ]
-    },
-    "arm_r_upper": {
-      "position": [
-        -10.75,
-        -70.0,
-        108.0
-      ],
-      "rotation": [
-        0.0,
-        -1.0,
-        0.0,
-        30.0
-      ]
-    },
-    "arm_r_elbow": {
-      "position": [
-        -10.75,
-        -131.1,
-        108.0
-      ],
-      "rotation": [
-        0.0,
-        -1.0,
-        0.0,
-        30.0
-      ]
-    },
-    "arm_r_forearm": {
-      "position": [
-        -10.75,
-        -182.2,
-        108.0
-      ],
-      "rotation": [
-        0.0,
-        -1.0,
-        0.0,
-        15.0
-      ]
-    },
-    "arm_r_wrist": {
-      "position": [
-        -10.75,
-        -233.3,
-        108.0
-      ],
-      "rotation": [
-        0.0,
-        -1.0,
-        0.0,
-        15.0
-      ]
-    },
-    "arm_r_gripper": {
-      "position": [
-        -10.75,
-        -269.4,
-        108.0
-      ],
-      "rotation": [
-        0.0,
-        -1.0,
-        0.0,
-        15.0
       ]
     },
     "arm_l_base": {
       "position": [
-        -203.0,
-        -70.0,
+        -98.0,
+        0.0,
         63.0
       ],
       "rotation": [
@@ -398,8 +229,8 @@
     },
     "arm_l_shoulder": {
       "position": [
-        -203.0,
-        -70.0,
+        -98.0,
+        0.0,
         86.0
       ],
       "rotation": [
@@ -411,8 +242,8 @@
     },
     "arm_l_upper": {
       "position": [
-        -206.75,
-        -70.0,
+        -101.75,
+        0.0,
         108.0
       ],
       "rotation": [
@@ -424,8 +255,8 @@
     },
     "arm_l_elbow": {
       "position": [
-        -206.75,
-        -131.1,
+        -101.75,
+        -61.1,
         108.0
       ],
       "rotation": [
@@ -437,8 +268,8 @@
     },
     "arm_l_forearm": {
       "position": [
-        -206.75,
-        -182.2,
+        -101.75,
+        -112.2,
         108.0
       ],
       "rotation": [
@@ -450,8 +281,8 @@
     },
     "arm_l_wrist": {
       "position": [
-        -206.75,
-        -233.3,
+        -101.75,
+        -163.3,
         108.0
       ],
       "rotation": [
@@ -463,8 +294,8 @@
     },
     "arm_l_gripper": {
       "position": [
-        -206.75,
-        -269.4,
+        -101.75,
+        -199.4,
         108.0
       ],
       "rotation": [
@@ -472,6 +303,175 @@
         -1.0,
         0.0,
         15.0
+      ]
+    },
+    "arm_r_base": {
+      "position": [
+        98.0,
+        0.0,
+        63.0
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "arm_r_shoulder": {
+      "position": [
+        98.0,
+        0.0,
+        86.0
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "arm_r_upper": {
+      "position": [
+        94.25,
+        0.0,
+        108.0
+      ],
+      "rotation": [
+        0.0,
+        -1.0,
+        0.0,
+        30.0
+      ]
+    },
+    "arm_r_elbow": {
+      "position": [
+        94.25,
+        -61.1,
+        108.0
+      ],
+      "rotation": [
+        0.0,
+        -1.0,
+        0.0,
+        30.0
+      ]
+    },
+    "arm_r_forearm": {
+      "position": [
+        94.25,
+        -112.2,
+        108.0
+      ],
+      "rotation": [
+        0.0,
+        -1.0,
+        0.0,
+        15.0
+      ]
+    },
+    "arm_r_wrist": {
+      "position": [
+        94.25,
+        -163.3,
+        108.0
+      ],
+      "rotation": [
+        0.0,
+        -1.0,
+        0.0,
+        15.0
+      ]
+    },
+    "arm_r_gripper": {
+      "position": [
+        94.25,
+        -199.4,
+        108.0
+      ],
+      "rotation": [
+        0.0,
+        -1.0,
+        0.0,
+        15.0
+      ]
+    },
+    "battery_box": {
+      "position": [
+        0.0,
+        0.0,
+        17.5
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "controller_board": {
+      "position": [
+        0.0,
+        0.0,
+        61.5
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "imu_mount": {
+      "position": [
+        0.0,
+        0.0,
+        60.5
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "imu_sensor": {
+      "position": [
+        0.0,
+        0.0,
+        67.0
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "lidar_mount": {
+      "position": [
+        0.0,
+        0.0,
+        63.0
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
+      ]
+    },
+    "lidar_sensor": {
+      "position": [
+        0.0,
+        0.0,
+        89.5
+      ],
+      "rotation": [
+        0,
+        0,
+        1,
+        0
       ]
     }
   },
@@ -502,6 +502,24 @@
     },
     {
       "parent": "standoff_fl",
+      "child": "top_plate",
+      "aligned": true,
+      "hole_count_parent": 1
+    },
+    {
+      "parent": "standoff_fr",
+      "child": "top_plate",
+      "aligned": true,
+      "hole_count_parent": 1
+    },
+    {
+      "parent": "standoff_rl",
+      "child": "top_plate",
+      "aligned": true,
+      "hole_count_parent": 1
+    },
+    {
+      "parent": "standoff_rr",
       "child": "top_plate",
       "aligned": true,
       "hole_count_parent": 1
@@ -583,141 +601,156 @@
     },
     {
       "step": 6,
-      "part": "motor_fl",
+      "part": "top_plate",
       "feasible": true
     },
     {
       "step": 7,
-      "part": "motor_fr",
+      "part": "top_plate",
       "feasible": true
     },
     {
       "step": 8,
-      "part": "motor_rl",
+      "part": "top_plate",
       "feasible": true
     },
     {
       "step": 9,
-      "part": "motor_rr",
+      "part": "motor_fl",
       "feasible": true
     },
     {
       "step": 10,
-      "part": "wheel_fl",
+      "part": "motor_fr",
       "feasible": true
     },
     {
       "step": 11,
-      "part": "wheel_fr",
+      "part": "motor_rl",
       "feasible": true
     },
     {
       "step": 12,
-      "part": "wheel_rl",
+      "part": "motor_rr",
       "feasible": true
     },
     {
       "step": 13,
-      "part": "wheel_rr",
+      "part": "wheel_fl",
       "feasible": true
     },
     {
       "step": 14,
-      "part": "arm_l_base",
+      "part": "wheel_fr",
       "feasible": true
     },
     {
       "step": 15,
-      "part": "arm_l_shoulder",
+      "part": "wheel_rl",
       "feasible": true
     },
     {
       "step": 16,
-      "part": "arm_l_upper",
+      "part": "wheel_rr",
       "feasible": true
     },
     {
       "step": 17,
-      "part": "arm_l_elbow",
+      "part": "arm_l_base",
       "feasible": true
     },
     {
       "step": 18,
-      "part": "arm_l_forearm",
+      "part": "arm_l_shoulder",
       "feasible": true
     },
     {
       "step": 19,
-      "part": "arm_l_wrist",
+      "part": "arm_l_upper",
       "feasible": true
     },
     {
       "step": 20,
-      "part": "arm_l_gripper",
+      "part": "arm_l_elbow",
       "feasible": true
     },
     {
       "step": 21,
-      "part": "arm_r_base",
+      "part": "arm_l_forearm",
       "feasible": true
     },
     {
       "step": 22,
-      "part": "arm_r_shoulder",
+      "part": "arm_l_wrist",
       "feasible": true
     },
     {
       "step": 23,
-      "part": "arm_r_upper",
+      "part": "arm_l_gripper",
       "feasible": true
     },
     {
       "step": 24,
-      "part": "arm_r_elbow",
+      "part": "arm_r_base",
       "feasible": true
     },
     {
       "step": 25,
-      "part": "arm_r_forearm",
+      "part": "arm_r_shoulder",
       "feasible": true
     },
     {
       "step": 26,
-      "part": "arm_r_wrist",
+      "part": "arm_r_upper",
       "feasible": true
     },
     {
       "step": 27,
-      "part": "arm_r_gripper",
+      "part": "arm_r_elbow",
       "feasible": true
     },
     {
       "step": 28,
-      "part": "battery_box",
+      "part": "arm_r_forearm",
       "feasible": true
     },
     {
       "step": 29,
-      "part": "controller_board",
+      "part": "arm_r_wrist",
       "feasible": true
     },
     {
       "step": 30,
-      "part": "imu_mount",
+      "part": "arm_r_gripper",
       "feasible": true
     },
     {
       "step": 31,
-      "part": "imu_sensor",
+      "part": "battery_box",
       "feasible": true
     },
     {
       "step": 32,
-      "part": "lidar_mount",
+      "part": "controller_board",
       "feasible": true
     },
     {
       "step": 33,
+      "part": "imu_mount",
+      "feasible": true
+    },
+    {
+      "step": 34,
+      "part": "imu_sensor",
+      "feasible": true
+    },
+    {
+      "step": 35,
+      "part": "lidar_mount",
+      "feasible": true
+    },
+    {
+      "step": 36,
       "part": "lidar_sensor",
       "feasible": true
     }

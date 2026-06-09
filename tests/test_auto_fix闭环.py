@@ -332,6 +332,89 @@ def _has_api_key():
 
 
 @pytest.mark.skipif(not _has_vtk(), reason="VTK not installed")
+class TestFixCommandsExtraction:
+    """Test extract_fix_commands and its integration with generate_fix_hint."""
+
+    def test_extract_fix_commands_from_result(self):
+        """Extract FIX_COMMANDS from a single-angle cad_verify result."""
+        from lang3d.agent.fix_strategy import extract_fix_commands
+
+        result = (
+            "MATCH: False\n"
+            "OBSERVED: Solid cube\n"
+            "DIFFERENCES: Missing center hole\n"
+            "FIX_COMMANDS: fc_batch operations=[{op: cylinder_cut, radius: 4, height: 25}]\n"
+            "SUGGESTION: Add a through-hole"
+        )
+        fc = extract_fix_commands(result)
+        assert "fc_batch operations=" in fc
+        assert "cylinder_cut" in fc
+
+    def test_extract_fix_commands_returns_empty_for_none(self):
+        """FIX_COMMANDS: None → empty string."""
+        from lang3d.agent.fix_strategy import extract_fix_commands
+
+        result = (
+            "MATCH: False\n"
+            "OBSERVED: Cube\n"
+            "FIX_COMMANDS: None\n"
+            "SUGGESTION: Check dimensions"
+        )
+        assert extract_fix_commands(result) == ""
+
+    def test_extract_fix_commands_from_multiline(self):
+        """Correctly extract FIX_COMMANDS from multi-line results."""
+        from lang3d.agent.fix_strategy import extract_fix_commands
+
+        result = (
+            "MATCH: False\n"
+            "OBSERVED: Wrong dimensions\n"
+            "DIFFERENCES: Size 30mm instead of 25mm\n"
+            "FIX_COMMANDS: fc_batch operations=[{op: resize, target: Box, x: 25, y: 25, z: 25}]\n"
+            "SUGGESTION: Resize the box"
+        )
+        fc = extract_fix_commands(result)
+        assert "fc_batch" in fc
+        assert "resize" in fc
+
+    def test_generate_fix_hint_incorporates_fix_commands(self):
+        """When fix_commands is provided, hint includes VLM suggestion section."""
+        from lang3d.agent.fix_strategy import classify_failure, generate_fix_hint
+
+        result = (
+            "MATCH: False\n"
+            "DIFFERENCES: Missing hole\n"
+            "FIX_COMMANDS: fc_batch operations=[{op: cylinder_cut, radius: 4}]\n"
+        )
+        ctx = classify_failure(result, "cube with hole")
+        hint = generate_fix_hint(ctx, fix_commands="fc_batch operations=[{op: cylinder_cut, radius: 4}]")
+        assert "VLM 建议的具体修复操作" in hint
+        assert "cylinder_cut" in hint
+
+    def test_generate_fix_hint_ignores_empty_fix_commands(self):
+        """When fix_commands is empty, hint behaves like the original (no VLM suggestion section)."""
+        from lang3d.agent.fix_strategy import classify_failure, generate_fix_hint
+
+        result = "MATCH: False\nDIFFERENCES: Missing hole\n"
+        ctx = classify_failure(result, "cube with hole")
+        hint = generate_fix_hint(ctx, fix_commands="")
+        assert "VLM 建议的具体修复操作" not in hint
+
+    def test_parse_cad_verify_failure_convenience(self):
+        """parse_cad_verify_failure returns both FixContext and fix_commands."""
+        from lang3d.agent.fix_strategy import parse_cad_verify_failure, FailureType
+
+        result = (
+            "MATCH: False\n"
+            "DIFFERENCES: Missing hole\n"
+            "FIX_COMMANDS: fc_batch operations=[{op: cylinder_cut}]\n"
+        )
+        ctx, fc = parse_cad_verify_failure(result, "cube with hole")
+        assert ctx.failure_type == FailureType.MISSING_FEATURE
+        assert "fc_batch" in fc
+
+
+@pytest.mark.skipif(not _has_vtk(), reason="VTK not installed")
 class TestAutoFixWithRealRendering:
     """Test auto-fix with real VTK rendering but mocked VLM.
 
