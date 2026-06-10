@@ -69,13 +69,16 @@ def _extract_chain(assembly: Assembly) -> tuple[list[LinkSegment], float]:
     # Find revolute joints in order
     revolute_joints = [j for j in assembly.joints if j.type == "revolute"]
 
-    # Compute segment lengths from home-position Z differences
+    # Compute segment lengths from home-position 3D positions
     links: list[LinkSegment] = []
-    prev_z = 0.0
+    prev_pos = [0.0, 0.0, 0.0]
     for j in revolute_joints:
         child_pos = placements_home.get(j.child, {}).get("position", [0, 0, 0])
-        z = child_pos[2]
-        seg_len = abs(z - prev_z)
+        seg_len = (
+            (child_pos[0] - prev_pos[0]) ** 2
+            + (child_pos[1] - prev_pos[1]) ** 2
+            + (child_pos[2] - prev_pos[2]) ** 2
+        ) ** 0.5
         links.append(LinkSegment(
             name=j.child,
             length=seg_len,
@@ -83,7 +86,7 @@ def _extract_chain(assembly: Assembly) -> tuple[list[LinkSegment], float]:
             parent_anchor=j.parent_anchor,
             axis=j.axis,
         ))
-        prev_z = z
+        prev_pos = child_pos
 
     # Base height = first child Z
     base_height = 0.0

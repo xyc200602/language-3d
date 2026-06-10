@@ -254,7 +254,10 @@ class ScreenAnalyzeTool(Tool):
                 if region == "fullscreen":
                     capture = sct.monitors[0]
                 else:
-                    m = sct.monitors[1]
+                    if len(sct.monitors) < 2:
+                        m = sct.monitors[0]
+                    else:
+                        m = sct.monitors[1]
                     w, h = m["width"], m["height"]
                     if region == "left":
                         capture = {"left": m["left"], "top": m["top"], "width": w // 2, "height": h}

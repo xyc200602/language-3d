@@ -137,18 +137,9 @@ def load_config() -> Config:
 
 
 def save_config(config: Config) -> None:
-    """Persist configuration to ~/.lang3d/config.json.
-
-    API keys are masked (first 4 chars + ***) to prevent accidental exposure.
-    """
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    """Save current config to disk."""
     data = config.model_dump()
-    # Mask API keys
-    for section in ("glm", "openai"):
-        if section in data and isinstance(data[section], dict):
-            key = data[section].get("api_key", "")
-            if key and len(key) > 4:
-                data[section]["api_key"] = key[:4] + "***"
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
 

@@ -260,11 +260,9 @@ class Planner:
     def _detect_task_type(task: str) -> str:
         """Detect the task type from the task description."""
         task_lower = task.lower()
-        # Complex robot keywords (highest priority)
-        for kw in COMPLEX_ROBOT_KEYWORDS:
-            if kw in task_lower:
-                return "complex_robot"
-        # Mobile base keywords
+        # Mobile base keywords — check BEFORE complex_robot because
+        # specific keywords like "差速底盘" are more precise than the
+        # generic "4轮"/"差速" in COMPLEX_ROBOT_KEYWORDS.
         mobile_base_keywords = [
             "底盘设计", "移动底盘", "差速底盘", "轮式底盘",
             "agv底盘", "巡检底盘", "mecanum底盘",
@@ -273,6 +271,10 @@ class Planner:
         for kw in mobile_base_keywords:
             if kw in task_lower:
                 return "mobile_base"
+        # Complex robot keywords (second priority)
+        for kw in COMPLEX_ROBOT_KEYWORDS:
+            if kw in task_lower:
+                return "complex_robot"
         assembly_keywords = [
             "装配", "组装", "assembly", "多个零件", "机械臂",
             "机器人", "关节", "连接", "底座",
@@ -449,7 +451,7 @@ class Planner:
         dependencies_dict: dict[str, list[str]] = {}
         for step_idx, dep_idxs in dep_indices.items():
             step = steps[step_idx]
-            dep_ids = [steps[i].id for i in dep_idxs if i < len(steps)]
+            dep_ids = [steps[i].id for i in dep_idxs if 0 <= i < len(steps)]
             step.dependencies = dep_ids
             dependencies_dict[step.id] = dep_ids
 

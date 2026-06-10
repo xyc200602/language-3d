@@ -33,7 +33,7 @@ _DIMENSION_KEYWORDS = [
     "dimension", "尺寸", "size", "大小", "too big", "too small",
     "宽度", "高度", "长度", "width", "height", "length",
     "thickness", "厚度", "diameter", "直径", "radius", "半径",
-    "mm", "not.*mm",
+    "mm", "not mm", "incorrect mm", "wrong mm",
 ]
 _POSITION_KEYWORDS = [
     "position", "位置", "offset", "偏移", "misalign", "不对齐",

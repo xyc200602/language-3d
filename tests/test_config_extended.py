@@ -63,9 +63,9 @@ class TestConfigCorruptedJson:
                 assert config is not None
 
 
-class TestConfigApiKeyMasking:
-    def test_save_config_masks_api_keys(self, tmp_path):
-        """Saved config should mask API keys."""
+class TestConfigApiKeyPreservation:
+    def test_save_config_preserves_api_keys(self, tmp_path):
+        """Saved config should preserve real API keys (masking is for display only)."""
         from lang3d.config import save_config, Config
 
         config = Config(
@@ -79,6 +79,5 @@ class TestConfigApiKeyMasking:
                 save_config(config)
 
         saved = json.loads(config_file.read_text(encoding="utf-8"))
-        assert saved["glm"]["api_key"] == "sk-1***"
-        assert saved["openai"]["api_key"] == "sk-a***"
-        assert "1234567890" not in saved["glm"]["api_key"]
+        assert saved["glm"]["api_key"] == "sk-1234567890abcdef"
+        assert saved["openai"]["api_key"] == "sk-abcdef1234567890"

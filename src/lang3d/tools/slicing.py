@@ -279,8 +279,11 @@ class SliceModelTool(Tool):
         if not output_path:
             output_path = str(stl.with_suffix(".gcode"))
 
-        # Build command
-        cmd = _build_prusa_command(str(stl), output_path, params)
+        # Build command — select correct slicer backend
+        if "orca" in (slicer or "").lower():
+            cmd = _build_orca_command(str(stl), output_path, params)
+        else:
+            cmd = _build_prusa_command(str(stl), output_path, params)
 
         # Execute
         try:
@@ -590,6 +593,8 @@ class SliceVLMAnalyzeTool(Tool):
                     parts = line.split("Saved:")
                     if len(parts) > 1:
                         screenshot_path = parts[1].strip()
+                        # Remove file size suffix like "(123 KB)"
+                        screenshot_path = re.sub(r'\s*\(\d+\s*[KM]?B\)\s*$', '', screenshot_path)
                     break
 
             # If no screenshot path found, try to find latest screenshot

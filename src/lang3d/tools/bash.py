@@ -41,7 +41,8 @@ def _is_dangerous_command(command: str) -> str | None:
 # Dangerous Python modules that should not be importable in python_exec
 _BLOCKED_MODULES = {
     "subprocess", "os.system", "shutil.rmtree",
-    "ctypes", "winreg",
+    "ctypes", "winreg", "__import__", "importlib",
+    "eval(", "exec(", "compile(",
 }
 
 
@@ -146,10 +147,13 @@ class PythonExecTool(Tool):
         )
 
     def execute(self, *, code: str, timeout: int = 30, **kwargs: Any) -> str:
-        # Security: block dangerous imports
+        # Security: block dangerous imports and patterns
         for mod in _BLOCKED_MODULES:
-            if mod in code:
+            if re.search(rf'\b{re.escape(mod)}\b', code):
                 return f"Error: Code contains blocked module/reference: {mod}"
+        # Block getattr with dunder access
+        if re.search(r'getattr\s*\([^)]*[\'"]__\w+', code):
+            return "Error: Code contains blocked pattern: getattr with dunder"
         try:
             result = subprocess.run(
                 [sys.executable, "-c", code],

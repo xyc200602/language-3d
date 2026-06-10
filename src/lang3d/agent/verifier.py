@@ -59,14 +59,16 @@ class Verifier:
 
     def _check_heuristics(self, step: PlanStep, result: str) -> tuple[bool, str]:
         """Run heuristic checks based on verification description."""
+        import re as _re
         verification = step.verification.lower()
 
         # Check file existence
         if "文件存在" in verification or "file exists" in verification or "目录存在" in verification:
-            for word in step.description.split():
-                if Path(word).suffix or Path(word).name.startswith("."):
-                    if Path(word).exists():
-                        return True, f"File/directory found: {word}"
+            path_pattern = _re.compile(r'[\w./\\:-]+\.\w+|[./\\][\w./\\:-]+')
+            for match in path_pattern.finditer(step.description):
+                candidate = match.group()
+                if Path(candidate).exists():
+                    return True, f"File/directory found: {candidate}"
 
         # Check for successful code execution
         if "运行成功" in verification or "executes successfully" in verification:
@@ -98,7 +100,12 @@ class Verifier:
                 temperature=0.3,
             )
             content = response.content.strip()
-            if "失败" in content and "通过" not in content:
+            content_lower = content.lower()
+            fail_indicators = ["验证失败", "verification failed", "失败，", "失败。", "失败\n", "步骤失败"]
+            pass_indicators = ["通过", "成功", "passed", "success", "succeeded"]
+            has_fail = any(ind in content_lower for ind in fail_indicators)
+            has_pass = any(ind in content_lower for ind in pass_indicators)
+            if has_fail and not has_pass:
                 return False, content
             return True, content
         except Exception as e:
