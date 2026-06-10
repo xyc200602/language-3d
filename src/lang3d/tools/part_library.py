@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +28,8 @@ from ..knowledge.parts_catalog import (
 )
 from ..models.base import ToolDefinition
 from .base import Tool
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -62,8 +66,8 @@ class PartsStore:
             self._path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
             )
-        except OSError:
-            pass  # Non-critical: silently ignore write failures
+        except OSError as e:
+            logger.warning("Failed to save parts store to %s: %s", self._path, e)
 
     def add(self, part: GeneratedPart) -> None:
         """Add a generated part and persist."""
@@ -95,17 +99,20 @@ class PartsStore:
         return len(self._parts)
 
 
-# Module-level store instance (lazy-initialized)
+# Module-level store instance (lazy-initialized, thread-safe)
 _parts_store: PartsStore | None = None
+_parts_store_lock = threading.Lock()
 
 
 def _get_parts_store() -> PartsStore:
     """Get or create the singleton PartsStore."""
     global _parts_store
     if _parts_store is None:
-        ws = _workspace_dir()
-        json_path = Path(ws) / "generated_parts.json"
-        _parts_store = PartsStore(json_path)
+        with _parts_store_lock:
+            if _parts_store is None:
+                ws = _workspace_dir()
+                json_path = Path(ws) / "generated_parts.json"
+                _parts_store = PartsStore(json_path)
     return _parts_store
 
 
@@ -822,8 +829,6 @@ _PART_IMPORT_TEMPLATES = {
 # Import STL: {name}
 mesh_{idx} = Mesh.read(r"{file}")
 shape_{idx} = Part.Shape(mesh_{idx}.topology)
-shape_{idx}.translate(FreeCAD.Vector({tx}, {ty}, {tz}))
-# Apply rotation
 rot_{idx} = FreeCAD.Rotation(FreeCAD.Vector({rax}, {ray}, {raz}), {rangle})
 placement_{idx} = FreeCAD.Placement(FreeCAD.Vector({tx}, {ty}, {tz}), rot_{idx})
 obj_{idx} = doc.addObject("Part::Feature", "{name}")

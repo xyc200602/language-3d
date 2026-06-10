@@ -548,6 +548,42 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
     return assembly
 
 
+def _find_best_parent(part_name: str, part_names: set[str], visited: set[str]) -> str | None:
+    """Find the best parent for an orphaned part using prefix-based heuristics.
+
+    Maps common component prefixes to their natural parent patterns:
+    sensor_* → sensor_tower, camera_* → sensor_tower, lidar_* → sensor_tower,
+    imu_* → sensor_tower, battery_* → base_plate, pcb_* → top_plate,
+    controller_* → top_plate, power_* → base_plate, servo_* → matching arm link,
+    arm_* → matching base, gripper_* → matching wrist/link.
+    """
+    n = part_name.lower()
+
+    # Prefix-to-parent mapping with candidate patterns
+    prefix_map: dict[str, list[str]] = {
+        "sensor_": ["sensor_tower", "sensor_mount", "top_plate", "base_plate"],
+        "camera_": ["sensor_tower", "sensor_mount", "top_plate", "base_plate"],
+        "lidar_": ["sensor_tower", "sensor_mount", "top_plate", "base_plate"],
+        "imu_": ["sensor_tower", "sensor_mount", "top_plate", "base_plate"],
+        "battery_": ["base_plate", "bottom_plate", "chassis", "top_plate"],
+        "pcb_": ["top_plate", "base_plate", "main_board"],
+        "controller_": ["top_plate", "base_plate", "main_board"],
+        "power_": ["base_plate", "bottom_plate", "battery_box"],
+        "servo_": ["base_plate", "top_plate"],
+        "arm_": ["base_plate", "top_plate"],
+        "gripper_": ["wrist_link", "wrist", "end_effector"],
+    }
+
+    for prefix, candidates in prefix_map.items():
+        if n.startswith(prefix):
+            for candidate in candidates:
+                if candidate in visited:
+                    return candidate
+            return None
+
+    return None
+
+
 def _ensure_connected(assembly: Assembly, part_names: set[str]) -> None:
     """Auto-fix: connect orphaned parts to the nearest reachable parent.
 
@@ -610,6 +646,10 @@ def _ensure_connected(assembly: Assembly, part_names: set[str]) -> None:
             motor_name = f"motor_{suffix}"
             if motor_name in part_names:
                 parent = motor_name
+        else:
+            best = _find_best_parent(part_name, part_names, visited)
+            if best is not None:
+                parent = best
 
         # Default: attach to root with a fixed joint
         assembly.joints.append(Joint(
@@ -740,25 +780,6 @@ class AssemblyGenerateTool(Tool):
             return f"Error: {e}"
 
 
-def _count_subsystems(assembly: Assembly) -> dict[str, int]:
-    """Count parts per subsystem."""
-    counts: dict[str, int] = {}
-    for p in assembly.parts:
-        n = p.name.lower()
-        if n.startswith("arm_l_"):
-            key = "arm_left"
-        elif n.startswith("arm_r_"):
-            key = "arm_right"
-        elif "ipc" in n:
-            key = "ipc"
-        elif n.startswith(("sensor_", "imu_", "lidar_", "camera_")):
-            key = "sensor_tower"
-        else:
-            key = "chassis"
-        counts[key] = counts.get(key, 0) + 1
-    return counts
-
-
 # ---------------------------------------------------------------------------
 # VLM auto-fix closed loop
 # ---------------------------------------------------------------------------
@@ -803,7 +824,7 @@ def _geometric_prevalidation(
     seen: dict[str, str] = {}
     for name, pdata in positions.items():
         pos = pdata.get("position", [0, 0, 0])
-        key = f"{pos[0]:.0f},{pos[1]:.0f},{pos[2]:.0f}"
+        key = f"{pos[0]:.1f},{pos[1]:.1f},{pos[2]:.1f}"
         if key in seen:
             problems.append(f"Parts '{name}' and '{seen[key]}' at same position")
         else:

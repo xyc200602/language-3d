@@ -533,7 +533,7 @@ class FastenerModelTool(Tool):
                 f"=== {size} 紧固件组 ===",
                 f"  螺栓: {size}×{bolt_len}mm",
                 f"  {'热嵌螺母' if with_insert else '螺母'}: {size}",
-                f"  垫圈: {'M3 平垫圈' if with_washer else '无'}",
+                f"  垫圈: {f'{size} 平垫圈' if with_washer else '无'}",
                 f"  推荐扭矩: {result['torque_nm']}N·m (PLA)",
                 f"  间隙孔: Ø{result['clearance_hole_mm']}mm",
                 f"  共 {len(all_ops)} 个 FreeCAD 操作，{result['parts_count']} 个零件",
