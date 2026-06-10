@@ -127,7 +127,7 @@ class TestSearch:
     def test_search_category_fastener(self):
         from lang3d.knowledge.parts_catalog import search_parts
         results = search_parts(category="fastener")
-        assert len(results) == 4  # screw, nut, washer, bolt
+        assert len(results) == 7  # screw, nut, washer, bolt, heat_set_insert, t_nut, dowel_pin
         for t in results:
             assert t.category == "fastener"
 
@@ -473,7 +473,7 @@ class TestCategoryTree:
 
     def test_fastener_subcategories(self):
         from lang3d.knowledge.parts_catalog import CATEGORY_TREE
-        assert set(CATEGORY_TREE["fastener"]) == {"screw", "nut", "washer", "bolt"}
+        assert set(CATEGORY_TREE["fastener"]) == {"screw", "nut", "washer", "bolt", "insert", "pin"}
 
     def test_template_categories_match_tree(self):
         from lang3d.knowledge.parts_catalog import PART_CATALOG, CATEGORY_TREE

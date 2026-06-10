@@ -48,5 +48,17 @@ gui_*.png
 window_*.png
 create_cylinder.py
 
+# Root-level debug/temp scripts and files
+check_file*.py
+create_cyl*.py
+temp_*
+debug_*.py
+diag_*.py
+verify_final.py
+validate_production_e2e.py
+true_e2e.py
+test_4dof_arm_e2e.py
+test_planned_cyl*
+
 # Legacy development logs (migrated to progress.txt)
 development_log/

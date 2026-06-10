@@ -176,12 +176,12 @@ class GeneratedPart:
 # ---------------------------------------------------------------------------
 
 CATEGORY_TREE: dict[str, list[str]] = {
-    "fastener": ["screw", "nut", "washer", "bolt"],
+    "fastener": ["screw", "nut", "washer", "bolt", "insert", "pin"],
     "bearing": ["ball_bearing", "linear_bearing"],
 
     "actuator": ["servo", "stepper", "dc_motor", "bldc"],
 
-    "shaft": ["linear", "coupling", "leadscrew"],
+    "shaft": ["linear", "coupling", "leadscrew", "collar"],
 
     "gear": ["spur"],
     "transmission": ["timing_pulley", "timing_belt", "rigid_coupling", "flexible_coupling"],
@@ -3057,6 +3057,99 @@ obj.Shape = body
 doc.recompute()
 """
 
+# Heat-set brass thread insert — knurled cylinder with internal thread hole
+_HEAT_SET_INSERT_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("heat_set_insert")
+outer_r = {outer_diameter} / 2
+thread_r = {thread_diameter} / 2
+length = {length}
+body = Part.makeCylinder(outer_r, length)
+# Internal thread hole
+hole = Part.makeCylinder(thread_r, length)
+# Knurl pattern (simplified as longitudinal grooves)
+n_grooves = int(math.pi * outer_r * 2 / {knurl_pitch})
+groove_r = {knurl_pitch} / 3
+for i in range(n_grooves):
+    angle = 2 * math.pi * i / n_grooves
+    x = (outer_r - groove_r * 0.5) * math.cos(angle)
+    y = (outer_r - groove_r * 0.5) * math.sin(angle)
+    groove = Part.makeCylinder(groove_r, length)
+    groove.translate(FreeCAD.Vector(x, y, 0))
+    body = body.cut(groove)
+result = body.cut(hole)
+obj = doc.addObject("Part::Feature", "HeatSetInsert")
+obj.Shape = result
+doc.recompute()
+"""
+
+# Shaft collar — ring with bore and radial set-screw hole
+_SHAFT_COLLAR_SCRIPT = """\
+import FreeCAD, Part, math
+doc = FreeCAD.newDocument("shaft_collar")
+outer_r = {outer_diameter} / 2
+bore_r = {bore_diameter} / 2
+width = {width}
+body = Part.makeCylinder(outer_r, width)
+hole = Part.makeCylinder(bore_r, width)
+result = body.cut(hole)
+# Radial set-screw hole
+screw_r = {set_screw_diameter} / 2
+screw_hole = Part.makeCylinder(screw_r, outer_r - bore_r)
+screw_hole.rotate(FreeCAD.Vector(0, 0, width / 2), FreeCAD.Vector(0, 1, 0), 90)
+screw_hole.translate(FreeCAD.Vector(bore_r, 0, 0))
+result = result.cut(screw_hole)
+obj = doc.addObject("Part::Feature", "ShaftCollar")
+obj.Shape = result
+doc.recompute()
+"""
+
+# T-nut for aluminum extrusion slots
+_T_NUT_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("t_nut")
+# T-shaped cross section
+plate_w = {plate_width}
+plate_h = {plate_height}
+flange_w = {flange_width}
+flange_h = {flange_height}
+thread_r = {thread_diameter} / 2
+total_h = plate_h + flange_h
+# Build T-profile by extrusion
+plate = Part.makeBox(plate_w, plate_h, {nut_length})
+flange = Part.makeBox(flange_w, flange_h, {nut_length})
+flange.translate(FreeCAD.Vector(-(flange_w - plate_w) / 2, plate_h, 0))
+body = plate.fuse(flange)
+# Center threaded hole
+hole = Part.makeCylinder(thread_r, total_h)
+hole.translate(FreeCAD.Vector(plate_w / 2, 0, 0))
+result = body.cut(hole)
+obj = doc.addObject("Part::Feature", "TNut")
+obj.Shape = result
+doc.recompute()
+"""
+
+# Dowel pin — cylinder with chamfered ends
+_DOWEL_PIN_SCRIPT = """\
+import FreeCAD, Part
+doc = FreeCAD.newDocument("dowel_pin")
+r = {diameter} / 2
+length = {length}
+chamfer = {chamfer}
+pin = Part.makeCylinder(r, length)
+# Chamfer both ends using cones
+if chamfer > 0:
+    cone1 = Part.makeCone(r, r - chamfer, chamfer)
+    cone1.translate(FreeCAD.Vector(0, 0, -chamfer))
+    pin = pin.fuse(cone1)
+    cone2 = Part.makeCone(r, r - chamfer, chamfer)
+    cone2.translate(FreeCAD.Vector(0, 0, length))
+    pin = pin.fuse(cone2)
+obj = doc.addObject("Part::Feature", "DowelPin")
+obj.Shape = pin
+doc.recompute()
+"""
+
 
 # ---------------------------------------------------------------------------
 # Standard parts catalog (25+ templates)
@@ -5660,6 +5753,134 @@ doc.recompute()
             ],
             bore_diameter=6.0,
         ),
+    ),
+
+    # ---- Fastener subcategories: inserts and pins ----
+
+    "heat_set_insert": PartTemplate(
+        id="heat_set_insert",
+        name_en="Heat-Set Thread Insert",
+        name_cn="热熔铜螺母",
+        category="fastener",
+        subcategory="insert",
+        description="热压安装铜螺母，用于3D打印件螺纹加固，带滚花外表面",
+        tags=["热熔", "铜螺母", "heat-set", "insert", "brass", "knurled", "3D打印"],
+        material_default="brass",
+        part_class="fastener", scalable=False,
+        parameters=[
+            ParamDef("thread_diameter", "内螺纹直径", "mm", 3.0, 2.0, 6.0, 0.5, fixed=True),
+            ParamDef("outer_diameter", "外径(滚花)", "mm", 4.6, 3.0, 10.0, 0.1, fixed=True),
+            ParamDef("length", "长度", "mm", 5.6, 3.0, 10.0, 0.1, fixed=True),
+            ParamDef("knurl_pitch", "滚花间距", "mm", 0.8, 0.4, 1.5, 0.1, fixed=True),
+        ],
+        fc_script_template=_HEAT_SET_INSERT_SCRIPT,
+        standard_sizes=[
+            {"thread_diameter": 2.0, "outer_diameter": 3.5, "length": 4.0, "knurl_pitch": 0.5},
+            {"thread_diameter": 2.5, "outer_diameter": 4.2, "length": 5.0, "knurl_pitch": 0.6},
+            {"thread_diameter": 3.0, "outer_diameter": 4.6, "length": 5.6, "knurl_pitch": 0.7},
+            {"thread_diameter": 4.0, "outer_diameter": 6.0, "length": 7.0, "knurl_pitch": 0.8},
+            {"thread_diameter": 5.0, "outer_diameter": 7.1, "length": 8.0, "knurl_pitch": 0.9},
+            {"thread_diameter": 6.0, "outer_diameter": 8.3, "length": 10.0, "knurl_pitch": 1.0},
+        ],
+        notes="热压安装：使用电烙铁加热压入3D打印件预留孔。常见品牌：Ruthex, CNC Kitchen。"
+              "安装孔径 = 外径 - 0.1~0.2mm（过盈配合）。",
+    ),
+
+    "shaft_collar": PartTemplate(
+        id="shaft_collar",
+        name_en="Shaft Collar",
+        name_cn="轴环",
+        category="shaft",
+        subcategory="collar",
+        description="轴用固定环，含紧定螺钉孔，用于轴上零件轴向定位",
+        tags=["轴环", "轴固定", "shaft", "collar", "set screw", "定位"],
+        material_default="steel",
+        part_class="fastener", scalable=False,
+        parameters=[
+            ParamDef("bore_diameter", "内孔径", "mm", 6.0, 3.0, 12.0, 0.5, fixed=True),
+            ParamDef("outer_diameter", "外径", "mm", 12.0, 8.0, 22.0, 0.5, fixed=True),
+            ParamDef("width", "宽度", "mm", 6.0, 3.0, 12.0, 0.5, fixed=True),
+            ParamDef("set_screw_diameter", "紧定螺钉径", "mm", 3.0, 2.0, 5.0, 0.5, fixed=True),
+        ],
+        fc_script_template=_SHAFT_COLLAR_SCRIPT,
+        standard_sizes=[
+            {"bore_diameter": 5.0, "outer_diameter": 10.0, "width": 5.0, "set_screw_diameter": 2.5},
+            {"bore_diameter": 6.0, "outer_diameter": 12.0, "width": 6.0, "set_screw_diameter": 3.0},
+            {"bore_diameter": 8.0, "outer_diameter": 16.0, "width": 8.0, "set_screw_diameter": 4.0},
+            {"bore_diameter": 10.0, "outer_diameter": 18.0, "width": 8.0, "set_screw_diameter": 4.0},
+            {"bore_diameter": 12.0, "outer_diameter": 22.0, "width": 10.0, "set_screw_diameter": 5.0},
+        ],
+        notes="分为一体式和分体式两种。紧定螺钉锁紧轴面，提供轴向定位力。"
+              "推荐配合定位螺丝使用，避免损伤轴面。",
+    ),
+
+    "t_nut": PartTemplate(
+        id="t_nut",
+        name_en="T-Nut for Aluminum Extrusion",
+        name_cn="T型螺母（铝型材用）",
+        category="fastener",
+        subcategory="insert",
+        description="铝型材T型槽用螺母，T形截面嵌入型材槽内",
+        tags=["T型螺母", "铝型材", "T-nut", "extrusion", "2020", "3030", "4040"],
+        material_default="steel",
+        part_class="fastener", scalable=False,
+        parameters=[
+            ParamDef("thread_diameter", "螺纹直径", "mm", 3.0, 2.0, 8.0, 0.5, fixed=True),
+            ParamDef("plate_width", "T头宽度", "mm", 6.0, 4.0, 12.0, 0.5, fixed=True),
+            ParamDef("plate_height", "T头高度", "mm", 3.0, 1.5, 6.0, 0.5, fixed=True),
+            ParamDef("flange_width", "法兰宽度", "mm", 8.0, 5.0, 16.0, 0.5, fixed=True),
+            ParamDef("flange_height", "法兰高度", "mm", 1.5, 0.5, 3.0, 0.5, fixed=True),
+            ParamDef("nut_length", "螺母长度", "mm", 12.0, 6.0, 25.0, 1.0, fixed=True),
+        ],
+        fc_script_template=_T_NUT_SCRIPT,
+        standard_sizes=[
+            {"thread_diameter": 3.0, "plate_width": 5.5, "plate_height": 2.5,
+             "flange_width": 7.5, "flange_height": 1.5, "nut_length": 10},
+            {"thread_diameter": 4.0, "plate_width": 6.0, "plate_height": 3.0,
+             "flange_width": 8.0, "flange_height": 1.5, "nut_length": 12},
+            {"thread_diameter": 5.0, "plate_width": 8.0, "plate_height": 3.5,
+             "flange_width": 11.0, "flange_height": 2.0, "nut_length": 15},
+            {"thread_diameter": 6.0, "plate_width": 10.0, "plate_height": 4.0,
+             "flange_width": 14.0, "flange_height": 2.5, "nut_length": 18},
+        ],
+        notes="2020型材槽宽6.2mm，3030型材槽宽8.2mm，4040型材槽宽10.2mm。"
+              "滑入式安装，配合螺栓固定其他零件到型材上。",
+    ),
+
+    "dowel_pin": PartTemplate(
+        id="dowel_pin",
+        name_en="Dowel Pin",
+        name_cn="定位销",
+        category="fastener",
+        subcategory="pin",
+        description="ISO 8734定位销，两端倒角，用于两零件精确定位",
+        tags=["定位销", "销钉", "dowel", "pin", "定位", "ISO8734"],
+        material_default="steel",
+        part_class="fastener", scalable=False,
+        parameters=[
+            ParamDef("diameter", "直径", "mm", 5.0, 3.0, 10.0, 0.5, fixed=True),
+            ParamDef("length", "长度", "mm", 25.0, 8.0, 50.0, 1.0, fixed=True),
+            ParamDef("chamfer", "倒角", "mm", 0.5, 0.2, 1.5, 0.1, fixed=True),
+        ],
+        fc_script_template=_DOWEL_PIN_SCRIPT,
+        standard_sizes=[
+            {"diameter": 3.0, "length": 10.0, "chamfer": 0.3},
+            {"diameter": 3.0, "length": 16.0, "chamfer": 0.3},
+            {"diameter": 3.0, "length": 20.0, "chamfer": 0.3},
+            {"diameter": 4.0, "length": 16.0, "chamfer": 0.4},
+            {"diameter": 4.0, "length": 20.0, "chamfer": 0.4},
+            {"diameter": 4.0, "length": 25.0, "chamfer": 0.4},
+            {"diameter": 5.0, "length": 20.0, "chamfer": 0.5},
+            {"diameter": 5.0, "length": 25.0, "chamfer": 0.5},
+            {"diameter": 5.0, "length": 30.0, "chamfer": 0.5},
+            {"diameter": 6.0, "length": 25.0, "chamfer": 0.5},
+            {"diameter": 6.0, "length": 30.0, "chamfer": 0.5},
+            {"diameter": 6.0, "length": 40.0, "chamfer": 0.5},
+            {"diameter": 8.0, "length": 30.0, "chamfer": 0.8},
+            {"diameter": 8.0, "length": 40.0, "chamfer": 0.8},
+        ],
+        notes="ISO 8734 m6精度定位销。一端间隙配合(H7)，另一端过盈配合。"
+              "安装时轻敲压入过盈端。定位精度可达0.01mm。",
     ),
 }
 

@@ -51,8 +51,9 @@ class Plan:
         return None
 
     def progress(self) -> tuple[int, int]:
-        completed = sum(1 for s in self.steps if s.status == StepStatus.COMPLETED)
-        return completed, len(self.steps)
+        relevant = [s for s in self.steps if s.status != StepStatus.SKIPPED]
+        completed = sum(1 for s in relevant if s.status == StepStatus.COMPLETED)
+        return completed, len(relevant)
 
 
 # --- Hierarchical Plan (Phase E: Task 43) ---
@@ -80,8 +81,9 @@ class SubSystem:
     interface_points: dict[str, Any] = field(default_factory=dict)
 
     def progress(self) -> tuple[int, int]:
-        completed = sum(1 for s in self.steps if s.status == StepStatus.COMPLETED)
-        return completed, len(self.steps)
+        relevant = [s for s in self.steps if s.status != StepStatus.SKIPPED]
+        completed = sum(1 for s in relevant if s.status == StepStatus.COMPLETED)
+        return completed, len(relevant)
 
 
 @dataclass
@@ -121,6 +123,13 @@ class HierarchicalPlan:
         steps.extend(self.integration_steps)
         return steps
 
+    def current_step(self) -> PlanStep | None:
+        """Return the first PENDING or IN_PROGRESS step across all subsystems."""
+        for step in self.all_steps():
+            if step.status in (StepStatus.PENDING, StepStatus.IN_PROGRESS):
+                return step
+        return None
+
     def total_parts(self) -> int:
         return sum(len(ss.parts) for ss in self.subsystems)
 
@@ -139,6 +148,21 @@ class HierarchicalPlan:
     def to_flat_plan(self) -> Plan:
         """Convert to a flat Plan for backward compatibility."""
         return Plan(goal=self.goal, steps=self.all_steps())
+
+
+@dataclass
+class CheckpointInfo:
+    """Metadata for a saved checkpoint."""
+
+    checkpoint_id: str
+    label: str
+    step_id: str
+    step_description: str
+    created_at: str
+    path: str  # path to the checkpoint JSON file
+
+
+_MAX_CHECKPOINTS = 20
 
 
 class AgentState:
@@ -184,10 +208,102 @@ class AgentState:
             "created_at": self.created_at,
             "workspace": str(self.workspace),
             "plan": plan_data,
+            "conversation": self.conversation[-100:],
+            "screenshots": self.screenshots[-50:],
             "tool_history": self.tool_history[-100:],  # Keep last 100
             "metadata": self.metadata,
         }
         save_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    def checkpoint(self, label: str, step_id: str = "", step_description: str = "") -> CheckpointInfo:
+        """Save a timestamped snapshot of the current state.
+
+        Snapshots are stored under ``<workspace>/.lang3d/checkpoints/``.
+        Older checkpoints are pruned automatically when the count exceeds
+        ``_MAX_CHECKPOINTS``.
+        """
+        cp_dir = self.workspace / ".lang3d" / "checkpoints"
+        cp_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        cp_id = f"cp_{ts}"
+        cp_path = cp_dir / f"{cp_id}.json"
+
+        self.save(path=cp_path)
+
+        info = CheckpointInfo(
+            checkpoint_id=cp_id,
+            label=label,
+            step_id=step_id,
+            step_description=step_description,
+            created_at=datetime.now().isoformat(),
+            path=str(cp_path),
+        )
+
+        # Write sidecar metadata
+        meta_path = cp_dir / f"{cp_id}_meta.json"
+        meta_path.write_text(
+            json.dumps({
+                "checkpoint_id": info.checkpoint_id,
+                "label": info.label,
+                "step_id": info.step_id,
+                "step_description": info.step_description,
+                "created_at": info.created_at,
+                "path": info.path,
+            }, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        # Auto-prune oldest checkpoints
+        metas = sorted(cp_dir.glob("*_meta.json"), key=lambda p: p.name)
+        if len(metas) > _MAX_CHECKPOINTS:
+            for old_meta in metas[: len(metas) - _MAX_CHECKPOINTS]:
+                old_cp = Path(old_meta.stem.replace("_meta", "") + ".json")
+                old_meta.unlink(missing_ok=True)
+                (cp_dir / old_cp).unlink(missing_ok=True)
+
+        return info
+
+    def list_checkpoints(self) -> list[CheckpointInfo]:
+        """Return checkpoints newest-first for the current workspace."""
+        cp_dir = self.workspace / ".lang3d" / "checkpoints"
+        if not cp_dir.exists():
+            return []
+
+        results: list[CheckpointInfo] = []
+        for meta_path in sorted(cp_dir.glob("*_meta.json"), reverse=True):
+            try:
+                data = json.loads(meta_path.read_text(encoding="utf-8"))
+                results.append(CheckpointInfo(
+                    checkpoint_id=data["checkpoint_id"],
+                    label=data.get("label", ""),
+                    step_id=data.get("step_id", ""),
+                    step_description=data.get("step_description", ""),
+                    created_at=data.get("created_at", ""),
+                    path=data.get("path", ""),
+                ))
+            except (json.JSONDecodeError, KeyError):
+                continue
+        return results
+
+    @classmethod
+    def restore_checkpoint(cls, workspace: str | Path, checkpoint_id: str) -> AgentState:
+        """Load a specific checkpoint as a new AgentState.
+
+        Args:
+            workspace: The workspace directory containing ``.lang3d/checkpoints/``.
+            checkpoint_id: The checkpoint identifier (e.g. ``cp_20250610_143000_123456``).
+
+        Returns:
+            A fresh AgentState restored from the checkpoint snapshot.
+
+        Raises:
+            FileNotFoundError: If the checkpoint file does not exist.
+        """
+        cp_path = Path(workspace) / ".lang3d" / "checkpoints" / f"{checkpoint_id}.json"
+        if not cp_path.exists():
+            raise FileNotFoundError(f"Checkpoint not found: {checkpoint_id}")
+        return cls.load(path=cp_path)
 
     @staticmethod
     def _serialize_step(s: PlanStep) -> dict[str, Any]:
@@ -235,10 +351,12 @@ class AgentState:
         """Load state from JSON file."""
         data = json.loads(path.read_text(encoding="utf-8"))
         state = cls(workspace=data.get("workspace"))
-        state.session_id = data["session_id"]
-        state.created_at = data["created_at"]
+        state.session_id = data.get("session_id", state.session_id)
+        state.created_at = data.get("created_at", state.created_at)
         state.tool_history = data.get("tool_history", [])
         state.metadata = data.get("metadata", {})
+        state.conversation = data.get("conversation", [])
+        state.screenshots = data.get("screenshots", [])
 
         if plan_data := data.get("plan"):
             plan_type = plan_data.get("type", "flat")

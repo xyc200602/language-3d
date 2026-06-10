@@ -6,6 +6,16 @@ build-backend = "setuptools.build_meta"
 name = "lang3d"
 version = "0.1.0"
 description = "Language-3D Agent: Autonomous 3D modeling agent with VLM screen awareness"
+authors = [{name = "Language-3D Contributors"}]
+license = {text = "MIT"}
+readme = "README.md"
+keywords = ["3d-modeling", "cad", "agent", "freecad", "robotics"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering :: 3D Modeling",
+    "Programming Language :: Python :: 3.12",
+]
 requires-python = ">=3.12"
 dependencies = [
     "openai>=1.30.0",

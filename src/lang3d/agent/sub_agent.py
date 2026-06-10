@@ -3,15 +3,65 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import shutil
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 from ..models.router import ModelRouter, TaskType
 from ..tools.base import ToolRegistry
 from .executor import Executor
 from .state import AgentState, PlanStep, StepStatus
+
+logger = logging.getLogger(__name__)
+
+
+# Known CAD file extensions that should be cleaned up on step failure
+_CAD_EXTENSIONS = (".fcstd", ".step", ".stl", ".obj", ".py")
+
+
+def cleanup_artifacts(artifacts: list[str], workspace: str) -> None:
+    """Move artifact files produced by a failed step to a backup directory.
+
+    Files are moved to ``<workspace>/.lang3d/backups/`` with a timestamp
+    prefix instead of being permanently deleted.  Backups older than 7
+    days are purged automatically.
+    """
+    ws = Path(workspace)
+    backup_dir = ws / ".lang3d" / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    ts_prefix = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    for artifact_path in artifacts:
+        p = Path(artifact_path)
+        # Only back up files with known CAD extensions
+        if p.suffix.lower() not in _CAD_EXTENSIONS:
+            continue
+        # Resolve relative paths against workspace
+        if not p.is_absolute():
+            p = ws / p
+        try:
+            if p.exists():
+                backup_name = f"{ts_prefix}_{p.name}"
+                shutil.move(str(p), str(backup_dir / backup_name))
+                logger.info("Backed up artifact: %s -> %s", p, backup_dir / backup_name)
+        except OSError:
+            logger.warning("Failed to back up artifact: %s", p)
+
+    # Auto-purge backups older than 7 days
+    cutoff = datetime.now() - timedelta(days=7)
+    for old_file in backup_dir.iterdir():
+        try:
+            if old_file.is_file() and old_file.stat().st_mtime < cutoff.timestamp():
+                old_file.unlink()
+                logger.info("Purged old backup: %s", old_file)
+        except OSError:
+            pass
 
 
 class SubAgentRole(str, Enum):
@@ -195,7 +245,7 @@ class SubAgent:
             artifacts=artifacts,
             error="" if success else result_text,
             tool_history=[
-                {"name": t["name"], "arguments": t["arguments"]}
+                {"name": t.get("name", "unknown"), "arguments": t.get("arguments", {})}
                 for t in self._state.tool_history
             ],
         )
