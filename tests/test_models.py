@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from unittest.mock import MagicMock, patch
+
 from lang3d.models.base import Message, ModelResponse, ToolCall, ToolDefinition
 from lang3d.models.glm import GLMBackend
 from lang3d.models.ollama import OllamaBackend
@@ -94,3 +97,132 @@ def test_media_type_detection():
     assert backend._get_media_type("test.png") == "image/png"
     assert backend._get_media_type("test.jpg") == "image/jpeg"
     assert backend._get_media_type("test.jpeg") == "image/jpeg"
+
+
+# --- Round 4: Runtime crash bug tests ---
+
+
+def test_ollama_vision_accepts_model_param():
+    """OllamaBackend.vision() must accept model kwarg without TypeError."""
+    backend = OllamaBackend()
+    import inspect
+    sig = inspect.signature(backend.vision)
+    assert "model" in sig.parameters
+
+    # Also verify it can be called with model= without crashing
+    # Mock _encode_image and HTTP call since no Ollama server is running
+    with patch.object(backend, "_encode_image", return_value="fake_base64"):
+        with patch("lang3d.models.ollama.httpx.post") as mock_post:
+            mock_resp = MagicMock()
+            mock_resp.json.return_value = {"message": {"content": "test"}}
+            mock_resp.raise_for_status = MagicMock()
+            mock_post.return_value = mock_resp
+            result = backend.vision("dummy.png", "describe", model="llava")
+            assert result == "test"
+
+
+def test_glm_malformed_tool_call_arguments():
+    """GLMBackend.chat() must not crash on malformed tool_call arguments."""
+    backend = GLMBackend()
+    # Simulate a response with malformed arguments
+    mock_tc = MagicMock()
+    mock_tc.id = "tc_1"
+    mock_tc.function.name = "test_tool"
+    mock_tc.function.arguments = "NOT VALID JSON {{"
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = ""
+    mock_choice.message.tool_calls = [mock_tc]
+    mock_choice.finish_reason = "stop"
+
+    mock_usage = MagicMock()
+    mock_usage.prompt_tokens = 10
+    mock_usage.completion_tokens = 5
+
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_response.usage = mock_usage
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+    backend._client = mock_client
+
+    with patch("lang3d.models.glm.get_cache") as mock_get_cache:
+        mock_cache = MagicMock()
+        mock_cache.get.return_value = None
+        mock_get_cache.return_value = mock_cache
+
+        result = backend.chat(
+            [Message(role="user", content="test")],
+            temperature=0.0,
+        )
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0].arguments == {}  # fallback to empty dict
+
+
+def test_openai_malformed_tool_call_arguments():
+    """OpenAIBackend.chat() must not crash on malformed tool_call arguments."""
+    backend = OpenAIBackend()
+    mock_tc = MagicMock()
+    mock_tc.id = "tc_1"
+    mock_tc.function.name = "test_tool"
+    mock_tc.function.arguments = None  # TypeError scenario
+
+    mock_choice = MagicMock()
+    mock_choice.message.content = ""
+    mock_choice.message.tool_calls = [mock_tc]
+    mock_choice.finish_reason = "stop"
+
+    mock_usage = MagicMock()
+    mock_usage.prompt_tokens = 10
+    mock_usage.completion_tokens = 5
+
+    mock_response = MagicMock()
+    mock_response.choices = [mock_choice]
+    mock_response.usage = mock_usage
+
+    mock_client = MagicMock()
+    mock_client.chat.completions.create.return_value = mock_response
+    backend._client = mock_client
+
+    result = backend.chat(
+        [Message(role="user", content="test")],
+    )
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0].arguments == {}
+
+
+def test_tool_registry_raises_tool_error():
+    """ToolRegistry.execute() must raise ToolError, not return error strings."""
+    from lang3d.tools.base import ToolError, ToolRegistry
+
+    registry = ToolRegistry()
+    import pytest
+    with pytest.raises(ToolError, match="not found"):
+        registry.execute("nonexistent_tool")
+
+
+def test_tool_registry_wraps_exceptions_as_tool_error():
+    """ToolRegistry.execute() must wrap tool exceptions in ToolError."""
+    from lang3d.tools.base import Tool, ToolError, ToolRegistry, ToolDefinition
+
+    class FailingTool(Tool):
+        name = "fail_tool"
+        description = "A tool that always fails"
+
+        def get_definition(self):
+            return ToolDefinition(
+                name=self.name,
+                description=self.description,
+                parameters={"type": "object", "properties": {}},
+            )
+
+        def execute(self, **kwargs):
+            raise RuntimeError("Intentional failure")
+
+    registry = ToolRegistry()
+    registry.register(FailingTool())
+
+    import pytest
+    with pytest.raises(ToolError, match="Error executing fail_tool"):
+        registry.execute("fail_tool")

@@ -33,9 +33,11 @@ def test_tool_registry_execute():
 
 
 def test_tool_registry_unknown():
+    import pytest
+    from lang3d.tools.base import ToolError
     registry = ToolRegistry()
-    result = registry.execute("unknown_tool")
-    assert "not found" in result
+    with pytest.raises(ToolError, match="not found"):
+        registry.execute("unknown_tool")
 
 
 def test_file_write_read():

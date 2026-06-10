@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -213,7 +215,17 @@ class AgentState:
             "tool_history": self.tool_history[-100:],  # Keep last 100
             "metadata": self.metadata,
         }
-        save_path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        data_str = json.dumps(data, indent=2, ensure_ascii=False)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=str(save_path.parent), suffix=".tmp", prefix=".lang3d_state_"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(data_str)
+            os.replace(tmp_path, str(save_path))
+        except Exception:
+            Path(tmp_path).unlink(missing_ok=True)
+            raise
 
     def checkpoint(self, label: str, step_id: str = "", step_description: str = "") -> CheckpointInfo:
         """Save a timestamped snapshot of the current state.
@@ -240,19 +252,26 @@ class AgentState:
             path=str(cp_path),
         )
 
-        # Write sidecar metadata
+        # Write sidecar metadata (atomic)
         meta_path = cp_dir / f"{cp_id}_meta.json"
-        meta_path.write_text(
-            json.dumps({
-                "checkpoint_id": info.checkpoint_id,
-                "label": info.label,
-                "step_id": info.step_id,
-                "step_description": info.step_description,
-                "created_at": info.created_at,
-                "path": info.path,
-            }, indent=2, ensure_ascii=False),
-            encoding="utf-8",
+        meta_str = json.dumps({
+            "checkpoint_id": info.checkpoint_id,
+            "label": info.label,
+            "step_id": info.step_id,
+            "step_description": info.step_description,
+            "created_at": info.created_at,
+            "path": info.path,
+        }, indent=2, ensure_ascii=False)
+        tmp_fd, tmp_meta = tempfile.mkstemp(
+            dir=str(cp_dir), suffix=".tmp", prefix=".lang3d_meta_"
         )
+        try:
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                f.write(meta_str)
+            os.replace(tmp_meta, str(meta_path))
+        except Exception:
+            Path(tmp_meta).unlink(missing_ok=True)
+            raise
 
         # Auto-prune oldest checkpoints
         metas = sorted(cp_dir.glob("*_meta.json"), key=lambda p: p.name)

@@ -96,31 +96,29 @@ class OrchestratorAgent:
 
         return modeling_steps >= 3
 
-    def run_task(self, task: str) -> str:
+    def run_task(self, task: str, plan: Plan | None = None) -> str:
         """Main entry point for orchestrated task execution.
 
         Runs the async orchestration in a new event loop.
         """
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # We're inside an existing event loop, use nest_asyncio or thread
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, self._run_orchestrated_async(task))
-                    return future.result()
-            else:
-                return loop.run_until_complete(self._run_orchestrated_async(task))
+            asyncio.get_running_loop()
+            # Already inside an event loop → run in a background thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, self._run_orchestrated_async(task, plan)).result()
         except RuntimeError:
-            return asyncio.run(self._run_orchestrated_async(task))
+            # No running loop → safe to create one
+            return asyncio.run(self._run_orchestrated_async(task, plan))
 
-    async def _run_orchestrated_async(self, task: str) -> str:
+    async def _run_orchestrated_async(self, task: str, plan: Plan | None = None) -> str:
         """Execute a task using multi-agent orchestration."""
         if self._on_thinking:
             self._on_thinking("正在分析任务并创建 DAG 计划...")
 
-        # Phase 1: Create plan
-        plan = self.planner.create_plan(task)
+        # Phase 1: Create plan (or use provided one)
+        if plan is None:
+            plan = self.planner.create_plan(task)
 
         # Phase 2: Build DAG
         self._dag = TaskDAG.from_plan(plan)
@@ -206,6 +204,10 @@ class OrchestratorAgent:
                 elif self._dag:
                     self._dag.mark_failed(node.step.id)
 
+        # Clean up completed steps to prevent memory buildup
+        for node in nodes:
+            self._cleanup_step(node.step.id)
+
         return results
 
     async def _run_node_with_retry(
@@ -220,6 +222,7 @@ class OrchestratorAgent:
             success=False,
             error="No attempts made",
         )
+        sub_agent = None  # Guard for max_retries=0
         for attempt in range(self.max_retries):
             sub_agent = self._spawn_sub_agent(node)
 
@@ -260,9 +263,8 @@ class OrchestratorAgent:
                 # Reset step for retry
                 with self._step_lock:
                     node.step.status = StepStatus.PENDING
-                    node.step.attempts = attempt + 1
 
-        if self._on_sub_agent_update:
+        if sub_agent is not None and self._on_sub_agent_update:
             self._on_sub_agent_update(
                 sub_agent.agent_id, "failed", node.step.description
             )
@@ -357,6 +359,20 @@ class OrchestratorAgent:
         result = self.verifier.verify_assembly(assembly, self.workspace, parts_results)
         return AssemblyVerifier.generate_assembly_report(result)
 
+    def _cleanup_step(self, step_id: str) -> None:
+        """Remove completed step data to prevent memory buildup."""
+        self._results.pop(step_id, None)
+        to_remove = [aid for aid, agent in self._active_agents.items()
+                     if getattr(agent, 'step_id', None) == step_id]
+        for aid in to_remove:
+            del self._active_agents[aid]
+
+    def reset(self) -> None:
+        """Clear all orchestration state."""
+        self._active_agents.clear()
+        self._results.clear()
+        self._dag = None
+
     @property
     def active_agents(self) -> dict[str, SubAgent]:
         """Get currently tracked sub-agents."""
@@ -429,15 +445,13 @@ class PhasedOrchestrator(OrchestratorAgent):
     def run_task(self, task: str) -> str:  # type: ignore[override]
         """Run the 4-phase orchestrated execution."""
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, self._run_phased_async(task))
-                    return future.result()
-            else:
-                return loop.run_until_complete(self._run_phased_async(task))
+            asyncio.get_running_loop()
+            # Already inside an event loop → run in a background thread
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, self._run_phased_async(task)).result()
         except RuntimeError:
+            # No running loop → safe to create one
             return asyncio.run(self._run_phased_async(task))
 
     # ── Internal phase orchestration ──────────────────────────────
@@ -652,6 +666,12 @@ class PhasedOrchestrator(OrchestratorAgent):
         design_ctx: dict[str, Any],
     ) -> SubAgentResult:
         """Run a single step with retry logic and design context injection."""
+        result = SubAgentResult(
+            agent_id="phased",
+            step_id=step.id,
+            success=False,
+            error="No attempts made",
+        )
         for attempt in range(self.max_retries):
             sub = SubAgent(
                 role=SubAgentRole.MODELING,
@@ -695,7 +715,6 @@ class PhasedOrchestrator(OrchestratorAgent):
                     self._on_thinking(f"反思结果：{reflection[:200]}")
 
                 step.status = StepStatus.PENDING
-                step.attempts = attempt + 1
 
         return result
 

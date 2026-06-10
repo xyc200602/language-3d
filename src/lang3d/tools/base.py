@@ -97,6 +97,11 @@ STEP_TOOL_CATEGORIES: dict[str, list[str]] = {
 }
 
 
+class ToolError(Exception):
+    """Raised when a tool execution fails."""
+    pass
+
+
 class Tool(ABC):
     """Base class for all agent tools."""
 
@@ -203,8 +208,10 @@ class ToolRegistry:
         """Execute a tool by name."""
         tool = self.get(tool_name)
         if tool is None:
-            return f"Error: Tool '{tool_name}' not found. Available: {', '.join(self.list_tools())}"
+            raise ToolError(f"Tool '{tool_name}' not found. Available: {', '.join(self.list_tools())}")
         try:
             return tool.execute(**kwargs)
+        except ToolError:
+            raise
         except Exception as e:
-            return f"Error executing {tool_name}: {e}"
+            raise ToolError(f"Error executing {tool_name}: {e}") from e

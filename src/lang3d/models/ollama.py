@@ -87,6 +87,7 @@ class OllamaBackend(ModelBackend):
         prompt: str,
         *,
         max_tokens: int = 2048,
+        model: str | None = None,  # accepted but ignored; Ollama uses self.vision_model
     ) -> str:
         image_data = self._encode_image(image_path)
 

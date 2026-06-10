@@ -103,11 +103,15 @@ class GLMBackend(ModelBackend):
 
         if choice.message.tool_calls:
             for tc in choice.message.tool_calls:
+                try:
+                    arguments = json.loads(tc.function.arguments)
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    arguments = {}
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
                         name=tc.function.name,
-                        arguments=json.loads(tc.function.arguments),
+                        arguments=arguments,
                     )
                 )
 

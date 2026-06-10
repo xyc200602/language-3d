@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 from ..models.base import Message, ModelResponse, ToolCall
 from ..models.router import ModelRouter, TaskType
-from ..tools.base import ToolRegistry
+from ..tools.base import ToolError, ToolRegistry
 from .context import truncate_messages, truncate_tool_result
 from .fix_strategy import classify_failure, check_convergence, extract_fix_commands, generate_fix_hint
 from .state import AgentState, PlanStep, StepStatus
@@ -168,7 +168,10 @@ class Executor:
                     except Exception:
                         pass
 
-                result = self.tools.execute(tc.name, **tc.arguments)
+                try:
+                    result = self.tools.execute(tc.name, **tc.arguments)
+                except ToolError as e:
+                    result = f"Error: {e}"
                 state.add_tool_call(tc.name, tc.arguments, result)
 
                 # Truncate large tool results

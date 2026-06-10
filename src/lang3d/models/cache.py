@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -53,6 +54,7 @@ class SemanticCache:
         self.ttl_seconds = ttl_seconds
         self.max_entries = max_entries
         self._store: OrderedDict[str, CacheEntry] = OrderedDict()
+        self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
 
@@ -82,39 +84,42 @@ class SemanticCache:
 
     def get(self, key: str) -> Any | None:
         """Retrieve a cached response, or None if not found / expired."""
-        entry = self._store.get(key)
-        if entry is None:
-            self._misses += 1
-            return None
+        with self._lock:
+            entry = self._store.get(key)
+            if entry is None:
+                self._misses += 1
+                return None
 
-        # Check TTL
-        if time.monotonic() - entry.created_at > self.ttl_seconds:
-            del self._store[key]
-            self._misses += 1
-            return None
+            # Check TTL
+            if time.monotonic() - entry.created_at > self.ttl_seconds:
+                del self._store[key]
+                self._misses += 1
+                return None
 
-        # Promote to most-recently-used
-        self._store.move_to_end(key)
-        entry.hits += 1
-        self._hits += 1
-        logger.debug("Cache hit: %s (hits=%d)", key[:12], entry.hits)
-        return entry.response
+            # Promote to most-recently-used
+            self._store.move_to_end(key)
+            entry.hits += 1
+            self._hits += 1
+            logger.debug("Cache hit: %s (hits=%d)", key[:12], entry.hits)
+            return entry.response
 
     def put(self, key: str, response: Any) -> None:
         """Store a response in the cache, evicting LRU if at capacity."""
-        if key in self._store:
-            self._store.move_to_end(key)
-        self._store[key] = CacheEntry(response=response, created_at=time.monotonic())
-        # Evict oldest entries if over capacity
-        while len(self._store) > self.max_entries:
-            evicted_key, _ = self._store.popitem(last=False)
-            logger.debug("Cache eviction: %s", evicted_key[:12])
+        with self._lock:
+            if key in self._store:
+                self._store.move_to_end(key)
+            self._store[key] = CacheEntry(response=response, created_at=time.monotonic())
+            # Evict oldest entries if over capacity
+            while len(self._store) > self.max_entries:
+                evicted_key, _ = self._store.popitem(last=False)
+                logger.debug("Cache eviction: %s", evicted_key[:12])
 
     def clear(self) -> None:
         """Remove all cached entries."""
-        self._store.clear()
-        self._hits = 0
-        self._misses = 0
+        with self._lock:
+            self._store.clear()
+            self._hits = 0
+            self._misses = 0
 
     @property
     def size(self) -> int:

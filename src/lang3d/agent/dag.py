@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import logging
 from typing import Any
 
 from .state import Plan, PlanStep, StepStatus
@@ -32,6 +33,17 @@ class TaskDAG:
     ) -> DAGNode:
         """Add a step to the DAG."""
         deps = dependencies or []
+
+        # Validate dependencies — log unknown IDs
+        known_ids = set(self._nodes.keys())
+        unknown = [d for d in deps if d not in known_ids]
+        if unknown:
+            _logger = logging.getLogger(__name__)
+            _logger.warning(
+                "Step '%s' references unknown dependencies: %s", step.id, unknown
+            )
+            deps = [d for d in deps if d in known_ids]
+
         node = DAGNode(step=step, dependencies=deps, agent_role=agent_role)
         self._nodes[step.id] = node
 

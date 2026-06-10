@@ -267,3 +267,44 @@ class TestPlanStepFields:
         step = loaded.plan.steps[0]
         assert step.dependencies == ["other"]
         assert step.assigned_agent == "agent-A"
+
+
+class TestDependencyValidation:
+    """Round 4: Validate that unknown dependency IDs are filtered with a warning."""
+
+    def test_unknown_dependency_filtered(self):
+        """Unknown dependency IDs should be filtered out, not crash."""
+        step_a = _make_step("task A")
+        step_b = _make_step("task B")
+        dag = TaskDAG()
+        dag.add_step(step_a)
+        node_b = dag.add_step(step_b, dependencies=[step_a.id, "nonexistent_id"])
+        # Only the valid dependency should remain
+        assert step_a.id in node_b.dependencies
+        assert "nonexistent_id" not in node_b.dependencies
+
+    def test_all_unknown_dependencies_filtered(self):
+        """If all dependencies are unknown, node should have no deps."""
+        step_a = _make_step("task A")
+        dag = TaskDAG()
+        node = dag.add_step(step_a, dependencies=["ghost1", "ghost2"])
+        assert node.dependencies == []
+
+    def test_unknown_dependency_warning_logged(self, caplog):
+        """A warning should be logged for unknown dependencies."""
+        import logging
+        with caplog.at_level(logging.WARNING, logger="lang3d.agent.dag"):
+            step_a = _make_step("task A")
+            dag = TaskDAG()
+            dag.add_step(step_a, dependencies=["unknown_dep"])
+            assert "unknown dependencies" in caplog.text
+
+    def test_valid_dependencies_not_affected(self):
+        """Valid dependencies should still work normally after validation."""
+        a, b, c = [_make_step(f"task {n}") for n in "ABC"]
+        dag = TaskDAG()
+        dag.add_step(a)
+        dag.add_step(b, dependencies=[a.id])
+        dag.add_step(c, dependencies=[a.id, b.id])
+        assert a.id in dag.get_node(c.id).dependencies
+        assert b.id in dag.get_node(c.id).dependencies
