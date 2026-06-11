@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-11 - 审计报告 P0 修复：连接特征激活 + 标准件绑定 + 渲染改进
+
+### What was done:
+
+**P0-1: 连接特征死代码激活 (connection_features.py)**
+- 问题：export_package.py 的 _freecad_ops_for_part(part) 不传 joints，1075 行 connection_features.py 在主流水线上是死代码
+- 修复：构建 per-part 关节查找表，透传 joints 到 generate_ops 和 validate_part；移除 features_generated 跨调用跳过；固定关节默认 bolted M3x4
+- 效果：base_plate +8 螺栓孔，MG996R 舵机 +8 cuts
+
+**P0-2: 标准件目录绑定 (parts_catalog binding)**
+- 问题：_parse_assembly_json 用 LLM 自编尺寸，不查 parts_catalog 真实规格
+- 修复：新增 _bind_catalog_part() 匹配 SG90/MG996R/NEMA17/608 等型号，_map_catalog_dims() 映射 catalog→solver 维度键
+- 效果：LLM 写 MG996R → 实际 40.7x19.7x42.9mm
+
+**渲染质量改进：** vtk_renderer 工业级配色 + 特征边 + 光照跟随质心
+
+### Testing:
+- 194 单元测试通过 (solver + templates + connection_features)
+- 104 单元测试通过 (feature_engine + export + validator)
+- E2E 4dof_arm 86.7% 通过
+
+---
+
 ## 2026-06-09 - Layer 4: 装配模板 + 碰撞修复建议 + 零件推荐
 
 ### What was done:

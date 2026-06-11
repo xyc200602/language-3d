@@ -243,10 +243,15 @@ def build_complex_robot() -> Assembly:
 # ============================================================================
 
 
-def _freecad_ops_for_part(part: Part) -> list[dict]:
-    """Generate FreeCAD operation list for a single part with engineering features."""
+def _freecad_ops_for_part(part: Part, joints: list | None = None) -> list[dict]:
+    """Generate FreeCAD operation list for a single part with engineering features.
+
+    If *joints* is provided, connection features (bolt holes, bearing seats,
+    snap-fits, etc.) are generated from ``Joint.connection`` metadata and
+    merged into the ops list before the final export.
+    """
     from .part_feature_engine import generate_ops
-    return generate_ops(part)
+    return generate_ops(part, joints=joints)
 
 
 # ============================================================================
@@ -347,6 +352,7 @@ def export_engineering_package(
     # ---- Step 1b: VLM visual verification ----
     # Try to run closed-loop VLM verification: render → VLM check → fix → re-solve
     vlm_result = None
+    vlm_backend = None
     try:
         from ..models.glm import GLMBackend
         import os as _os
@@ -398,10 +404,20 @@ def export_engineering_package(
     fc_dir = output_dir / "freecad_scripts"
     fc_dir.mkdir(parents=True, exist_ok=True)
 
+    # Build per-part joint lookup so connection features (bolt holes, bearing
+    # seats, snap-fits, adhesive grooves, etc.) are generated for each part
+    # that participates in a joint.  This activates the previously-dead
+    # connection_features module in the main export pipeline.
+    joints_by_part: dict[str, list] = {}
+    for joint in assembly.joints:
+        for pn in (joint.parent, joint.child):
+            joints_by_part.setdefault(pn, []).append(joint)
+
     # Build all part operation lists
     all_part_ops = []
     for part in assembly.parts:
-        ops = _freecad_ops_for_part(part)
+        part_joints = joints_by_part.get(part.name, [])
+        ops = _freecad_ops_for_part(part, joints=part_joints)
         # Replace workspace placeholder with actual path
         for op in ops:
             if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
@@ -424,9 +440,13 @@ def export_engineering_package(
         from .freecad import _find_freecad_python
         if _find_freecad_python():
             from .part_validator import validate_all_parts
-            logger.info("Running FreeCAD validation for %d parts", len(assembly.parts))
+            logger.info("Running FreeCAD validation for %d parts (vlm_backend=%s)",
+                        len(assembly.parts), "available" if vlm_backend else "None")
             validation_report = validate_all_parts(
                 assembly.parts, str(stl_dir), timeout=60,
+                vlm_router=vlm_backend,
+                vlm_sample=len(assembly.parts),
+                joints_by_part=joints_by_part,
             )
             # Save validation report
             validation_report_path.write_text(
@@ -714,7 +734,7 @@ def export_engineering_package(
         f"- Convex hull vertices: {len(polygon)}\n",
         "## Static Stability",
         f"- Stable: {static_stab.get('stable', 'N/A')}",
-        f"- Margin: {static_stab.get('margin_mm', 'N/A'):.1f} mm\n",
+        f"- Margin: {static_stab.get('margin_mm', 'N/A') if static_stab.get('margin_mm') is not None else 'N/A'} mm\n",
         "## Tip-Over Risk Assessment",
         f"- Risk level: {tip_risk['risk_level']}",
         f"- Min stability margin: {tip_risk.get('min_stability_margin_mm', 'N/A')}",

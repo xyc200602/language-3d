@@ -35,22 +35,36 @@ SUBSYSTEM_COLORS: dict[str, tuple[float, float, float]] = {
     "default": (0.65, 0.65, 0.65),
 }
 
-# Category-based colors for better visual distinction of part types
+# Category-based colors — distinct industrial palette for VLM readability.
+# Key principle: each category must be visually distinguishable so the VLM
+# (and humans) can tell joints from links from gripper at a glance.
 CATEGORY_COLORS: dict[str, tuple[float, float, float]] = {
-    "structural": (0.20, 0.45, 0.80),   # blue
-    "actuator": (0.85, 0.25, 0.20),     # red
-    "mechanical": (0.15, 0.70, 0.25),   # green
-    "electronics": (0.85, 0.65, 0.10),  # amber
-    "sensor": (0.60, 0.20, 0.75),       # purple
+    "structural": (0.72, 0.74, 0.78),   # bright aluminum silver (links, base)
+    "actuator": (0.80, 0.50, 0.12),     # industrial orange (servos/joints — like Dynamixel)
+    "mechanical": (0.78, 0.22, 0.18),   # red (gripper/end effector — stands out)
+    "electronics": (0.15, 0.50, 0.22),  # PCB green
+    "sensor": (0.22, 0.52, 0.82),       # sensor blue
+    "bearing": (0.85, 0.86, 0.90),      # chrome silver
 }
 
 # Category-based material properties (specular, specular_power, ambient, diffuse)
 CATEGORY_MATERIALS: dict[str, dict[str, float]] = {
-    "structural": {"specular": 0.4, "specular_power": 30, "ambient": 0.15, "diffuse": 0.85},
-    "actuator": {"specular": 0.3, "specular_power": 20, "ambient": 0.10, "diffuse": 0.80},
-    "mechanical": {"specular": 0.5, "specular_power": 40, "ambient": 0.15, "diffuse": 0.85},
-    "electronics": {"specular": 0.1, "specular_power": 5, "ambient": 0.20, "diffuse": 0.80},
-    "sensor": {"specular": 0.2, "specular_power": 15, "ambient": 0.15, "diffuse": 0.80},
+    "structural": {"specular": 0.55, "specular_power": 55, "ambient": 0.18, "diffuse": 0.82},
+    "actuator": {"specular": 0.45, "specular_power": 35, "ambient": 0.15, "diffuse": 0.85},
+    "mechanical": {"specular": 0.35, "specular_power": 25, "ambient": 0.16, "diffuse": 0.84},
+    "electronics": {"specular": 0.20, "specular_power": 10, "ambient": 0.20, "diffuse": 0.80},
+    "sensor": {"specular": 0.30, "specular_power": 25, "ambient": 0.16, "diffuse": 0.84},
+    "bearing": {"specular": 0.75, "specular_power": 90, "ambient": 0.14, "diffuse": 0.78},
+}
+
+# Edge color per category — dark version of base color for visible geometry edges
+CATEGORY_EDGE_COLORS: dict[str, tuple[float, float, float]] = {
+    "structural": (0.32, 0.34, 0.38),
+    "actuator": (0.35, 0.20, 0.05),
+    "mechanical": (0.32, 0.08, 0.06),
+    "electronics": (0.06, 0.22, 0.10),
+    "sensor": (0.08, 0.22, 0.35),
+    "bearing": (0.40, 0.41, 0.44),
 }
 
 
@@ -151,7 +165,8 @@ class VTKOffscreenRenderer:
         transform.RotateWXYZ(angle_deg, ax, ay, az)
         actor.SetUserTransform(transform)
 
-    def _apply_material(self, actor: Any, category: str = "") -> None:
+    def _apply_material(self, actor: Any, category: str = "",
+                        show_edges: bool = False) -> None:
         """Apply category-based material properties to an actor."""
         mat = CATEGORY_MATERIALS.get(category)
         if mat:
@@ -164,6 +179,13 @@ class VTKOffscreenRenderer:
             actor.GetProperty().SetSpecularPower(10)
             actor.GetProperty().SetAmbient(0.15)
             actor.GetProperty().SetDiffuse(0.85)
+        # Only show edges for simple primitives (box/cylinder),
+        # NOT for STL meshes which have dense triangulation
+        if show_edges:
+            edge_color = CATEGORY_EDGE_COLORS.get(category, (0.25, 0.25, 0.25))
+            actor.GetProperty().EdgeVisibilityOn()
+            actor.GetProperty().SetEdgeColor(*edge_color)
+            actor.GetProperty().SetLineWidth(1.0)
 
     def load_stl(
         self,
@@ -173,8 +195,16 @@ class VTKOffscreenRenderer:
         position: tuple[float, float, float] | None = None,
         rotation: tuple[float, float, float, float] | None = None,
         category: str = "",
+        swap_xy: bool = False,
     ) -> None:
-        """Load an STL file and add it to the scene."""
+        """Load an STL file and add it to the scene.
+
+        Args:
+            swap_xy: If True, apply R_z(90°) to swap X↔Y axes.
+                     Needed for FreeCAD-generated STL files where
+                     makeBox puts length along X, but the solver's
+                     convention puts length along Y (front/back).
+        """
         import vtk  # lazy import — only needed when rendering
 
         if not os.path.isfile(stl_path):
@@ -186,11 +216,14 @@ class VTKOffscreenRenderer:
 
         # Center the mesh so its bounding box center is at the origin.
         # FreeCAD generates STL with corner at (0,0,0), but the solver
-        # and VTK's box/cylinder approximations assume centered geometry.
-        center_filter = vtk.vtkCenterOfMass()
-        center_filter.SetInputConnection(reader.GetOutputPort())
-        center_filter.Update()
-        cx, cy, cz = center_filter.GetCenter()
+        # computes positions based on bounding box half-extents (not
+        # centroid), so we must center on the bounding box center to
+        # ensure STL parts align exactly where the solver expects them.
+        raw = reader.GetOutput()
+        bounds = raw.GetBounds()  # [xmin,xmax,ymin,ymax,zmin,zmax]
+        cx = (bounds[0] + bounds[1]) / 2.0
+        cy = (bounds[2] + bounds[3]) / 2.0
+        cz = (bounds[4] + bounds[5]) / 2.0
 
         shift = vtk.vtkTransform()
         shift.Translate(-cx, -cy, -cz)
@@ -199,9 +232,25 @@ class VTKOffscreenRenderer:
         shift_filter.SetTransform(shift)
         shift_filter.Update()
 
+        # Swap X↔Y axes for FreeCAD-generated STL meshes.
+        # FreeCAD convention: makeBox(length,width,height) → X=length, Y=width
+        # Solver convention: front/back=Y (length), left/right=X (width)
+        # R_z(-90°) maps FreeCAD +X → solver -Y (front), so parts extend
+        # in the correct direction (away from parent, toward child).
+        if swap_xy:
+            swap = vtk.vtkTransform()
+            swap.RotateZ(-90)
+            swap_filter = vtk.vtkTransformPolyDataFilter()
+            swap_filter.SetInputConnection(shift_filter.GetOutputPort())
+            swap_filter.SetTransform(swap)
+            swap_filter.Update()
+            last_output = swap_filter.GetOutputPort()
+        else:
+            last_output = shift_filter.GetOutputPort()
+
         # Smooth normals for nice shading
         normals = vtk.vtkPolyDataNormals()
-        normals.SetInputConnection(shift_filter.GetOutputPort())
+        normals.SetInputConnection(last_output)
         normals.ComputePointNormalsOn()
         normals.SplittingOff()
         normals.Update()
@@ -213,7 +262,7 @@ class VTKOffscreenRenderer:
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(*color)
         actor.GetProperty().SetOpacity(opacity)
-        self._apply_material(actor, category)
+        self._apply_material(actor, category, show_edges=False)
         actor.GetProperty().SetInterpolationToPhong()
 
         self._apply_transform(actor, position or (0, 0, 0), rotation)
@@ -221,6 +270,38 @@ class VTKOffscreenRenderer:
         self._actors.append(actor)
         self._content_actors.append(actor)
         self._has_content = True
+
+        # Feature edges: extract sharp geometric edges (>55°) and render as
+        # thin dark lines. This makes part boundaries and mechanical features
+        # (bearing collars, output shafts, finger outlines) visible to the VLM
+        # without the visual noise of showing every STL triangle edge.
+        try:
+            edges = vtk.vtkFeatureEdges()
+            edges.SetInputConnection(normals.GetOutputPort())
+            edges.BoundaryEdgesOff()
+            edges.ManifoldEdgesOff()
+            edges.NonManifoldEdgesOff()
+            edges.FeatureEdgesOn()
+            edges.SetFeatureAngle(55.0)
+            edges.Update()
+
+            if edges.GetOutput().GetNumberOfCells() > 0:
+                edge_mapper = vtk.vtkPolyDataMapper()
+                edge_mapper.SetInputConnection(edges.GetOutputPort())
+
+                edge_actor = vtk.vtkActor()
+                edge_actor.SetMapper(edge_mapper)
+                edge_color = CATEGORY_EDGE_COLORS.get(category, (0.2, 0.2, 0.2))
+                edge_actor.GetProperty().SetColor(*edge_color)
+                edge_actor.GetProperty().SetLineWidth(1.0)
+                edge_actor.GetProperty().SetOpacity(opacity)
+
+                self._apply_transform(edge_actor, position or (0, 0, 0), rotation)
+
+                self._actors.append(edge_actor)
+                self._content_actors.append(edge_actor)
+        except Exception:
+            pass  # Feature edges are cosmetic — never block rendering
 
     def add_box(
         self,
@@ -236,9 +317,11 @@ class VTKOffscreenRenderer:
         """Add a box (approximation from dimensions)."""
         import vtk
 
+        # Solver convention: X=left/right(width), Y=front/back(length), Z=top/bottom(height)
+        # This matches ANCHOR_DIRECTIONS: front=(0,-1,0), left=(-1,0,0), top=(0,0,1)
         source = vtk.vtkCubeSource()
-        source.SetXLength(length)
-        source.SetYLength(width)
+        source.SetXLength(width)
+        source.SetYLength(length)
         source.SetZLength(height)
         source.SetCenter(0, 0, 0)
         source.Update()
@@ -250,7 +333,7 @@ class VTKOffscreenRenderer:
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(*color)
         actor.GetProperty().SetOpacity(opacity)
-        self._apply_material(actor, category)
+        self._apply_material(actor, category, show_edges=True)
         actor.GetProperty().SetInterpolationToPhong()
         self._apply_transform(actor, position, rotation)
 
@@ -294,7 +377,7 @@ class VTKOffscreenRenderer:
         actor.SetMapper(mapper)
         actor.GetProperty().SetColor(*color)
         actor.GetProperty().SetOpacity(opacity)
-        self._apply_material(actor, category)
+        self._apply_material(actor, category, show_edges=True)
         actor.GetProperty().SetInterpolationToPhong()
         self._apply_transform(actor, position, rotation)
 
@@ -367,37 +450,46 @@ class VTKOffscreenRenderer:
     # Rendering
     # ------------------------------------------------------------------
 
-    def _build_renderer(self) -> Any:
-        """Build a vtkRenderer with all actors and lighting."""
+    def _build_renderer(self, centroid: tuple[float, float, float] = (0, 0, 50)) -> Any:
+        """Build a vtkRenderer with all actors and lighting.
+
+        Lights are positioned relative to *centroid* so the entire assembly
+        is well-lit regardless of where it sits in world coordinates.
+        """
         import vtk
+
+        cx, cy, cz = centroid
 
         renderer = vtk.vtkRenderer()
         renderer.SetBackground(0.95, 0.95, 0.97)    # top
         renderer.SetBackground2(0.85, 0.85, 0.88)    # bottom
         renderer.GradientBackgroundOn()
-        renderer.SetAmbient(0.25, 0.25, 0.25)
+        renderer.SetAmbient(0.28, 0.28, 0.28)
 
-        # Key light
+        # Key light — warm, upper-right-front (relative to scene centroid)
         light1 = vtk.vtkLight()
-        light1.SetPosition(80, -60, 120)
-        light1.SetFocalPoint(0, 0, 50)
-        light1.SetIntensity(0.9)
+        light1.SetPosition(cx + 100, cy - 80, cz + 150)
+        light1.SetFocalPoint(cx, cy, cz)
+        light1.SetIntensity(1.0)
+        light1.SetColor(1.0, 0.98, 0.95)
         light1.SetLightTypeToSceneLight()
         renderer.AddLight(light1)
 
-        # Fill light (softer, opposite side)
+        # Fill light — cool, upper-left-back
         light2 = vtk.vtkLight()
-        light2.SetPosition(-60, 80, 80)
-        light2.SetFocalPoint(0, 0, 50)
-        light2.SetIntensity(0.4)
+        light2.SetPosition(cx - 80, cy + 100, cz + 100)
+        light2.SetFocalPoint(cx, cy, cz)
+        light2.SetIntensity(0.5)
+        light2.SetColor(0.92, 0.95, 1.0)
         light2.SetLightTypeToSceneLight()
         renderer.AddLight(light2)
 
-        # Rim light (back-top, for edge definition)
+        # Rim/back light — from behind for silhouette edge definition
         light3 = vtk.vtkLight()
-        light3.SetPosition(0, 0, 200)
-        light3.SetFocalPoint(0, 0, 50)
-        light3.SetIntensity(0.3)
+        light3.SetPosition(cx - 30, cy - 30, cz + 200)
+        light3.SetFocalPoint(cx, cy, cz)
+        light3.SetIntensity(0.4)
+        light3.SetColor(1.0, 1.0, 1.0)
         light3.SetLightTypeToSceneLight()
         renderer.AddLight(light3)
 
@@ -406,7 +498,7 @@ class VTKOffscreenRenderer:
 
         return renderer
 
-    def _compute_bounds(self, renderer: Any) -> tuple[float, float, float, float, float, float]:
+    def _compute_bounds_raw(self) -> tuple[float, float, float, float, float, float]:
         """Compute bounding box of content actors only (excludes floor grid/axes).
 
         This ensures the auto-framing camera positions itself to show the
@@ -420,6 +512,9 @@ class VTKOffscreenRenderer:
             temp.AddActor(actor)
         temp.ResetCamera()
         return temp.ComputeVisiblePropBounds()
+
+    # Alias for backwards compatibility
+    _compute_bounds = _compute_bounds_raw
 
     def render_to_file(self, view_name: str, output_path: str) -> str:
         """Render a single view to a PNG file. Returns the output path.
@@ -436,10 +531,8 @@ class VTKOffscreenRenderer:
 
         preset = VIEW_PRESETS.get(view_name, VIEW_PRESETS["isometric"])
 
-        renderer = self._build_renderer()
-
-        # --- Auto-frame based on actual actor bounds ---
-        xmin, xmax, ymin, ymax, zmin, zmax = self._compute_bounds(renderer)
+        # First compute bounds to determine scene centroid for lighting.
+        xmin, xmax, ymin, ymax, zmin, zmax = self._compute_bounds_raw()
 
         cx = (xmin + xmax) / 2
         cy = (ymin + ymax) / 2
@@ -451,6 +544,9 @@ class VTKOffscreenRenderer:
         sz = zmax - zmin
         max_extent = max(sx, sy, sz)
 
+        # Build renderer with lights positioned at the scene centroid.
+        renderer = self._build_renderer(centroid=(cx, cy, cz))
+
         # View direction from preset (unit vector)
         px, py, pz = preset["position"]
         fx, fy, fz = preset["focal"]
@@ -459,7 +555,6 @@ class VTKOffscreenRenderer:
         dir_x, dir_y, dir_z = dx / norm, dy / norm, dz / norm
 
         # Camera distance: enough to fit the full scene with padding.
-        # Factor accounts for perspective FOV and ensures padding.
         distance = max_extent * 1.8
 
         camera = renderer.GetActiveCamera()
@@ -599,7 +694,7 @@ def render_assembly_from_positions(
         if stl_dir:
             stl_path = os.path.join(stl_dir, f"{name}.stl")
             if os.path.isfile(stl_path):
-                r.load_stl(stl_path, color=color, position=tuple(pos), rotation=rot_tuple, category=category)
+                r.load_stl(stl_path, color=color, position=tuple(pos), rotation=rot_tuple, category=category, swap_xy=True)
                 stl_loaded = True
 
         # Fallback to dimension-based approximation
@@ -636,14 +731,6 @@ def _add_dimension_approximation(
         l = dims["length"]
         w = dims["width"]
         h = dims.get("height", dims.get("thickness", 5))
-        # Detect Y-axis rotation (arm joints rotate around Y).
-        # R_Y(±90°) swaps X and Z, so swap length↔height so the
-        # long axis (length) ends up horizontal after rotation.
-        swap_axes = False
-        if rotation is not None and abs(rotation[1]) > 0.5 and abs(rotation[3]) > 30:
-            swap_axes = True
-        if swap_axes:
-            l, h = h, l
         renderer.add_box(
             length=l, width=w, height=h, color=color, position=tuple(position),
             rotation=rotation, category=category,

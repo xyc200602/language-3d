@@ -16,7 +16,8 @@ import os
 import re
 from typing import Any
 
-from ..knowledge.mechanics import Assembly, Joint, Part
+from ..knowledge.mechanics import Assembly, ConnectionMethod, Joint, Part
+from .assembly_solver import ANCHOR_DIM_KEYS
 from .base import Tool, ToolDefinition
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,7 @@ Parts fall into two classes with DIFFERENT dimension rules:
 3. **Motors**: match wheel size, ~40x40x30mm for standard TT motors
 4. **Standoffs**: M3/M4, 6-8mm diameter, 40-60mm tall
 5. **Arm links**: 25-40mm wide, 15-25mm high, 60-120mm long
-6. **Arm joints**: revolute with ±180° range, axis depends on orientation
+6. **Arm joints**: revolute with ±180° range; pitch uses axis="x", yaw uses axis="z"
 7. **Sensors**: small mounts, 20-40mm range
 
 ## Joint Anchor Semantics
@@ -122,20 +123,31 @@ Parts fall into two classes with DIFFERENT dimension rules:
 3. **JOINT COUNT must equal PART COUNT minus 1** (N parts needs N-1 joints for a connected tree)
 4. Part names must be unique and match exactly in joints
 5. Wheels attach to motors (revolute, axis=y for horizontal axle)
-6. Arms attach to top plate (revolute, axis=z for shoulder rotation)
+6. Arms attach to top plate (revolute, axis=z for shoulder yaw rotation)
 7. Use distribution_group to group symmetric siblings (e.g., "arms", "standoffs", "wheels_fl_fr")
 8. Use offset for parts that need to be shifted from their anchor position
 9. The assembly must form a connected tree (no cycles)
 10. **DOUBLE CHECK**: count joints, if fewer than parts-1, add missing joints
 11. **ARM TOPOLOGY**: Parts MUST alternate joint→link→joint→link (never link→link directly)
-12. **ARM ANCHORS**: After the first vertical segment (top/bottom), horizontal links MUST use
-    parent_anchor="front" / child_anchor="back" so the link extends along its length axis
+12. **ARM ANCHORS & AXIS**: Arm links extend along Y via parent_anchor="front" / child_anchor="back".
+    Pitch joints (up/down bending) MUST use axis="x" — the X axis is perpendicular to the Y link
+    direction, so rotation creates bending. NEVER use axis="y" for front→back pitch joints, because
+    Y is parallel to the link direction and rotation produces no displacement.
+    Base rotation (yaw) uses axis="z" with top→bottom anchors.
 13. **ARM DEFAULT ANGLES**: Provide non-zero default_angles (e.g., -45, -30, 15) so the arm
     has a bent posture instead of a straight vertical tower
 14. **WHEEL ORIENTATION**: Wheels MUST use child_anchor='center', axis='y',
     parent_anchor='left' or 'right'. This ensures correct cylinder orientation.
 15. **WHEEL-MOTOR CHAIN**: Always use base_plate→motor→wheel topology.
     Never attach wheels directly to base_plate.
+16. **NO WHEELS IN ARMS**: Robotic arms (N-DOF arm, robotic arm, 机械臂) must NOT include
+    wheel parts. An arm has: base_plate, joints (support/housing), links (连杆), and end_effector.
+    NEVER generate "wheel" parts for arm assemblies.
+17. **ARM LINK DIMENSIONS**: Link parts must have length 60-200mm, width 20-50mm, height 12-30mm.
+    End effectors must be 20-60mm in each dimension. Never create parts with dimensions > 300mm.
+18. **EVERY joint after the first 2 in an arm chain MUST use parent_anchor="front" / child_anchor="back".
+    The first 2 joints (base→housing, housing→first_link) use top→bottom. All subsequent joints
+    use front→back so the arm extends horizontally.
 
 ## Connection Methods (physical joining)
 
@@ -215,10 +227,10 @@ Joints:
   top_plate → arm_l_base (fixed, offset=[0,-70,0], distribution_group="arms")
   top_plate → arm_r_base (fixed, offset=[0,70,0], distribution_group="arms")
   arm_l_base → arm_l_shoulder (revolute, axis=z, range=[-180,180])
-  arm_l_shoulder → arm_l_upper_link (revolute, axis=y, range=[-120,120], default_angle=-30)
-  arm_l_upper_link → arm_l_elbow (revolute, axis=y, range=[-150,150])
-  arm_l_elbow → arm_l_forearm (revolute, axis=y, range=[-150,150])
-  arm_l_forearm → arm_l_wrist (revolute, axis=y, range=[-180,180])
+  arm_l_shoulder → arm_l_upper_link (revolute, axis=x, range=[-120,120], default_angle=-30)
+  arm_l_upper_link → arm_l_elbow (revolute, axis=x, range=[-150,150])
+  arm_l_elbow → arm_l_forearm (revolute, axis=x, range=[-150,150])
+  arm_l_forearm → arm_l_wrist (revolute, axis=x, range=[-180,180])
   arm_l_wrist → arm_l_gripper (fixed)
   (mirror for arm_r_* with symmetric Y offsets)
 """
@@ -240,10 +252,10 @@ EXAMPLE_ARM_STANDALONE = """\
   ],
   "joints": [
     {"type": "fixed", "parent": "base_plate", "child": "shoulder_joint", "parent_anchor": "top", "child_anchor": "bottom"},
-    {"type": "revolute", "parent": "shoulder_joint", "child": "shoulder_link", "axis": "y", "range_deg": [-180, 180], "parent_anchor": "top", "child_anchor": "bottom"},
-    {"type": "revolute", "parent": "shoulder_link", "child": "elbow_joint", "axis": "y", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
-    {"type": "revolute", "parent": "elbow_joint", "child": "elbow_link", "axis": "y", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
-    {"type": "revolute", "parent": "elbow_link", "child": "wrist_joint", "axis": "y", "range_deg": [-180, 180], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "shoulder_joint", "child": "shoulder_link", "axis": "x", "range_deg": [-180, 180], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "shoulder_link", "child": "elbow_joint", "axis": "x", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "elbow_joint", "child": "elbow_link", "axis": "x", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "elbow_link", "child": "wrist_joint", "axis": "x", "range_deg": [-180, 180], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "wrist_joint", "child": "wrist_link", "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "wrist_link", "child": "end_effector", "parent_anchor": "front", "child_anchor": "back"}
   ]
@@ -280,13 +292,13 @@ EXAMPLE_5DOF_ARM_REALISTIC = """\
     {"type": "revolute", "parent": "base", "child": "shoulder_joint_housing", "axis": "z", "range_deg": [-180, 180], "parent_anchor": "top", "child_anchor": "bottom"},
     {"type": "fixed", "parent": "shoulder_joint_housing", "child": "shoulder_motor", "parent_anchor": "back", "child_anchor": "front", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "shoulder_joint_housing", "child": "bearing_shoulder", "parent_anchor": "center", "child_anchor": "center", "connection_method": "press_fit"},
-    {"type": "revolute", "parent": "shoulder_joint_housing", "child": "shoulder_link", "axis": "y", "range_deg": [-120, 120], "parent_anchor": "front", "child_anchor": "back", "offset": [0, 0, -20]},
+    {"type": "revolute", "parent": "shoulder_joint_housing", "child": "shoulder_link", "axis": "x", "range_deg": [-120, 120], "parent_anchor": "front", "child_anchor": "back", "offset": [0, 0, -20]},
     {"type": "fixed", "parent": "shoulder_link", "child": "elbow_joint_housing", "parent_anchor": "front", "child_anchor": "back", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "elbow_joint_housing", "child": "elbow_motor", "parent_anchor": "back", "child_anchor": "front", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
-    {"type": "revolute", "parent": "elbow_joint_housing", "child": "elbow_link", "axis": "y", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "elbow_joint_housing", "child": "elbow_link", "axis": "x", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "elbow_link", "child": "wrist_joint_housing", "parent_anchor": "front", "child_anchor": "back", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "wrist_joint_housing", "child": "wrist_motor", "parent_anchor": "back", "child_anchor": "front", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
-    {"type": "revolute", "parent": "wrist_joint_housing", "child": "wrist_link", "axis": "y", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "wrist_joint_housing", "child": "wrist_link", "axis": "x", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "revolute", "parent": "wrist_link", "child": "wrist_rotate_motor", "axis": "z", "range_deg": [-180, 180], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "wrist_rotate_motor", "child": "end_effector_mount", "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "base", "child": "bearing_base", "parent_anchor": "center", "child_anchor": "center", "connection_method": "press_fit"}
@@ -331,14 +343,14 @@ EXAMPLE_6DOF_BELT_DRIVE_ARM = """\
     {"type": "fixed", "parent": "shoulder_housing", "child": "shoulder_motor", "parent_anchor": "back", "child_anchor": "front", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "shoulder_housing", "child": "bearing_shoulder_upper", "parent_anchor": "center", "child_anchor": "center", "connection_method": "press_fit"},
     {"type": "fixed", "parent": "shoulder_housing", "child": "bearing_shoulder_lower", "parent_anchor": "center", "child_anchor": "center", "connection_method": "press_fit"},
-    {"type": "revolute", "parent": "shoulder_housing", "child": "shoulder_link", "axis": "y", "range_deg": [-120, 120], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "shoulder_housing", "child": "shoulder_link", "axis": "x", "range_deg": [-120, 120], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "shoulder_link", "child": "elbow_housing", "parent_anchor": "front", "child_anchor": "back", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "elbow_housing", "child": "elbow_motor", "parent_anchor": "back", "child_anchor": "front", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "elbow_housing", "child": "bearing_elbow", "parent_anchor": "center", "child_anchor": "center", "connection_method": "press_fit"},
-    {"type": "revolute", "parent": "elbow_housing", "child": "elbow_link", "axis": "y", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "elbow_housing", "child": "elbow_link", "axis": "x", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "elbow_link", "child": "wrist_pitch_housing", "parent_anchor": "front", "child_anchor": "back", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "wrist_pitch_housing", "child": "wrist_pitch_motor", "parent_anchor": "back", "child_anchor": "front", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
-    {"type": "revolute", "parent": "wrist_pitch_housing", "child": "wrist_pitch_link", "axis": "y", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "revolute", "parent": "wrist_pitch_housing", "child": "wrist_pitch_link", "axis": "x", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "wrist_pitch_link", "child": "wrist_yaw_housing", "parent_anchor": "front", "child_anchor": "back", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "fixed", "parent": "wrist_yaw_housing", "child": "wrist_yaw_motor", "parent_anchor": "back", "child_anchor": "front", "connection_method": "bolted", "connection_detail": {"bolt_size": "M3", "bolt_count": 4}},
     {"type": "revolute", "parent": "wrist_yaw_housing", "child": "wrist_roll_housing", "axis": "z", "range_deg": [-180, 180], "parent_anchor": "front", "child_anchor": "back"},
@@ -464,6 +476,115 @@ def generate_assembly_from_nl(
     return assembly
 
 
+# ============================================================================
+# Catalog binding — replace LLM-invented dimensions with real standard specs
+# ============================================================================
+
+
+def _map_catalog_dims(catalog_dims: dict, part_class: str = "") -> dict:
+    """Map catalog parameter keys to solver/feature-engine dimension keys.
+
+    The catalog uses keys like ``body_length``, ``outer_diameter``.
+    The solver expects ``length``, ``width``, ``height``, ``diameter``.
+    """
+    result: dict[str, float] = {}
+    has_body_size = "body_size" in catalog_dims
+
+    for k, v in catalog_dims.items():
+        if not isinstance(v, (int, float)) or isinstance(v, bool):
+            continue
+        if k == "body_size":
+            # NEMA steppers: body_size is the square face dimension
+            result["length"] = v
+            result["width"] = v
+        elif k == "body_length":
+            if has_body_size:
+                # Stepper depth (along shaft axis)
+                result["height"] = v
+            else:
+                # Servo longest dimension
+                result["length"] = v
+        elif k == "body_width":
+            result["width"] = v
+        elif k == "body_height":
+            result["height"] = v
+        elif k == "body_depth":
+            result["depth"] = v
+        elif k == "pcb_length":
+            result["length"] = v
+        elif k == "pcb_width":
+            result["width"] = v
+        elif k == "pcb_thickness":
+            result["height"] = v
+        elif k == "outer_diameter":
+            result["diameter"] = v
+        elif k == "width" and part_class == "functional":
+            result.setdefault("height", v)
+        elif k in ("length", "width", "height", "diameter", "depth", "thickness"):
+            result[k] = v
+        else:
+            result[k] = v
+    return result
+
+
+def _bind_catalog_part(
+    name: str,
+    description: str,
+    category: str,
+    llm_dims: dict,
+) -> tuple[dict, str | None]:
+    """Try to bind a part to a catalog standard part by model number.
+
+    When the LLM mentions a known model number (SG90, MG996R, NEMA17,
+ Dynamixel, bearing 608, etc.), replace the LLM-invented dimensions
+    with real catalog specifications.
+
+    Returns ``(dimensions, catalog_id)``.  If no match, returns
+    ``(llm_dims, None)``.
+    """
+    try:
+        from ..knowledge.parts_catalog import get_all_templates
+    except ImportError:
+        return llm_dims, None
+
+    text = f"{name} {description}".upper().replace(" ", "").replace("-", "").replace("_", "")
+
+    best_match = None
+    best_model_len = 0
+
+    for template in get_all_templates():
+        if template.part_class != "functional":
+            continue
+        model = template.model_number.upper().replace(" ", "").replace("-", "").replace("_", "")
+        if not model or len(model) < 3:
+            continue
+        # Use word-boundary-aware matching: the model string must appear as a
+        # distinct token, not as a substring of a longer number.
+        # Simple substring check works because model numbers are distinctive
+        # (SG90, MG996R, NEMA17, 608-2RS, etc.)
+        if model in text:
+            # Prefer the longest model number match (e.g. MG996R over MG)
+            if len(model) > best_model_len:
+                best_match = template
+                best_model_len = len(model)
+
+    if best_match is None:
+        return llm_dims, None
+
+    if not best_match.standard_sizes:
+        return llm_dims, None
+
+    real_dims = _map_catalog_dims(best_match.standard_sizes[0], best_match.part_class)
+    if not real_dims:
+        return llm_dims, None
+
+    logger.info(
+        "Catalog binding: '%s' matched %s (model=%s), replacing dims %s -> %s",
+        name, best_match.id, best_match.model_number, llm_dims, real_dims,
+    )
+    return real_dims, best_match.id
+
+
 def _parse_assembly_json(raw_text: str) -> Assembly:
     """Parse LLM response text into an Assembly object.
 
@@ -507,12 +628,22 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
     # Convert to Assembly
     parts: list[Part] = []
     for pd in data.get("parts", []):
+        llm_dims = pd.get("dimensions", {})
+        # Try to bind to catalog standard part (replaces LLM-invented
+        # dimensions with real specs when a model number is detected)
+        real_dims, catalog_id = _bind_catalog_part(
+            name=pd["name"],
+            description=pd.get("description", ""),
+            category=pd.get("category", "structural"),
+            llm_dims=llm_dims,
+        )
         parts.append(Part(
             name=pd["name"],
             category=pd.get("category", "structural"),
             description=pd.get("description", ""),
             material=pd.get("material", "PLA"),
-            dimensions=pd.get("dimensions", {}),
+            dimensions=real_dims,
+            notes=(f"catalog:{catalog_id}" if catalog_id else pd.get("notes", "")),
         ))
 
     joints: list[Joint] = []
@@ -520,6 +651,25 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
         jtype = jd.get("type", "fixed")
         range_deg = tuple(jd.get("range_deg", [-180, 180]))
         offset = tuple(jd["offset"]) if "offset" in jd else None
+
+        # Parse connection method from LLM output
+        connection = None
+        cm_type = jd.get("connection_method", "")
+        if cm_type:
+            cd = jd.get("connection_detail", {}) or {}
+            connection = ConnectionMethod(
+                type=cm_type,
+                bolt_size=cd.get("bolt_size", "M3"),
+                bolt_count=cd.get("bolt_count", 0),
+                torque_nm=cd.get("torque_nm", 0.0),
+                interference_mm=cd.get("interference_mm", 0.0),
+                snap_count=cd.get("snap_count", 0),
+                snap_force_n=cd.get("snap_force_n", 0.0),
+                adhesive_type=cd.get("adhesive_type", ""),
+                bond_area_mm2=cd.get("bond_area_mm2", 0.0),
+                weld_type=cd.get("weld_type", ""),
+            )
+
         joints.append(Joint(
             type=jtype,
             parent=jd["parent"],
@@ -532,7 +682,25 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
             offset=offset,
             no_distribute=jd.get("no_distribute", False),
             distribution_group=jd.get("distribution_group", ""),
+            connection=connection,
         ))
+
+    # Post-parse anchor fixup: correct common LLM mistakes for arm chains.
+    _fix_arm_chain_anchors(joints, parts)
+
+    # Default connection_method for fixed joints that lack one.
+    # Fixed joints in robotic assemblies are almost always bolted; defaulting
+    # here ensures the connection feature engine generates mounting holes
+    # even when the LLM omits the connection_method field.
+    for joint in joints:
+        if joint.type == "fixed" and joint.connection is None:
+            joint.connection = ConnectionMethod(
+                type="bolted", bolt_size="M3", bolt_count=4,
+            )
+            logger.debug(
+                "Defaulted joint %s->%s to bolted M3x4",
+                joint.parent, joint.child,
+            )
 
     assembly = Assembly(
         name=data.get("name", "generated_assembly"),
@@ -546,6 +714,68 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
         assembly.default_angles = data["default_angles"]
 
     return assembly
+
+
+# Patterns that identify link-like parts (extend horizontally in arm chains).
+_LINK_PATTERNS = ("link", "arm", "forearm", "upper_arm", "bracket")
+_JOINT_PATTERNS = ("joint", "support", "housing", "servo", "motor")
+
+
+def _is_link_like(name: str) -> bool:
+    """Check if a part name looks like an arm link (extends horizontally)."""
+    n = name.lower()
+    return any(p in n for p in _LINK_PATTERNS)
+
+
+def _is_end_effector(name: str) -> bool:
+    """Check if a part name is an end effector."""
+    n = name.lower()
+    return "end_effector" in n or "gripper" in n or "effector" in n
+
+
+def _fix_arm_chain_anchors(joints: list[Joint], parts: list[Part]) -> None:
+    """Fix anchor assignments for arm-chain joints.
+
+    Heuristic: In a proper arm chain, joints after the first 2 (base→housing,
+    housing→first_link which use top→bottom) should use front→back for
+    horizontal extension.  If the LLM used default top→bottom for link joints,
+    correct them.
+
+    Also ensures end-effectors use front→back anchors.
+    """
+    if len(joints) < 3:
+        return
+
+    parts_by_name = {p.name: p for p in parts}
+
+    for i, joint in enumerate(joints):
+        # Skip joints that already have non-default anchors
+        if joint.parent_anchor != "top" or joint.child_anchor != "bottom":
+            continue
+
+        parent_name = joint.parent.lower()
+        child_name = joint.child.lower()
+
+        # Case 1: parent is a link/bracket → child should extend from front
+        # (link→joint, link→link, link→effector)
+        if _is_link_like(parent_name):
+            logger.info(
+                "Fixing anchors for joint %d ('%s'→'%s'): top/bottom → front/back",
+                i, joint.parent, joint.child,
+            )
+            joint.parent_anchor = "front"
+            joint.child_anchor = "back"
+            continue
+
+        # Case 2: child is end_effector/gripper → use front/back
+        if _is_end_effector(child_name):
+            logger.info(
+                "Fixing anchors for end-effector joint %d ('%s'→'%s'): top/bottom → front/back",
+                i, joint.parent, joint.child,
+            )
+            joint.parent_anchor = "front"
+            joint.child_anchor = "back"
+            continue
 
 
 def _find_best_parent(part_name: str, part_names: set[str], visited: set[str]) -> str | None:
@@ -695,6 +925,22 @@ def _validate_assembly(assembly: Assembly) -> None:
                     logger.warning(
                         "Part '%s' dimension '%s' = %s (should be > 0)",
                         part.name, key, val,
+                    )
+
+    # Check anchor-dimension compatibility
+    _parts_by_name = {p.name: p for p in assembly.parts}
+    for joint in assembly.joints:
+        for part_name, anchor in [(joint.parent, joint.parent_anchor), (joint.child, joint.child_anchor)]:
+            part = _parts_by_name.get(part_name)
+            if part and anchor in ("front", "back", "left", "right"):
+                dim_keys = ANCHOR_DIM_KEYS.get(anchor, [])
+                has_match = any(k in part.dimensions for k in dim_keys)
+                if not has_match and not any(
+                    k in part.dimensions for k in ("diameter", "outer_diameter")
+                ):
+                    logger.warning(
+                        "Joint '%s': part '%s' uses anchor '%s' but has no matching dimensions %s",
+                        joint.description, part_name, anchor, dim_keys,
                     )
 
     logger.info(

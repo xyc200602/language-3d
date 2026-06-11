@@ -70,7 +70,9 @@ def _classify(name: str) -> str:
         return "wheel"
     if n.startswith("motor_"):
         return "motor"
-    if "_gripper" in n:
+    if "finger" in n and ("gripper" in n or "effector" in n):
+        return "gripper_finger"
+    if "_gripper" in n or "gripper_base" in n:
         return "gripper"
     if n.startswith("battery_box"):
         return "battery_box"
@@ -511,6 +513,11 @@ def generate_ops(
         ops.append({"type": "export_stl", "object": f"{name}_final",
                      "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
         return ops
+    if family == "gripper_finger":
+        ops.extend(_gripper_finger_ops(name, d))
+        ops.append({"type": "export_stl", "object": f"{name}_final",
+                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
+        return ops
     if family == "gripper":
         ops.extend(_gripper_ops(name, d))
         ops.append({"type": "export_stl", "object": f"{name}_final",
@@ -692,7 +699,7 @@ def generate_ops(
 
         engine = ConnectionFeatureEngine()
         for joint in joints:
-            if joint.connection is None or joint.connection.features_generated:
+            if joint.connection is None:
                 continue
             # Check if this joint involves the current part
             if joint.parent != name and joint.child != name:
@@ -1142,42 +1149,54 @@ doc.recompute()
 
 
 def _arm_joint_ops(name: str, d: dict) -> list[dict]:
-    """Servo motor joint with flange mount, output shaft, and wire slot.
+    """Servo motor joint with visible output shaft, bearing collar, and flange.
 
-    Generates a realistic servo housing:
-    - Main body: cylinder with mounting flange disc
-    - Center shaft bore with D-cut
-    - 4x mounting holes on flange
+    Generates a realistic servo that LOOKS like it can rotate:
+    - Main body: cylinder housing (fixed part, mounts to parent)
+    - Bottom mounting flange: wider disc with 4x M3 holes
+    - Output shaft: protruding cylinder from TOP (rotating part, mounts to child)
+    - Bearing collar: ring at shaft base creates visible rotation interface
+    - D-cut flat on shaft for securing link/horn
     - Wire exit slot on side
-    - Top bearing lip
+    - Groove between flange and body for visual separation
     """
     od = d.get("diameter", d.get("outer_diameter", 40))
     h = d.get("height", 30)
-    shaft_r = 3.0
+    shaft_r = max(3.0, od * 0.08)
 
     script = f'''
 import FreeCAD, Part, math
 
 od, h = {od}, {h}
 shaft_r = {shaft_r}
+shaft_h = max(8.0, h * 0.25)  # output shaft protrusion height
 flange_r = od / 2 + od * 0.25
 flange_h = max(4.0, h * 0.12)
+collar_r = shaft_r + 3.0  # bearing collar radius
 
-# --- Main cylinder ---
+# --- Main cylinder body (servo housing, fixed part) ---
 body = Part.makeCylinder(od/2, h)
 
-# --- Bottom flange disc ---
+# --- Bottom mounting flange (attaches to parent link) ---
 flange = Part.makeCylinder(flange_r, flange_h)
 body = body.fuse(flange)
 
-# --- Center shaft bore ---
-shaft = Part.makeCylinder(shaft_r, h + flange_h + 2)
-shaft.translate(FreeCAD.Vector(0, 0, -1))
-body = body.cut(shaft)
+# --- Output shaft (protrudes from TOP — this is the ROTATING part) ---
+shaft = Part.makeCylinder(shaft_r, shaft_h)
+shaft.translate(FreeCAD.Vector(0, 0, h))
+body = body.fuse(shaft)
 
-# --- D-cut on shaft (flat) ---
-d_flat = Part.makeBox(shaft_r * 1.2, od, h + flange_h + 2)
-d_flat.translate(FreeCAD.Vector(-shaft_r*0.2, -od/2, -1))
+# --- Bearing collar (ring at shaft base, visible rotation interface) ---
+collar_outer = Part.makeCylinder(collar_r, 4.0)
+collar_outer.translate(FreeCAD.Vector(0, 0, h - 2))
+collar_bore = Part.makeCylinder(shaft_r + 0.5, 6.0)
+collar_bore.translate(FreeCAD.Vector(0, 0, h - 3))
+collar = collar_outer.cut(collar_bore)
+body = body.fuse(collar)
+
+# --- D-cut flat on output shaft (for securing horn/link) ---
+d_flat = Part.makeBox(shaft_r * 1.5, shaft_r * 3, shaft_h + 4)
+d_flat.translate(FreeCAD.Vector(-shaft_r * 0.3, -shaft_r * 1.5, h - 2))
 body = body.cut(d_flat)
 
 # --- 4x M3 mounting holes on flange ---
@@ -1194,13 +1213,13 @@ slot = Part.makeBox(6, od/2 + 2, 4)
 slot.translate(FreeCAD.Vector(-3, -1, h * 0.3))
 body = body.cut(slot)
 
-# --- Top bearing lip (ring) ---
-lip = Part.makeCylinder(od/2 + 2, 3)
-lip.translate(FreeCAD.Vector(0, 0, h - 3))
-lip_bore = Part.makeCylinder(od/2 - 2, 5)
-lip_bore.translate(FreeCAD.Vector(0, 0, h - 4))
-lip = lip.cut(lip_bore)
-body = body.fuse(lip)
+# --- Decorative groove between flange and body ---
+groove_outer = Part.makeCylinder(od/2 + 0.5, 1.5)
+groove_outer.translate(FreeCAD.Vector(0, 0, flange_h - 0.5))
+groove_inner = Part.makeCylinder(od/2 - 1.5, 3.0)
+groove_inner.translate(FreeCAD.Vector(0, 0, flange_h - 1))
+groove = groove_outer.cut(groove_inner)
+body = body.cut(groove)
 
 # --- Fillet ---
 try:
@@ -1216,13 +1235,99 @@ doc.recompute()
 
 
 def _gripper_ops(name: str, d: dict) -> list[dict]:
-    """Parallel-jaw gripper with two fingers and servo cavity.
+    """Gripper housing — either base-only or complete gripper with fingers.
 
-    Generates a realistic end-effector:
-    - Base block with servo mounting cavity
-    - Two parallel fingers with wider tips
-    - Spring slot between fingers
-    - Mounting holes on base
+    When the part name contains "base", generates ONLY the base block
+    (fingers are separate parts in the assembly).
+
+    For all other gripper names (end_effector, gripper, arm_l_gripper, etc.),
+    generates a COMPLETE gripper with base + two visible L-shaped fingers,
+    since the gripper is a single part in the assembly.
+    """
+    length = d.get("length", 40)
+    width = d.get("width", 35)
+    height = d.get("height", 15)
+
+    # If name contains "base", generate base-only (fingers are separate parts)
+    is_base_only = "base" in name.lower()
+
+    if is_base_only:
+        return _gripper_base_ops(name, d)
+    else:
+        return _gripper_complete_ops(name, d)
+
+
+def _gripper_base_ops(name: str, d: dict) -> list[dict]:
+    """Gripper base block with servo cavity and linear guide rails.
+
+    Generates ONLY the base (fingers are separate parts):
+    - Main housing with internal servo cavity
+    - Front face has two parallel linear rail grooves (for finger tabs)
+    - Top mounting holes (to attach to wrist)
+    - Side servo wire exit
+    """
+    length = d.get("length", 40)
+    width = d.get("width", 35)
+    height = d.get("height", 15)
+
+    script = f'''
+import FreeCAD, Part, math
+
+L, W, H = {length}, {width}, {height}
+rail_depth = max(2.0, H * 0.15)
+rail_w = max(5.0, W * 0.15)
+
+# --- Main housing block ---
+body = Part.makeBox(L, W, H)
+
+# --- Servo cavity (hollowed center) ---
+cavity_l = L * 0.55
+cavity_w = W * 0.45
+cavity = Part.makeBox(cavity_l, cavity_w, H - 4)
+cavity.translate(FreeCAD.Vector(L * 0.1, (W - cavity_w) / 2, 2))
+body = body.cut(cavity)
+
+# --- Two parallel linear rail grooves on FRONT face (X = L) ---
+# These grooves guide the finger tabs for prismatic sliding
+for y_center in [W * 0.25, W * 0.75]:
+    rail = Part.makeBox(rail_depth + 1, rail_w, H - 4)
+    rail.translate(FreeCAD.Vector(L - rail_depth, y_center - rail_w / 2, 2))
+    body = body.cut(rail)
+
+# --- Top mounting holes (2x M3 to attach to wrist joint) ---
+for x_off in [L * 0.25, L * 0.75]:
+    for y_off in [W * 0.2, W * 0.8]:
+        h_cyl = Part.makeCylinder(1.5, H + 2)
+        h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
+        body = body.cut(h_cyl)
+
+# --- Servo wire exit slot (back face) ---
+wire = Part.makeBox(4, 8, 5)
+wire.translate(FreeCAD.Vector(-1, W * 0.4, H * 0.2))
+body = body.cut(wire)
+
+# --- Decorative fillet on front edges ---
+try:
+    body = body.makeFillet(0.8, [_e for _e in body.Edges
+                                  if _e.Length < W * 0.3][:25])
+except Exception:
+    pass
+
+obj = doc.addObject("Part::Feature", "{name}_final")
+obj.Shape = body
+doc.recompute()
+'''
+    return [{"type": "raw_script", "script": script}]
+
+
+def _gripper_complete_ops(name: str, d: dict) -> list[dict]:
+    """Complete gripper with base housing and two L-shaped fingers.
+
+    Used when the gripper is a single part in the assembly (e.g. end_effector).
+    - Base block with servo cavity and mounting holes
+    - Two parallel L-shaped fingers extending forward
+    - Visible gap between fingers (looks like they can slide)
+    - Wider grip tips with ribbed inner surfaces
     """
     length = d.get("length", 50)
     width = d.get("width", 30)
@@ -1232,60 +1337,155 @@ def _gripper_ops(name: str, d: dict) -> list[dict]:
 import FreeCAD, Part, math
 
 L, W, H = {length}, {width}, {height}
-finger_w = max(5.0, W * 0.15)
-finger_l = L * 0.6
-gap = max(8.0, W * 0.25)
 base_l = L * 0.4
-tip_extra = finger_w * 0.5
+finger_l = L * 0.6
+finger_w = max(4.0, W * 0.12)
+tip_extra = finger_w * 0.6
+gap = max(6.0, W * 0.2)
 
-# --- Base block ---
-base = Part.makeBox(base_l, W, H)
+# --- Base housing block ---
+body = Part.makeBox(base_l, W, H)
 
-# --- Servo cavity ---
+# --- Servo cavity in base ---
 cavity = Part.makeBox(base_l - 4, W * 0.5, H - 4)
-cavity.translate(FreeCAD.Vector(2, W*0.25, 2))
-base = base.cut(cavity)
+cavity.translate(FreeCAD.Vector(2, W * 0.25, 2))
+body = body.cut(cavity)
 
-# --- Left finger ---
+# --- Left finger (L-shaped, extends forward in +X) ---
+lf_x = base_l
+lf_y = (W - gap) / 2 - finger_w
 lf = Part.makeBox(finger_l, finger_w, H)
-lf.translate(FreeCAD.Vector(base_l, (W - gap)/2 - finger_w, 0))
-# Wider tip
-ltip = Part.makeBox(finger_l * 0.15, finger_w + tip_extra, H)
-ltip.translate(FreeCAD.Vector(base_l + finger_l * 0.85,
-              (W - gap)/2 - finger_w - tip_extra/2, 0))
+lf.translate(FreeCAD.Vector(lf_x, lf_y, 0))
+# Left finger tip hooks inward (toward center, +Y direction)
+ltip = Part.makeBox(finger_l * 0.2, finger_w + tip_extra, H)
+ltip.translate(FreeCAD.Vector(lf_x + finger_l * 0.8,
+              lf_y - tip_extra / 2, 0))
 lf = lf.fuse(ltip)
 
-# --- Right finger ---
+# --- Right finger (L-shaped, extends forward in +X) ---
+rf_x = base_l
+rf_y = (W + gap) / 2
 rf = Part.makeBox(finger_l, finger_w, H)
-rf.translate(FreeCAD.Vector(base_l, (W + gap)/2, 0))
-# Wider tip
-rtip = Part.makeBox(finger_l * 0.15, finger_w + tip_extra, H)
-rtip.translate(FreeCAD.Vector(base_l + finger_l * 0.85,
-              (W + gap)/2 - tip_extra/2, 0))
+rf.translate(FreeCAD.Vector(rf_x, rf_y, 0))
+# Right finger tip hooks inward (toward center, -Y direction)
+rtip = Part.makeBox(finger_l * 0.2, finger_w + tip_extra, H)
+rtip.translate(FreeCAD.Vector(rf_x + finger_l * 0.8,
+              rf_y + finger_w - tip_extra / 2, 0))
 rf = rf.fuse(rtip)
 
-# --- Spring slot ---
-slot = Part.makeBox(finger_l * 0.35, gap - 2, H * 0.4)
-slot.translate(FreeCAD.Vector(base_l + finger_l*0.3, (W - gap + 2)/2 + gap - 1, H*0.3))
+# --- Grip ribs on left finger inner face ---
+for i in range(3):
+    rib_y = lf_y + finger_w * (0.3 + i * 0.2)
+    rib = Part.makeBox(finger_l * 0.15, 0.8, 1.0)
+    rib.translate(FreeCAD.Vector(lf_x + finger_l * 0.82, rib_y - 0.4, -0.5))
+    lf = lf.cut(rib)
 
-# --- Assemble ---
-body = base.fuse(lf).fuse(rf).cut(slot)
+# --- Grip ribs on right finger inner face ---
+for i in range(3):
+    rib_y = rf_y + finger_w * (0.3 + i * 0.2)
+    rib = Part.makeBox(finger_l * 0.15, 0.8, 1.0)
+    rib.translate(FreeCAD.Vector(rf_x + finger_l * 0.82, rib_y - 0.4, -0.5))
+    rf = rf.cut(rib)
 
-# --- M3 mounting holes ---
+# --- Visible slot between fingers and base (sliding interface) ---
+slot_l = 2.0
+slot = Part.makeBox(slot_l, gap + finger_w * 2, H)
+slot.translate(FreeCAD.Vector(base_l - slot_l / 2,
+              (W - gap) / 2 - finger_w, 0))
+
+# --- Assemble: base + fingers ---
+body = body.fuse(lf).fuse(rf)
+
+# --- M3 mounting holes on base ---
 for x_off in [base_l * 0.3, base_l * 0.7]:
     for y_off in [W * 0.15, W * 0.85]:
         h_cyl = Part.makeCylinder(1.5, H + 2)
         h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
         body = body.cut(h_cyl)
 
-# --- Chamfer finger tips ---
+# --- Chamfer finger tips for grip ---
 try:
-    body = body.makeChamfer(0.5, [_e for _e in body.Edges if _e.Length < finger_w * 2][:30])
+    body = body.makeChamfer(0.5, [_e for _e in body.Edges
+                                   if _e.Length < finger_w * 2][:30])
 except Exception:
     pass
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
+doc.recompute()
+'''
+    return [{"type": "raw_script", "script": script}]
+
+
+def _gripper_finger_ops(name: str, d: dict) -> list[dict]:
+    """Individual gripper finger — L-shaped with rail tab.
+
+    Generates a single finger that slides on the gripper base's rail:
+    - Main bar: extends forward (length direction)
+    - L-shaped tip: hooks inward at the end to grip objects
+    - Rail tab: protrusion on back that slides in the base rail groove
+    - Grip pad: ribbed surface on the inner face
+
+    Left vs right is detected from the name to mirror the tip direction.
+    """
+    length = d.get("length", 35)
+    width = d.get("width", 6)
+    height = d.get("height", 15)
+
+    # Detect left/right from name to mirror the L-tip direction
+    n_lower = name.lower()
+    is_left = "left" in n_lower
+    # In FreeCAD coords: left finger sits at -Y, so tip hooks toward +Y
+    # Right finger sits at +Y, so tip hooks toward -Y
+    tip_dir = 1.0 if is_left else -1.0
+
+    script = f'''
+import FreeCAD, Part, math
+
+L, W, H = {length}, {width}, {height}
+tip_dir = {tip_dir}
+
+# --- Main bar (extends forward in +X) ---
+bar = Part.makeBox(L, W, H)
+
+# --- Rail tab on back (protrudes in -X, fits into base rail groove) ---
+rail_tab_l = max(3.0, L * 0.1)
+rail_tab_w = max(3.0, W * 0.8)
+rail_tab = Part.makeBox(rail_tab_l, rail_tab_w, H * 0.6)
+rail_tab.translate(FreeCAD.Vector(-rail_tab_l * 0.5,
+                    (W - rail_tab_w) / 2, H * 0.2))
+bar = bar.fuse(rail_tab)
+
+# --- L-shaped tip at front end (hooks inward) ---
+tip_l = L * 0.25
+tip_w = max(5.0, W * 2.0)
+# Tip extends inward (toward center of gripper)
+if tip_dir > 0:
+    tip_y = W  # extend toward +Y
+else:
+    tip_y = -tip_w  # extend toward -Y
+tip = Part.makeBox(tip_l, tip_w, H)
+tip.translate(FreeCAD.Vector(L - tip_l, tip_y, 0))
+bar = bar.fuse(tip)
+
+# --- Grip pad ribs (on inner face of tip) ---
+rib_count = 3
+rib_spacing = tip_w / (rib_count + 1)
+for i in range(rib_count):
+    rib_y = tip_y + rib_spacing * (i + 1) if tip_dir > 0 else tip_y + tip_w - rib_spacing * (i + 1)
+    rib = Part.makeBox(tip_l * 0.8, 1.0, 1.0)
+    rib.translate(FreeCAD.Vector(L - tip_l * 0.9, rib_y - 0.5, -0.5))
+    bar = bar.cut(rib)
+
+# --- Chamfer front edge of main bar ---
+try:
+    bar = bar.makeChamfer(0.5, [_e for _e in bar.Edges
+                                 if _e.Length < W * 1.5][:20])
+except Exception:
+    pass
+
+obj = doc.addObject("Part::Feature", "{name}_final")
+obj.Shape = bar
 doc.recompute()
 '''
     return [{"type": "raw_script", "script": script}]

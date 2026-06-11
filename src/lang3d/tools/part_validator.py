@@ -50,6 +50,7 @@ class PartValidationResult:
     vlm_verified: bool | None = None
     vlm_observed: str = ""
     vlm_match: bool | None = None
+    vlm_error: str = ""
 
     @property
     def stl_size_kb(self) -> float:
@@ -91,7 +92,9 @@ class BatchValidationReport:
                     "stl_size_kb": round(r.stl_size_kb, 1),
                     "simplification_level": r.simplification_level,
                     "simplification_note": r.simplification_note,
+                    "vlm_verified": r.vlm_verified,
                     "vlm_match": r.vlm_match,
+                    "vlm_error": r.vlm_error,
                     "error": r.freecad_error,
                 }
                 for r in self.results
@@ -199,6 +202,7 @@ def validate_part(
     *,
     vlm_router: Any = None,
     vlm_detail: str = "detailed",
+    joints: list | None = None,
 ) -> PartValidationResult:
     """Validate a single part through FreeCAD execution.
 
@@ -212,6 +216,8 @@ def validate_part(
         timeout: FreeCAD subprocess timeout in seconds.
         vlm_router: Optional ModelRouter for VLM visual verification.
         vlm_detail: VLM detail level string.
+        joints: Optional list of Joint objects involving this part.
+                When provided, connection features are generated.
 
     Returns:
         PartValidationResult with pass/fail and diagnostics.
@@ -227,7 +233,7 @@ def validate_part(
 
         # Generate ops and script
         try:
-            ops = generate_ops(part, config=cfg)
+            ops = generate_ops(part, config=cfg, joints=joints)
         except Exception as e:
             result.freecad_error = f"generate_ops failed at level {level}: {e}"
             result.simplification_level = level
@@ -315,9 +321,9 @@ def _vlm_verify(
     detail: str,
 ) -> None:
     """Render STL via VTK and send to VLM for structural verification."""
+    logger.info("VLM verifying part '%s' (stl=%s)", part.name, result.stl_path)
     try:
         from .vtk_renderer import render_stl_multi_angle
-        from ..models.router import VisionDetail
 
         with tempfile.TemporaryDirectory(prefix="vlm_validate_") as tmpdir:
             pngs = render_stl_multi_angle(result.stl_path, tmpdir)
@@ -327,15 +333,9 @@ def _vlm_verify(
 
             # Build prompt
             prompt = _build_part_verify_prompt(part)
-            vd = None
-            if detail:
-                try:
-                    vd = VisionDetail(detail)
-                except ValueError:
-                    pass
 
             # Send first (isometric) view to VLM
-            vlm_response = router.vision(pngs[0], prompt, detail=vd)
+            vlm_response = router.vision(pngs[0], prompt)
             result.vlm_verified = True
             result.vlm_observed = vlm_response[:500]
 
@@ -344,12 +344,12 @@ def _vlm_verify(
             parsed = _parse_verification_json(vlm_response)
             result.vlm_match = parsed.get("match", False)
 
-    except ImportError:
+    except ImportError as e:
         result.vlm_verified = False
-        logger.debug("VTK not available for VLM verification of %s", part.name)
+        result.vlm_error = f"VTK import error: {e}"
     except Exception as e:
         result.vlm_verified = False
-        logger.debug("VLM verification failed for %s: %s", part.name, e)
+        result.vlm_error = f"{type(e).__name__}: {e}"
 
 
 def _build_part_verify_prompt(part: Part) -> str:
@@ -389,6 +389,7 @@ def validate_all_parts(
     vlm_router: Any = None,
     vlm_detail: str = "detailed",
     vlm_sample: int = 0,
+    joints_by_part: dict[str, list] | None = None,
 ) -> BatchValidationReport:
     """Validate all parts through FreeCAD execution.
 
@@ -401,6 +402,9 @@ def validate_all_parts(
         vlm_detail: VLM detail level.
         vlm_sample: If > 0, only run VLM verification on this many parts
                     (sampled from passed parts).
+        joints_by_part: Optional mapping of part_name → list[Joint].
+                       When provided, connection features are generated
+                       for each part during validation.
 
     Returns:
         BatchValidationReport with per-part results and summary.
@@ -426,12 +430,14 @@ def validate_all_parts(
     for i, part in enumerate(parts):
         logger.info("Validating %d/%d: %s", i + 1, len(parts), part.name)
         use_vlm = vlm_router if (i in vlm_indices) else None
+        part_joints = joints_by_part.get(part.name, []) if joints_by_part else None
         result = validate_part(
             part, workspace,
             max_simplification=max_simplification,
             timeout=timeout,
             vlm_router=use_vlm,
             vlm_detail=vlm_detail,
+            joints=part_joints,
         )
         report.results.append(result)
         if result.passed:
