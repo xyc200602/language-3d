@@ -461,6 +461,7 @@ def generate_assembly_from_nl(
 
         user_prompt += (
             f"\n5. **机械臂拓扑规则**（必须严格遵守）：\n"
+            f"   - **绝对不要生成轮子(wheel)零件或电机座(motor_mount)零件！** 固定底座机械臂只有 base_plate，没有轮子。\n"
             f"   - 零件必须按 joint→link→joint→link→... 交替排列\n"
             f"   - 不要出现 link→link 直接连接！\n"
             f"   - 连杆(link)的 child_anchor 和下一个关节的 parent_anchor 用 'front'/'back'\n"
@@ -511,6 +512,10 @@ def generate_assembly_from_nl(
 
     # Parse the JSON response
     assembly = _parse_assembly_json(raw_text)
+
+    # Sanitize: strip hallucinated wheel parts from fixed-base arm assemblies
+    if is_arm and not is_wheeled:
+        assembly = _strip_wheel_parts(assembly)
 
     # Validate the assembly
     _validate_assembly(assembly)
@@ -934,6 +939,48 @@ def _ensure_connected(assembly: Assembly, part_names: set[str]) -> None:
         logger.info("  Auto-connected '%s' -> '%s'", part_name, parent)
 
 
+def _strip_wheel_parts(assembly: Assembly) -> Assembly:
+    """Remove wheel and wheel-motor parts from the assembly in-place.
+
+    The LLM sometimes hallucinates wheel/motor_mount parts for fixed-base arms,
+    which causes VLM verification failures (overlapping parts, wrong wheel
+    orientation feedback that confuses the regeneration loop).
+
+    This sanitizer strips any part whose name matches wheel keywords and
+    removes their associated joints. Returns the (mutated) assembly.
+    """
+    wheel_keywords = ("wheel", "motor_mount", "电机座", "轮")
+    removed_names: set[str] = set()
+    kept_parts: list[Part] = []
+    for p in assembly.parts:
+        name_lower = p.name.lower()
+        if any(kw in name_lower for kw in wheel_keywords):
+            removed_names.add(p.name)
+            logger.info(
+                "Sanitizer: removed wheel part '%s' from arm assembly", p.name
+            )
+        else:
+            kept_parts.append(p)
+    if not removed_names:
+        return assembly
+    kept_joints: list[Joint] = []
+    for j in assembly.joints:
+        if j.parent in removed_names or j.child in removed_names:
+            logger.info(
+                "Sanitizer: removed joint '%s' -> '%s' (references stripped part)",
+                j.parent, j.child,
+            )
+        else:
+            kept_joints.append(j)
+    assembly.parts = kept_parts
+    assembly.joints = kept_joints
+    logger.info(
+        "Sanitizer: stripped %d wheel part(s), %d parts / %d joints remain",
+        len(removed_names), len(assembly.parts), len(assembly.joints),
+    )
+    return assembly
+
+
 def _validate_assembly(assembly: Assembly) -> None:
     """Validate an Assembly for basic correctness.
 
@@ -1081,12 +1128,14 @@ _VLM_VERIFY_PROMPT = (
     "Check for:\n"
     "1. Parts floating in mid-air with no support\n"
     "2. Parts intersecting / overlapping each other\n"
-    "3. Wheels not near the ground level\n"
-    "4. Arms pointing in impossible directions (e.g. going through the body)\n"
-    "5. Critical parts missing (no base plate, no wheels, etc.)\n"
-    "6. Overall structural coherence\n"
-    "7. Parts with WRONG ORIENTATION (e.g. wheels lying flat instead of upright, "
-    "cylinders oriented along wrong axis)\n\n"
+    "3. Arms pointing in impossible directions (e.g. going through the body)\n"
+    "4. Critical parts missing (no base plate, no main body)\n"
+    "5. Overall structural coherence\n"
+    "6. Parts with WRONG ORIENTATION (e.g. cylinders oriented along wrong axis)\n"
+    "7. Gripper at the end of arm should look like a gripper (two fingers "
+    "or a claw), not just another arm link\n\n"
+    "NOTE: Wheeled robots SHOULD have wheels near the ground. Fixed-base "
+    "arms should NOT have wheels. Do NOT report missing wheels for arms.\n\n"
     "Reply with JSON only:\n"
     '{"passed": true/false, '
     '"problems": ["list of specific issues found"], '
@@ -1312,6 +1361,12 @@ def generate_assembly_with_vlm_loop(
                 max_tokens=16384,
             )
             assembly = _parse_assembly_json(resp.content)
+            # Re-apply sanitizer to catch any re-hallucinated wheel parts
+            desc_check = description.lower()
+            is_arm_check = any(kw in desc_check for kw in ["臂", "arm", "机械手", "机械臂", "抓手", "gripper", "自由度"])
+            is_wheeled_check = any(kw in desc_check for kw in ["轮", "wheel", "差速", "移动", "底盘"])
+            if is_arm_check and not is_wheeled_check:
+                assembly = _strip_wheel_parts(assembly)
             _validate_assembly(assembly)
 
         print(f"  Assembly: {assembly.name}, {len(assembly.parts)} parts, "
