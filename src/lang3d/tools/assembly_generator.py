@@ -516,6 +516,8 @@ def generate_assembly_from_nl(
     # Sanitize: strip hallucinated wheel parts from fixed-base arm assemblies
     if is_arm and not is_wheeled:
         assembly = _strip_wheel_parts(assembly)
+    # Normalize gripper finger joints for visible separation
+    assembly = _normalize_gripper_fingers(assembly)
 
     # Validate the assembly
     _validate_assembly(assembly)
@@ -981,6 +983,81 @@ def _strip_wheel_parts(assembly: Assembly) -> Assembly:
     return assembly
 
 
+def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
+    """Ensure gripper fingers are symmetrically separated for render visibility.
+
+    The LLM often generates gripper finger joints with inconsistent anchors or
+    relies on auto-distribution that places fingers too close together.  This
+    causes the fingers to appear as a single solid block in box-based VLM
+    renders, failing verification.
+
+    This sanitizer:
+    1. Detects left/right finger pairs by name.
+    2. Overrides their joints to use identical front/back anchors.
+    3. Sets ``no_distribute=True`` to prevent auto-distribution.
+    4. Sets explicit lateral (X) offsets so fingers are visibly separated.
+    """
+    finger_left_kw = ("finger_left", "left_finger", "left_gripper",
+                      "gripper_left", "左爪", "左指", "左夹", "左手指")
+    finger_right_kw = ("finger_right", "right_finger", "right_gripper",
+                       "gripper_right", "右爪", "右指", "右夹", "右手指")
+
+    parts_by_name = {p.name: p for p in assembly.parts}
+
+    left_name = None
+    right_name = None
+    for p in assembly.parts:
+        nl = p.name.lower()
+        if left_name is None and any(kw in nl for kw in finger_left_kw):
+            left_name = p.name
+        if right_name is None and any(kw in nl for kw in finger_right_kw):
+            right_name = p.name
+
+    if not left_name or not right_name:
+        return assembly
+
+    left_joint = None
+    right_joint = None
+    for j in assembly.joints:
+        if j.child == left_name:
+            left_joint = j
+        elif j.child == right_name:
+            right_joint = j
+
+    if not left_joint or not right_joint:
+        return assembly
+
+    # Use a consistent anchor pair — both fingers attach to the same face
+    parent_anchor = left_joint.parent_anchor
+    child_anchor = left_joint.child_anchor
+    right_joint.parent_anchor = parent_anchor
+    right_joint.child_anchor = child_anchor
+
+    # Disable auto-distribution so explicit offsets are the sole lateral factor
+    left_joint.no_distribute = True
+    right_joint.no_distribute = True
+
+    # Compute gap from parent part width, fallback to 18mm
+    parent_part = parts_by_name.get(left_joint.parent)
+    gap = 18.0
+    if parent_part and parent_part.dimensions:
+        for key in ("width", "depth"):
+            if key in parent_part.dimensions:
+                w = parent_part.dimensions[key]
+                gap = max(12.0, min(w * 0.35, 30.0))
+                break
+
+    left_joint.offset = (-gap, 0.0, 0.0)
+    right_joint.offset = (gap, 0.0, 0.0)
+
+    logger.info(
+        "Sanitizer: normalized gripper fingers '%s'/'%s' — "
+        "anchors=%s/%s, gap=±%.1fmm",
+        left_name, right_name, parent_anchor, child_anchor, gap,
+    )
+    return assembly
+
+
 def _validate_assembly(assembly: Assembly) -> None:
     """Validate an Assembly for basic correctness.
 
@@ -1367,6 +1444,7 @@ def generate_assembly_with_vlm_loop(
             is_wheeled_check = any(kw in desc_check for kw in ["轮", "wheel", "差速", "移动", "底盘"])
             if is_arm_check and not is_wheeled_check:
                 assembly = _strip_wheel_parts(assembly)
+            assembly = _normalize_gripper_fingers(assembly)
             _validate_assembly(assembly)
 
         print(f"  Assembly: {assembly.name}, {len(assembly.parts)} parts, "
