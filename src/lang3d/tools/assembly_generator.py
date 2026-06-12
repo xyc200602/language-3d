@@ -995,12 +995,14 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     1. Detects left/right finger pairs by name.
     2. Overrides their joints to use identical front/back anchors.
     3. Sets ``no_distribute=True`` to prevent auto-distribution.
-    4. Sets explicit lateral (**Y**) offsets so fingers are visibly separated
-       perpendicular to their length.
+    4. Sets explicit lateral (**X**) offsets so fingers are visibly separated.
 
-    The offset is in Y (not X) because finger bars extend in local X (60mm
-    typical).  Separating in X would cause overlap along the bar length.
-    Y separation places the L-shaped tips face-to-face for a correct grip.
+    The offset is applied in X.  An earlier attempt used Y separation, but
+    this triggered the solver's ``_clamp_child_offset`` because the Y
+    displacement combined with anchor offsets produced a large 3D distance,
+    causing the entire displacement vector to be scaled down and the fingers
+    to collapse together.  X separation avoids the clamping path while still
+    producing a visible gap between the fingers in box-based VLM renders.
     """
     finger_left_kw = ("finger_left", "left_finger", "left_gripper",
                       "gripper_left", "左爪", "左指", "左夹", "左手指")
@@ -1042,24 +1044,20 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     left_joint.no_distribute = True
     right_joint.no_distribute = True
 
-    # Compute lateral gap from finger height (the gripping opening needs to
-    # accommodate the tip reach).  Default ~20mm gives ~40mm centre separation
-    # which is clearly visible and produces a realistic grip pose.
-    left_part = parts_by_name.get(left_name)
-    gap = 20.0
-    if left_part and left_part.dimensions:
-        # Use height or width as a proxy for the lateral extent
-        for key in ("height", "width", "depth"):
-            if key in left_part.dimensions:
-                h = left_part.dimensions[key]
-                gap = max(16.0, min(h * 0.75, 28.0))
+    # Compute lateral gap from the parent (gripper base) width, fallback 18mm.
+    parent_part = parts_by_name.get(left_joint.parent)
+    gap = 18.0
+    if parent_part and parent_part.dimensions:
+        for key in ("width", "depth"):
+            if key in parent_part.dimensions:
+                w = parent_part.dimensions[key]
+                gap = max(12.0, min(w * 0.35, 30.0))
                 break
 
-    # Offset in Y so fingers separate perpendicular to their length (X).
-    # Left finger's L-tip hooks toward +Y → place at -Y so tip faces inward.
-    # Right finger's L-tip hooks toward -Y → place at +Y so tip faces inward.
-    left_joint.offset = (0.0, -gap, 0.0)
-    right_joint.offset = (0.0, gap, 0.0)
+    # Offset in X.  See docstring for why X is used instead of Y (Y triggers
+    # the solver's offset-clamping path and collapses the fingers).
+    left_joint.offset = (-gap, 0.0, 0.0)
+    right_joint.offset = (gap, 0.0, 0.0)
 
     logger.info(
         "Sanitizer: normalized gripper fingers '%s'/'%s' — "
