@@ -381,13 +381,28 @@ class Planner:
                 return [PlanStep(description=content, expected_tools=[], verification="手动验证")]
 
         steps: list[PlanStep] = []
+        if not isinstance(data, list):
+            return [PlanStep(description=content, expected_tools=[], verification="手动验证")]
         for item in data:
             if isinstance(item, dict):
+                # Validate field types from LLM output
+                desc = item.get("description", str(item))
+                if not isinstance(desc, str) or not desc.strip():
+                    desc = str(item)
+
+                tools = item.get("expected_tools", [])
+                if not isinstance(tools, list):
+                    tools = [str(tools)] if tools else []
+
+                verif = item.get("verification", "")
+                if not isinstance(verif, str):
+                    verif = str(verif) if verif else ""
+
                 steps.append(
                     PlanStep(
-                        description=item.get("description", str(item)),
-                        expected_tools=item.get("expected_tools", []),
-                        verification=item.get("verification", ""),
+                        description=desc,
+                        expected_tools=tools,
+                        verification=verif,
                     )
                 )
 
@@ -509,21 +524,53 @@ class Planner:
 
         steps: list[PlanStep] = []
         dep_indices: dict[int, list[int]] = {}
+        # Map from data index → step index (for when non-dict items are skipped)
+        data_to_step_idx: dict[int, int] = {}
 
         for idx, item in enumerate(data):
             if isinstance(item, dict):
+                step_idx = len(steps)
+                data_to_step_idx[idx] = step_idx
+                # Validate field types from LLM output
+                desc = item.get("description", str(item))
+                if not isinstance(desc, str) or not desc.strip():
+                    desc = str(item)
+
+                tools = item.get("expected_tools", [])
+                if not isinstance(tools, list):
+                    tools = [str(tools)] if tools else []
+
+                verif = item.get("verification", "")
+                if not isinstance(verif, str):
+                    verif = str(verif) if verif else ""
+
                 steps.append(
                     PlanStep(
-                        description=item.get("description", str(item)),
-                        expected_tools=item.get("expected_tools", []),
-                        verification=item.get("verification", ""),
+                        description=desc,
+                        expected_tools=tools,
+                        verification=verif,
                     )
                 )
                 deps = item.get("dependencies", [])
                 if deps:
-                    dep_indices[idx] = [int(d) for d in deps]
+                    safe_deps: list[int] = []
+                    for d in deps:
+                        try:
+                            di = int(d)
+                            safe_deps.append(di)
+                        except (ValueError, TypeError):
+                            logger.warning("Skipping invalid dependency index %r in step %d", d, idx)
+                    dep_indices[step_idx] = safe_deps
 
-        return steps, dep_indices
+        # Remap dependency indices from data-space to step-space
+        remapped: dict[int, list[int]] = {}
+        for step_idx, raw_deps in dep_indices.items():
+            remapped[step_idx] = [
+                data_to_step_idx[d] for d in raw_deps
+                if d in data_to_step_idx
+            ]
+
+        return steps, remapped
 
     # --- Hierarchical Planning (Phase E: Task 43) ---
 
@@ -677,6 +724,16 @@ class Planner:
                 )
 
         # Parse subsystems
+        if not isinstance(data, dict):
+            return HierarchicalPlan(
+                goal=task,
+                subsystems=[SubSystem(
+                    name="main",
+                    description=task,
+                    steps=[PlanStep(description=content)],
+                )],
+            )
+
         subsystems: list[SubSystem] = []
         for ss_data in data.get("subsystems", []):
             if not isinstance(ss_data, dict):
@@ -684,10 +741,22 @@ class Planner:
             steps = []
             for step_data in ss_data.get("steps", []):
                 if isinstance(step_data, dict):
+                    desc = step_data.get("description", "")
+                    if not isinstance(desc, str):
+                        desc = str(desc) if desc else ""
+
+                    tools = step_data.get("expected_tools", [])
+                    if not isinstance(tools, list):
+                        tools = [str(tools)] if tools else []
+
+                    verif = step_data.get("verification", "")
+                    if not isinstance(verif, str):
+                        verif = str(verif) if verif else ""
+
                     steps.append(PlanStep(
-                        description=step_data.get("description", ""),
-                        expected_tools=step_data.get("expected_tools", []),
-                        verification=step_data.get("verification", ""),
+                        description=desc,
+                        expected_tools=tools,
+                        verification=verif,
                     ))
             subsystems.append(SubSystem(
                 name=ss_data.get("name", "unknown"),
@@ -731,10 +800,22 @@ class Planner:
         integration_steps: list[PlanStep] = []
         for step_data in data.get("integration_steps", []):
             if isinstance(step_data, dict):
+                desc = step_data.get("description", "")
+                if not isinstance(desc, str):
+                    desc = str(desc) if desc else ""
+
+                tools = step_data.get("expected_tools", [])
+                if not isinstance(tools, list):
+                    tools = [str(tools)] if tools else []
+
+                verif = step_data.get("verification", "")
+                if not isinstance(verif, str):
+                    verif = str(verif) if verif else ""
+
                 integration_steps.append(PlanStep(
-                    description=step_data.get("description", ""),
-                    expected_tools=step_data.get("expected_tools", []),
-                    verification=step_data.get("verification", ""),
+                    description=desc,
+                    expected_tools=tools,
+                    verification=verif,
                 ))
 
         plan = HierarchicalPlan(

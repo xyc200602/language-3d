@@ -32,7 +32,7 @@ TOOL_CATEGORIES: dict[str, list[str]] = {
         "motion_sim", "motion_range", "motion_trajectory", "motion_vlm_analyze",
     ],
     "cfd": ["cfd_run", "cfd_vlm_analyze"],
-    "solidworks": ["sw_create_part", "sw_open_gui", "sw_close_gui", "sw_export"],
+    "solidworks": ["sw_new_part", "sw_extrude", "sw_sketch_line", "sw_sketch_circle", "sw_sketch_rectangle", "sw_save", "sw_export_stl", "sw_status"],
     "part_library": [
         "part_search", "part_get", "part_generate", "part_list",
         "part_import", "part_save", "part_analyze_print", "part_assemble",
@@ -94,7 +94,30 @@ STEP_TOOL_CATEGORIES: dict[str, list[str]] = {
     "slicing": ["slicing", "vlm", "gui"],
     "file_ops": ["file_ops", "shell"],
     "general": ["file_ops", "shell", "screen", "vlm", "freecad", "gui"],
+    "direct": ["file_ops", "shell", "vlm", "freecad", "gui", "screen"],
 }
+
+# Keywords for inferring which extra categories to include in direct mode
+_DIRECT_KEYWORD_CATEGORIES: list[tuple[list[str], str]] = [
+    # (keywords, category_name)
+    (["装配", "组装", "assembly", "关节", "连接"], "assembly"),
+    (["切片", "slice", "g-code", "gcode", "3d打印", "3d print"], "slicing"),
+    (["fea", "应力", "有限元", "结构分析", "simulation"], "simulation"),
+    (["cfd", "流体", "流场"], "cfd"),
+    (["运动", "motion", "轨迹"], "motion"),
+    (["零件库", "标准件", "螺钉", "螺栓", "螺母"], "part_library"),
+    (["舵机", "电机", "actuator"], "actuator"),
+    (["切片", "slice"], "print_optimize"),
+    (["bom", "物料", "清单"], "bom"),
+    (["solidworks", "sw_"], "solidworks"),
+    (["导出", "export", "打包"], "export"),
+    (["代码生成", "firmware", "接线图"], "code_gen"),
+    (["装配文档", "装配指南"], "assembly_doc"),
+    (["质量", "quality"], "quality"),
+    (["生产", "production"], "production"),
+    (["迭代", "iteration"], "iteration"),
+    (["方案对比", "scheme"], "scheme_compare"),
+]
 
 
 class ToolError(Exception):
@@ -197,6 +220,31 @@ class ToolRegistry:
                     for name in self._tools:
                         if name.startswith(t.split("*")[0]):
                             relevant_names.add(name)
+
+        return [self._tools[n].get_definition() for n in relevant_names if n in self._tools]
+
+    def get_direct_definitions(self, task: str) -> list[ToolDefinition]:
+        """Get tool definitions for direct mode, filtered by task keywords.
+
+        Starts with core tools (file_ops, shell, vlm, freecad, gui, screen)
+        and adds relevant categories based on keyword matching.
+        """
+        core_cats = list(STEP_TOOL_CATEGORIES.get("direct", []))
+        task_lower = task.lower()
+
+        extra_cats: set[str] = set()
+        for keywords, cat_name in _DIRECT_KEYWORD_CATEGORIES:
+            if any(kw in task_lower for kw in keywords):
+                extra_cats.add(cat_name)
+
+        all_cats = core_cats + [c for c in extra_cats if c not in core_cats]
+
+        relevant_names: set[str] = set()
+        for cat in all_cats:
+            for prefix in TOOL_CATEGORIES.get(cat, []):
+                for name in self._tools:
+                    if name == prefix or name.startswith(prefix.split("*")[0]):
+                        relevant_names.add(name)
 
         return [self._tools[n].get_definition() for n in relevant_names if n in self._tools]
 

@@ -49,7 +49,7 @@ Return ONLY a JSON object with this exact structure:
   ],
   "joints": [
     {
-      "type": "fixed|revolute",
+      "type": "fixed|revolute|prismatic",
       "parent": "parent_part_name",
       "child": "child_part_name",
       "range_deg": [min, max],
@@ -148,6 +148,37 @@ Parts fall into two classes with DIFFERENT dimension rules:
 18. **EVERY joint after the first 2 in an arm chain MUST use parent_anchor="front" / child_anchor="back".
     The first 2 joints (base→housing, housing→first_link) use top→bottom. All subsequent joints
     use front→back so the arm extends horizontally.
+19. **GRIPPER DECOMPOSITION (CRITICAL)**: End-effectors/grippers MUST be decomposed into
+    4 separate parts: gripper_servo + gripper_base + gripper_finger_left + gripper_finger_right.
+    The gripper must be VISUALLY DISTINCT from arm links: wider, taller, and shorter in the
+    arm direction so it reads as a gripper block, not another link segment.
+    - gripper_servo (category: actuator): Small SG90-style servo motor that DRIVES the
+      fingers. Dimensions: {"length": 23, "width": 12, "height": 22}. Mounted on TOP of
+      gripper_base (fixed joint, parent_anchor="top", child_anchor="bottom") so it is
+      visually prominent and clearly identifies the gripper as servo-actuated.
+    - gripper_base (category: mechanical): Mounts the servo and guides the fingers on
+      linear rails. Dimensions: {"length": 28, "width": 50, "height": 32}. The base must
+      be WIDER (50mm) and TALLER (32mm) than arm links, but SHORTER in the arm direction
+      (28mm) so it looks like a blocky gripper housing, not a flat arm segment. Must have
+      visible features: servo cavity on top, 2 parallel rail grooves on front face for
+      finger sliding, M3 mounting holes.
+    - gripper_finger_left attaches to gripper_base via a prismatic joint
+      (axis="x", offset=[-16,0,0], range_deg=[-8,12]) so it slides left to open.
+      Dimensions: {"length": 60, "width": 10, "height": 28}. Fingers must be LONG (60mm
+      forward extension, clearly protruding past the base) and TALL (28mm) so they are
+      visually prominent. Must have L-shaped tip and rail tab that fits into the rail groove.
+    - gripper_finger_right attaches to gripper_base via a prismatic joint
+      (axis="x", offset=[16,0,0], range_deg=[-8,12]) so it slides right to open.
+      Dimensions: {"length": 60, "width": 10, "height": 28}. Must have L-shaped tip
+      and rail tab. MUST specify mimic_joint="gripper_finger_left" with
+      mimic_multiplier=-1 so the two fingers open/close symmetrically (coupled motion).
+      The ±16mm offset creates a ~22mm visible gap between inner finger faces — this gap
+      is what makes the gripper look like a real two-finger gripper.
+    - gripper_base attaches to wrist_link via a fixed joint (front→back).
+    The gripper MUST be a real, functional mechanism: the prismatic joints must have
+    correct axis and limits so fingers actually slide open/close in simulation. The
+    servo on top makes the actuation visible and realistic. NEVER model a gripper as
+    a single fused "end_effector" part.
 
 ## Connection Methods (physical joining)
 
@@ -248,7 +279,10 @@ EXAMPLE_ARM_STANDALONE = """\
     {"name": "elbow_link", "category": "structural", "description": "肘部连杆", "material": "Aluminum", "dimensions": {"length": 100, "width": 25, "height": 15}},
     {"name": "wrist_joint", "category": "actuator", "description": "腕部舵机", "material": "Steel", "dimensions": {"diameter": 28, "height": 28}},
     {"name": "wrist_link", "category": "structural", "description": "腕部连杆", "material": "Aluminum", "dimensions": {"length": 60, "width": 20, "height": 12}},
-    {"name": "end_effector", "category": "mechanical", "description": "末端执行器/抓手", "material": "PLA", "dimensions": {"length": 50, "width": 30, "height": 15}}
+    {"name": "gripper_base", "category": "mechanical", "description": "夹爪基座(含直线导轨槽和舵机安装座)", "material": "PLA", "dimensions": {"length": 28, "width": 50, "height": 32}},
+    {"name": "gripper_servo", "category": "actuator", "description": "夹爪驱动舵机SG90", "material": "Steel", "dimensions": {"length": 23, "width": 12, "height": 22}},
+    {"name": "gripper_finger_left", "category": "mechanical", "description": "夹爪左手指(含滑动导轨和L形指尖)", "material": "PLA", "dimensions": {"length": 60, "width": 10, "height": 28}},
+    {"name": "gripper_finger_right", "category": "mechanical", "description": "夹爪右手指(含滑动导轨和L形指尖)", "material": "PLA", "dimensions": {"length": 60, "width": 10, "height": 28}}
   ],
   "joints": [
     {"type": "fixed", "parent": "base_plate", "child": "shoulder_joint", "parent_anchor": "top", "child_anchor": "bottom"},
@@ -257,7 +291,10 @@ EXAMPLE_ARM_STANDALONE = """\
     {"type": "revolute", "parent": "elbow_joint", "child": "elbow_link", "axis": "x", "range_deg": [-150, 150], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "revolute", "parent": "elbow_link", "child": "wrist_joint", "axis": "x", "range_deg": [-180, 180], "parent_anchor": "front", "child_anchor": "back"},
     {"type": "fixed", "parent": "wrist_joint", "child": "wrist_link", "parent_anchor": "front", "child_anchor": "back"},
-    {"type": "fixed", "parent": "wrist_link", "child": "end_effector", "parent_anchor": "front", "child_anchor": "back"}
+    {"type": "fixed", "parent": "wrist_link", "child": "gripper_base", "parent_anchor": "front", "child_anchor": "back"},
+    {"type": "fixed", "parent": "gripper_base", "child": "gripper_servo", "parent_anchor": "top", "child_anchor": "bottom", "connection_method": "bolted", "connection_detail": {"bolt_size": "M2", "bolt_count": 2}},
+    {"type": "prismatic", "parent": "gripper_base", "child": "gripper_finger_left", "axis": "x", "range_deg": [-8, 12], "parent_anchor": "front", "child_anchor": "back", "offset": [-16, 0, 0]},
+    {"type": "prismatic", "parent": "gripper_base", "child": "gripper_finger_right", "axis": "x", "range_deg": [-8, 12], "parent_anchor": "front", "child_anchor": "back", "offset": [16, 0, 0], "mimic_joint": "gripper_finger_left", "mimic_multiplier": -1.0, "mimic_offset": 0}
   ]
 }
 """
@@ -432,6 +469,11 @@ def generate_assembly_from_nl(
             f"   - 提供 default_angles 让臂有弯曲姿态（不要全是0度）\n"
             f"   - 关节零件用 cylindrical dimensions（diameter + height）\n"
             f"   - 连杆零件用 box dimensions（length >> width, height）\n"
+            f"   - **夹爪必须拆成 4 个零件**：gripper_servo + gripper_base + gripper_finger_left + gripper_finger_right，\n"
+            f"     gripper_servo（SG90舵机 23×12×22mm）固定在 gripper_base 顶部（top→bottom），\n"
+            f"     gripper_base 宽50mm×高32mm×长28mm（比臂连杆更宽更高更短，看起来像夹爪基座而非连杆），\n"
+            f"     两个手指用 prismatic 关节（axis='x'，offset 左[-16,0,0] 右[16,0,0]），手指长60mm 宽10mm 高28mm，\n"
+            f"     两个手指间距22mm，必须清晰可见！夹爪必须是实际可动的！\n"
         )
 
         if is_6dof:
@@ -683,6 +725,9 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
             no_distribute=jd.get("no_distribute", False),
             distribution_group=jd.get("distribution_group", ""),
             connection=connection,
+            mimic_joint=jd.get("mimic_joint", ""),
+            mimic_multiplier=jd.get("mimic_multiplier", 1.0),
+            mimic_offset=jd.get("mimic_offset", 0.0),
         ))
 
     # Post-parse anchor fixup: correct common LLM mistakes for arm chains.
@@ -1315,8 +1360,13 @@ def generate_assembly_with_vlm_loop(
             print(f"  → Will regenerate with feedback...")
 
     # --- Step D: Export (whether passed or max rounds reached) ---
+    # Stamp the package with verification status so downstream consumers
+    # can detect unverified outputs. We still export on failure to enable
+    # debugging, but the design_report.json will flag it.
     export_dir = os.path.join(output_dir, "engineering_package")
     export_success = False
+    verification_status = "PASSED" if passed else "FAILED_MAX_ROUNDS"
+    last_warnings = problems_history[-1] if problems_history else []
     if assembly and positions:
         try:
             from .export_package import export_engineering_package
@@ -1325,6 +1375,8 @@ def generate_assembly_with_vlm_loop(
                 output_dir=export_dir,
                 actuator_ids=None,  # Let export_engineering_package derive from assembly
                 controller="esp32",
+                verification_status=verification_status,
+                verification_warnings=last_warnings,
             )
             export_success = result is not None
         except Exception as e:

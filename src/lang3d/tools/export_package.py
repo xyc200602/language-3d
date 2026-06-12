@@ -318,6 +318,8 @@ def export_engineering_package(
     actuator_ids: list[str] | None = None,
     controller: str = "esp32",
     components: list[str] | None = None,
+    verification_status: str = "UNKNOWN",
+    verification_warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Export a complete engineering package for the assembly.
 
@@ -327,6 +329,11 @@ def export_engineering_package(
         actuator_ids: Actuator IDs (default: TT_MOTOR x4 + MG996R x6).
         controller: Controller type (default: esp32).
         components: Optional component filter (None = all).
+        verification_status: VLM loop status — "PASSED", "FAILED_MAX_ROUNDS",
+            or "UNKNOWN" (default). Stamped into design_report.json so
+            downstream consumers can detect unverified packages.
+        verification_warnings: VLM problems from the last round. Stored
+            alongside the status in design_report.json.
 
     Returns:
         Dict with generated file list and key metrics.
@@ -670,7 +677,7 @@ def export_engineering_package(
         calc.add_motor("Drive Motor", "TT_MOTOR", duty_cycle=0.5, quantity=n_drive_motors)
     n_servos = len(revolute_joints)
     if n_servos > 0:
-        calc.add_servo("Servos", "MG996R", duty_cycle=0.3, quantity=n_servos)
+        calc.add_servo("Servos", "MG996R", duty_cycle=0.6, quantity=n_servos)
     # Add controller if electronics present
     if any(p.category in ("electronics", "controller") for p in assembly.parts):
         calc.add_controller("Main Controller", tdp_w=15.0)
@@ -762,6 +769,37 @@ def export_engineering_package(
         generated_files.append(str(ss_dir / f"{ss_name}.json"))
 
     # Design report JSON
+    kinematic = ctx.ensure_kinematic_analysis()
+
+    design_warnings: list[str] = []
+    if tip_risk.get("risk_level") == "CRITICAL":
+        design_warnings.append(
+            "Stability risk is CRITICAL — robot may tip over. "
+            "Consider widening the base or lowering the center of mass."
+        )
+    if all(abs(v) < 0.1 for v in com):
+        design_warnings.append(
+            "Center of mass is at origin — positions may not have been "
+            "applied to mass calculation."
+        )
+    if peak_w > 0 and avg_w > 0 and peak_w / avg_w > 20:
+        design_warnings.append(
+            f"Peak/avg power ratio is {peak_w/avg_w:.0f}x — "
+            "average power estimate may be unrealistic."
+        )
+    if verification_status != "PASSED":
+        design_warnings.append(
+            f"VLM verification status is {verification_status} — "
+            "package may not match design intent. Review renders before "
+            "manufacturing."
+        )
+    if kinematic.get("loop_count", 0) > 0 and not kinematic.get("converged", True):
+        design_warnings.append(
+            f"Closed-chain solver did not converge: "
+            f"{kinematic.get('loop_count')} loops, "
+            f"residual error {kinematic.get('error_mm', 0):.2f}mm."
+        )
+
     report = {
         "requirement": getattr(assembly, "description", assembly.name),
         "total_parts": len(assembly.parts),
@@ -779,6 +817,10 @@ def export_engineering_package(
             "risk_level": tip_risk["risk_level"],
             "margin_mm": round(static_stab.get("margin_mm", 0), 1),
         },
+        "verification_status": verification_status,
+        "verification_warnings": list(verification_warnings or []),
+        "kinematic_analysis": kinematic,
+        "warnings": design_warnings,
         "battery_recommendations": [
             {
                 "name": r.get("battery").name if hasattr(r.get("battery"), "name") else str(r.get("battery")),

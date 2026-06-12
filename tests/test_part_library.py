@@ -1001,13 +1001,16 @@ class TestPartClassification:
             assert isinstance(t.scalable, bool), f"scalable must be bool for {tid}"
 
     def test_functional_parts_not_scalable(self):
-        """Functional parts (motors, servos, bearings, sensors) must have scalable=False."""
+        """Functional parts (motors, servos, bearings, sensors, gears, wheels) must have scalable=False."""
         from lang3d.knowledge.parts_catalog import PART_CATALOG
         functional_ids = ["servo_sg90", "servo_mg996r", "servo_ds3218",
                           "nema17_stepper", "nema23_stepper",
                           "bearing_608", "bearing_623", "bearing_625",
                           "motor_tt", "motor_jgb37_520",
-                          "sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam"]
+                          "sensor_rplidar_a1", "sensor_mpu6050", "sensor_esp32_cam",
+                          "flexible_coupling", "spur_gear",
+                          "wheel_simple", "wheel_mecanum",
+                          "hub_adapter", "standoff_hex", "battery_holder_18650"]
         for fid in functional_ids:
             t = PART_CATALOG[fid]
             assert t.part_class == "functional", f"{fid} should be functional"
@@ -1032,10 +1035,10 @@ class TestPartClassification:
             assert t.scalable is False, f"{fid} should not be scalable"
 
     def test_structural_parts_scalable(self):
-        """Structural parts (brackets, plates, wheels) must have scalable=True."""
+        """Structural parts (brackets, plates) must have scalable=True."""
         from lang3d.knowledge.parts_catalog import PART_CATALOG
         structural_ids = ["l_bracket", "mounting_plate", "chassis_plate",
-                          "wheel_simple", "corner_bracket", "standoff_hex"]
+                          "corner_bracket", "linear_shaft"]
         for sid in structural_ids:
             t = PART_CATALOG[sid]
             assert t.part_class == "structural", f"{sid} should be structural"
@@ -1044,14 +1047,14 @@ class TestPartClassification:
     def test_get_functional_parts(self):
         from lang3d.knowledge.parts_catalog import get_functional_parts
         parts = get_functional_parts()
-        assert len(parts) >= 13  # 3 bearings + 3 servos + 2 steppers + 2 DC motors + 3 sensors
+        assert len(parts) >= 20  # 3 bearings + 3 servos + 2 steppers + 2 DC motors + 3 sensors + 7 reclassified
         for p in parts:
             assert p.part_class == "functional"
 
     def test_get_structural_parts(self):
         from lang3d.knowledge.parts_catalog import get_structural_parts
         parts = get_structural_parts()
-        assert len(parts) >= 8  # brackets, plates, wheels, etc.
+        assert len(parts) >= 6  # brackets, plates, shafts, etc.
         for p in parts:
             assert p.part_class == "structural"
 

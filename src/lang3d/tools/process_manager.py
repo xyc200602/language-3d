@@ -159,3 +159,7 @@ class FreeCADProcessManager:
 
 # Module-level singleton
 _process_manager = FreeCADProcessManager()
+
+# Register cleanup to prevent zombie FreeCAD processes on interpreter exit
+import atexit
+atexit.register(_process_manager.cleanup)

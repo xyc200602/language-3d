@@ -168,6 +168,14 @@ class OmnidirectionalKinematics:
 
         return [fl, fr, rl, rr]
 
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "omnidirectional",
+            "wheel_radius_mm": self.wheel_radius_mm,
+            "track_width_mm": self.track_width_mm,
+            "wheelbase_mm": self.wheelbase_mm,
+        }
+
     def forward_kinematics(
         self, wheels_mm_s: list[float]
     ) -> tuple[float, float, float]:
@@ -521,12 +529,19 @@ def design_mobile_base(
 
     # Step 3: Kinematics
     max_rpm = selected_motor.rated_speed_rpm if selected_motor else 200
-    kinematics = DifferentialDriveKinematics(
-        wheel_radius_mm=wheel_d / 2,
-        track_width_mm=track,
-        wheelbase_mm=wb_calc.wheelbase_mm(),
-        max_rpm=max_rpm,
-    )
+    if "mecanum" in drive_type:
+        kinematics = OmnidirectionalKinematics(
+            wheel_radius_mm=wheel_d / 2,
+            track_width_mm=track,
+            wheelbase_mm=wb_calc.wheelbase_mm(),
+        )
+    else:
+        kinematics = DifferentialDriveKinematics(
+            wheel_radius_mm=wheel_d / 2,
+            track_width_mm=track,
+            wheelbase_mm=wb_calc.wheelbase_mm(),
+            max_rpm=max_rpm,
+        )
 
     # Step 4: Battery sizing
     motor_power = selected_motor.rated_torque_kg_cm * 9.81 / 100 * (

@@ -307,11 +307,13 @@ class TestOperationGeneration:
                  dimensions=dict(length=60, width=30, height=20))
         ops = generate_ops(p)
         types = {op["type"] for op in ops}
-        # gripper uses specialized raw_script with parallel-jaw geometry
+        # gripper uses specialized raw_script with housing geometry
         assert "raw_script" in types
         raw = next(op for op in ops if op["type"] == "raw_script")
         assert "makeBox" in raw["script"]
-        assert "chamfer" in raw["script"].lower() or "Chamfer" in raw["script"]
+        # edge treatment (chamfer or fillet) required for production quality
+        lower = raw["script"].lower()
+        assert "chamfer" in lower or "fillet" in lower
 
     def test_bracket_uses_fillets(self):
         p = Part("ipc_bracket", "structural", "test",

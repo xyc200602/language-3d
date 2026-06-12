@@ -324,4 +324,6 @@ class TestPlannerMobileBaseDetection:
         assert Planner._detect_task_type(task) == "mobile_base"
 
     def test_complex_robot_still_highest(self):
-        assert Planner._detect_task_type("设计4轮差速底盘移动机器人") == "complex_robot"
+        # "差速底盘" matches mobile_base first (more specific), so use a task
+        # that has complex_robot keywords but NOT mobile_base-specific keywords.
+        assert Planner._detect_task_type("带有双臂的移动平台") == "complex_robot"

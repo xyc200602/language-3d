@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from openai import OpenAI
 
 from .base import Message, ModelBackend, ModelResponse, ToolCall, ToolDefinition
 from .retry import RetryConfig, call_with_retry
+
+logger = logging.getLogger(__name__)
 
 
 class OpenAIBackend(ModelBackend):
@@ -58,6 +61,9 @@ class OpenAIBackend(ModelBackend):
             retry_config=self.retry_config,
         )
 
+        if not response.choices:
+            return ModelResponse(content="", tool_calls=[], finish_reason="empty", usage={})
+
         choice = response.choices[0]
         content = choice.message.content or ""
         tool_calls: list[ToolCall] = []
@@ -68,6 +74,7 @@ class OpenAIBackend(ModelBackend):
                 try:
                     arguments = json.loads(tc.function.arguments)
                 except (json.JSONDecodeError, TypeError, AttributeError):
+                    logger.warning("Failed to parse tool call arguments for %s", tc.function.name)
                     arguments = {}
                 tool_calls.append(
                     ToolCall(

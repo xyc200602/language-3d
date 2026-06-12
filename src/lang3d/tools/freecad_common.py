@@ -24,11 +24,11 @@ from typing import Any
 def _safe_name(name: str) -> str:
     """Sanitize a FreeCAD object/document name to prevent script injection.
 
-    Only allows alphanumeric, underscore, hyphen, dot characters.
+    Only allows alphanumeric, underscore, hyphen, and CJK characters.
     """
     if not name:
         return "Unnamed"
-    sanitized = _re.sub(r"[^A-Za-z0-9_\-.]", "_", name)
+    sanitized = _re.sub(r"[^A-Za-z0-9_\-]", "_", name)
     if not sanitized or sanitized.startswith("_"):
         sanitized = "obj_" + sanitized
     return sanitized[:64]
@@ -58,6 +58,13 @@ def _validate_raw_script(script: str) -> None:
         r"\bopen\s*\([^)]*['\"]w",
         r"\bshutil\b",
         r"\bctypes\b",
+        r"\bimportlib\b",
+        r"\bPath\s*\([^)]*\)\s*\.write_text\b",
+        r"\bPath\s*\([^)]*\)\s*\.write_bytes\b",
+        r"\b__builtins__\b",
+        r"\bcompile\s*\(",
+        r"\bglobals\s*\(\s*\)\s*\[",
+        r"\bgetattr\s*\([^)]*__builtins__",
     ]
     for pat in blocked_patterns:
         if _re.search(pat, script):

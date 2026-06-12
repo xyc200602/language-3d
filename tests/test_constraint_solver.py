@@ -82,7 +82,22 @@ class TestPartGeometry:
     def test_anchor_left(self):
         p = _box("b", 100, 60, 10)
         x, y, z = _anchor_point(p, "left")
+        assert (x, y, z) == (-50, 0, 0)
+
+    def test_anchor_right(self):
+        p = _box("b", 100, 60, 10)
+        x, y, z = _anchor_point(p, "right")
+        assert (x, y, z) == (50, 0, 0)
+
+    def test_anchor_front(self):
+        p = _box("b", 100, 60, 10)
+        x, y, z = _anchor_point(p, "front")
         assert (x, y, z) == (0, -30, 0)
+
+    def test_anchor_back(self):
+        p = _box("b", 100, 60, 10)
+        x, y, z = _anchor_point(p, "back")
+        assert (x, y, z) == (0, 30, 0)
 
 
 # ---------------------------------------------------------------------------

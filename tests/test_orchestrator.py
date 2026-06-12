@@ -168,3 +168,86 @@ class TestDAGProperty:
     def test_active_agents_initially_empty(self):
         orch = _make_orchestrator()
         assert len(orch.active_agents) == 0
+
+
+class TestMaxRetriesZeroNoCrash:
+    """BUG 6: sub_agent undefined when max_retries=0."""
+
+    def test_max_retries_zero_no_crash(self):
+        """When max_retries=0, _run_node_with_retry should still return a result."""
+        from lang3d.agent.dag import DAGNode
+        import asyncio
+
+        orch = _make_orchestrator()
+        orch.max_retries = 0
+
+        step = PlanStep(description="test step")
+        node = DAGNode(step=step)
+
+        result = asyncio.run(orch._run_node_with_retry(node, {}))
+        assert result is not None
+        assert result.success is False
+        assert result.error == "No attempts made"
+
+
+class TestNoDoubleCountingAttempts:
+    """BUG 7: attempts should not be double-counted by the orchestrator."""
+
+    def test_no_double_counting_attempts(self):
+        """The orchestrator should NOT set step.attempts = attempt + 1.
+        Only SubAgent.execute() manages the attempt counter."""
+        from lang3d.agent.dag import DAGNode
+        import asyncio
+
+        orch = _make_orchestrator()
+        orch.max_retries = 2
+
+        step = PlanStep(description="test step")
+        node = DAGNode(step=step)
+
+        # Simulate SubAgent that increments step.attempts like the real one
+        fail_result = SubAgentResult(
+            agent_id="test-agent", step_id=step.id,
+            success=False, error="fail",
+        )
+
+        class FakeSubAgent:
+            agent_id = "test-agent"
+            async def execute_async(self, s, ctx):
+                # Mimic SubAgent.execute() which does step.attempts += 1
+                s.attempts += 1
+                return fail_result
+
+        orch._spawn_sub_agent = MagicMock(return_value=FakeSubAgent())
+        orch.reflector.reflect = MagicMock(return_value="try again")
+
+        result = asyncio.run(orch._run_node_with_retry(node, {}))
+
+        # With max_retries=2, FakeSubAgent.execute_async is called 2 times
+        # Each call increments step.attempts by 1 → total should be exactly 2
+        # If orchestrator still double-counted, it would be higher
+        assert step.attempts == 2
+
+
+class TestOrchestratorUsesProvidedPlan:
+    """BUG 5: Orchestrator should use an existing plan when provided."""
+
+    def test_orchestrator_uses_provided_plan(self):
+        orch = _make_orchestrator()
+
+        step_a = PlanStep(description="custom step A")
+        step_b = PlanStep(description="custom step B")
+        provided_plan = Plan(goal="custom goal", steps=[step_a, step_b])
+
+        # Should NOT call planner.create_plan when plan is provided
+        orch.planner.create_plan = MagicMock(side_effect=AssertionError("Should not be called"))
+
+        mock_response = MagicMock()
+        mock_response.content = "Done"
+        mock_response.tool_calls = []
+        orch.router.chat.return_value = mock_response
+
+        result = orch.run_task("some task", plan=provided_plan)
+
+        # Verify planner.create_plan was NOT called (it would have raised)
+        orch.planner.create_plan.assert_not_called()

@@ -141,6 +141,10 @@ def save_config(config: Config) -> None:
     data = config.model_dump()
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CONFIG_FILE.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    try:
+        os.chmod(CONFIG_FILE, 0o600)
+    except OSError:
+        pass  # Windows: os.chmod only toggles read-only; real restriction via ACL
 
 
 def _build_env_config() -> dict[str, Any]:
@@ -172,27 +176,54 @@ def _build_env_config() -> dict[str, Any]:
         result.setdefault(backend, {})["vision_model"] = v
 
     if v := os.environ.get("AGENT_MAX_TURNS"):
-        result.setdefault("agent", {})["max_turns"] = int(v)
+        try:
+            result.setdefault("agent", {})["max_turns"] = int(v)
+        except ValueError:
+            pass
     if v := os.environ.get("AGENT_WORKSPACE"):
         result.setdefault("agent", {})["workspace"] = v
     if v := os.environ.get("AGENT_MAX_TURNS_PER_STEP"):
-        result.setdefault("agent", {})["max_turns_per_step"] = int(v)
+        try:
+            result.setdefault("agent", {})["max_turns_per_step"] = int(v)
+        except ValueError:
+            pass
     if v := os.environ.get("AGENT_MAX_VERIFY_RETRIES"):
-        result.setdefault("agent", {})["max_verify_retries"] = int(v)
+        try:
+            result.setdefault("agent", {})["max_verify_retries"] = int(v)
+        except ValueError:
+            pass
     if v := os.environ.get("AGENT_MAX_PLAN_RETRIES"):
-        result.setdefault("agent", {})["max_plan_retries"] = int(v)
+        try:
+            result.setdefault("agent", {})["max_plan_retries"] = int(v)
+        except ValueError:
+            pass
     if v := os.environ.get("AGENT_CONVERSATION_MAX_TOKENS"):
-        result.setdefault("agent", {})["conversation_max_tokens"] = int(v)
+        try:
+            result.setdefault("agent", {})["conversation_max_tokens"] = int(v)
+        except ValueError:
+            pass
     if v := os.environ.get("AGENT_TOOL_RESULT_MAX_CHARS"):
-        result.setdefault("agent", {})["tool_result_max_chars"] = int(v)
+        try:
+            result.setdefault("agent", {})["tool_result_max_chars"] = int(v)
+        except ValueError:
+            pass
 
     # Retry settings
     if v := os.environ.get("AGENT_RETRY_MAX_RETRIES"):
-        result.setdefault("agent", {}).setdefault("retry", {})["max_retries"] = int(v)
+        try:
+            result.setdefault("agent", {}).setdefault("retry", {})["max_retries"] = int(v)
+        except ValueError:
+            pass
     if v := os.environ.get("AGENT_RETRY_BASE_DELAY"):
-        result.setdefault("agent", {}).setdefault("retry", {})["base_delay"] = float(v)
+        try:
+            result.setdefault("agent", {}).setdefault("retry", {})["base_delay"] = float(v)
+        except ValueError:
+            pass
     if v := os.environ.get("AGENT_RETRY_MAX_DELAY"):
-        result.setdefault("agent", {}).setdefault("retry", {})["max_delay"] = float(v)
+        try:
+            result.setdefault("agent", {}).setdefault("retry", {})["max_delay"] = float(v)
+        except ValueError:
+            pass
 
     if v := os.environ.get("LANG3D_DEFAULT_BACKEND"):
         result["default_backend"] = v
@@ -200,7 +231,9 @@ def _build_env_config() -> dict[str, Any]:
     # Simulation settings
     if v := os.environ.get("CALCULIX_PATH"):
         result.setdefault("agent", {}).setdefault("simulation", {})["calculix_path"] = v
-    if v := os.environ.get("DEFAULT_MATERIAL"):
+    if v := os.environ.get("DEFAULT_SIM_MATERIAL"):
+        result.setdefault("agent", {}).setdefault("simulation", {})["default_material"] = v
+    elif v := os.environ.get("DEFAULT_MATERIAL"):
         result.setdefault("agent", {}).setdefault("simulation", {})["default_material"] = v
     if v := os.environ.get("OPENFOAM_PATH"):
         result.setdefault("agent", {}).setdefault("simulation", {})["openfoam_path"] = v
@@ -214,7 +247,9 @@ def _build_env_config() -> dict[str, Any]:
         result.setdefault("agent", {}).setdefault("slicing", {})["orcaslicer_path"] = v
     if v := os.environ.get("DEFAULT_PRINTER"):
         result.setdefault("agent", {}).setdefault("slicing", {})["default_printer"] = v
-    if v := os.environ.get("DEFAULT_MATERIAL"):
+    if v := os.environ.get("DEFAULT_SLICE_MATERIAL"):
+        result.setdefault("agent", {}).setdefault("slicing", {})["default_material"] = v
+    elif v := os.environ.get("DEFAULT_MATERIAL"):
         result.setdefault("agent", {}).setdefault("slicing", {})["default_material"] = v
     if v := os.environ.get("DEFAULT_QUALITY"):
         result.setdefault("agent", {}).setdefault("slicing", {})["default_quality"] = v

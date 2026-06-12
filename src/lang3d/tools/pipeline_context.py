@@ -7,10 +7,13 @@ with all downstream modules.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from ..knowledge.mechanics import Assembly, compute_assembly_mass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -26,9 +29,11 @@ class AssemblyContext:
     positions: dict[str, Any] = field(default_factory=dict)
     mass_result: dict[str, Any] = field(default_factory=dict)
     subsystems: dict[str, list[str]] = field(default_factory=dict)
+    kinematic_analysis: dict[str, Any] = field(default_factory=dict)
     solved: bool = False
     mass_computed: bool = False
     subsystems_built: bool = False
+    kinematic_analyzed: bool = False
 
     def ensure_positions(self) -> dict[str, Any]:
         """Compute assembly positions if not already done."""
@@ -160,7 +165,9 @@ class AssemblyContext:
     def ensure_mass(self) -> dict[str, Any]:
         """Compute mass properties if not already done."""
         if not self.mass_computed:
-            self.mass_result = compute_assembly_mass(self.assembly)
+            self.mass_result = compute_assembly_mass(
+                self.assembly, positions=self.positions,
+            )
             self.mass_computed = True
         return self.mass_result
 
@@ -171,6 +178,114 @@ class AssemblyContext:
             self.subsystems = _build_subsystems(self.assembly, self.positions)
             self.subsystems_built = True
         return self.subsystems
+
+    def ensure_kinematic_analysis(self) -> dict[str, Any]:
+        """Run closed-chain loop detection and differential-drive inference.
+
+        Stamps the context with:
+        - loops: list of closed kinematic loops (if any)
+        - loop_count: number of detected loops
+        - converged: True if ClosedChainSolver converged (or no loops)
+        - error_mm: residual closure error in mm
+        - differential_constraint: auto-detected differential-drive spec,
+          or None if no wheel pair found.
+        """
+        if self.kinematic_analyzed:
+            return self.kinematic_analysis
+
+        from .assembly_solver import ClosedChainSolver, DifferentialConstraint
+
+        solver = ClosedChainSolver(self.assembly)
+        loops = solver.detect_loops()
+        result: dict[str, Any] = {
+            "loop_count": len(loops),
+            "loops": [{"parts": loop} for loop in loops],
+        }
+
+        if loops:
+            try:
+                solve_result = solver.solve_closed_chain(
+                    initial_angles=dict(self.assembly.default_angles),
+                    max_iterations=50,
+                    tolerance=0.5,
+                )
+                result["converged"] = bool(solve_result.get("converged"))
+                result["iterations"] = int(solve_result.get("iterations", 0))
+                result["error_mm"] = float(solve_result.get("error_mm", 0.0))
+                if not solve_result.get("converged"):
+                    logger.warning(
+                        "Closed-chain solver did not converge: %d loops, "
+                        "error=%.3fmm after %d iterations",
+                        len(loops),
+                        solve_result.get("error_mm", 0.0),
+                        solve_result.get("iterations", 0),
+                    )
+            except Exception as e:
+                logger.warning("Closed-chain solver failed: %s", e)
+                result["converged"] = False
+                result["error"] = str(e)
+        else:
+            result["converged"] = True
+            result["iterations"] = 0
+            result["error_mm"] = 0.0
+
+        # Differential-drive auto-detection
+        diff = self._detect_differential_constraint()
+        if diff is not None:
+            # Sanitize: turning_radius_mm defaults to inf — JSON-unsafe
+            diff_dict = diff.to_dict()
+            tr = diff_dict.get("turning_radius_mm")
+            if tr is None or tr != tr or abs(tr) == float("inf"):
+                diff_dict["turning_radius_mm"] = None
+            result["differential_constraint"] = diff_dict
+            result["differential_left_wheel"] = diff.left_wheel
+            result["differential_right_wheel"] = diff.right_wheel
+            result["differential_track_width_mm"] = diff.track_width_mm
+            v_left, v_right = diff.speed_ratio(0.0)
+            result["differential_straight_ratio"] = [round(v_left, 4), round(v_right, 4)]
+
+        self.kinematic_analysis = result
+        self.kinematic_analyzed = True
+        return result
+
+    def _detect_differential_constraint(self) -> "DifferentialConstraint | None":
+        """Auto-detect a differential-drive wheel pair from the assembly.
+
+        Looks for wheel pairs with naming patterns wheel_fl/wheel_fr,
+        wheel_rl/wheel_rr, wheel_l/wheel_r, or mecanum_fl/fr.
+        Returns a DifferentialConstraint with track width derived from
+        solved positions, or None if no pair is found.
+        """
+        from .assembly_solver import DifferentialConstraint
+
+        pair_patterns = [
+            ("wheel_fl", "wheel_fr"),
+            ("wheel_rl", "wheel_rr"),
+            ("wheel_l", "wheel_r"),
+            ("mecanum_fl", "mecanum_fr"),
+            ("mecanum_rl", "mecanum_rr"),
+        ]
+        part_names = {p.name for p in self.assembly.parts}
+        for left, right in pair_patterns:
+            if left in part_names and right in part_names:
+                # Derive track width from solved positions
+                left_pos = self.positions.get(left, {}).get("position")
+                right_pos = self.positions.get(right, {}).get("position")
+                if left_pos and right_pos:
+                    dx = right_pos[0] - left_pos[0]
+                    dy = right_pos[1] - left_pos[1]
+                    track = (dx * dx + dy * dy) ** 0.5
+                    if track < 1.0:
+                        track = 200.0  # fallback
+                else:
+                    track = 200.0
+                return DifferentialConstraint(
+                    left_wheel=left,
+                    right_wheel=right,
+                    track_width_mm=round(track, 1),
+                    description=f"auto-detected {left}/{right} pair",
+                )
+        return None
 
     def get_com(self) -> list[float]:
         """Get center of mass, computing mass if needed."""

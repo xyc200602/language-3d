@@ -450,12 +450,14 @@ def assembly_match_tool_factory() -> tuple[Any, Any]:
     )
 
     class _AssemblyMatchTool:
+        name = "assembly_match"
+
         def execute(self, *, part_a_name: str = "", part_b_name: str = "",
                     connection_type: str = "bolted", bolt_size: str = "M3",
                     anchor: str = "top", **kwargs) -> str:
-            from ..knowledge.mechanics import Part, find_part
-            pa = find_part(part_a_name)
-            pb = find_part(part_b_name)
+            from ..knowledge.mechanics import Part, get_part
+            pa = get_part(part_a_name)
+            pb = get_part(part_b_name)
             if pa is None:
                 pa = Part(part_a_name, "structural", "auto", dimensions={"length": 50, "width": 50, "thickness": 5})
             if pb is None:

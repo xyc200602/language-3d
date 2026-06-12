@@ -106,7 +106,7 @@ class Reflector:
         # Check tool history for cad_verify results
         if tool_history:
             for t in reversed(tool_history[-3:]):
-                if t["name"] == "cad_verify":
+                if t.get("name") == "cad_verify":
                     result = t.get("result", "")
                     if "MATCH: False" in result or "MATCH: false" in result or '"match": false' in result:
                         parts.append(f"cad_verify 结果:\n{result[:500]}")

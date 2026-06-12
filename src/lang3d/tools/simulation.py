@@ -276,7 +276,7 @@ def _run_freecad_script(script: str, timeout: int = 120) -> str:
 
     try:
         result = subprocess.run(
-            [fc_python, "-c", f"exec(open(r'{script_path}').read())"],
+            [fc_python, script_path],
             capture_output=True,
             text=True,
             timeout=timeout,

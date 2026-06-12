@@ -172,11 +172,11 @@ _register(AssemblyTemplate(
                          {"diameter": 35, "height": 30},
                          part_catalog_id="servo_mg996r"),
         TemplatePartSpec("gripper_base", "structural", "夹爪基座", "PLA",
-                         {"length": 40, "width": 35, "height": 15}),
+                         {"length": 28, "width": 50, "height": 32}),
         TemplatePartSpec("gripper_finger_left", "structural", "夹爪左手指", "PLA",
-                         {"length": 35, "width": 6, "height": 15}),
+                         {"length": 60, "width": 10, "height": 28}),
         TemplatePartSpec("gripper_finger_right", "structural", "夹爪右手指", "PLA",
-                         {"length": 35, "width": 6, "height": 15}),
+                         {"length": 60, "width": 10, "height": 28}),
     ],
     joints=[
         # joint1: base yaw — servo sits on base, rotates around Z
@@ -203,11 +203,11 @@ _register(AssemblyTemplate(
         TemplateJointSpec("prismatic", "gripper_base", "gripper_finger_left",
                           (-8, 12),
                           parent_anchor="front", child_anchor="back",
-                          axis="x", offset=(-8, 0, 0)),
+                          axis="x", offset=(-16, 0, 0)),
         TemplateJointSpec("prismatic", "gripper_base", "gripper_finger_right",
                           (-8, 12),
                           parent_anchor="front", child_anchor="back",
-                          axis="x", offset=(8, 0, 0)),
+                          axis="x", offset=(16, 0, 0)),
     ],
     default_angles={
         "shoulder_joint": 0.0,

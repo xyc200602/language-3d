@@ -171,6 +171,10 @@ class OrchestratorAgent:
         if verification_report:
             result += f"\n\n{verification_report}"
 
+        # Final cleanup
+        self._results.clear()
+        self._active_agents.clear()
+
         return result
 
     async def _execute_wave(self, nodes: list) -> dict[str, SubAgentResult]:
@@ -204,9 +208,9 @@ class OrchestratorAgent:
                 elif self._dag:
                     self._dag.mark_failed(node.step.id)
 
-        # Clean up completed steps to prevent memory buildup
+        # Clean up completed step agents to prevent memory buildup
         for node in nodes:
-            self._cleanup_step(node.step.id)
+            self._cleanup_agents_for_step(node.step.id)
 
         return results
 
@@ -224,6 +228,8 @@ class OrchestratorAgent:
         )
         sub_agent = None  # Guard for max_retries=0
         for attempt in range(self.max_retries):
+            if attempt > 0 and sub_agent is not None:
+                self._active_agents.pop(sub_agent.agent_id, None)
             sub_agent = self._spawn_sub_agent(node)
 
             if self._on_sub_agent_update:
@@ -280,6 +286,7 @@ class OrchestratorAgent:
             tools=self.tools,
             workspace=self.workspace,
         )
+        sub.step_id = node.step.id
 
         # Wire up callbacks
         if self._on_tool_call:
@@ -359,9 +366,8 @@ class OrchestratorAgent:
         result = self.verifier.verify_assembly(assembly, self.workspace, parts_results)
         return AssemblyVerifier.generate_assembly_report(result)
 
-    def _cleanup_step(self, step_id: str) -> None:
-        """Remove completed step data to prevent memory buildup."""
-        self._results.pop(step_id, None)
+    def _cleanup_agents_for_step(self, step_id: str) -> None:
+        """Remove agents for a completed step (keep results for later waves)."""
         to_remove = [aid for aid, agent in self._active_agents.items()
                      if getattr(agent, 'step_id', None) == step_id]
         for aid in to_remove:
@@ -672,13 +678,17 @@ class PhasedOrchestrator(OrchestratorAgent):
             success=False,
             error="No attempts made",
         )
+        sub = None
         for attempt in range(self.max_retries):
+            if attempt > 0 and sub is not None:
+                self._active_agents.pop(sub.agent_id, None)
             sub = SubAgent(
                 role=SubAgentRole.MODELING,
                 router=self.router,
                 tools=self.tools,
                 workspace=self.workspace,
             )
+            sub.step_id = step.id
 
             # Wire callbacks
             self._wire_sub_agent_callbacks(sub)

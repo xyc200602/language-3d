@@ -486,12 +486,13 @@ class AssemblyVerifier:
             ]
             return checks, result.collision_free, True
         except ImportError:
-            # FCL not available — this is a warning, not silently skipped (Task 80)
+            # FCL not available — collision status is UNVERIFIED, not "safe"
             warning_check = CollisionCheck(
                 part_a="*",
                 part_b="*",
                 is_collision=False,
-                notes="WARNING: FCL (python-fcl) not available — collision check skipped",
+                notes="UNVERIFIED: FCL (python-fcl) not installed — collisions NOT checked, "
+                      "assembly must NOT be labeled 'production-grade'",
             )
             return [warning_check], True, False
         except Exception as e:
@@ -499,7 +500,8 @@ class AssemblyVerifier:
                 part_a="*",
                 part_b="*",
                 is_collision=False,
-                notes=f"WARNING: Collision check failed: {e}",
+                notes=f"UNVERIFIED: Collision check failed: {e} — "
+                      "assembly must NOT be labeled 'production-grade'",
             )
             return [warning_check], True, False
 

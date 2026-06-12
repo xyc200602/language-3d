@@ -22,14 +22,14 @@
   },
   "verification": {
     "overall_pass": false,
-    "collision_free": false,
-    "fcl_available": true,
+    "collision_free": true,
+    "fcl_available": false,
     "mating_surface_checks": 36,
     "bolt_alignment_checks": 16,
     "sequence_checks": 36,
     "tolerance_chain_checks": 10,
-    "verification_items_total": 623,
-    "verification_items_passed": 585
+    "verification_items_total": 99,
+    "verification_items_passed": 69
   },
   "key_placements": {
     "base_plate": {
@@ -169,10 +169,10 @@
         -15.0
       ],
       "rotation": [
-        0,
-        0,
-        1,
-        0
+        -1.0,
+        0.0,
+        0.0,
+        90.0
       ]
     },
     "wheel_fr": {
@@ -182,10 +182,10 @@
         -15.0
       ],
       "rotation": [
-        0,
-        0,
-        1,
-        0
+        -1.0,
+        0.0,
+        0.0,
+        90.0
       ]
     },
     "wheel_rl": {
@@ -195,10 +195,10 @@
         -15.0
       ],
       "rotation": [
-        0,
-        0,
-        1,
-        0
+        -1.0,
+        0.0,
+        0.0,
+        90.0
       ]
     },
     "wheel_rr": {
@@ -208,10 +208,10 @@
         -15.0
       ],
       "rotation": [
-        0,
-        0,
-        1,
-        0
+        -1.0,
+        0.0,
+        0.0,
+        90.0
       ]
     },
     "arm_l_base": {

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import logging
 import re
 import subprocess
 import sys
@@ -10,22 +12,49 @@ from typing import Any
 from ..models.base import ToolDefinition
 from .base import Tool
 
-# Dangerous command patterns that should be blocked
+logger = logging.getLogger(__name__)
+
+# Dangerous command patterns — expanded to cover common bypasses
 _DANGEROUS_PATTERNS = [
-    r"\brm\s+-rf\s+/",
-    r"\brm\s+-rf\s+[A-Za-z]:",
+    # Recursive / forced deletion
+    r"\brm\s+.*-[rR].*[fF]",
+    r"\brm\s+.*-[fF].*[rR]",
+    r"\brd\s+/[sS]\s+/[qQ]",
+    # Disk / filesystem destruction
     r"\bformat\s+[A-Za-z]:",
     r"\bdd\s+if=",
     r"\bmkfs\b",
+    # System control
     r"\bshutdown\b",
     r"\breboot\b",
     r"\bhalt\b",
+    r"\binit\s+[06]\b",
+    # Windows registry / user management
     r"\bpowershell\b.*-command.*Remove-Item",
     r"\breg\s+(delete|add)\b",
     r"\bnet\s+(user|localgroup)\b",
     r"\btaskkill\s+/f\s+/pid\s+0\b",
+    # Device access
     r">/dev/sd",
-    r"\bsudo\s+rm\b",
+    # Privilege escalation
+    r"\bsudo\s+",
+    r"\bsu\s+",
+    r"\brunas\s+",
+    # Shell injection / download-and-execute
+    r"\bcurl\b.*\|\s*(bash|sh|python|python3)\b",
+    r"\bwget\b.*\|\s*(bash|sh|python|python3)\b",
+    r"\b(base64|xxd)\s+.*\|\s*(bash|sh)\b",
+    # Reverse shells
+    r"/dev/tcp/",
+    r"\bnc\s+.*-e\b",
+    r"\bncat\b",
+    # Writing to system paths
+    r">\s*/etc/",
+    r">\s*/boot/",
+    r">\s*/proc/",
+    r">\s*/sys/",
+    # Pipe chain with destructive commands
+    r"\|\s*(bash|sh|zsh|fish)\s*$",
 ]
 
 
@@ -38,12 +67,66 @@ def _is_dangerous_command(command: str) -> str | None:
     return None
 
 
-# Dangerous Python modules that should not be importable in python_exec
-_BLOCKED_MODULES = {
-    "subprocess", "os.system", "shutil.rmtree",
-    "ctypes", "winreg", "__import__", "importlib",
-    "eval(", "exec(", "compile(",
-}
+# --- Python code safety via AST analysis ---
+
+def _validate_python_code(code: str) -> list[str]:
+    """Parse Python code AST and check for dangerous constructs.
+
+    Returns a list of error strings. Empty list means safe.
+    """
+    errors: list[str] = []
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return [f"Syntax error: {e}"]
+
+    _BLOCKED_IMPORTS = {
+        "subprocess", "os", "shutil", "ctypes", "winreg",
+        "importlib", "socket", "http", "urllib", "requests",
+        "telnetlib", "ftplib", "smtplib", "xmlrpc",
+    }
+    _BLOCKED_BUILTINS = {
+        "exec", "eval", "compile", "__import__",
+        "breakpoint", "exit", "quit",
+    }
+
+    for node in ast.walk(tree):
+        # Block import statements for dangerous modules
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                root_module = alias.name.split(".")[0]
+                if root_module in _BLOCKED_IMPORTS:
+                    errors.append(f"Blocked import: {alias.name}")
+        if isinstance(node, ast.ImportFrom):
+            if node.module:
+                root_module = node.module.split(".")[0]
+                if root_module in _BLOCKED_IMPORTS:
+                    errors.append(f"Blocked import from: {node.module}")
+
+        # Block dangerous builtins
+        if isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name):
+                if node.func.id in _BLOCKED_BUILTINS:
+                    errors.append(f"Blocked builtin call: {node.func.id}()")
+            # Block method calls on dangerous modules (e.g., os.system(...))
+            if isinstance(node.func, ast.Attribute):
+                if isinstance(node.func.value, ast.Name):
+                    if node.func.value.id in _BLOCKED_IMPORTS:
+                        errors.append(f"Blocked call: {node.func.value.id}.{node.func.attr}()")
+
+        # Block dunder attribute access (e.g., __builtins__, __import__)
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") and node.attr.endswith("__"):
+                errors.append(f"Blocked dunder access: .{node.attr}")
+
+        # Block dunder string-key lookups (e.g., d["__builtins__"])
+        if isinstance(node, ast.Subscript):
+            if isinstance(node.slice, ast.Constant) and isinstance(node.slice.value, str):
+                key = node.slice.value
+                if key.startswith("__") and key.endswith("__"):
+                    errors.append(f"Blocked dunder key access: {key}")
+
+    return errors
 
 
 class BashTool(Tool):
@@ -85,6 +168,7 @@ class BashTool(Tool):
         # Security: block dangerous commands
         dangerous = _is_dangerous_command(command)
         if dangerous:
+            logger.warning("Blocked dangerous command (pattern: %s): %s", dangerous, command[:100])
             return f"Error: Command blocked (matches dangerous pattern: {dangerous})"
         try:
             result = subprocess.run(
@@ -147,13 +231,11 @@ class PythonExecTool(Tool):
         )
 
     def execute(self, *, code: str, timeout: int = 30, **kwargs: Any) -> str:
-        # Security: block dangerous imports and patterns
-        for mod in _BLOCKED_MODULES:
-            if re.search(rf'\b{re.escape(mod)}\b', code):
-                return f"Error: Code contains blocked module/reference: {mod}"
-        # Block getattr with dunder access
-        if re.search(r'getattr\s*\([^)]*[\'"]__\w+', code):
-            return "Error: Code contains blocked pattern: getattr with dunder"
+        # Security: AST-based validation
+        errors = _validate_python_code(code)
+        if errors:
+            logger.warning("Blocked unsafe Python code: %s", "; ".join(errors[:3]))
+            return f"Error: Code contains blocked patterns: {'; '.join(errors[:5])}"
         try:
             result = subprocess.run(
                 [sys.executable, "-c", code],

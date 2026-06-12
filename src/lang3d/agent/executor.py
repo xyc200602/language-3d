@@ -15,6 +15,105 @@ from .fix_strategy import classify_failure, check_convergence, extract_fix_comma
 from .state import AgentState, PlanStep, StepStatus
 
 
+def execute_tool_calls(
+    tool_calls: list[ToolCall],
+    *,
+    tools: ToolRegistry,
+    state: AgentState,
+    messages: list[Message],
+    verify_fail_count: int,
+    fix_history: list[str],
+    max_verify_retries: int = 3,
+    on_tool_call: Callable[[str, dict], None] | None = None,
+    on_tool_result: Callable[[str, str], None] | None = None,
+    on_thinking: Callable[[str], None] | None = None,
+    assistant_content: str | None = None,
+) -> tuple[int, list[str]]:
+    """Execute a batch of tool calls, handling callbacks, auto-fix, and truncation.
+
+    Returns (updated verify_fail_count, updated fix_history).
+    Appends assistant + tool messages to *messages* in place.
+    """
+    # Append assistant message with tool calls
+    messages.append(
+        Message(
+            role="assistant",
+            content=assistant_content,
+            tool_calls=[
+                {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                for tc in tool_calls
+            ],
+        )
+    )
+
+    for tc in tool_calls:
+        if on_tool_call:
+            try:
+                on_tool_call(tc.name, tc.arguments)
+            except Exception:
+                pass
+
+        try:
+            result = tools.execute(tc.name, **tc.arguments)
+        except (ToolError, TypeError) as e:
+            result = f"Error: {e}"
+        state.add_tool_call(tc.name, tc.arguments, result)
+
+        # Truncate large tool results
+        result = truncate_tool_result(result)
+
+        if on_tool_result:
+            try:
+                on_tool_result(tc.name, result)
+            except UnicodeEncodeError:
+                try:
+                    on_tool_result(
+                        tc.name,
+                        result.encode("utf-8", errors="replace").decode("utf-8"),
+                    )
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+        messages.append(
+            Message(role="tool", content=result, tool_call_id=tc.id)
+        )
+
+        # Auto-fix: detect cad_verify MATCH:False and inject fix hint
+        if tc.name == "cad_verify" and "match: false" in result.lower():
+            verify_fail_count += 1
+            if verify_fail_count <= max_verify_retries:
+                expected = tc.arguments.get("expected", "")
+                fix_ctx = classify_failure(result, expected)
+                fix_commands = extract_fix_commands(result)
+
+                if check_convergence(fix_history, result):
+                    fix_hint = (
+                        "[系统提示] 检测到修复陷入循环（连续多次失败原因相似）。"
+                        "请尝试完全不同的建模方法，或删除当前模型从头开始重建。"
+                    )
+                else:
+                    fix_ctx.fix_history = fix_history
+                    fix_hint = generate_fix_hint(fix_ctx, fix_commands=fix_commands)
+
+                fix_history.append(result)
+                messages.append(Message(role="user", content=fix_hint))
+
+                if on_thinking:
+                    try:
+                        on_thinking(
+                            f"智能修复：{fix_ctx.failure_type.value}，"
+                            f"注入定向提示（第 {verify_fail_count} 次）"
+                        )
+                    except Exception:
+                        pass
+        elif tc.name == "cad_verify" and "match: true" in result.lower():
+            verify_fail_count = 0
+
+    return verify_fail_count, fix_history
+
+
 EXECUTOR_SYSTEM_PROMPT = """你是一个执行助手。你需要完成指定的步骤任务。
 
 视觉感知策略：
@@ -99,9 +198,8 @@ class Executor:
         """
         step.status = StepStatus.IN_PROGRESS
         step.attempts += 1
-        # Explicitly initialize per-step state (thread safety)
-        self._verify_fail_count = 0
-        self._fix_history = []
+        verify_fail_count = 0
+        fix_history: list[str] = []
 
         messages: list[Message] = [
             Message(
@@ -149,78 +247,20 @@ class Executor:
                 step.result = response.content
                 return response.content
 
-            # Process tool calls
-            assistant_msg = Message(
-                role="assistant",
-                content=response.content,
-                tool_calls=[
-                    {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-                    for tc in response.tool_calls
-                ],
+            # Execute tool calls via shared helper
+            verify_fail_count, fix_history = execute_tool_calls(
+                response.tool_calls,
+                tools=self.tools,
+                state=state,
+                messages=messages,
+                verify_fail_count=verify_fail_count,
+                fix_history=fix_history,
+                max_verify_retries=3,
+                on_tool_call=on_tool_call,
+                on_tool_result=on_tool_result,
+                on_thinking=on_thinking,
+                assistant_content=response.content,
             )
-            messages.append(assistant_msg)
-
-            # Execute each tool call
-            for tc in response.tool_calls:
-                if on_tool_call:
-                    try:
-                        on_tool_call(tc.name, tc.arguments)
-                    except Exception:
-                        pass
-
-                try:
-                    result = self.tools.execute(tc.name, **tc.arguments)
-                except ToolError as e:
-                    result = f"Error: {e}"
-                state.add_tool_call(tc.name, tc.arguments, result)
-
-                # Truncate large tool results
-                result = truncate_tool_result(result)
-
-                if on_tool_result:
-                    try:
-                        on_tool_result(tc.name, result)
-                    except UnicodeEncodeError:
-                        # VLM may return Unicode chars that can't encode in GBK
-                        try:
-                            on_tool_result(
-                                tc.name,
-                                result.encode("utf-8", errors="replace").decode("utf-8"),
-                            )
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-
-                messages.append(
-                    Message(
-                        role="tool",
-                        content=result,
-                        tool_call_id=tc.id,
-                    )
-                )
-
-                # Auto-fix: detect cad_verify MATCH:False and inject fix hint
-                if tc.name == "cad_verify" and "MATCH: False" in result:
-                    self._verify_fail_count = getattr(self, "_verify_fail_count", 0) + 1
-                    max_verify_retries = 3  # same as core._run_direct default
-                    if self._verify_fail_count <= max_verify_retries:
-                        expected = tc.arguments.get("expected", "")
-                        fix_ctx = classify_failure(result, expected)
-                        fix_commands = extract_fix_commands(result)
-                        self._fix_history = getattr(self, "_fix_history", [])
-                        if check_convergence(self._fix_history, result):
-                            fix_hint = (
-                                "[系统提示] 检测到修复陷入循环（连续多次失败原因相似）。"
-                                "请尝试完全不同的建模方法，或删除当前模型从头开始重建。"
-                            )
-                        else:
-                            fix_hint = generate_fix_hint(fix_ctx, fix_commands=fix_commands)
-                        self._fix_history.append(result)
-                        messages.append(Message(role="user", content=fix_hint))
-                elif tc.name == "cad_verify" and "MATCH: True" in result:
-                    # Reset counter on success
-                    self._verify_fail_count = 0
 
             # Apply sliding window when messages grow too large
             if len(messages) > 12:

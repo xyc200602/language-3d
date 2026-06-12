@@ -9,6 +9,7 @@ Each tool accepts an optional 'detail' parameter to control the vision model:
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from pathlib import Path
@@ -17,6 +18,8 @@ from typing import Any
 from ..models.base import ToolDefinition
 from ..models.router import ModelRouter, VisionDetail
 from .base import Tool
+
+logger = logging.getLogger(__name__)
 
 _DETAIL_DESCRIPTION = (
     "Vision detail level: 'fast' (quick, free), 'standard' (accurate, default), "
@@ -502,7 +505,20 @@ class CADVerifyTool(Tool):
     def _resolve_stl(self, stl_path: str) -> str | None:
         """Find the STL file to verify."""
         if stl_path and os.path.isfile(stl_path):
-            return os.path.abspath(stl_path)
+            resolved = os.path.abspath(stl_path)
+            # Reject paths outside the configured workspace to prevent
+            # arbitrary file access via the stl_path parameter.
+            from ..config import load_config
+
+            try:
+                cfg = load_config()
+                workspace = os.path.abspath(cfg.agent.workspace)
+            except Exception:
+                workspace = os.path.abspath(".")
+            if not (resolved == workspace or resolved.startswith(workspace + os.sep)):
+                logger.warning("STL path outside workspace rejected: %s", resolved)
+                return None
+            return resolved
 
         # Search screenshot_dir and workspace for recent STL files
         search_dirs = [self.screenshot_dir]

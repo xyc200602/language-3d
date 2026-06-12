@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 from typing import Any
@@ -11,9 +12,16 @@ import pyautogui
 from ..models.base import ToolDefinition
 from .base import Tool
 
+logger = logging.getLogger(__name__)
+
 # Safety: move mouse to corner raises FailSafeException
 pyautogui.FAILSAFE = True
 pyautogui.PAUSE = 0.1
+
+
+def _log_gui_action(action: str, details: dict[str, Any]) -> None:
+    """Log all GUI actions for audit trail."""
+    logger.info("GUI action: %s %s", action, details)
 
 
 class GUIClickTool(Tool):
@@ -64,6 +72,7 @@ class GUIClickTool(Tool):
         pause: float = 0.5,
         **kwargs: Any,
     ) -> str:
+        _log_gui_action("click", {"x": x, "y": y, "button": button, "clicks": clicks})
         try:
             screen_w, screen_h = pyautogui.size()
             if not (0 <= x <= screen_w and 0 <= y <= screen_h):
@@ -116,6 +125,7 @@ class GUITypeTool(Tool):
         pause: float = 0.3,
         **kwargs: Any,
     ) -> str:
+        _log_gui_action("type", {"text_length": len(text)})
         try:
             if text:
                 # pyautogui.typewrite only supports ASCII; for non-ASCII text,
@@ -161,6 +171,7 @@ class GUIHotkeyTool(Tool):
         )
 
     def execute(self, *, keys: str, pause: float = 0.5, **kwargs: Any) -> str:
+        _log_gui_action("press_key", {"keys": keys})
         try:
             key_list = [k.strip() for k in keys.split("+")]
             pyautogui.hotkey(*key_list)
@@ -299,6 +310,7 @@ class GUIMousePosTool(Tool):
         )
 
     def execute(self, **kwargs: Any) -> str:
+        _log_gui_action("mouse_pos", {})
         try:
             x, y = pyautogui.position()
             screen_w, screen_h = pyautogui.size()
@@ -360,6 +372,7 @@ class GUIDragTool(Tool):
         button: str = "left",
         **kwargs: Any,
     ) -> str:
+        _log_gui_action("drag", {"start": (start_x, start_y), "end": (end_x, end_y), "button": button})
         try:
             pyautogui.moveTo(start_x, start_y)
             pyautogui.drag(

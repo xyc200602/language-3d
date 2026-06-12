@@ -170,15 +170,22 @@ class TestHierarchicalPlan:
 
 class TestTaskTypeDetection:
     @pytest.mark.parametrize("task", [
-        "设计一个4轮差速底盘移动机器人",
         "带有双臂的移动平台",
         "工控机安装在底盘上",
         "设计一个AGV巡检机器人",
         "4 wheel mobile robot with dual arm",
-        "differential drive mobile base",
     ])
     def test_complex_robot_detected(self, task):
         assert Planner._detect_task_type(task) == "complex_robot"
+
+    @pytest.mark.parametrize("task", [
+        "设计一个4轮差速底盘移动机器人",
+        "differential drive mobile base",
+    ])
+    def test_mobile_base_detected(self, task):
+        """Tasks with specific mobile_base keywords are classified as mobile_base
+        rather than complex_robot, because mobile_base keywords are more specific."""
+        assert Planner._detect_task_type(task) == "mobile_base"
 
     @pytest.mark.parametrize("task", [
         "创建一个30x30x10的带孔平板",

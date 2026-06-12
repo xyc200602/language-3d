@@ -145,14 +145,14 @@ ACTUATORS: dict[str, Actuator] = {
         dimensions_mm={"length": 72.0, "width": 37.0, "height": 37.0},
         shaft_diameter_mm=6.0,
     ),
-    "GA25_370": Actuator(
-        id="GA25_370", name="GA25-370 减速电机 (1:30)", category="dc_motor",
+    "GA25_370_6V": Actuator(
+        id="GA25_370_6V", name="GA25-370 减速电机 6V (1:30)", category="dc_motor",
         torque_kgcm=3.0, speed_s_per_60deg=0, rpm=300,
         voltage=6.0, voltage_range=(3.0, 9.0),
         current_idle_ma=80, current_stall_ma=2000,
         weight_g=60, price_cny=20,
         rotation_range=(0, 0), interface="pwm",
-        description="6V 减速电机，带霍尔编码器，桌面机器人底盘",
+        description="6V 减速电机 (注意：mobile_base.py 中的 GA25-370 为 12V 变体)，带霍尔编码器，桌面机器人底盘",
         dimensions_mm={"length": 54.0, "width": 25.0, "height": 25.0},
         shaft_diameter_mm=4.0,
     ),
@@ -161,7 +161,7 @@ ACTUATORS: dict[str, Actuator] = {
     "28BYJ48": Actuator(
         id="28BYJ48", name="28BYJ-48 步进电机", category="stepper",
         torque_kgcm=0.35, speed_s_per_60deg=0, rpm=15,
-        voltage=5.0, voltage_range=(5.0, 12.0),
+        voltage=5.0, voltage_range=(5.0, 7.0),
         current_idle_ma=40, current_stall_ma=300,
         weight_g=30, price_cny=5,
         rotation_range=(0, 0), interface="step_dir",
@@ -256,11 +256,11 @@ DC_MOTOR_PID_SPECS: dict[str, DCMotorPIDSpec] = {
         max_pwm=200, sample_period_ms=20,
         description="TT 减速电机 1:48，低速高扭矩，适合差速底盘",
     ),
-    "GA25_370": DCMotorPIDSpec(
-        motor_id="GA25_370", encoder_ppr=11, gear_ratio=30.0,
+    "GA25_370_6V": DCMotorPIDSpec(
+        motor_id="GA25_370_6V", encoder_ppr=11, gear_ratio=30.0,
         kp=1.5, ki=0.4, kd=0.08,
         max_pwm=220, sample_period_ms=20,
-        description="GA25-370 减速电机 1:30，中等精度差速底盘",
+        description="GA25-370 6V 减速电机 1:30，中等精度差速底盘",
     ),
     "JGB37_520": DCMotorPIDSpec(
         motor_id="JGB37_520", encoder_ppr=11, gear_ratio=30.0,

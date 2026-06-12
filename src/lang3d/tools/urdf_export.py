@@ -292,6 +292,9 @@ class URDFJoint:
     upper: float = 0.0  # radians
     effort: float = 100.0  # N or Nm
     velocity: float = 3.14  # m/s or rad/s
+    mimic_joint: str = ""           # If set, this joint mimics another
+    mimic_multiplier: float = 1.0
+    mimic_offset: float = 0.0
 
 
 @dataclass
@@ -395,6 +398,13 @@ class AssemblyToURDF:
             ))
 
     def _build_joints(self) -> None:
+        # Build child→joint-name lookup for mimic joint resolution
+        child_to_joint_name: dict[str, str] = {}
+        for j in self.assembly.joints:
+            p = _sanitize_name(j.parent)
+            c = _sanitize_name(j.child)
+            child_to_joint_name[c] = f"{p}_to_{c}"
+
         for i, joint in enumerate(self.assembly.joints):
             jtype = _JOINT_TYPE_MAP.get(joint.type, "fixed")
             parent_name = _sanitize_name(joint.parent)
@@ -430,6 +440,12 @@ class AssemblyToURDF:
             lower_rad = math.radians(joint.range_deg[0])
             upper_rad = math.radians(joint.range_deg[1])
 
+            # Resolve mimic joint: convert child part name to URDF joint name
+            mimic_joint_name = ""
+            if joint.mimic_joint:
+                mimic_child = _sanitize_name(joint.mimic_joint)
+                mimic_joint_name = child_to_joint_name.get(mimic_child, "")
+
             self._joints.append(URDFJoint(
                 name=f"{parent_name}_to_{child_name}",
                 type=jtype,
@@ -440,6 +456,9 @@ class AssemblyToURDF:
                 axis=tuple(axis_vec),  # type: ignore[arg-type]
                 lower=round(lower_rad, 4),
                 upper=round(upper_rad, 4),
+                mimic_joint=mimic_joint_name,
+                mimic_multiplier=joint.mimic_multiplier,
+                mimic_offset=joint.mimic_offset,
             ))
 
     def _compute_joint_origin(self, joint) -> tuple[tuple[float, float, float] | None, tuple[float, float, float] | None]:
@@ -482,14 +501,39 @@ class AssemblyToURDF:
                 and j.axis == (0.0, 0.0, 1.0)
             ]
             if len(wheel_joints) >= 2:
+                # Derive wheel separation from positions (distance between
+                # left/right wheel X coords) or fall back to default.
+                wheel_separation = 0.15
+                if self.positions:
+                    left_name = wheel_joints[0].name.split("_to_")[0]
+                    right_name = wheel_joints[1].name.split("_to_")[0]
+                    lp = self.positions.get(left_name, {}).get("position")
+                    rp = self.positions.get(right_name, {}).get("position")
+                    if lp and rp:
+                        wheel_separation = abs(
+                            _mm_to_m(lp[0] - rp[0])
+                        ) or 0.15
+
+                # Derive wheel diameter from part dimensions or fall back.
+                wheel_diameter = 0.065
+                child_name_0 = wheel_joints[0].name.split("_to_")[-1]
+                child_part = self._part_index.get(child_name_0)
+                if child_part:
+                    d = child_part.dimensions.get(
+                        "diameter",
+                        child_part.dimensions.get("outer_diameter", 0),
+                    )
+                    if d > 0:
+                        wheel_diameter = _mm_to_m(d)
+
                 self._gazebo_plugins.append(GazeboPlugin(
                     name="diff_drive",
                     filename="libgazebo_ros_diff_drive.so",
                     params={
                         "leftJoint": wheel_joints[0].name,
                         "rightJoint": wheel_joints[1].name,
-                        "wheelSeparation": 0.15,
-                        "wheelDiameter": 0.065,
+                        "wheelSeparation": round(wheel_separation, 4),
+                        "wheelDiameter": round(wheel_diameter, 4),
                         "commandTopic": "cmd_vel",
                         "odometryTopic": "odom",
                         "odometryFrame": "odom",
@@ -567,6 +611,13 @@ class AssemblyToURDF:
                 limit_el.set("upper", f"{joint.upper:.4f}")
                 limit_el.set("effort", f"{joint.effort:.1f}")
                 limit_el.set("velocity", f"{joint.velocity:.2f}")
+
+            # Mimic joint coupling (e.g. gripper fingers that move symmetrically)
+            if joint.mimic_joint:
+                mimic_el = ET.SubElement(joint_el, "mimic")
+                mimic_el.set("joint", joint.mimic_joint)
+                mimic_el.set("multiplier", f"{joint.mimic_multiplier:.1f}")
+                mimic_el.set("offset", f"{joint.mimic_offset:.4f}")
 
         # Gazebo plugins
         for plugin in self._gazebo_plugins:
@@ -807,10 +858,14 @@ class URDFExportTool(Tool):
             return f"错误：未找到装配体 '{assembly_name}'"
 
         try:
+            from .assembly_solver import AssemblySolver
+            solver = AssemblySolver(assembly)
+            positions = solver.solve()
             converter = AssemblyToURDF(
                 assembly,
                 meshes_dir="meshes",
                 package_name=package_name,
+                positions=positions,
             )
             urdf_xml = converter.convert()
         except Exception as e:
@@ -848,8 +903,8 @@ class URDFExportTool(Tool):
 
 def _find_assembly(name: str) -> Assembly | None:
     """Try to find an assembly by name from the standard library."""
-    from ..knowledge.mechanics import ROBOTIC_ARM_ASSEMBLY
-    candidates = [ROBOTIC_ARM_ASSEMBLY]
+    from ..knowledge.mechanics import ROBOTIC_ARM_ASSEMBLY, OPEN_MANIPULATOR_X_ASSEMBLY
+    candidates = [ROBOTIC_ARM_ASSEMBLY, OPEN_MANIPULATOR_X_ASSEMBLY]
     for a in candidates:
         if a.name == name or _sanitize_name(a.name) == _sanitize_name(name):
             return a

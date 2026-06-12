@@ -58,7 +58,7 @@ class TestDCMotorPIDSpec:
         assert spec.sample_period_ms == 10
 
     def test_ga25_spec(self):
-        spec = get_motor_pid_spec("GA25_370")
+        spec = get_motor_pid_spec("GA25_370_6V")
         assert spec is not None
         assert spec.gear_ratio == 30.0
         assert spec.encoder_ppr == 11

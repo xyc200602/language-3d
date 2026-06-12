@@ -347,6 +347,8 @@ def tolerance_analysis_tool_factory() -> tuple[Any, Any]:
     )
 
     class _ToleranceAnalysisTool:
+        name = "tolerance_analysis"
+
         def execute(self, *, dimensions: list | None = None,
                     allowed_total: float = 0.0, **kwargs) -> str:
             dims = dimensions or []

@@ -321,7 +321,13 @@ def _phase2_position_solving(
         if "rotation" in pdata:
             has_rotation += 1
 
-    _warn(checks, phase, "no_nan_positions", f"NaN/Inf positions: {nan_count}")
+    # NaN/Inf positions mean the solver failed catastrophically — output is garbage.
+    _check(
+        checks, phase, "no_nan_positions",
+        nan_count == 0,
+        f"NaN/Inf positions: {nan_count}",
+        critical=True,
+    )
     _warn(checks, phase, "rotation_data", f"Parts with rotation: {has_rotation}/{len(positions)}")
 
     # Outlier detection
@@ -465,6 +471,43 @@ def _phase5_content_validation(
                 report.get("total_parts", 0) == len(assembly.parts),
                 f"Report parts: {report.get('total_parts', 'N/A')} vs assembly: {len(assembly.parts)}",
             )
+            # VLM verification gate — stamped by generate_assembly_with_vlm_loop.
+            # PASSED = VLM visual check passed at least once;
+            # FAILED_MAX_ROUNDS = all rounds failed (package still exported for debugging);
+            # UNKNOWN = older export without status reporting.
+            verif_status = report.get("verification_status", "UNKNOWN")
+            _check(
+                checks, phase, "verification_status",
+                verif_status == "PASSED",
+                f"VLM verification status: {verif_status}",
+                critical=True,
+            )
+            # Kinematic analysis — closed-chain loop detection + differential
+            # drive inference. Must be present and converged (or have no loops).
+            kin = report.get("kinematic_analysis") or {}
+            if kin:
+                _check(
+                    checks, phase, "kinematic_analysis_present",
+                    True,
+                    f"Loops: {kin.get('loop_count', 0)}, "
+                    f"converged: {kin.get('converged')}",
+                )
+                if kin.get("loop_count", 0) > 0:
+                    _check(
+                        checks, phase, "kinematic_loops_converged",
+                        bool(kin.get("converged")),
+                        f"Closed-chain error: {kin.get('error_mm', '?')}mm "
+                        f"after {kin.get('iterations', '?')} iterations",
+                    )
+                if "differential_constraint" in kin:
+                    dc = kin["differential_constraint"]
+                    _check(
+                        checks, phase, "differential_constraint_detected",
+                        True,
+                        f"Differential pair: {dc.get('left_wheel')}/"
+                        f"{dc.get('right_wheel')} "
+                        f"track={dc.get('track_width_mm')}mm",
+                    )
         except json.JSONDecodeError:
             _warn(checks, phase, "report_json", "design_report.json is not valid JSON")
 

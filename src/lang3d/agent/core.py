@@ -10,12 +10,11 @@ logger = logging.getLogger(__name__)
 from ..config import Config
 from ..models.base import Message, ModelResponse, ToolCall
 from ..models.router import ModelRouter, TaskType
-from ..tools.base import ToolRegistry
+from ..tools.base import ToolError, ToolRegistry
 from ..tools.bash import register_bash_tools
 from ..tools.file_ops import register_file_tools
 from .context import truncate_messages, truncate_tool_result
-from .executor import Executor
-from .fix_strategy import classify_failure, check_convergence, extract_fix_commands, generate_fix_hint
+from .executor import Executor, execute_tool_calls
 from .planner import Planner
 from .reflector import Reflector
 from .state import AgentState, HierarchicalPlan, Plan, PlanStep, StepStatus
@@ -194,6 +193,10 @@ class Agent:
         self.tools = ToolRegistry()
         self.state = AgentState(workspace=self.config.agent.workspace)
 
+        # Enforce workspace boundary for file tools
+        from ..tools.file_ops import FileOps
+        FileOps.set_workspace(self.config.agent.workspace)
+
         # Initialize components
         self.planner = Planner(self.router)
         self.executor = Executor(self.router, self.tools)
@@ -201,313 +204,33 @@ class Agent:
         self.reflector = Reflector(self.router)
 
         # Register built-in tools
+        from ..tools.file_ops import register_file_tools
+        from ..tools.bash import register_bash_tools
         register_file_tools(self.tools)
         register_bash_tools(self.tools)
 
-        # Register optional tools
+        # Register all optional tools via auto-discovery
+        # Pre-build fc_menu dependencies (needs VLM + GUI tool instances)
+        fc_menu_deps = None
         try:
-            from ..tools.screen import register_screen_tools
-            from ..tools.vlm import register_vlm_tools
-            from ..tools.cad_utils import register_cad_utils
-            from ..tools.python_exec import register_python_tools
-            from ..tools.gui_action import register_gui_action_tools
-
-            register_screen_tools(self.tools, screenshot_dir=self.config.agent.screenshot_dir)
-            register_vlm_tools(self.tools, self.router, screenshot_dir=self.config.agent.screenshot_dir)
-            register_cad_utils(self.tools)
-            register_python_tools(self.tools)
-            register_gui_action_tools(self.tools, screenshot_dir=self.config.agent.screenshot_dir)
-
-            # Register FreeCAD menu tools (depend on VLM + GUI tools above)
-            try:
-                from ..tools.fc_menu import register_fc_menu_tools
-                from ..tools.vlm import VLMLocateTool
-                from ..tools.gui_action import (
-                    GUIClickTool, GUITypeTool, GUIPressKeyTool,
-                )
-
-                _locate = VLMLocateTool(self.router, screenshot_dir=self.config.agent.screenshot_dir)
-                _click = GUIClickTool()
-                _type = GUITypeTool()
-                _press = GUIPressKeyTool()
-                register_fc_menu_tools(
-                    self.tools,
-                    locate_tool=_locate,
-                    click_tool=_click,
-                    type_tool=_type,
-                    press_key_tool=_press,
-                )
-            except ImportError:
-                pass
-        except ImportError:
-            pass
-
-        # Register SolidWorks tools (may fail if SW not installed, that's OK)
-        try:
-            from ..tools.solidworks import register_solidworks_tools
-            register_solidworks_tools(self.tools)
+            from ..tools.vlm import VLMLocateTool
+            from ..tools.gui_action import GUIClickTool, GUITypeTool, GUIPressKeyTool
+            fc_menu_deps = {
+                "locate_tool": VLMLocateTool(self.router, screenshot_dir=self.config.agent.screenshot_dir),
+                "click_tool": GUIClickTool(),
+                "type_tool": GUITypeTool(),
+                "press_key_tool": GUIPressKeyTool(),
+            }
         except Exception:
             pass
 
-        # Register FreeCAD tools (may fail if FreeCAD not installed, that's OK)
-        try:
-            from ..tools.freecad import register_freecad_tools
-            register_freecad_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register simulation tools (FEA, tolerance, interference, motion)
-        try:
-            from ..tools.simulation import register_simulation_tools
-            register_simulation_tools(
-                self.tools,
-                router=self.router,
-                screenshot_dir=self.config.agent.screenshot_dir,
-            )
-        except Exception:
-            pass
-
-        # Register CFD tools (OpenFOAM)
-        try:
-            from ..tools.cfd import register_cfd_tools
-            register_cfd_tools(
-                self.tools,
-                router=self.router,
-                screenshot_dir=self.config.agent.screenshot_dir,
-            )
-        except Exception:
-            pass
-
-        # Register part library tools (standard parts catalog)
-        try:
-            from ..tools.part_library import register_part_library_tools
-            register_part_library_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register fastener model tools (ISO/DIN standard hardware)
-        try:
-            from ..tools.fastener_model import register_fastener_tools
-            register_fastener_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register assembly solver tools (constraint-based auto-positioning)
-        try:
-            from ..tools.assembly_solver import register_assembly_solver_tools
-            register_assembly_solver_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register mating constraint solver (Task 77)
-        try:
-            from ..tools.mating_constraint import constraint_solve_tool_factory
-            _def, _cls = constraint_solve_tool_factory()
-            self.tools.register(_cls())
-        except Exception:
-            pass
-
-        # Register assembly auto-matcher (Task 78)
-        try:
-            from ..tools.assembly_matcher import assembly_match_tool_factory
-            _def2, _cls2 = assembly_match_tool_factory()
-            self.tools.register(_cls2())
-        except Exception:
-            pass
-
-        # Register tolerance analysis tool
-        try:
-            from ..tools.tolerance_analysis import tolerance_analysis_tool_factory
-            _def3, _cls3 = tolerance_analysis_tool_factory()
-            self.tools.register(_cls3())
-        except Exception:
-            pass
-
-        # Register assembly VLM verification tools
-        try:
-            from ..tools.assembly_vlm import AssemblyVLMSolveTool
-            self.tools.register(AssemblyVLMSolveTool())
-        except Exception:
-            pass
-
-        # Register IK solver tools (inverse kinematics)
-        try:
-            from ..tools.ik_solver import register_ik_tools
-            register_ik_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register collision detection tools (capsule + GJK)
-        try:
-            from ..tools.collision import register_collision_tools
-            register_collision_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register mesh collision tools (trimesh + FCL)
-        try:
-            from ..tools.mesh_collision import register_mesh_collision_tools
-            register_mesh_collision_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register workspace analysis tools (Monte Carlo sampling)
-        try:
-            from ..tools.workspace import register_workspace_tools
-            register_workspace_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register slicing tools (PrusaSlicer/OrcaSlicer)
-        try:
-            from ..tools.slicing import register_slicing_tools
-            register_slicing_tools(
-                self.tools,
-                router=self.router,
-                screenshot_dir=self.config.agent.screenshot_dir,
-            )
-        except Exception:
-            pass
-
-        # Register actuator tools (servo/motor selection and analysis)
-        try:
-            from ..tools.actuator_tools import register_actuator_tools
-            register_actuator_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register power budget tools (system power analysis + battery selection)
-        try:
-            from ..tools.power_budget import register_power_budget_tools
-            register_power_budget_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register code generation tools (firmware, wiring, test sequence)
-        try:
-            from ..tools.code_gen import register_code_gen_tools
-            register_code_gen_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register BOM generation tools (bill of materials)
-        try:
-            from ..tools.bom_gen import register_bom_tools
-            register_bom_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register assembly documentation tools (assembly guide)
-        try:
-            from ..tools.assembly_doc import register_assembly_doc_tools
-            register_assembly_doc_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register print optimization tools (3D print settings)
-        try:
-            from ..tools.print_optimize import register_print_optimize_tools
-            register_print_optimize_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register quality control tools (inspection, test, maintenance)
-        try:
-            from ..tools.quality import register_quality_tools
-            register_quality_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register iteration design tools (change impact, redesign)
-        try:
-            from ..tools.iteration import register_iteration_tools
-            register_iteration_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register scheme comparison tools
-        try:
-            from ..tools.scheme_compare import register_scheme_tools
-            register_scheme_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register production readiness check tools
-        try:
-            from ..tools.production_check import register_production_tools
-            register_production_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register mass properties tools (part mass, COM, inertia, assembly)
-        try:
-            from ..tools.mass_properties import register_mass_properties_tools
-            register_mass_properties_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register mobile base design tools (chassis, drive kinematics)
-        try:
-            from ..tools.mobile_design import register_mobile_design_tools
-            register_mobile_design_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register drive train tools (motor → wheel assembly)
-        try:
-            from ..tools.drive_train import register_drive_train_tools
-            register_drive_train_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register stability analysis tools (COM, support polygon, Force-Angle)
-        try:
-            from ..tools.stability import register_stability_tools
-            register_stability_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register URDF export tools
-        try:
-            from ..tools.urdf_export import register_urdf_tools
-            register_urdf_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register cable routing tools
-        try:
-            from ..tools.cable_routing import register_cable_routing_tools
-            register_cable_routing_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register export package tools (engineering package export)
-        try:
-            from ..tools.export_package import register_export_package_tools
-            register_export_package_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register assembly generator tools (NL → assembly definition)
-        try:
-            from ..tools.assembly_generator import register_assembly_generator_tools
-            register_assembly_generator_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register assembly template tools (template search & instantiate)
-        try:
-            from ..tools.assembly_template_tool import register_assembly_template_tools
-            register_assembly_template_tools(self.tools)
-        except Exception:
-            pass
-
-        # Register part recommendation tools (accessory suggestions)
-        try:
-            from ..tools.part_recommend_tool import register_part_recommend_tools
-            register_part_recommend_tools(self.tools)
-        except Exception:
-            pass
+        from ..tools import discover_and_register
+        discover_and_register(
+            self.tools,
+            router=self.router,
+            screenshot_dir=self.config.agent.screenshot_dir,
+            fc_menu_deps=fc_menu_deps,
+        )
 
         # Callbacks for UI
         self._on_tool_call: Callable[[str, dict], None] | None = None
@@ -563,6 +286,53 @@ class Agent:
                     break
             add_vlm_result(name, prompt, result)
 
+    def _cleanup_failed_step_artifacts(self, step: PlanStep) -> None:
+        """Extract and clean up artifact files from a failed step."""
+        try:
+            from .sub_agent import cleanup_artifacts
+            # Collect artifact paths from recent tool history related to this step
+            artifacts: list[str] = []
+            for entry in self.state.tool_history:
+                result = entry.get("result", "")
+                args = entry.get("arguments", {})
+                for key in ("path", "file_path", "output_path"):
+                    if key in args:
+                        artifacts.append(args[key])
+                for line in result.split("\n"):
+                    line = line.strip()
+                    if line.endswith((".fcstd", ".step", ".stl", ".obj", ".py")):
+                        for ext in (".fcstd", ".step", ".stl", ".obj", ".py"):
+                            if ext in line:
+                                idx = line.find(ext)
+                                path = line[: idx + len(ext)].split()[-1]
+                                artifacts.append(path)
+                                break
+            if artifacts:
+                cleanup_artifacts(artifacts, str(self.state.workspace))
+        except Exception:
+            logger.warning("Failed to clean up artifacts for step %s", step.id, exc_info=True)
+
+    def _insert_step_into_hierarchical_plan(
+        self, failed_step: PlanStep, new_step: PlanStep
+    ) -> None:
+        """Insert a replacement step after the failed step in the correct subsystem."""
+        plan = self.state.plan
+        if not isinstance(plan, HierarchicalPlan):
+            raise TypeError(f"Expected HierarchicalPlan, got {type(plan).__name__}")
+        # Find which subsystem (or integration_steps) owns the failed step
+        for ss in plan.subsystems:
+            if failed_step in ss.steps:
+                idx = ss.steps.index(failed_step)
+                ss.steps.insert(idx + 1, new_step)
+                return
+        # Check integration_steps
+        if failed_step in plan.integration_steps:
+            idx = plan.integration_steps.index(failed_step)
+            plan.integration_steps.insert(idx + 1, new_step)
+            return
+        # Fallback: append to integration_steps
+        plan.integration_steps.append(new_step)
+
     def run_task(self, task: str, *, use_planning: bool = True, use_orchestration: bool = True) -> str:
         """Run a task, optionally with planning and multi-agent orchestration.
 
@@ -575,13 +345,21 @@ class Agent:
             if self._should_use_hierarchical(task):
                 plan = self.planner.create_hierarchical_plan(task)
                 self.state.plan = plan
-                # Flatten for backward-compatible execution
-                # (Phase 44 will add true phased execution via PhasedOrchestrator)
-                flat_plan = plan.to_flat_plan()
-                if use_orchestration and self._should_orchestrate(task, flat_plan):
-                    return self._run_with_orchestration(task, flat_plan)
+                if use_orchestration:
+                    from .orchestrator import PhasedOrchestrator
+                    phased = PhasedOrchestrator(
+                        config=self.config,
+                        router=self.router,
+                        tools=self.tools,
+                        planner=self.planner,
+                        hierarchical_plan=plan,
+                        workspace=self.config.agent.workspace,
+                        max_parallel=self.config.agent.orchestrator.max_parallel_agents,
+                        max_retries=self.config.agent.orchestrator.max_retries_per_step,
+                    )
+                    self._wire_callbacks(phased)
+                    return phased.run_task(task)
                 else:
-                    self.state.plan = flat_plan
                     return self._run_with_planning(task)
             else:
                 plan = self.planner.create_plan(task)
@@ -637,16 +415,19 @@ class Agent:
         )
 
         # Wire callbacks
+        self._wire_callbacks(orchestrator)
+
+        # The orchestrator can reuse the plan we already created
+        return orchestrator.run_task(task, plan)
+
+    def _wire_callbacks(self, orchestrator: Any) -> None:
+        """Wire UI callbacks onto an orchestrator or phased orchestrator."""
         if self._on_thinking:
             orchestrator.on_thinking(self._on_thinking)
         if self._on_tool_call:
             orchestrator.on_tool_call(self._on_tool_call)
         if self._on_tool_result:
             orchestrator.on_tool_result(self._on_tool_result)
-
-        # The orchestrator creates its own plan, so pass the task
-        # (the plan we already have was used for the should_orchestrate check)
-        return orchestrator.run_task(task)
 
     def _broadcast_plan(self) -> None:
         """Push the current plan (if any) to the web panel as JSON."""
@@ -774,6 +555,10 @@ class Agent:
             # Phase 4: Reflect and retry if failed
             if step.status == StepStatus.FAILED and step.attempts < max_retries and global_retry_count < max_global_retries:
                 global_retry_count += 1
+
+                # Clean up artifact files from the failed step
+                self._cleanup_failed_step_artifacts(step)
+
                 reflection = self.reflector.reflect(
                     self.state.plan, step, result, self.state.tool_history
                 )
@@ -788,12 +573,19 @@ class Agent:
                     self.state.plan, step, result, reflection
                 )
                 if new_step:
-                    # Insert after current step
-                    idx = self.state.plan.steps.index(step)
-                    self.state.plan.steps.insert(idx + 1, new_step)
+                    # Mark failed step as SKIPPED before inserting replacement
+                    step.status = StepStatus.SKIPPED
+                    # Insert after current step in the actual plan structure
+                    if isinstance(self.state.plan, HierarchicalPlan):
+                        self._insert_step_into_hierarchical_plan(step, new_step)
+                    else:
+                        idx = self.state.plan.steps.index(step)
+                        self.state.plan.steps.insert(idx + 1, new_step)
                     if self._on_plan_update:
                         self._on_plan_update(self.state.plan)
             elif step.status == StepStatus.FAILED:
+                # Clean up artifact files from the failed step
+                self._cleanup_failed_step_artifacts(step)
                 if self._on_step_update:
                     self._on_step_update(step)
 
@@ -825,7 +617,7 @@ class Agent:
             pass
 
         for _ in range(self.config.agent.max_turns):
-            tools = self.tools.get_all_definitions()
+            tools = self.tools.get_direct_definitions(task)
             response = self.router.chat(
                 messages=messages,
                 tools=tools,
@@ -843,76 +635,20 @@ class Agent:
                     pass
                 return response.content
 
-            # Add assistant message with tool calls
-            messages.append(
-                Message(
-                    role="assistant",
-                    content=response.content,
-                    tool_calls=[
-                        {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
-                        for tc in response.tool_calls
-                    ],
-                )
+            # Execute tool calls via shared helper
+            verify_fail_count, fix_history = execute_tool_calls(
+                response.tool_calls,
+                tools=self.tools,
+                state=self.state,
+                messages=messages,
+                verify_fail_count=verify_fail_count,
+                fix_history=fix_history,
+                max_verify_retries=max_verify_retries,
+                on_tool_call=self._on_tool_call,
+                on_tool_result=self._on_tool_result,
+                on_thinking=self._on_thinking,
+                assistant_content=response.content,
             )
-
-            # Execute tool calls
-            for tc in response.tool_calls:
-                if self._on_tool_call:
-                    try:
-                        self._on_tool_call(tc.name, tc.arguments)
-                    except Exception:
-                        pass
-
-                result = self.tools.execute(tc.name, **tc.arguments)
-                self.state.add_tool_call(tc.name, tc.arguments, result)
-
-                # Truncate large tool results
-                result = truncate_tool_result(result)
-
-                if self._on_tool_result:
-                    try:
-                        self._on_tool_result(tc.name, result)
-                    except UnicodeEncodeError:
-                        # VLM may return Unicode chars (e.g. braille) that
-                        # can't be encoded in Windows GBK terminals
-                        try:
-                            self._on_tool_result(tc.name, result.encode("utf-8", errors="replace").decode("utf-8"))
-                        except Exception:
-                            pass
-                    except Exception:
-                        pass
-
-                messages.append(
-                    Message(role="tool", content=result, tool_call_id=tc.id)
-                )
-
-                # Smart auto-fix: classify failure and generate targeted hint
-                if tc.name == "cad_verify" and "MATCH: False" in result:
-                    verify_fail_count += 1
-                    if verify_fail_count <= max_verify_retries:
-                        expected = tc.arguments.get("expected", "")
-                        fix_ctx = classify_failure(result, expected)
-                        fix_commands = extract_fix_commands(result)
-
-                        # Check for convergence (stuck in loop)
-                        if check_convergence(fix_history, result):
-                            fix_hint = (
-                                "[系统提示] 检测到修复陷入循环（连续多次失败原因相似）。"
-                                "请尝试完全不同的建模方法，或删除当前模型从头开始重建。"
-                            )
-                        else:
-                            fix_ctx.fix_history = fix_history
-                            fix_hint = generate_fix_hint(fix_ctx, fix_commands=fix_commands)
-
-                        fix_history.append(result)
-                        messages.append(Message(role="user", content=fix_hint))
-                        if self._on_thinking:
-                            try:
-                                self._on_thinking(
-                                    f"智能修复：{fix_ctx.failure_type.value}，注入定向提示（第 {verify_fail_count} 次）"
-                                )
-                            except Exception:
-                                pass
 
             # Apply sliding window when messages grow too large
             if len(messages) > 12:
@@ -922,7 +658,7 @@ class Agent:
 
     def chat(self, message: str, history: list[Message] | None = None) -> ModelResponse:
         """Simple chat without tool use."""
-        messages = history or []
+        messages = list(history) if history else []
         messages.append(Message(role="user", content=message))
 
         response = self.router.chat(

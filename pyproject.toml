@@ -47,3 +47,8 @@ lang3d = "lang3d.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "e2e: end-to-end tests requiring API keys",
+]

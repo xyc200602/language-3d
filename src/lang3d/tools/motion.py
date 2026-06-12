@@ -23,31 +23,21 @@ from ..models.base import ToolDefinition
 from .base import Tool
 
 
+def _safe_name(name: str) -> str:
+    """Sanitize a name to prevent script injection in FreeCAD scripts."""
+    if not name:
+        return "Unnamed"
+    sanitized = re.sub(r"[^A-Za-z0-9_\-.]", "_", name)
+    if not sanitized or sanitized.startswith("_"):
+        sanitized = "obj_" + sanitized
+    return sanitized[:64]
+
+
 # ---------------------------------------------------------------------------
-# FreeCAD subprocess bridge (reuse simulation.py pattern)
+# FreeCAD subprocess bridge — reuse canonical implementation
 # ---------------------------------------------------------------------------
 
-def _find_freecad_python() -> str | None:
-    """Find FreeCAD's bundled Python executable."""
-    fc_path = os.environ.get("FREECAD_PATH")
-    if fc_path:
-        python = str(Path(fc_path) / "python.exe")
-        if Path(python).exists():
-            return python
-
-    common_paths = [
-        os.path.expanduser(r"~\AppData\Local\Programs\FreeCAD 1.1\bin"),
-        os.path.expanduser(r"~\AppData\Local\Programs\FreeCAD 1.0\bin"),
-        r"C:\Program Files\FreeCAD 1.1\bin",
-        r"C:\Program Files\FreeCAD 1.0\bin",
-        r"C:\Program Files\FreeCAD\bin",
-    ]
-    for p in common_paths:
-        python = str(Path(p) / "python.exe")
-        if Path(python).exists():
-            return python
-
-    return None
+from .freecad_common import _find_freecad_python
 
 
 def _run_freecad_script(script: str, timeout: int = 120) -> str:
@@ -163,31 +153,34 @@ def _build_range_check_script(
 ) -> str:
     """Build FreeCAD script for joint range scanning."""
     min_val, max_val = angle_range
+    doc_path_json = json.dumps(document_path)
+    jn_json = json.dumps(joint_name)
+    jt_json = json.dumps(joint_type)
     return f'''
 import FreeCAD
 import json
 import math
 
-doc = FreeCAD.openDocument(r"{document_path}")
+doc = FreeCAD.openDocument({doc_path_json})
 if not doc:
     raise RuntimeError("Failed to open document")
 
-obj = doc.getObject("{joint_name}")
+obj = doc.getObject({jn_json})
 if not obj:
     # Try by label
     for o in doc.Objects:
-        if o.Label == "{joint_name}":
+        if o.Label == {jn_json}:
             obj = o
             break
 
 if not obj:
-    print(json.dumps({{"error": "Object not found: {joint_name}"}}))
+    print(json.dumps({{"error": "Object not found: " + {jn_json}}}))
 else:
     positions = []
     step_size = ({max_val} - {min_val}) / max({steps} - 1, 1)
     # Determine rotation axis based on joint type
-    name_lower = "{joint_name}".lower()
-    jtype = "{joint_type}".lower()
+    name_lower = {jn_json}.lower()
+    jtype = {jt_json}.lower()
     import FreeCAD as FC
     if jtype == "prismatic":
         # Linear joint: translate along axis
@@ -239,12 +232,13 @@ def _build_trajectory_script(
     """Build FreeCAD script for trajectory interpolation."""
     start_json = json.dumps(start_angles)
     end_json = json.dumps(end_angles)
+    doc_path_json = json.dumps(document_path)
     return f'''
 import FreeCAD
 import json
 import math
 
-doc = FreeCAD.openDocument(r"{document_path}")
+doc = FreeCAD.openDocument({doc_path_json})
 if not doc:
     raise RuntimeError("Failed to open document")
 
@@ -410,9 +404,10 @@ class MotionRangeTool(Tool):
         if not fc_python:
             return "Error: FreeCAD not found. Install with: winget install FreeCAD"
 
+        safe_joint_name = _safe_name(joint_name)
         script = _build_range_check_script(
             document_path=document_path,
-            joint_name=joint_name,
+            joint_name=safe_joint_name,
             joint_type=joint_type,
             angle_range=angle_range,
             steps=steps,

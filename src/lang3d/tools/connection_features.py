@@ -342,10 +342,10 @@ class ConnectionFeatureEngine:
             positions = self._auto_layout_bolts(count, d, anchor, hole_d)
 
         # Generate clearance holes (through holes)
-        for pos, dia in positions:
+        for i, (pos, dia) in enumerate(positions):
             r = dia / 2
             # Through hole cylinder
-            hole_name = f"{part.name}_bolt_hole"
+            hole_name = f"{part.name}_bolt_hole_{i}"
             ops.append({
                 "type": "make_cylinder",
                 "radius": r,
@@ -361,14 +361,24 @@ class ConnectionFeatureEngine:
             })
 
             # Counterbore for socket head cap screw
-            cbore_name = f"{part.name}_cbore"
+            cbore_name = f"{part.name}_cbore_{i}"
             ops.append({
                 "type": "make_cylinder",
                 "radius": head_d / 2,
                 "height": head_h,
                 "name": cbore_name,
             })
-            cbore_x, cbore_y, cbore_z = self._position_on_face(pos, anchor, d, thickness)
+            # Offset counterbore inward from face surface by head_h/2
+            # so it sits at the bolt entry, recessing into the material.
+            _inward = {
+                "top": (0, 0, -1), "bottom": (0, 0, 1),
+                "front": (0, 1, 0), "back": (0, -1, 0),
+                "left": (1, 0, 0), "right": (-1, 0, 0),
+            }
+            nx, ny, nz = _inward.get(anchor, (0, 0, -1))
+            cbore_x = x + nx * head_h / 2
+            cbore_y = y + ny * head_h / 2
+            cbore_z = (z - 2) + nz * head_h / 2
             ops.append({
                 "type": "move",
                 "object": cbore_name,
@@ -839,9 +849,9 @@ class ConnectionFeatureEngine:
         else:
             positions = self._auto_layout_bolts(4, d, anchor, tap_d)
 
-        for pos, dia in positions:
+        for i, (pos, dia) in enumerate(positions):
             r = tap_d / 2
-            hole_name = f"{part.name}_tap_hole"
+            hole_name = f"{part.name}_tap_hole_{i}"
             ops.append({
                 "type": "make_cylinder",
                 "radius": r,
@@ -910,9 +920,9 @@ class ConnectionFeatureEngine:
         else:
             positions = self._auto_layout_bolts(4, d, anchor, hole_nominal)
 
-        for pos, dia in positions:
+        for i, (pos, dia) in enumerate(positions):
             # Through hole
-            hole_name = f"{part.name}_bolt_hole"
+            hole_name = f"{part.name}_bolt_hole_{i}"
             ops.append({
                 "type": "make_cylinder",
                 "radius": hole_r,
@@ -927,7 +937,7 @@ class ConnectionFeatureEngine:
             })
 
             # Nut pocket (hex approximation on opposite face)
-            pocket_name = f"{part.name}_nut_pocket"
+            pocket_name = f"{part.name}_nut_pocket_{i}"
             ops.append({
                 "type": "make_cylinder",
                 "radius": pocket_r,
@@ -984,9 +994,9 @@ class ConnectionFeatureEngine:
         else:
             positions = self._auto_layout_bolts(4, d, anchor, install_d)
 
-        for pos, dia in positions:
+        for i, (pos, dia) in enumerate(positions):
             # Insert pocket (cylinder for brass insert)
-            pocket_name = f"{part.name}_insert_pocket"
+            pocket_name = f"{part.name}_insert_pocket_{i}"
             ops.append({
                 "type": "make_cylinder",
                 "radius": install_d / 2,

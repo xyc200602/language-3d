@@ -1,7 +1,7 @@
 {
   "requirement": "设计一个 3 自由度桌面机械臂，工作半径 300mm，负载 200g，用 SG90 舵机",
   "all_passed": true,
-  "total_time_ms": 326.3,
+  "total_time_ms": 183.9,
   "stages": [
     {
       "name": "Assembly Definition",
@@ -17,7 +17,7 @@
     {
       "name": "Assembly Solving",
       "success": true,
-      "duration_ms": 0.3,
+      "duration_ms": 0.1,
       "details": {
         "parts_positioned": 8
       },
@@ -26,7 +26,7 @@
     {
       "name": "Inverse Kinematics",
       "success": true,
-      "duration_ms": 323.8,
+      "duration_ms": 183.0,
       "details": {
         "targets_tested": 4,
         "reachable": 4,
@@ -37,7 +37,7 @@
     {
       "name": "Actuator Selection",
       "success": true,
-      "duration_ms": 0.3,
+      "duration_ms": 0.2,
       "details": {
         "joints_analyzed": 4,
         "total_power_w": 16.444,
@@ -49,7 +49,7 @@
     {
       "name": "Firmware Generation",
       "success": true,
-      "duration_ms": 0.4,
+      "duration_ms": 0.2,
       "details": {
         "files_generated": 7,
         "files": [
@@ -67,7 +67,7 @@
     {
       "name": "Wiring Diagram",
       "success": true,
-      "duration_ms": 0.2,
+      "duration_ms": 0.0,
       "details": {
         "length_chars": 691
       },
@@ -76,7 +76,7 @@
     {
       "name": "Test Sequence",
       "success": true,
-      "duration_ms": 0.1,
+      "duration_ms": 0.0,
       "details": {
         "length_chars": 933
       },
@@ -85,7 +85,7 @@
     {
       "name": "BOM Generation",
       "success": true,
-      "duration_ms": 0.2,
+      "duration_ms": 0.0,
       "details": {
         "custom_parts": 8,
         "standard_parts": 4,
@@ -97,7 +97,7 @@
     {
       "name": "Assembly Guide",
       "success": true,
-      "duration_ms": 0.2,
+      "duration_ms": 0.1,
       "details": {
         "length_chars": 3588
       },
@@ -106,7 +106,7 @@
     {
       "name": "Print Optimization",
       "success": true,
-      "duration_ms": 0.4,
+      "duration_ms": 0.1,
       "details": {
         "parts_optimized": 8,
         "plates_needed": 2,
@@ -118,7 +118,7 @@
     {
       "name": "Quality Control",
       "success": true,
-      "duration_ms": 0.3,
+      "duration_ms": 0.1,
       "details": {
         "dimensions_to_inspect": 22,
         "critical_dimensions": 7,

@@ -12,6 +12,7 @@ Tools:
 from __future__ import annotations
 
 import json
+import logging
 import math
 from collections import deque
 from dataclasses import dataclass, replace
@@ -21,6 +22,8 @@ from typing import Any
 from ..knowledge.mechanics import Assembly, Joint, Part
 from ..models.base import ToolDefinition
 from .base import Tool
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Anchor direction vectors and offsets
@@ -83,6 +86,11 @@ def _half_extent(part: Part, anchor: str) -> float:
     for key in candidates:
         if key in dims:
             return dims[key] / 2.0
+    # Fallback: for front/back/left/right, use diameter/outer_diameter if present
+    if anchor in ("front", "back", "left", "right"):
+        for dkey in ("diameter", "outer_diameter"):
+            if dkey in dims:
+                return dims[dkey] / 2.0
     return 0.0
 
 
@@ -123,6 +131,53 @@ def _face_extent_for_part(part: Part, anchor: str) -> tuple[float, float]:
         d = dims["diameter"]
 
     return (w, d)
+
+
+def _max_dimension(part: Part) -> float:
+    """Return the largest dimension of a part."""
+    if not part.dimensions:
+        return 0.0
+    return max(part.dimensions.values())
+
+
+def _clamp_child_offset(
+    parent_pos: tuple[float, float, float],
+    child_pos: tuple[float, float, float],
+    parent_part: Part,
+    child_part: Part,
+    max_factor: float = 3.0,
+) -> tuple[float, float, float]:
+    """Clamp child-parent offset to a reasonable maximum.
+
+    If the offset exceeds ``max_factor`` times the sum of both parts'
+    largest dimensions, scale it back.  This prevents extreme positions
+    caused by incorrect LLM dimensions or explicit offsets.
+    """
+    dx = child_pos[0] - parent_pos[0]
+    dy = child_pos[1] - parent_pos[1]
+    dz = child_pos[2] - parent_pos[2]
+    dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+
+    max_offset = max_factor * (_max_dimension(parent_part) + _max_dimension(child_part))
+    if max_offset < 1.0:
+        max_offset = 500.0  # fallback for parts with no dimensions
+
+    if dist > max_offset and dist > 1e-6:
+        scale = max_offset / dist
+        logger.warning(
+            "Clamping extreme offset for '%s'→'%s': %.1fmm → %.1fmm "
+            "(max=%.1fmm = %.1f × (%.0f + %.0f))",
+            parent_part.name, child_part.name,
+            dist, max_offset, max_offset, max_factor,
+            _max_dimension(parent_part), _max_dimension(child_part),
+        )
+        return (
+            parent_pos[0] + dx * scale,
+            parent_pos[1] + dy * scale,
+            parent_pos[2] + dz * scale,
+        )
+
+    return child_pos
 
 
 def _compute_distribution_offset(
@@ -274,6 +329,10 @@ def _cylinder_base_orientation(axis: tuple[float, float, float]) -> list[list[fl
         # General: rotate Z to target via cross product
         z = (0, 0, 1)
         cross = (z[1]*az - z[2]*ay, z[2]*ax - z[0]*az, z[0]*ay - z[1]*ax)
+        # Normalize the cross product (rotation axis)
+        cross_norm = math.sqrt(sum(c**2 for c in cross))
+        if cross_norm > 1e-10:
+            cross = tuple(c / cross_norm for c in cross)
         dot = az  # z · axis_normalized
         return _rotation_matrix_axis_angle(cross, math.acos(max(-1, min(1, dot))))
 
@@ -550,6 +609,15 @@ class AssemblySolver:
         if joint_angles is None:
             joint_angles = dict(self.assembly.default_angles)
 
+        # Resolve mimic joints: if a joint mimics another, compute its angle
+        # from the mimicked joint's angle.  This ensures the solver places
+        # coupled parts (e.g. gripper fingers) at the correct position.
+        for j in self._joints:
+            if j.mimic_joint:
+                source_angle = joint_angles.get(j.mimic_joint, 0.0)
+                resolved = source_angle * j.mimic_multiplier + j.mimic_offset
+                joint_angles[j.child] = resolved
+
         # Build adjacency: parent -> list of (joint, child)
         children_of: dict[str, list[tuple[Joint, str]]] = {}
         parent_of: dict[str, list[tuple[Joint, str]]] = {}
@@ -824,13 +892,20 @@ class AssemblySolver:
             eccentric = getattr(joint, 'eccentric_offset', None) or (0, 0, 0)
             if any(e != 0 for e in eccentric):
                 # Translate to eccentric center, rotate, translate back
-                parent_anchor_global = _vec_add(parent_anchor_global, eccentric)
+                # eccentric is in local frame — transform to global first
+                eccentric_global = _mat_vec(parent_rot, eccentric)
+                parent_anchor_global = _vec_add(parent_anchor_global, eccentric_global)
 
             joint_rot = _rotation_matrix_axis_angle(rot_axis_global, angle_rad)
             child_rot = _mat_mul(joint_rot, _mat_mul(parent_rot, _mat_mul(align_rot, cylinder_orient)))
         elif joint.type == "prismatic":
-            # Translation along the anchor direction, alignment only
-            slide_dir = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
+            # Translation along the joint axis (e.g. axis="x" for gripper
+            # fingers that slide left/right).  Fall back to anchor direction
+            # for legacy assemblies without an explicit axis.
+            if joint.axis in _EXPLICIT_AXES:
+                slide_dir = _EXPLICIT_AXES[joint.axis]
+            else:
+                slide_dir = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
             slide_global = _mat_vec(parent_rot, slide_dir)
             offset = (slide_global[0] * angle_rad * 100,
                       slide_global[1] * angle_rad * 100,
@@ -857,6 +932,13 @@ class AssemblySolver:
         # Apply constraint refinements from connection_to_constraints()
         child_center = self._apply_constraint_refinement(
             joint, child_center, parent_rot,
+        )
+
+        # Sanity clamp: if the child is displaced too far from the parent,
+        # clamp to a reasonable maximum.  This prevents extreme positions
+        # caused by incorrect LLM dimensions or offsets (e.g. -1500mm).
+        child_center = _clamp_child_offset(
+            parent_pos, child_center, parent_part, child_part,
         )
 
         return child_center, child_rot
@@ -1053,6 +1135,48 @@ class ClosedChainSolver:
     def add_differential_constraint(self, constraint: DifferentialConstraint) -> None:
         self._diff_constraints.append(constraint)
 
+    def _compute_loop_error(
+        self,
+        placements: dict[str, dict],
+        loops: list[list[str]],
+        base_solver: "AssemblySolver",
+        angles: dict[str, float],
+    ) -> float:
+        """Compute total closure error (mm) for all loops."""
+        total_error = 0.0
+        for loop in loops:
+            if len(loop) < 2:
+                continue
+            loop_close_joints = [
+                j for j in self._joints
+                if (j.parent == loop[-1] and j.child == loop[0])
+                or (j.parent == loop[0] and j.child == loop[-1])
+            ]
+            if not loop_close_joints:
+                continue
+            joint = loop_close_joints[0]
+            parent_part = self._parts_by_name.get(joint.parent)
+            child_part = self._parts_by_name.get(joint.child)
+            if not parent_part or not child_part:
+                continue
+            parent_pos = tuple(placements.get(joint.parent, {}).get("position", [0, 0, 0]))
+            parent_rot_mat = _identity_matrix()
+            parent_placement = placements.get(joint.parent, {})
+            if "rotation" in parent_placement:
+                parent_rot_mat = _axis_angle_deg_to_rot_mat(parent_placement["rotation"])
+            expected_pos, _ = base_solver._compute_child_transform(
+                parent_part=parent_part,
+                child_part=child_part,
+                joint=joint,
+                parent_pos=parent_pos,
+                parent_rot=parent_rot_mat,
+                joint_angles=angles,
+            )
+            actual_pos = tuple(placements.get(joint.child, {}).get("position", [0, 0, 0]))
+            err = math.sqrt(sum((a - e) ** 2 for a, e in zip(actual_pos, expected_pos)))
+            total_error += err
+        return total_error
+
     def detect_loops(self) -> list[list[str]]:
         """Detect closed loops in the joint graph.
 
@@ -1141,59 +1265,20 @@ class ClosedChainSolver:
         converged = False
         iteration = 0
 
+        # Identify revolute joints for gradient computation
+        revolute_keys = [j.child for j in self._joints if j.type == "revolute"]
+        for key in revolute_keys:
+            if key not in angles:
+                angles[key] = 0.0
+
         for iteration in range(1, max_iterations + 1):
             placements = base_solver.solve(
                 joint_angles=angles,
                 base_position=base_position,
             )
 
-            # Check closure error for each loop
-            total_error = 0.0
-            for loop in loops:
-                if len(loop) < 2:
-                    continue
-                # The closure condition: the first and last parts in the loop
-                # should have positions that satisfy the loop closure.
-                first_pos = placements.get(loop[0], {}).get("position", [0, 0, 0])
-                last_pos = placements.get(loop[-1], {}).get("position", [0, 0, 0])
-
-                # Find the joint that closes the loop
-                loop_close_joints = [
-                    j for j in self._joints
-                    if (j.parent == loop[-1] and j.child == loop[0])
-                    or (j.parent == loop[0] and j.child == loop[-1])
-                ]
-
-                if not loop_close_joints:
-                    continue
-
-                joint = loop_close_joints[0]
-                parent_part = self._parts_by_name.get(joint.parent)
-                child_part = self._parts_by_name.get(joint.child)
-                if not parent_part or not child_part:
-                    continue
-
-                # Compute expected child position from parent
-                parent_pos = tuple(placements.get(joint.parent, {}).get("position", [0, 0, 0]))
-                parent_rot_mat = _identity_matrix()
-
-                # Try to reconstruct parent rotation from placement
-                parent_placement = placements.get(joint.parent, {})
-                if "rotation" in parent_placement:
-                    parent_rot_mat = _axis_angle_deg_to_rot_mat(parent_placement["rotation"])
-
-                expected_pos, _ = base_solver._compute_child_transform(
-                    parent_part=parent_part,
-                    child_part=child_part,
-                    joint=joint,
-                    parent_pos=parent_pos,
-                    parent_rot=parent_rot_mat,
-                    joint_angles=angles,
-                )
-
-                actual_pos = tuple(placements.get(joint.child, {}).get("position", [0, 0, 0]))
-                err = math.sqrt(sum((a - e) ** 2 for a, e in zip(actual_pos, expected_pos)))
-                total_error += err
+            total_error = self._compute_loop_error(
+                placements, loops, base_solver, angles)
 
             if total_error < best_error:
                 best_error = total_error
@@ -1202,16 +1287,23 @@ class ClosedChainSolver:
                 converged = True
                 break
 
-            # Newton-Raphson-like step: perturb joint angles
-            # Simple finite-difference Jacobian approximation
-            for j in self._joints:
-                if j.type != "revolute":
-                    continue
-                key = j.child
-                if key not in angles:
-                    angles[key] = 0.0
-                # Small perturbation to reduce error
-                angles[key] += (total_error * 0.1) / max(len(self._joints), 1)
+            # Finite-difference Jacobian: perturb each revolute joint
+            # independently to estimate gradient, then take a step.
+            delta = 0.1  # degrees perturbation
+            step_size = 0.5  # damping factor
+            for key in revolute_keys:
+                old_angle = angles[key]
+                angles[key] = old_angle + delta
+                perturbed = base_solver.solve(
+                    joint_angles=angles,
+                    base_position=base_position,
+                )
+                perturbed_error = self._compute_loop_error(
+                    perturbed, loops, base_solver, angles)
+                gradient = (perturbed_error - total_error) / delta
+                angles[key] = old_angle  # restore
+                if abs(gradient) > 1e-6:
+                    angles[key] = old_angle - step_size * total_error / gradient
 
         # Final solve with converged angles
         final_placements = base_solver.solve(
@@ -1446,8 +1538,34 @@ def _parse_assembly_dict(data: dict[str, Any]) -> Assembly:
         )
         for p in data.get("parts", [])
     ]
-    joints = [
-        Joint(
+    joints = []
+    for j in data.get("joints", []):
+        # Parse connection method if present
+        connection = None
+        cm_type = j.get("connection_method", "")
+        if cm_type:
+            cd = j.get("connection_detail", {}) or {}
+            from ..knowledge.mechanics import ConnectionMethod
+            connection = ConnectionMethod(
+                type=cm_type,
+                bolt_size=cd.get("bolt_size", "M3"),
+                bolt_count=cd.get("bolt_count", 0),
+                torque_nm=cd.get("torque_nm", 0.0),
+                interference_mm=cd.get("interference_mm", 0.0),
+                snap_count=cd.get("snap_count", 0),
+                snap_force_n=cd.get("snap_force_n", 0.0),
+                adhesive_type=cd.get("adhesive_type", ""),
+                bond_area_mm2=cd.get("bond_area_mm2", 0.0),
+                weld_type=cd.get("weld_type", ""),
+            )
+
+        # Parse attachment points
+        pa = j.get("parent_attachment")
+        ca = j.get("child_attachment")
+        pn = j.get("parent_normal")
+        cn = j.get("child_normal")
+
+        joints.append(Joint(
             type=j.get("type", "fixed"),
             parent=j["parent"],
             child=j["child"],
@@ -1456,14 +1574,25 @@ def _parse_assembly_dict(data: dict[str, Any]) -> Assembly:
             parent_anchor=j.get("parent_anchor", "top"),
             child_anchor=j.get("child_anchor", "bottom"),
             offset=tuple(j.get("offset", (0, 0, 0))),
-        )
-        for j in data.get("joints", [])
-    ]
+            axis=j.get("axis", "auto"),
+            no_distribute=j.get("no_distribute", False),
+            distribution_group=j.get("distribution_group", ""),
+            parent_attachment=tuple(pa) if pa else None,
+            child_attachment=tuple(ca) if ca else None,
+            parent_normal=tuple(pn) if pn else None,
+            child_normal=tuple(cn) if cn else None,
+            constraint_type=j.get("constraint_type", ""),
+            constraint_distance=j.get("constraint_distance", 0.0),
+            constraint_angle_deg=j.get("constraint_angle_deg", 0.0),
+            connection=connection,
+        ))
+
     return Assembly(
         name=data.get("name", "Custom Assembly"),
         parts=parts,
         joints=joints,
         description=data.get("description", ""),
+        default_angles=data.get("default_angles", {}),
     )
 
 

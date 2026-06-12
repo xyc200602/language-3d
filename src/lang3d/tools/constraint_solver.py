@@ -1,4 +1,14 @@
-"""Constraint-based assembly solver using SolveSpace (py_slvs).
+"""[DEPRECATED — DO NOT USE] Constraint-based assembly solver using SolveSpace (py_slvs).
+
+.. warning::
+    This module is **not imported** by the production pipeline. The active
+    solver is :mod:`lang3d.tools.assembly_solver`. This file is kept only for
+    its experimental prototype history and tests.
+
+    It also contains a known bug: the ``revolute`` branch uses
+    ``addSameOrientation`` which locks *all* rotational DOFs, making it
+    behave identically to ``fixed``. The comment "5 DOF removed, 1 rotation"
+    below is incorrect.
 
 This module implements a constraint solver that replaces the anchor-face BFS
 approach with proper geometric constraint solving. It uses the SolveSpace
@@ -84,7 +94,11 @@ def quaternion_to_axis_angle(w: float, x: float, y: float, z: float):
         return [0.0, 0.0, 1.0], 0.0
     w, x, y, z = w / mag, x / mag, y / mag, z / mag
 
-    angle_rad = 2 * math.acos(max(-1.0, min(1.0, abs(w))))
+    # Ensure w >= 0 (canonicalize quaternion hemisphere) to preserve sign
+    if w < 0:
+        w, x, y, z = -w, -x, -y, -z
+
+    angle_rad = 2 * math.acos(max(-1.0, min(1.0, w)))
     angle_deg = math.degrees(angle_rad)
 
     s = math.sin(angle_rad / 2)
@@ -103,10 +117,10 @@ def quaternion_to_axis_angle(w: float, x: float, y: float, z: float):
 ANCHOR_NORMALS = {
     "top":    (0, 0, 1),
     "bottom": (0, 0, -1),
-    "left":   (0, -1, 0),
-    "right":  (0, 1, 0),
-    "front":  (-1, 0, 0),
-    "back":   (1, 0, 0),
+    "left":   (-1, 0, 0),
+    "right":  (1, 0, 0),
+    "front":  (0, -1, 0),
+    "back":   (0, 1, 0),
 }
 
 
@@ -135,10 +149,10 @@ def _anchor_point(part: Part, anchor: str):
     normals = {
         "top":    (0, 0, dz),
         "bottom": (0, 0, -dz),
-        "left":   (0, -dy, 0),
-        "right":  (0, dy, 0),
-        "front":  (-dx, 0, 0),
-        "back":   (dx, 0, 0),
+        "left":   (-dx, 0, 0),
+        "right":  (dx, 0, 0),
+        "front":  (0, -dy, 0),
+        "back":   (0, dy, 0),
     }
     return normals.get(anchor, (0, 0, 0))
 
@@ -564,10 +578,10 @@ class ConstraintSolver:
         face_dims = {
             "top": (pdx * 2, pdy * 2),
             "bottom": (pdx * 2, pdy * 2),
-            "left": (pdx * 2, pdz * 2),
-            "right": (pdx * 2, pdz * 2),
-            "front": (pdy * 2, pdz * 2),
-            "back": (pdy * 2, pdz * 2),
+            "left": (pdy * 2, pdz * 2),
+            "right": (pdy * 2, pdz * 2),
+            "front": (pdx * 2, pdz * 2),
+            "back": (pdx * 2, pdz * 2),
         }
         face_w, face_d = face_dims.get(parent_anchor, (100, 100))
 
@@ -575,10 +589,10 @@ class ConstraintSolver:
         tangents = {
             "top": ((1, 0, 0), (0, 1, 0)),
             "bottom": ((1, 0, 0), (0, 1, 0)),
-            "left": ((1, 0, 0), (0, 0, 1)),
-            "right": ((1, 0, 0), (0, 0, 1)),
-            "front": ((0, 1, 0), (0, 0, 1)),
-            "back": ((0, 1, 0), (0, 0, 1)),
+            "left": ((0, 1, 0), (0, 0, 1)),
+            "right": ((0, 1, 0), (0, 0, 1)),
+            "front": ((1, 0, 0), (0, 0, 1)),
+            "back": ((1, 0, 0), (0, 0, 1)),
         }
         t1, t2 = tangents.get(parent_anchor, ((1, 0, 0), (0, 1, 0)))
 

@@ -144,6 +144,7 @@ class SubAgent:
         self.tools = tools
         self.workspace = workspace or "."
         self.max_turns = max_turns
+        self.step_id: str = ""
         self._state = AgentState(workspace=self.workspace)
 
         # Callbacks

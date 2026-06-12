@@ -183,7 +183,9 @@ class TaskDAG:
             node = self._nodes[node_id]
             for dep_id in node.dependencies:
                 if dep_id not in color:
-                    continue
+                    raise ValueError(
+                        f"DAG node '{node_id}' depends on unknown node '{dep_id}'"
+                    )
                 if color[dep_id] == GRAY:
                     return True  # Cycle detected
                 if color[dep_id] == WHITE and dfs(dep_id):
@@ -271,6 +273,9 @@ class TaskDAG:
                 role = "gui"
 
             dag.add_step(step, dependencies=deps, agent_role=role)
+
+        # Validate: detect cycles early
+        dag._detect_cycles()
 
         return dag
 

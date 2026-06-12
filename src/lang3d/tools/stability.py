@@ -274,8 +274,9 @@ def compute_zmp(
     # zmp_x = com_x - (h / g) * ax
     # zmp_y = com_y - (h / g) * ay
     g = gravity
-    zmp_x = com[0] - (h / 1000.0) * ax / g * 1000.0  # convert back to mm
-    zmp_y = com[1] - (h / 1000.0) * ay / g * 1000.0
+    # h in mm, ax/ay in m/s², g in m/s² → ax/g dimensionless → result in mm
+    zmp_x = com[0] - h * ax / g
+    zmp_y = com[1] - h * ay / g
 
     # Distance from COM projection to ZMP
     dx = zmp_x - com[0]

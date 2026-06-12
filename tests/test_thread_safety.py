@@ -55,16 +55,13 @@ class TestSubAgentStepRestore:
 
 
 class TestExecutorCounterReset:
-    """Verify verify_fail_count and fix_history are reset per step."""
+    """Verify verify_fail_count and fix_history use local variables (no stale state leak)."""
 
-    def test_counters_reset_on_new_step(self):
+    def test_counters_are_local_vars_not_instance(self):
         from lang3d.agent.executor import Executor
         from lang3d.agent.state import PlanStep, AgentState
 
         executor = Executor(router=MagicMock(), tool_registry=MagicMock())
-        # Simulate a previous step leaving stale state
-        executor._verify_fail_count = 5
-        executor._fix_history = ["old_history"]
 
         step = PlanStep(description="test step")
         state = AgentState()
@@ -78,8 +75,9 @@ class TestExecutorCounterReset:
 
             executor.execute_step(step, state)
 
-        assert executor._verify_fail_count == 0
-        assert executor._fix_history == []
+        # Counters should NOT exist as instance attributes at all
+        assert not hasattr(executor, "_verify_fail_count")
+        assert not hasattr(executor, "_fix_history")
 
 
 class TestOrchestratorResultDefault:
@@ -122,4 +120,5 @@ class TestWebCurrentTaskLock:
 
     def test_run_task_uses_state_lock(self):
         from lang3d.web.app import _state_lock
-        assert isinstance(_state_lock, type(threading.Lock()))
+        # RLock is used to prevent deadlock from nested lock acquisitions
+        assert isinstance(_state_lock, (type(threading.Lock()), type(threading.RLock())))

@@ -21,6 +21,8 @@ class AgentMessage:
 class MessageBus:
     """Simple publish-subscribe message bus for inter-agent communication."""
 
+    MAX_MESSAGES = 1000
+
     def __init__(self) -> None:
         self._messages: list[AgentMessage] = []
         self._subscribers: list[Callable[[AgentMessage], None]] = []
@@ -35,6 +37,8 @@ class MessageBus:
         """Publish a message and notify all subscribers."""
         with self._lock:
             self._messages.append(message)
+            if len(self._messages) > self.MAX_MESSAGES:
+                self._messages = self._messages[-self.MAX_MESSAGES:]
             subs = list(self._subscribers)
         for callback in subs:
             try:

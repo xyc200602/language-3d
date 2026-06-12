@@ -2,13 +2,53 @@
 
 from __future__ import annotations
 
-import glob as glob_module
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from ..models.base import ToolDefinition
 from .base import Tool
+
+logger = logging.getLogger(__name__)
+
+# --- Security: workspace boundary enforcement ---
+
+# Configurable workspace root. When set, all file operations are restricted
+# to paths within this directory tree. Set via FileOps.set_workspace().
+_workspace_root: Path | None = None
+
+
+class FileOps:
+    """Namespace for workspace boundary configuration."""
+
+    @staticmethod
+    def set_workspace(workspace: str | Path | None) -> None:
+        """Set the allowed workspace root for all file tools.
+
+        When set, reads/writes/searches outside this tree are rejected.
+        """
+        global _workspace_root
+        _workspace_root = Path(workspace).resolve() if workspace else None
+
+    @staticmethod
+    def get_workspace() -> Path | None:
+        return _workspace_root
+
+
+def _check_path_allowed(path: Path) -> str | None:
+    """Check if a resolved path is within the workspace boundary.
+
+    Returns an error string if blocked, None if allowed.
+    """
+    if _workspace_root is None:
+        return None  # No boundary configured
+    resolved = path.resolve()
+    try:
+        resolved.relative_to(_workspace_root)
+        return None  # Inside workspace
+    except ValueError:
+        return f"Error: Path escapes workspace boundary: {resolved} (workspace: {_workspace_root})"
 
 
 class FileReadTool(Tool):
@@ -41,7 +81,11 @@ class FileReadTool(Tool):
 
     def execute(self, *, path: str, offset: int = 0, limit: int = 2000, **kwargs: Any) -> str:
         try:
-            p = Path(path)
+            p = Path(path).resolve()
+            # Workspace boundary check
+            boundary_error = _check_path_allowed(p)
+            if boundary_error:
+                return boundary_error
             if not p.exists():
                 return f"Error: File not found: {path}"
             if p.is_dir():
@@ -68,14 +112,6 @@ class FileWriteTool(Tool):
     name = "file_write"
     description = "Write content to a file (creates parent directories if needed)"
 
-    # Workspace boundary — if set, writes are restricted to this directory tree.
-    _workspace: Path | None = None
-
-    @classmethod
-    def set_workspace(cls, workspace: str | Path | None) -> None:
-        """Set the allowed workspace root. Writes outside this tree are rejected."""
-        cls._workspace = Path(workspace).resolve() if workspace else None
-
     def get_definition(self) -> ToolDefinition:
         return ToolDefinition(
             name=self.name,
@@ -100,11 +136,13 @@ class FileWriteTool(Tool):
         try:
             p = Path(path).resolve()
             # Workspace boundary check
-            if self._workspace is not None:
-                try:
-                    p.relative_to(self._workspace)
-                except ValueError:
-                    return f"Error: Path escapes workspace boundary: {path}"
+            boundary_error = _check_path_allowed(p)
+            if boundary_error:
+                return boundary_error
+            # Block executable file writes
+            dangerous_exts = {".exe", ".dll", ".bat", ".cmd", ".ps1", ".vbs", ".scr", ".sh"}
+            if p.suffix.lower() in dangerous_exts:
+                return f"Error: Cannot write executable file: {p.suffix}"
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
             return f"Successfully wrote {len(content)} characters to {path}"
@@ -142,7 +180,11 @@ class FileEditTool(Tool):
 
     def execute(self, *, path: str, old_text: str, new_text: str, **kwargs: Any) -> str:
         try:
-            p = Path(path)
+            p = Path(path).resolve()
+            # Workspace boundary check
+            boundary_error = _check_path_allowed(p)
+            if boundary_error:
+                return boundary_error
             if not p.exists():
                 return f"Error: File not found: {path}"
 
@@ -196,7 +238,11 @@ class FileSearchTool(Tool):
             if len(pattern) > 500:
                 return "Error: Regex pattern too long (max 500 characters)"
 
-            search_path = Path(path)
+            search_path = Path(path).resolve()
+            # Workspace boundary check
+            boundary_error = _check_path_allowed(search_path)
+            if boundary_error:
+                return boundary_error
             if not search_path.exists():
                 return f"Error: Path not found: {path}"
 
@@ -250,7 +296,11 @@ class FileGlobTool(Tool):
 
     def execute(self, *, pattern: str, path: str, **kwargs: Any) -> str:
         try:
-            search_path = Path(path)
+            search_path = Path(path).resolve()
+            # Workspace boundary check
+            boundary_error = _check_path_allowed(search_path)
+            if boundary_error:
+                return boundary_error
             if not search_path.exists():
                 return f"Error: Path not found: {path}"
 
@@ -285,7 +335,11 @@ class ListDirTool(Tool):
 
     def execute(self, *, path: str, **kwargs: Any) -> str:
         try:
-            p = Path(path)
+            p = Path(path).resolve()
+            # Workspace boundary check
+            boundary_error = _check_path_allowed(p)
+            if boundary_error:
+                return boundary_error
             if not p.exists():
                 return f"Error: Path not found: {path}"
             if not p.is_dir():

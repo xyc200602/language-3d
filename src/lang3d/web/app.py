@@ -27,14 +27,11 @@ _API_KEY: str | None = os.environ.get("LANG3D_API_KEY")
 
 @app.middleware("http")
 async def api_key_middleware(request, call_next):
-    """Require API key for mutation endpoints when LANG3D_API_KEY is set."""
+    """Require API key for ALL endpoints when LANG3D_API_KEY is set."""
     if _API_KEY is None:
         return await call_next(request)
-    # Only enforce on mutation endpoints (POST/DELETE)
-    if request.method in ("GET", "HEAD", "OPTIONS"):
-        return await call_next(request)
-    # Allow WebSocket upgrades
-    if request.url.path.startswith("/ws"):
+    # Allow static files and index page without auth
+    if request.url.path in ("/", "/static", "/index.html"):
         return await call_next(request)
     key = request.headers.get("X-API-Key", "")
     if key != _API_KEY:
@@ -75,10 +72,31 @@ _task_history: list[dict[str, Any]] = []
 _current_task: dict[str, Any] | None = None
 
 # Lock for state mutations that involve compound read-modify-write
-_state_lock = threading.Lock()
+_state_lock = threading.RLock()
+
+# Simple rate limiter for /api/run-task
+_rate_limit_timestamps: list[float] = []
 
 # Previous snapshot used for delta WebSocket updates.
 _last_snapshot: dict[str, Any] | None = None
+
+# Captured event loop for cross-thread broadcast
+_event_loop: asyncio.AbstractEventLoop | None = None
+
+
+def set_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:
+    global _event_loop
+    _event_loop = loop
+
+
+@app.on_event("startup")
+async def _capture_event_loop():
+    set_event_loop(asyncio.get_running_loop())
+
+
+@app.on_event("shutdown")
+async def _release_event_loop():
+    set_event_loop(None)
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +233,8 @@ def update_sub_agent(agent_id: str, status: str, step: str = "") -> None:
 
 def update_dag(dag_data: dict[str, Any]) -> None:
     """Update the DAG visualization data."""
-    _agent_state["dag"] = dag_data
+    with _state_lock:
+        _agent_state["dag"] = dag_data
     broadcast_state()
 
 
@@ -336,13 +355,15 @@ async def broadcast_state_async() -> None:
 
 def broadcast_state() -> None:
     """Synchronous wrapper for broadcasting."""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
+    global _event_loop
+    if _event_loop is not None and _event_loop.is_running():
+        asyncio.run_coroutine_threadsafe(broadcast_state_async(), _event_loop)
+    else:
+        try:
+            loop = asyncio.get_running_loop()
             asyncio.ensure_future(broadcast_state_async())
-    except RuntimeError:
-        # No event loop — fall back to a new one (rare, e.g. tests)
-        pass
+        except RuntimeError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -458,7 +479,14 @@ async def get_file(path: str = Query(..., description="Path relative to workspac
 @app.post("/api/run-task")
 async def api_run_task(payload: dict[str, Any]) -> JSONResponse:
     """Submit a task to the registered agent (background execution)."""
-    global _task_thread
+    global _task_thread, _rate_limit_timestamps
+    # Rate limit: max 5 task submissions per 60 seconds
+    now = _time.time()
+    _rate_limit_timestamps = [t for t in _rate_limit_timestamps if now - t < 60]
+    if len(_rate_limit_timestamps) >= 5:
+        raise HTTPException(status_code=429, detail="Too many task submissions. Wait 60 seconds.")
+    _rate_limit_timestamps.append(now)
+
     if _agent_instance is None:
         raise HTTPException(status_code=503, detail="No agent registered. Start the CLI first.")
     if _task_thread is not None and _task_thread.is_alive():
@@ -598,15 +626,14 @@ async def api_convert_step(path: str = Query(...)) -> JSONResponse:
         except ValueError:
             pass
 
-    # Run FreeCAD conversion
+    # Run FreeCAD conversion — use json.dumps to prevent path injection
+    import json as _json
     script = (
-        "import sys, FreeCAD, Part, Mesh, MeshPart\n"
+        "import sys, json, FreeCAD, Part, Mesh, MeshPart\n"
         f"shape = Part.Shape()\n"
-        f"shape.read(r'{src}')\n"
-        # Use MeshPart.meshFromShape (more reliable than shape.tessellate)
+        f"shape.read({_json.dumps(str(src))})\n"
         f"mesh = MeshPart.meshFromShape(shape, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
-        # Write STL using Mesh.write (auto-detects extension)
-        f"mesh.write(r'{cache}')\n"
+        f"mesh.write({_json.dumps(str(cache))})\n"
         f"print('OK', mesh.CountPoints, mesh.CountFacets)\n"
     )
     import subprocess
@@ -664,9 +691,10 @@ async def api_convert_fcstd(path: str = Query(...)) -> JSONResponse:
     # FreeCAD script: open document, collect all visible shapes, merge, tessellate, write STL.
     # Use a temp log file to capture output for diagnostics.
     import tempfile
+    import json as _json2
     script = (
-        "import sys, FreeCAD, FreeCADGui, Part, Mesh, MeshPart\n"
-        f"doc = FreeCAD.openDocument(r'{src}')\n"
+        "import sys, json, FreeCAD, FreeCADGui, Part, Mesh, MeshPart\n"
+        f"doc = FreeCAD.openDocument({_json2.dumps(str(src))})\n"
         "shapes = []\n"
         "for obj in doc.Objects:\n"
         "    # Skip hidden / helper objects\n"
@@ -685,7 +713,7 @@ async def api_convert_fcstd(path: str = Query(...)) -> JSONResponse:
         "    sys.exit(1)\n"
         "compound = Part.makeCompound(shapes) if len(shapes) > 1 else shapes[0]\n"
         f"mesh = MeshPart.meshFromShape(compound, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
-        f"mesh.write(r'{cache}')\n"
+        f"mesh.write({_json2.dumps(str(cache))})\n"
         f"print('OK', mesh.CountPoints, mesh.CountFacets, 'shapes', len(shapes))\n"
     )
     with tempfile.NamedTemporaryFile(mode="w", suffix=".py", delete=False, encoding="utf-8") as tf:
@@ -745,7 +773,7 @@ def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str
         if src_ext == ".step" or src_ext == ".stp":
             script = (
                 "import sys, json, FreeCAD, Part, Mesh, MeshPart\n"
-                "_paths = json.loads(r'" + paths_json.replace("'", "\\'") + "')\n"
+                f"_paths = json.loads({paths_json})\n"
                 "shape = Part.Shape()\n"
                 "shape.read(_paths['src'])\n"
                 "mesh = MeshPart.meshFromShape(shape, LinearDeflection=0.5, AngularDeflection=0.523599)\n"
@@ -755,7 +783,7 @@ def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str
         elif src_ext == ".fcstd":
             script = (
                 "import sys, json, FreeCAD, Part, Mesh, MeshPart\n"
-                "_paths = json.loads(r'" + paths_json.replace("'", "\\'") + "')\n"
+                f"_paths = json.loads({paths_json})\n"
                 "doc = FreeCAD.openDocument(_paths['src'])\n"
                 "shapes = []\n"
                 "for obj in doc.Objects:\n"
@@ -1712,6 +1740,14 @@ async def api_design_power_budget() -> JSONResponse:
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket) -> None:
     global _last_snapshot
+    # WebSocket authentication: require api_key query param when API key is configured.
+    # Browsers cannot set custom headers on WebSocket handshakes, so query param is
+    # the standard mechanism. Note: this may leak into server/proxy access logs.
+    if _API_KEY is not None:
+        ws_key = websocket.query_params.get("api_key", "")
+        if ws_key != _API_KEY:
+            await websocket.close(code=1008, reason="Invalid or missing API key")
+            return
     await websocket.accept()
     _websockets.append(websocket)
     try:

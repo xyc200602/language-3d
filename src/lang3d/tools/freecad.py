@@ -35,11 +35,11 @@ import re as _re
 def _safe_name(name: str) -> str:
     """Sanitize a FreeCAD object/document name to prevent script injection.
 
-    Only allows alphanumeric, underscore, hyphen, dot, and CJK characters.
+    Only allows alphanumeric, underscore, hyphen, and CJK characters.
     """
     if not name:
         return "Unnamed"
-    sanitized = _re.sub(r"[^A-Za-z0-9_\-.]", "_", name)
+    sanitized = _re.sub(r"[^A-Za-z0-9_\-]", "_", name)
     if not sanitized or sanitized.startswith("_"):
         sanitized = "obj_" + sanitized
     return sanitized[:64]
@@ -49,12 +49,12 @@ def _safe_path(path: str) -> str:
     """Sanitize a file path to prevent script injection in f-string contexts.
 
     Rejects paths containing quotes or other dangerous characters.
-    NOTE: The returned path is used inside r"..." raw strings in generated
-    scripts, so backslashes must NOT be escaped (r-strings treat them literally).
+    NOTE: Paths should be passed via json.dumps() in generated scripts
+    rather than f-string interpolation to prevent injection.
     """
     p = str(path)
     # Block characters that could escape string contexts in generated scripts
-    if any(c in p for c in ('"', "'", "\n", "\r", ";", "`", "$")):
+    if any(c in p for c in ('"', "'", "\n", "\r", ";", "`", "$", "\x00")):
         raise ValueError(f"Path contains dangerous characters: {path!r}")
     return p
 
@@ -63,13 +63,24 @@ def _validate_raw_script(script: str) -> None:
     """Validate a raw_script operation to block dangerous FreeCAD API calls."""
     blocked_patterns = [
         r"\bos\.system\b",
+        r"\bos\.popen\b",
         r"\bsubprocess\b",
         r"\bexec\s*\(",
         r"\beval\s*\(",
         r"\b__import__\b",
-        r"\bopen\s*\([^)]*['\"]w",
+        r"\bopen\s*\(",
         r"\bshutil\b",
         r"\bctypes\b",
+        r"\bimportlib\b",
+        r"\bPath\s*\([^)]*\)\s*\.write_text\b",
+        r"\bPath\s*\([^)]*\)\s*\.write_bytes\b",
+        r"\b__builtins__\b",
+        r"\bcompile\s*\(",
+        r"\bglobals\s*\(\s*\)\s*\[",
+        r"\bgetattr\s*\([^)]*__builtins__",
+        r"\bsocket\b",
+        r"\bhttp\b",
+        r"\burllib\b",
     ]
     for pat in blocked_patterns:
         if _re.search(pat, script):
@@ -184,7 +195,9 @@ def _build_script(operations: list[dict]) -> str:
             lines.append(f'doc = FreeCAD.newDocument("{name}")')
 
         elif op_type == "make_box":
-            l, w, h = float(op["length"]), float(op["width"]), float(op["height"])
+            l = float(op.get("length", 0))
+            w = float(op.get("width", 0))
+            h = float(op.get("height", 0))
             name = _safe_name(op.get("name", "Box"))
             lines.append(f'box = Part.makeBox({l}, {w}, {h})')
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
@@ -192,7 +205,8 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "make_cylinder":
-            r, h = float(op["radius"]), float(op["height"])
+            r = float(op.get("radius", 0))
+            h = float(op.get("height", 0))
             name = _safe_name(op.get("name", "Cylinder"))
             lines.append(f'cyl = Part.makeCylinder({r}, {h})')
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
@@ -218,12 +232,12 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "boolean":
-            operation = op["operation"]  # union, cut, intersection
-            obj1_name = _safe_name(op["object1"])
-            obj2_name = _safe_name(op["object2"])
+            operation = op.get("operation", "union")  # union, cut, intersection
+            obj1_name = _safe_name(op.get("object1", "Box"))
+            obj2_name = _safe_name(op.get("object2", "Box"))
             result_name = _safe_name(op.get("result_name", "Result"))
             bool_map = {"union": "fuse", "cut": "cut", "intersection": "common"}
-            method = bool_map[operation]
+            method = bool_map.get(operation, "fuse")
             lines.append(f'o1 = doc.getObject("{obj1_name}")')
             lines.append(f'o2 = doc.getObject("{obj2_name}")')
             lines.append(f'result_shape = o1.Shape.{method}(o2.Shape)')
@@ -232,8 +246,10 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("doc.recompute()")
 
         elif op_type == "move":
-            obj_name = _safe_name(op["object"])
-            dx, dy, dz = float(op["dx"]), float(op["dy"]), float(op["dz"])
+            obj_name = _safe_name(op.get("object", "Box"))
+            dx = float(op.get("dx", 0))
+            dy = float(op.get("dy", 0))
+            dz = float(op.get("dz", 0))
             lines.append(f'_obj = doc.getObject("{obj_name}")')
             lines.append("_moved = _obj.Shape.copy()")
             lines.append(f"_moved.translate(FreeCAD.Vector({dx}, {dy}, {dz}))")
@@ -304,7 +320,7 @@ def _build_script(operations: list[dict]) -> str:
             lines.append("    except Exception:")
             lines.append("        pass")
             lines.append("doc.recompute()")
-            lines.append(f'doc.saveAs(r"{path}")')
+            lines.append(f'doc.saveAs({json.dumps(str(path))})')
 
         elif op_type == "export_stl":
             path = _safe_path(op["path"])
@@ -315,9 +331,9 @@ def _build_script(operations: list[dict]) -> str:
                 lines.append(f'_export_list = [doc.getObject("{obj_name}")]')
             else:
                 lines.append("_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]")
-            lines.append(f'Mesh.export(_export_list, r"{path}")')
+            lines.append(f'Mesh.export(_export_list, {json.dumps(str(path))})')
             lines.append("import os")
-            lines.append(f'_stl_path = r"{path}"')
+            lines.append(f'_stl_path = {json.dumps(str(path))}')
             lines.append('print(f"STL exported: {os.path.getsize(_stl_path):,} bytes")')
 
         elif op_type == "export_step":
@@ -325,7 +341,7 @@ def _build_script(operations: list[dict]) -> str:
             obj_name = _safe_name(op["object"]) if op.get("object") else ""
             if obj_name:
                 lines.append(f'_obj = doc.getObject("{obj_name}")')
-                lines.append(f'_obj.Shape.exportStep(r"{path}")')
+                lines.append(f'_obj.Shape.exportStep({json.dumps(str(path))})')
             else:
                 lines.append("_shapes = [o.Shape for o in doc.Objects if hasattr(o, 'Shape')]")
                 lines.append("if not _shapes:")
@@ -333,7 +349,7 @@ def _build_script(operations: list[dict]) -> str:
                 lines.append("_compound = _shapes[0]")
                 lines.append("for s in _shapes[1:]:")
                 lines.append("    _compound = _compound.fuse(s)")
-                lines.append(f'_compound.exportStep(r"{path}")')
+                lines.append(f'_compound.exportStep({json.dumps(str(path))})')
 
         elif op_type == "status":
             lines.append("if FreeCAD.ActiveDocument:")
@@ -373,7 +389,7 @@ def _build_script(operations: list[dict]) -> str:
             min_volume = float(checks.get("min_volume", 0))
             max_volume = float(checks.get("max_volume", float("inf")))
             if path:
-                lines.append(f'_vc_doc = FreeCAD.openDocument(r"{path}")')
+                lines.append(f'_vc_doc = FreeCAD.openDocument({json.dumps(str(path))})')
                 lines.append("if not _vc_doc:")
                 lines.append('    print("VOLUME_CHECK:error: Failed to open document")')
                 lines.append("else:")
@@ -424,9 +440,9 @@ def _build_script(operations: list[dict]) -> str:
                 lines.append("FreeCAD.closeDocument(_vc_doc.Name)")
 
         elif op_type == "rotate":
-            obj_name = _safe_name(op["object"])
-            axis = op["axis"]  # x, y, z
-            angle = float(op["angle"])
+            obj_name = _safe_name(op.get("object", "Box"))
+            axis = op.get("axis", "z")  # x, y, z
+            angle = float(op.get("angle", 0))
             lines.append("import math")
             lines.append(f'_obj = doc.getObject("{obj_name}")')
             lines.append(f'_axis_map = {{"x": FreeCAD.Vector(1,0,0), "y": FreeCAD.Vector(0,1,0), "z": FreeCAD.Vector(0,0,1)}}')
@@ -448,7 +464,7 @@ def _build_script(operations: list[dict]) -> str:
             density = float(op.get("density", 1240))  # kg/m³, default PLA
             path = _safe_path(op.get("path", "")) if op.get("path", "") else ""
             if path:
-                lines.append(f'_cm_doc = FreeCAD.openDocument(r"{path}")')
+                lines.append(f'_cm_doc = FreeCAD.openDocument({json.dumps(str(path))})')
             else:
                 lines.append("_cm_doc = doc")
             lines.append("_cm_results = []")
@@ -524,6 +540,7 @@ def _build_script(operations: list[dict]) -> str:
             else:
                 # custom: user provides raw script to create _prof wire
                 custom_script = op.get("custom_profile_script", "_prof = Part.Wire(Part.makeCircle(2.0))")
+                _validate_raw_script(custom_script)
                 lines.append(custom_script)
             # Build path wire
             if path_type == "helix":
@@ -541,6 +558,7 @@ def _build_script(operations: list[dict]) -> str:
                 lines.append(f"_path = Part.Wire(Part.makeLine(FreeCAD.Vector(0,0,0), FreeCAD.Vector({dx * line_length}, {dy * line_length}, {dz * line_length})))")
             else:
                 custom_path = op.get("custom_path_script", "_path = Part.Wire(Part.makeLine(FreeCAD.Vector(0,0,0), FreeCAD.Vector(30,0,0)))")
+                _validate_raw_script(custom_path)
                 lines.append(custom_path)
             # Perform sweep
             lines.append(f"_sweep = _prof.makePipeShell([_path], {solid}, {frenet})")
@@ -980,8 +998,8 @@ def _build_batch_script(all_ops: list[list[dict]]) -> str:
                 path = _safe_path(op["path"])
                 name = _safe_name(op.get("name", ""))
                 part_lines.append(f"_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]")
-                part_lines.append(f'Mesh.export(_export_list, r"{path}")')
-                part_lines.append(f'print(f"Exported: {path}")')
+                part_lines.append(f'Mesh.export(_export_list, {json.dumps(str(path))})')
+                part_lines.append(f'print({json.dumps(f"Exported: {path}")})')
 
             # For other op types, fall back to _build_script
             else:
@@ -1076,7 +1094,9 @@ def build_assembly_script(
             l = dims.get("length", 10)
             w = dims.get("width", 10)
             h = dims.get("height", 10)
-            lines.append(f"_shape = Part.makeBox({l}, {w}, {h})")
+            # Solver convention: X=width (left/right), Y=length (front/back), Z=height.
+            # FreeCAD makeBox(X, Y, Z), so pass (width, length, height) to match solver.
+            lines.append(f"_shape = Part.makeBox({w}, {l}, {h})")
         else:
             r = dims.get("diameter", 10) / 2
             h = dims.get("height", 10)
@@ -1101,10 +1121,9 @@ def build_assembly_script(
 
     # Save and export
     if output_path:
-        out = output_path.replace("\\", "\\\\")
-        lines.append(f'doc.saveAs(r"{out}.FCStd")')
+        lines.append(f'doc.saveAs({json.dumps(str(output_path) + ".FCStd")})')
         lines.append(f'_all_objs = [o for o in doc.Objects if hasattr(o, "Shape")]')
-        lines.append(f'Mesh.export(_all_objs, r"{out}.stl")')
+        lines.append(f'Mesh.export(_all_objs, {json.dumps(str(output_path) + ".stl")})')
         lines.append("print(f'Assembly saved and exported')")
 
     lines.append("print(f'Assembly: {len(doc.Objects)} objects created')")
@@ -1840,7 +1859,7 @@ class FCOpenGUITool(Tool):
                 "except Exception:",
                 "    pass",
                 "",
-                f'doc = FreeCAD.openDocument(r"{file_path}")',
+                f'doc = FreeCAD.openDocument({json.dumps(str(file_path))})',
                 "time.sleep(0.5)",
                 "",
             ]

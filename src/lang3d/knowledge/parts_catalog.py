@@ -277,7 +277,7 @@ _HEX_NUT_SCRIPT = """\
 import FreeCAD, Part, math
 doc = FreeCAD.newDocument("hex_nut")
 # Hex body
-r = {nominal_diameter} * 1.1
+r = {nominal_diameter} * 0.92
 h = {nominal_diameter} * 0.8
 hex_body = Part.makePolygon([
     FreeCAD.Vector(r, 0, 0),
@@ -362,7 +362,7 @@ thread = Part.makeCylinder({thread_diameter}/2, {length})
 thread_obj = doc.addObject("Part::Feature", "Thread")
 thread_obj.Shape = thread
 # Hex head
-r = {thread_diameter} * 1.0
+r = {thread_diameter} * 0.95
 head_h = {thread_diameter} * 0.7
 hex_body = Part.makePolygon([
     FreeCAD.Vector(r, 0, 0),
@@ -1729,7 +1729,7 @@ shaft.translate(FreeCAD.Vector({body_size}/2, {body_size}/2, {body_length}))
 shaft_obj = doc.addObject("Part::Feature", "Shaft")
 shaft_obj.Shape = shaft
 # Mounting holes (4 corners)
-for dx, dy in [(7.5, 7.5), ({body_size}-7.5, 7.5), (7.5, {body_size}-7.5), ({body_size}-7.5, {body_size}-7.5)]:
+for dx, dy in [(4.63, 4.63), ({body_size}-4.63, 4.63), (4.63, {body_size}-4.63), ({body_size}-4.63, {body_size}-4.63)]:
     hole = Part.makeCylinder(2.0, 3)
     hole.translate(FreeCAD.Vector(dx, dy, {body_length}))
     body = body.cut(hole)
@@ -3424,6 +3424,7 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="linear",
         description="直线光轴，配合直线轴承使用，用于直线运动系统",
         tags=["光轴", "直线", "linear shaft", "guide rod", "bearing shaft"],
+        part_class="structural", scalable=True,
         parameters=[
             ParamDef("diameter", "直径", "mm", 8, 3, 50, 0.5),
             ParamDef("length", "长度", "mm", 300, 10, 2000, 1),
@@ -3446,6 +3447,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="coupling",
         description="弹性联轴器，连接不同直径的轴，补偿对中偏差",
         tags=["联轴器", "弹性", "coupling", "flexible", "shaft connector"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Flexible-Coupling",
         parameters=[
             ParamDef("bore1_diameter", "孔1直径", "mm", 5, 2, 30, 0.5),
             ParamDef("bore2_diameter", "孔2直径", "mm", 8, 2, 30, 0.5),
@@ -3468,6 +3471,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="spur",
         description="直齿轮，用于平行轴间的动力传递",
         tags=["齿轮", "直齿轮", "spur gear", "gear", "transmission"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Spur-Gear",
         parameters=[
             ParamDef("teeth", "齿数", "", 20, 8, 200, 1),
             ParamDef("module", "模数", "mm", 1.0, 0.3, 10, 0.1),
@@ -3544,6 +3549,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="wheel",
         description="实心圆柱轮，适合小型差速/全向底盘",
         tags=["轮子", "实心轮", "wheel", "differential", "mobile base"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Generic-Wheel",
         parameters=[
             ParamDef("outer_diameter", "外径", default=65.0, min_value=10, max_value=300),
             ParamDef("width", "宽度", default=26.0, min_value=5, max_value=100),
@@ -3564,6 +3571,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="wheel",
         description="麦克纳姆轮，支持全向移动（前后/左右/原地旋转）",
         tags=["麦克纳姆", "全向轮", "mecanum", "omnidirectional"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Generic-Mecanum",
         parameters=[
             ParamDef("diameter", "直径", default=60.0, min_value=30, max_value=200),
             ParamDef("width", "宽度", default=30.0, min_value=10, max_value=80),
@@ -3586,6 +3595,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="hub",
         description="电机轴到轮子的适配器，含紧定螺钉孔",
         tags=["轮毂", "适配器", "hub", "adapter", "coupling"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Generic-Hub",
         parameters=[
             ParamDef("outer_diameter", "外径", default=20.0, min_value=8, max_value=60),
             ParamDef("height", "高度", default=15.0, min_value=5, max_value=50),
@@ -3623,6 +3634,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="standoff",
         description="六角铜柱/尼龙柱，PCB/层板间隔固定",
         tags=["铜柱", "六角柱", "standoff", "spacer", "PCB"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="Hex-Standoff",
         parameters=[
             ParamDef("outer_diameter", "外径", default=5.0, min_value=2, max_value=15),
             ParamDef("length", "长度", default=25.0, min_value=5, max_value=80),
@@ -3645,6 +3658,8 @@ PART_CATALOG: dict[str, PartTemplate] = {
         subcategory="battery_holder",
         description="18650 锂电池槽座，可定制 cell 数量",
         tags=["电池盒", "18650", "battery", "holder"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="18650-Holder",
         parameters=[
             ParamDef("length", "长度", default=75.0, min_value=30, max_value=200),
             ParamDef("width", "宽度", default=55.0, min_value=15, max_value=100),
@@ -5878,6 +5893,7 @@ doc.recompute()
             {"diameter": 6.0, "length": 40.0, "chamfer": 0.5},
             {"diameter": 8.0, "length": 30.0, "chamfer": 0.8},
             {"diameter": 8.0, "length": 40.0, "chamfer": 0.8},
+            {"diameter": 10.0, "length": 40.0, "chamfer": 1.0},
         ],
         notes="ISO 8734 m6精度定位销。一端间隙配合(H7)，另一端过盈配合。"
               "安装时轻敲压入过盈端。定位精度可达0.01mm。",

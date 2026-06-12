@@ -9,6 +9,11 @@ from unittest.mock import MagicMock
 import pytest
 
 
+def pytest_configure(config: pytest.Config) -> None:
+    """Register custom markers."""
+    config.addinivalue_line("markers", "e2e: end-to-end tests requiring API keys")
+
+
 @pytest.fixture
 def tmp_workspace():
     """Provide a temporary workspace directory."""

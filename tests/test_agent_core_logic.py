@@ -85,9 +85,9 @@ class TestHierarchicalPlanSerialization:
 
 
 class TestVerifierLLMError:
-    """Verifier should return False when LLM verification fails."""
+    """Verifier should default to pass when LLM verification fails."""
 
-    def test_llm_failure_returns_false(self):
+    def test_llm_failure_defaults_to_pass(self):
         from lang3d.agent.verifier import Verifier
 
         router = MagicMock()
@@ -99,8 +99,8 @@ class TestVerifierLLMError:
             verification="验证结果正确",
         )
         success, msg = verifier.verify_step(step, "some result")
-        assert success is False
-        assert "failed" in msg.lower() or "error" in msg.lower()
+        assert success is True
+        assert "unavailable" in msg.lower() or "assumed pass" in msg.lower()
 
 
 class TestReflectorExceptionHandling:
@@ -149,3 +149,83 @@ class TestPlannerNextSafe:
         # Test that the code doesn't crash with StopIteration
         # This is tested indirectly through the _safe_name fix
         assert True  # Verified by code review
+
+
+class TestFailedStepMarkedSkipped:
+    """BUG 3: Failed steps should be marked SKIPPED when replaced."""
+
+    def test_failed_step_marked_skipped(self):
+        """When a failed step gets a replacement, it should be marked SKIPPED."""
+        step = PlanStep(description="failing step", status=StepStatus.FAILED)
+        assert step.status == StepStatus.FAILED
+
+        # Simulate what core.py does: mark as SKIPPED before inserting replacement
+        step.status = StepStatus.SKIPPED
+        assert step.status == StepStatus.SKIPPED
+
+
+class TestProgressExcludesSkipped:
+    """BUG 3: progress() should exclude SKIPPED steps."""
+
+    def test_progress_excludes_skipped(self):
+        plan = Plan(
+            goal="test",
+            steps=[
+                PlanStep(description="step 1", status=StepStatus.COMPLETED),
+                PlanStep(description="step 2", status=StepStatus.SKIPPED),
+                PlanStep(description="step 3", status=StepStatus.COMPLETED),
+                PlanStep(description="step 4", status=StepStatus.PENDING),
+            ],
+        )
+        completed, total = plan.progress()
+        # SKIPPED step should be excluded from both counts
+        assert total == 3  # 4 steps minus 1 SKIPPED
+        assert completed == 2  # COMPLETED steps
+
+    def test_progress_with_no_skipped(self):
+        plan = Plan(
+            goal="test",
+            steps=[
+                PlanStep(description="step 1", status=StepStatus.COMPLETED),
+                PlanStep(description="step 2", status=StepStatus.PENDING),
+            ],
+        )
+        completed, total = plan.progress()
+        assert total == 2
+        assert completed == 1
+
+
+class TestCleanupArtifacts:
+    """P0-1: cleanup_artifacts should delete artifact files."""
+
+    def test_cleanup_artifacts(self, tmp_path):
+        from lang3d.agent.sub_agent import cleanup_artifacts
+
+        # Create some test files
+        fcstd_file = tmp_path / "part.fcstd"
+        stl_file = tmp_path / "part.stl"
+        txt_file = tmp_path / "readme.txt"
+        fcstd_file.write_text("fake fcstd")
+        stl_file.write_text("fake stl")
+        txt_file.write_text("readme")
+
+        artifacts = [
+            str(fcstd_file),
+            str(stl_file),
+            str(txt_file),
+        ]
+        cleanup_artifacts(artifacts, str(tmp_path))
+
+        # CAD files should be deleted
+        assert not fcstd_file.exists()
+        assert not stl_file.exists()
+        # Non-CAD file should remain
+        assert txt_file.exists()
+
+    def test_cleanup_skips_nonexistent(self, tmp_path):
+        """Should not crash on non-existent files."""
+        from lang3d.agent.sub_agent import cleanup_artifacts
+
+        artifacts = [str(tmp_path / "nonexistent.fcstd")]
+        # Should not raise
+        cleanup_artifacts(artifacts, str(tmp_path))

@@ -474,6 +474,30 @@ class _StepNamer:
         return f"{self._base}_{tag}{self._counter}"
 
 
+_CREATE_OP_TYPES = frozenset(
+    {"make_box", "make_cylinder", "cylinder_with_hole", "polar_pattern", "linear_pattern"}
+)
+
+
+def _suffix_feature_names(ops: list[dict], joint_idx: int) -> None:
+    """Append ``_j{joint_idx}`` to all feature object names *in-place*.
+
+    Ensures feature names are globally unique across multiple joints that
+    involve the same part (e.g. a bracket bolted to both a base and a link).
+    """
+    suffix = f"_j{joint_idx}"
+    rename: dict[str, str] = {}
+    for op in ops:
+        if op.get("type") in _CREATE_OP_TYPES and op.get("name"):
+            old = op["name"]
+            new = old + suffix
+            op["name"] = new
+            rename[old] = new
+    for op in ops:
+        if op.get("type") == "move" and op.get("object") in rename:
+            op["object"] = rename[op["object"]]
+
+
 def generate_ops(
     part: Part,
     config: FeatureConfig | None = None,
@@ -698,7 +722,7 @@ def generate_ops(
         from ..knowledge.mechanics import Joint as JointType
 
         engine = ConnectionFeatureEngine()
-        for joint in joints:
+        for ji, joint in enumerate(joints):
             if joint.connection is None:
                 continue
             # Check if this joint involves the current part
@@ -711,6 +735,9 @@ def generate_ops(
                 anchor=anchor,
             )
             if result.ops:
+                # Add joint-index suffix for cross-joint name uniqueness
+                if ji > 0:
+                    _suffix_feature_names(result.ops, ji)
                 ops = merge_connection_ops(ops, result.ops, body)
                 # Track body name changes from merge
                 for op in reversed(ops):

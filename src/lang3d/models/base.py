@@ -12,6 +12,10 @@ if TYPE_CHECKING:
     from .retry import RetryConfig
 
 
+# Maximum image size accepted by _encode_image; protects against memory DoS.
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024  # 20 MB
+
+
 @dataclass
 class Message:
     """A chat message."""
@@ -102,6 +106,12 @@ class ModelBackend(ABC):
         path = Path(image_path)
         if not path.exists():
             raise FileNotFoundError(f"Image not found: {path}")
+        size = path.stat().st_size
+        if size > _MAX_IMAGE_BYTES:
+            raise ValueError(
+                f"Image too large: {size / 1024 / 1024:.1f}MB "
+                f"(limit {_MAX_IMAGE_BYTES // 1024 // 1024}MB)"
+            )
         return base64.b64encode(path.read_bytes()).decode("utf-8")
 
     def _get_media_type(self, image_path: str | Path) -> str:

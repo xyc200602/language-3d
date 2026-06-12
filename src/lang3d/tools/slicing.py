@@ -580,7 +580,6 @@ class SliceVLMAnalyzeTool(Tool):
                 # Try to find the slicer window
                 screenshot_result = capture.execute(
                     title="PrusaSlicer",
-                    save=True,
                 )
             except Exception as e:
                 proc.terminate()

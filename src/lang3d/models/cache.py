@@ -143,11 +143,14 @@ class SemanticCache:
 
 # Module-level singleton for global use
 _global_cache: SemanticCache | None = None
+_cache_lock = threading.Lock()
 
 
 def get_cache() -> SemanticCache:
-    """Get or create the global LLM response cache."""
+    """Get or create the global LLM response cache (thread-safe)."""
     global _global_cache
     if _global_cache is None:
-        _global_cache = SemanticCache()
+        with _cache_lock:
+            if _global_cache is None:
+                _global_cache = SemanticCache()
     return _global_cache

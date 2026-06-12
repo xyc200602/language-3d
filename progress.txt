@@ -4,6 +4,47 @@
 
 ---
 
+## 2026-06-12 - 夹爪可视化修复：手指尺寸放大 + FreeCAD makeBox 轴向修正
+
+### What was done:
+
+**问题**: e2e 渲染图中夹爪看起来像另一段臂连杆，不是真正的夹爪。VLM 评分 2/10。侧视图中看不到两个手指的间隙。
+
+**根因分析**:
+1. **手指尺寸太小**: 原 35×6×15mm — 渲染中和臂连杆难以区分
+2. **夹爪基座太扁太长**: 原 40×35×15mm — 看起来像连杆而非夹爪基座
+3. **手指偏移太小**: ±8mm offset → 世界空间只有 ~15mm 间距（被臂旋转放大但仍不足）
+4. **FreeCAD makeBox 轴向错位**: `build_assembly_script` 生成 `makeBox(length, width, height)` = `makeBox(X=length, Y=width)`，但求解器约定 `length`→Y(front/back), `width`→X(left/right) — X-Y 被互换
+
+**修复**:
+
+1. **`src/lang3d/tools/freecad.py`** (`build_assembly_script`, 行 ~1097):
+   - `makeBox(length, width, height)` → `makeBox(width, length, height)`
+   - 添加注释说明求解器约定：X=width, Y=length, Z=height
+
+2. **`src/lang3d/tools/assembly_generator.py`** (rule 19 + EXAMPLE_ARM_STANDALONE + 中文 prompt):
+   - gripper_base: `{40,35,18}` → `{length:28, width:50, height:32}` (更宽更高更短，像夹爪基座)
+   - gripper_finger: `{40,8,18}` → `{length:60, width:10, height:28}` (更长更宽更高)
+   - finger offset: `±10mm` → `±16mm` (世界空间间距 ~22mm 可见间隙)
+   - 添加文本要求："必须比臂连杆更宽更高更短"
+
+3. **`src/lang3d/knowledge/assembly_templates.py`** (4dof_arm 模板):
+   - gripper_base: `{40,35,15}` → `{28,50,32}`
+   - gripper_finger_left/right: `{35,6,15}` → `{60,10,28}`
+   - finger joint offset: `±8mm` → `±16mm`
+
+### Testing:
+- 语法检查：3 个修改文件全部通过 `py_compile`
+- 求解器单元测试：137/137 通过 (test_assembly_solver.py + test_assembly_templates.py)
+- 求解器 smoke test: 手指间距 51.6mm（原来 ~34mm），两手指在基座前方 42.5mm
+- VTK 渲染测试：VLM 确认"两个独立手指清晰可见，有可见间隙"，逼真度从 2/10 提升到 6/10
+
+### Notes:
+- VTK 渲染器 (`vtk_renderer.py`) 本来就正确处理了轴向映射（`add_box` 用 `SetXLength(width)`, `SetYLength(length)`；`load_stl` 用 `R_z(-90°)` 交换），所以生产渲染（用 VTK 加载 STL）一直是对的。本次修的 `freecad.py` `build_assembly_script` 影响 FreeCAD 内部装配可视化
+- 手指偏移在 local X 轴，经过臂的累积 Y 轴旋转后会变成对角 XZ 方向，所以世界空间间距不是简单的 32mm
+
+---
+
 ## 2026-06-11 - 审计报告 P0 修复：连接特征激活 + 标准件绑定 + 渲染改进
 
 ### What was done:

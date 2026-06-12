@@ -313,6 +313,10 @@ class Joint:
     constraint_angle_deg: float = 0.0       # angle 约束参数（度）
     # --- Task 69: 物理连接方式 ---
     connection: ConnectionMethod | None = None  # How parts are physically fastened
+    # --- Mimic joint: this joint follows another joint (e.g. gripper finger coupling)
+    mimic_joint: str = ""           # Name of the joint to mimic (by child part name)
+    mimic_multiplier: float = 1.0   # Multiplier applied to the mimicked joint's angle
+    mimic_offset: float = 0.0       # Offset added after multiplication (degrees)
 
 
 @dataclass
@@ -643,11 +647,20 @@ def get_parts_by_category(category: str) -> list[Part]:
 # ============================================================================
 
 
-def compute_assembly_mass(assembly: Assembly) -> dict[str, Any]:
+def compute_assembly_mass(
+    assembly: Assembly,
+    positions: dict[str, dict] | None = None,
+) -> dict[str, Any]:
     """Compute total mass, center of mass, and inertia tensor for an assembly.
 
     Uses weighted average for center of mass and the parallel axis theorem
     for inertia tensor. If a part has mass=0, estimates from volume/density.
+
+    Args:
+        assembly: The assembly to analyze.
+        positions: Optional solver output ``{part_name: {"position": [x,y,z]}}``.
+                   When provided, each part's global position is added to its
+                   local center-of-mass so the assembly COM reflects real layout.
 
     Returns:
         dict with total_mass (kg), center_of_mass (mm), inertia_tensor (kg·mm²),
@@ -659,6 +672,12 @@ def compute_assembly_mass(assembly: Assembly) -> dict[str, Any]:
     for part in assembly.parts:
         m = part.compute_estimated_mass()
         cx, cy, cz = part.center_of_mass
+        # Add global position from solver output if available
+        if positions and part.name in positions:
+            pos = positions[part.name]["position"]
+            cx += pos[0]
+            cy += pos[1]
+            cz += pos[2]
         parts_data.append({
             "name": part.name,
             "mass_kg": m,

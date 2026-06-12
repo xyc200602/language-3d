@@ -1,4 +1,13 @@
-"""Mating constraint solver — real CAD-style constraint resolution.
+"""[DEPRECATED — NOT IN PRODUCTION PIPELINE] Mating constraint solver.
+
+.. warning::
+    This module is **not imported** by the production pipeline. The active
+    solver is :mod:`lang3d.tools.assembly_solver`. This file is retained
+    only for its tests and as a reference for future CAD-grade constraint
+    work. Unlike :mod:`constraint_solver`, its revolute handling is correct
+    (applies a real rotation matrix), but it is still unused in production.
+
+Mating constraint solver — real CAD-style constraint resolution.
 
 Upgrades assembly positioning from the anchor-face (6-basic-face) system
 to proper mating constraints:
@@ -362,12 +371,13 @@ class ConstraintSolver:
         # Apply joint angle rotation
         joint_rot = _mat_identity()
         if joint and joint.type == "revolute" and abs(angle_deg) > 1e-6:
-            # Rotate around axis perpendicular to parent normal
-            rot_axis = _vec_cross(parent_normal_world, (0, 0, 1))
-            if _vec_len(rot_axis) < 1e-6:
-                rot_axis = _vec_cross(parent_normal_world, (1, 0, 0))
-            rot_axis = _vec_normalize(rot_axis)
-            joint_rot = _rotation_matrix(parent_normal_world, math.radians(angle_deg))
+            # Use explicit joint axis if specified, otherwise fall back to parent normal
+            axis_map = {"x": (1, 0, 0), "y": (0, 1, 0), "z": (0, 0, 1)}
+            rot_axis = axis_map.get(
+                getattr(joint, "axis", "auto"),
+                parent_normal_world,
+            )
+            joint_rot = _rotation_matrix(rot_axis, math.radians(angle_deg))
 
         # Child anchor offset in local frame
         c_local = _anchor_offset_for_part(child_part, child_anchor) if child_anchor else (0, 0, 0)
@@ -488,8 +498,19 @@ class ConstraintSolver:
         joint: Joint | None,
         angle_deg: float,
     ) -> SolvedPosition:
-        """Parallel: child face/axis parallel to parent face/axis."""
-        # Use coincident for positioning, then ensure parallel orientation
+        """Parallel: child face/axis parallel to parent face/axis.
+
+        Uses coincident for positioning (correct location). The full
+        orientation guarantee (ensuring parallel rotation) requires
+        computing rotation from parent face normal to child face
+        direction, which is non-trivial for general cases. The current
+        behavior is correct for positioning but incomplete for rotation.
+        """
+        # TODO: Add explicit rotation enforcement after coincident positioning.
+        # The full fix requires computing rotation from parent face normal to
+        # child face direction, which is non-trivial for general constraint
+        # topologies. The current behavior positions correctly but may not
+        # enforce strict parallelism of orientation.
         return self._solve_coincident(
             parent_name, parent_pos, child_name, child_part,
             constraint, joint, angle_deg,
@@ -536,7 +557,8 @@ def _entity_normal(entity: tuple) -> tuple[float, float, float]:
     if entity[0] == "axis":
         return entity[1]
     if entity[0] == "point":
-        # Default normal: +Z (face up)
+        # Points have no inherent normal; default to +Z.
+        # TODO: Infer from constraint partner entity for more accuracy.
         return (0, 0, 1)
     return (0, 0, 1)
 
@@ -594,6 +616,8 @@ def constraint_solve_tool_factory() -> tuple[Any, Any]:
     )
 
     class _ConstraintSolveTool:
+        name = "constraint_solve"
+
         def execute(self, *, assembly_name: str = "", constraints: list | None = None,
                     base_position: list | None = None, joint_angles: dict | None = None,
                     **kwargs) -> str:

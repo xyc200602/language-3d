@@ -230,7 +230,13 @@ class PowerBudgetCalculator:
             return
 
         peak_w = act.voltage * (act.current_stall_ma / 1000.0)
-        avg_w = act.voltage * (act.current_idle_ma / 1000.0) * 2  # Moderate load
+        # Average power at ~20% load: servos draw holding current continuously,
+        # with intermittent bursts during movement.  20% of (stall-idle) + idle
+        # gives a realistic operating average.
+        avg_w = act.voltage * (
+            act.current_idle_ma / 1000.0
+            + (act.current_stall_ma - act.current_idle_ma) / 1000.0 * 0.2
+        )
 
         self.add_consumer(PowerConsumer(
             name=name, category="servo",
@@ -247,7 +253,13 @@ class PowerBudgetCalculator:
 
     def compute_total_avg(self) -> float:
         """Total average power (W) — realistic operating estimate."""
-        return sum(c.effective_avg_w for c in self.consumers)
+        total = sum(c.effective_avg_w for c in self.consumers)
+        # Apply a minimum floor: a robot with servos/controllers should never
+        # report < 1 W average.  This prevents absurd battery life estimates
+        # (e.g., 1000+ hours) when duty cycles are low.
+        if total > 0 and total < 1.0 and self.consumers:
+            total = 1.0
+        return total
 
     def estimate_runtime(self, battery_ah: float, battery_voltage: float,
                          safety_factor: float = 0.8) -> float:

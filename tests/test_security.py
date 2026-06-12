@@ -124,11 +124,11 @@ class TestFileOpsSecurity:
         assert "too long" not in result.split("\n")[0].lower()
 
     def test_file_write_workspace_boundary(self):
-        from lang3d.tools.file_ops import FileWriteTool
+        from lang3d.tools.file_ops import FileWriteTool, FileOps
         import tempfile
         tool = FileWriteTool()
         with tempfile.TemporaryDirectory() as ws:
-            tool.set_workspace(ws)
+            FileOps.set_workspace(ws)
             # Writing inside workspace should work
             result = tool.execute(path=str(Path(ws) / "test.txt"), content="hello")
             assert "Successfully" in result
@@ -138,7 +138,7 @@ class TestFileOpsSecurity:
             assert "workspace boundary" in result.lower() or "error" in result.lower()
 
             # Reset workspace
-            tool.set_workspace(None)
+            FileOps.set_workspace(None)
 
 
 # --- Web app security ---
@@ -180,3 +180,45 @@ class TestRetryKeyboardInterrupt:
 
         with pytest.raises(SystemExit):
             call_with_retry(raise_exit, retry_config=RetryConfig(max_retries=3))
+
+
+# --- raw_script injection hardening (P1-3) ---
+
+class TestRawScriptBlockedPatterns:
+    """Verify new blocked patterns for raw_script validation."""
+
+    def _validate(self, script: str):
+        from lang3d.tools.freecad_common import _validate_raw_script
+        _validate_raw_script(script)
+
+    def test_blocks_importlib(self):
+        with pytest.raises(ValueError, match="blocked pattern"):
+            self._validate("importlib.import_module('os')")
+
+    def test_blocks_pathlib_write(self):
+        with pytest.raises(ValueError, match="blocked pattern"):
+            self._validate('Path("evil.py").write_text("code")')
+
+    def test_blocks_pathlib_write_bytes(self):
+        with pytest.raises(ValueError, match="blocked pattern"):
+            self._validate('Path("evil.bin").write_bytes(b"\\x00")')
+
+    def test_blocks_builtins_access(self):
+        with pytest.raises(ValueError, match="blocked pattern"):
+            self._validate("__builtins__['exec']")
+
+    def test_blocks_compile(self):
+        with pytest.raises(ValueError, match="blocked pattern"):
+            self._validate('compile("1+1", "", "exec")')
+
+    def test_blocks_globals_bracket(self):
+        with pytest.raises(ValueError, match="blocked pattern"):
+            self._validate('globals()["__import__"]')
+
+    def test_blocks_getattr_builtins(self):
+        with pytest.raises(ValueError, match="blocked pattern"):
+            self._validate('getattr(obj, "__builtins__")')
+
+    def test_allows_safe_freecad_code(self):
+        """Normal FreeCAD API calls should still be allowed."""
+        self._validate('Part.makeBox(10, 20, 30)')
