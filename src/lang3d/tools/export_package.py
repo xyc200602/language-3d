@@ -235,7 +235,7 @@ def build_complex_robot() -> Assembly:
     # Without this, build_complex_robot()'s 41 parts would ship with STLs
     # that have no mounting holes even though the BOM lists 100+ fasteners.
     from .assembly_generator import apply_default_connection_methods
-    apply_default_connection_methods(joints)
+    apply_default_connection_methods(joints, parts=parts)
 
     return Assembly(
         name="4-Wheel Mobile Robot with Dual Arms",

@@ -35,7 +35,7 @@ class FitCheck:
     child_part: Part | None
     clearance: float = 0.0
     required_clearance: float = 0.0
-    fits: bool = False
+    fits: bool | None = False
     notes: str = ""
 
 
@@ -221,7 +221,7 @@ class AssemblyVerifier:
         # Collect tolerance issues
         tolerance_issues: list[str] = []
         for fc in fit_checks:
-            if not fc.fits:
+            if fc.fits is False:
                 tolerance_issues.append(
                     f"{fc.parent_part.name if fc.parent_part else '?'} -> "
                     f"{fc.child_part.name if fc.child_part else '?'}: "
@@ -347,7 +347,10 @@ class AssemblyVerifier:
 
         # Determine overall pass
         all_parts_exist = all(pc.exists for pc in part_checks)
-        all_fits_ok = all(fc.fits for fc in fit_checks)
+        # Three-state fits model: True=pass, False=fail, None=inconclusive.
+        # Only explicit False fails the assembly; None (missing dimensions)
+        # does not cause overall failure.
+        all_fits_ok = not any(fc.fits is False for fc in fit_checks)
         all_mating_ok = all(mc.parallel_ok and mc.distance_ok for mc in mating_checks)
         all_bolts_ok = all(bc.aligned for bc in bolt_checks)
         all_tol_ok = all(tc.acceptable for tc in tol_chain_checks)
@@ -367,7 +370,7 @@ class AssemblyVerifier:
 
         # Build summary
         completed_parts = sum(1 for pc in part_checks if pc.exists)
-        failed_fits = sum(1 for fc in fit_checks if not fc.fits)
+        failed_fits = sum(1 for fc in fit_checks if fc.fits is False)
         n_collisions = sum(1 for cc in collision_checks if cc.is_collision)
         n_items_pass = sum(1 for vi in verification_items if vi.passed)
         n_items_total = len(verification_items)
@@ -510,6 +513,7 @@ class AssemblyVerifier:
                         notes = f"配合良好: 间隙 {clearance:.2f}mm >= 要求 {required:.2f}mm"
                 else:
                     notes = "尺寸数据不完整，无法检查配合"
+                    fits = None  # inconclusive — dimensions missing
 
             checks.append(FitCheck(
                 joint=joint,
@@ -1267,7 +1271,7 @@ class AssemblyVerifier:
         lines.append("## 配合检查")
 
         for fc in result.fit_checks:
-            icon = "✓" if fc.fits else "✗"
+            icon = "✓" if fc.fits is True else ("?" if fc.fits is None else "✗")
             parent_name = fc.parent_part.name if fc.parent_part else fc.joint.parent
             child_name = fc.child_part.name if fc.child_part else fc.joint.child
             lines.append(

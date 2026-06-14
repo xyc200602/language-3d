@@ -1488,7 +1488,7 @@ def _gripper_finger_ops(name: str, d: dict) -> list[dict]:
     Left vs right is detected from the name to mirror the tip direction.
     """
     length = d.get("length", 35)
-    width = d.get("width", 6)
+    width = d.get("width", 12)
     height = d.get("height", 15)
 
     # Detect left/right from name to mirror the L-tip direction

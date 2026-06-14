@@ -1200,12 +1200,21 @@ class ConnectionFeatureEngine:
 
     @staticmethod
     def _infer_thickness(d: dict, anchor: str) -> float:
-        """Infer the thickness of the face from part dimensions."""
+        """Infer the thickness of the face from part dimensions.
+
+        The thickness is the material depth along the anchor normal — i.e.
+        how far the bolt shank travels through the part.  In FreeCAD
+        coordinates (X=length, Y=width, Z=height):
+
+        - front/back faces (±Y normal): thickness along Y = ``width``
+        - left/right faces (±X normal): thickness along X = ``length``
+        - top/bottom faces (±Z normal): thickness along Z = ``height``
+        """
         h = d.get("height", d.get("thickness", d.get("length", 10)))
         anchor_map = {
             "top": h, "bottom": h,
-            "left": d.get("width", h), "right": d.get("width", h),
-            "front": d.get("length", h), "back": d.get("length", h),
+            "front": d.get("width", h), "back": d.get("width", h),
+            "left": d.get("length", h), "right": d.get("length", h),
         }
         return anchor_map.get(anchor, h)
 

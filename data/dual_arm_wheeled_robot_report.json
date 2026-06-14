@@ -29,7 +29,7 @@
     "sequence_checks": 36,
     "tolerance_chain_checks": 10,
     "verification_items_total": 625,
-    "verification_items_passed": 574
+    "verification_items_passed": 578
   },
   "key_placements": {
     "base_plate": {
@@ -164,7 +164,7 @@
     },
     "wheel_fl": {
       "position": [
-        -123.0,
+        -155.5,
         -70.0,
         -15.0
       ],
@@ -177,7 +177,7 @@
     },
     "wheel_fr": {
       "position": [
-        123.0,
+        155.5,
         -70.0,
         -15.0
       ],
@@ -190,7 +190,7 @@
     },
     "wheel_rl": {
       "position": [
-        -123.0,
+        -155.5,
         70.0,
         -15.0
       ],
@@ -203,7 +203,7 @@
     },
     "wheel_rr": {
       "position": [
-        123.0,
+        155.5,
         70.0,
         -15.0
       ],

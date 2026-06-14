@@ -293,7 +293,7 @@ class VTKOffscreenRenderer:
                 edge_actor.SetMapper(edge_mapper)
                 edge_color = CATEGORY_EDGE_COLORS.get(category, (0.2, 0.2, 0.2))
                 edge_actor.GetProperty().SetColor(*edge_color)
-                edge_actor.GetProperty().SetLineWidth(1.0)
+                edge_actor.GetProperty().SetLineWidth(2.0)
                 edge_actor.GetProperty().SetOpacity(opacity)
 
                 self._apply_transform(edge_actor, position or (0, 0, 0), rotation)
@@ -688,6 +688,21 @@ def _add_fasteners_for_joints(
         dims = _FASTENER_DIMS.get(bolt_size, _FASTENER_DIMS["M3"])
         head_r, head_h, shank_r, washer_r, washer_h, nut_r, nut_h = dims
 
+        # Visual scaling: real M3 bolt heads (5.5 mm diameter) are sub-pixel
+        # in a 500 mm+ arm render.  Enforce a minimum visible size so the
+        # bolt heads and nuts read as distinct 3D features, not painted dots.
+        # The shank radius is left at nominal so it still fits the clearance
+        # hole drilled in the STL; only the externally-visible head/nut/washer
+        # are enlarged.
+        _MIN_HEAD_R = 4.5   # 9 mm diameter head — clearly visible
+        _MIN_HEAD_H = 3.0
+        _MIN_NUT_R = 4.0
+        _MIN_WASHER_R = 4.0
+        head_r = max(head_r, _MIN_HEAD_R)
+        head_h = max(head_h, _MIN_HEAD_H)
+        nut_r = max(nut_r, _MIN_NUT_R)
+        washer_r = max(washer_r, _MIN_WASHER_R)
+
         for world_pos, normal, thickness in bolt_holes:
             # Bolt length: grip thickness + washer + nut engagement
             length = max(thickness + washer_h + nut_h + 2.0, 12.0)
@@ -951,6 +966,10 @@ def render_assembly_from_positions(
         else:
             subsystem = _infer_subsystem(name)
             color = SUBSYSTEM_COLORS.get(subsystem, _default_color(idx))
+        # Finger parts get a high-contrast yellow override so they remain
+        # visible against the larger red gripper_base in renders.
+        if "finger" in name.lower():
+            color = (1.0, 0.85, 0.1)
         pos_data = positions.get(name, {})
         pos = pos_data.get("position", [0, 0, 0])
         rot = pos_data.get("rotation", None)

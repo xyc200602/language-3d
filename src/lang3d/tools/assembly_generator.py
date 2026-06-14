@@ -17,6 +17,7 @@ import re
 from typing import Any
 
 from ..knowledge.mechanics import Assembly, ConnectionMethod, Joint, Part
+from ..knowledge.fastener_catalog import get_torque
 from .assembly_solver import ANCHOR_DIM_KEYS
 from .base import Tool, ToolDefinition
 
@@ -322,8 +323,8 @@ EXAMPLE_ARM_STANDALONE = """\
     {"name": "wrist_link", "category": "structural", "description": "腕部连杆", "material": "Aluminum", "dimensions": {"length": 60, "width": 20, "height": 12}},
     {"name": "gripper_base", "category": "mechanical", "description": "夹爪基座(含直线导轨槽和舵机安装座)", "material": "PLA", "dimensions": {"length": 28, "width": 50, "height": 32}},
     {"name": "gripper_servo", "category": "actuator", "description": "夹爪驱动舵机SG90", "material": "Steel", "dimensions": {"length": 23, "width": 12, "height": 22}},
-    {"name": "gripper_finger_left", "category": "mechanical", "description": "夹爪左手指(含滑动导轨和L形指尖)", "material": "PLA", "dimensions": {"length": 60, "width": 10, "height": 28}},
-    {"name": "gripper_finger_right", "category": "mechanical", "description": "夹爪右手指(含滑动导轨和L形指尖)", "material": "PLA", "dimensions": {"length": 60, "width": 10, "height": 28}}
+    {"name": "gripper_finger_left", "category": "mechanical", "description": "夹爪左手指(含滑动导轨和L形指尖)", "material": "PLA", "dimensions": {"length": 60, "width": 14, "height": 28}},
+    {"name": "gripper_finger_right", "category": "mechanical", "description": "夹爪右手指(含滑动导轨和L形指尖)", "material": "PLA", "dimensions": {"length": 60, "width": 14, "height": 28}}
   ],
   "joints": [
     {"type": "revolute", "parent": "base_plate", "child": "shoulder_joint", "axis": "z", "range_deg": [-180, 180], "parent_anchor": "top", "child_anchor": "bottom"},
@@ -444,42 +445,110 @@ EXAMPLE_6DOF_BELT_DRIVE_ARM = """\
 # ---------------------------------------------------------------------------
 
 
-def apply_default_connection_methods(joints: list) -> None:
+def apply_default_connection_methods(joints: list, parts: list | None = None) -> None:
     """Assign a default ``ConnectionMethod`` to joints that lack one.
 
-    Fixed joints in robotic assemblies are almost always bolted; defaulting
-    here ensures the connection feature engine generates mounting holes even
-    when the caller (LLM path or ``build_complex_robot``) omits the
-    ``connection`` field.  Revolute joints are physically realized via a
-    bearing press-fit into the housing bore, so ``press_fit`` is the
-    mechanically correct default.  Prismatic (sliding) interfaces are not
-    fastenings and intentionally stay null.
+    Dispatches by part category (when ``parts`` is provided) on top of the
+    existing anchor-geometry rule:
 
-    Mutates *joints* in place.  Shared by the LLM assembly path and the
-    hand-authored ``build_complex_robot()`` assembly so both produce the
-    same connection features on exported STLs.
+    - **Bearing** parent or child (any joint type) → ``press_fit`` H7/js6.
+      Bearings are never bolted; they press into housings.
+    - **Servo** child (name contains "servo", e.g. SG90) → ``bolted M2×2``
+      with ``hole_type="threaded_hole"`` — SG90 servos have tapped holes
+      for self-tapping M2 screws, not through holes.
+    - **Actuator** child (motors like NEMA17) → ``bolted M3×4`` with
+      ``hole_type="threaded_hole"`` — motor flanges have tapped holes.
+    - Other fixed/revolute joints with face anchors → ``bolted M3×4``
+      ``through_hole`` (structural bracket mounting).
+    - Revolute with center/center anchors → ``press_fit`` (bearing seat).
+    - Prismatic → null (sliding fit, not a fastening).
+
+    Mutates *joints* in place.  ``parts`` is optional for backward
+    compatibility; without it the function falls back to the original
+    geometry-only dispatch.
     """
+    _face_anchors = {"front", "back", "top", "bottom", "left", "right"}
+    _parts_by_name = {p.name: p for p in parts} if parts else {}
+
+    def _category(name: str) -> str:
+        p = _parts_by_name.get(name)
+        return (p.category or "").lower() if p else ""
+
+    def _is_servo(name: str) -> bool:
+        return "servo" in name.lower()
+
+    def _bolted(size: str, count: int, hole_type: str) -> ConnectionMethod:
+        return ConnectionMethod(
+            type="bolted", bolt_size=size, bolt_count=count,
+            hole_type=hole_type, torque_nm=get_torque(size, "PLA"),
+        )
+
     for joint in joints:
         if joint.connection is not None:
             continue
+
+        child_cat = _category(joint.child)
+        parent_cat = _category(joint.parent)
+
+        # Bearing → always press_fit regardless of joint type
+        if child_cat == "bearing" or parent_cat == "bearing":
+            if joint.type in ("fixed", "revolute"):
+                joint.connection = ConnectionMethod(
+                    type="press_fit", interference_mm=0.02,
+                )
+                logger.debug(
+                    "Defaulted joint %s->%s to press_fit (bearing seat)",
+                    joint.parent, joint.child,
+                )
+                continue
+
         if joint.type == "fixed":
-            joint.connection = ConnectionMethod(
-                type="bolted", bolt_size="M3", bolt_count=4,
-            )
+            if _is_servo(joint.child):
+                # SG90-style servo: M2 into tapped holes
+                joint.connection = _bolted("M2", 2, "threaded_hole")
+            elif child_cat == "actuator":
+                # Larger motors (NEMA17 etc.): M3 into tapped flange
+                joint.connection = _bolted("M3", 4, "threaded_hole")
+            else:
+                # Structural fixed joint: through hole + nut
+                joint.connection = _bolted("M3", 4, "through_hole")
             logger.debug(
-                "Defaulted joint %s->%s to bolted M3x4",
+                "Defaulted fixed joint %s->%s to %s %s (%s)",
                 joint.parent, joint.child,
+                joint.connection.bolt_size,
+                joint.connection.hole_type,
+                joint.connection.type,
             )
         elif joint.type == "revolute":
-            # Revolute joints physically realized via a bearing press-fit
-            # into the housing; 0.01 mm is a typical small-bearing interference.
-            joint.connection = ConnectionMethod(
-                type="press_fit", interference_mm=0.01,
+            uses_face_anchor = (
+                joint.parent_anchor in _face_anchors
+                or joint.child_anchor in _face_anchors
             )
-            logger.debug(
-                "Defaulted revolute joint %s->%s to press_fit (bearing seat)",
-                joint.parent, joint.child,
-            )
+            if uses_face_anchor:
+                if _is_servo(joint.child):
+                    joint.connection = _bolted("M2", 2, "threaded_hole")
+                elif child_cat == "actuator":
+                    joint.connection = _bolted("M3", 4, "threaded_hole")
+                else:
+                    joint.connection = _bolted("M3", 4, "through_hole")
+                logger.debug(
+                    "Defaulted revolute joint %s->%s to bolted %s %s "
+                    "(face anchor %s/%s)",
+                    joint.parent, joint.child,
+                    joint.connection.bolt_size,
+                    joint.connection.hole_type,
+                    joint.parent_anchor, joint.child_anchor,
+                )
+            else:
+                # Center/center: bearing press-fit into a housing bore.
+                joint.connection = ConnectionMethod(
+                    type="press_fit", interference_mm=0.01,
+                )
+                logger.debug(
+                    "Defaulted revolute joint %s->%s to press_fit "
+                    "(bearing seat, center anchors)",
+                    joint.parent, joint.child,
+                )
         elif joint.type == "prismatic":
             # Sliding interface is not a fastening method; null is intentional.
             logger.info(
@@ -801,11 +870,16 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
         cm_type = jd.get("connection_method", "")
         if cm_type:
             cd = jd.get("connection_detail", {}) or {}
+            _bolt_size = cd.get("bolt_size", "M3")
+            # Default torque from catalog so metadata and step text agree (P0-2).
+            _torque = cd.get("torque_nm", 0.0)
+            if cm_type == "bolted" and _torque == 0.0:
+                _torque = get_torque(_bolt_size, "PLA")
             connection = ConnectionMethod(
                 type=cm_type,
-                bolt_size=cd.get("bolt_size", "M3"),
+                bolt_size=_bolt_size,
                 bolt_count=cd.get("bolt_count", 0),
-                torque_nm=cd.get("torque_nm", 0.0),
+                torque_nm=_torque,
                 interference_mm=cd.get("interference_mm", 0.0),
                 snap_count=cd.get("snap_count", 0),
                 snap_force_n=cd.get("snap_force_n", 0.0),
@@ -838,7 +912,7 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
     # Default connection_method for joints that lack one.
     # See apply_default_connection_methods() for the shared rule set used by
     # both the LLM assembly path and build_complex_robot().
-    apply_default_connection_methods(joints)
+    apply_default_connection_methods(joints, parts=parts)
 
     assembly = Assembly(
         name=data.get("name", "generated_assembly"),
@@ -1357,6 +1431,52 @@ def _validate_proportions(assembly: Assembly) -> Assembly:
                     )
                     child.dimensions["length"] = target
 
+        # Check 3: joint-link cross-section consistency.
+        # Joint cylinders (with "diameter") are often much fatter than the
+        # links they connect to (e.g. diameter=40 vs link 25×15).  When the
+        # joint is centred on the link's end face, the joint body extends
+        # well beyond the link profile on all sides, making it look like the
+        # joint "swallows" the link — visually read as parts intersecting.
+        # Enforce: link cross-section ≥ 0.55 × joint diameter in both width
+        # and height.  This keeps the link profile visually comparable to the
+        # joint so the connection looks clean rather than overlapping.
+        parent_d = parent.dimensions.get("diameter", 0)
+        child_d = child.dimensions.get("diameter", 0)
+        link_part = None
+        joint_d = 0
+        if parent_d > 0 and "joint" in parent_nl and child.category in (
+                "structural", "link"):
+            link_part = child
+            joint_d = parent_d
+        elif child_d > 0 and "joint" in child_nl and parent.category in (
+                "structural", "link"):
+            # parent is the link, child is the joint
+            link_part = parent
+            joint_d = child_d
+        if link_part is not None and joint_d > 0:
+            min_w = joint_d * 0.55
+            min_h = joint_d * 0.50
+            link_w = link_part.dimensions.get("width", 0)
+            link_h = link_part.dimensions.get("height", 0)
+            if link_w > 0 and link_w < min_w:
+                logger.info(
+                    "Proportion fix: link '%s' width %.0fmm < 0.55× joint "
+                    "'%s' diameter %.0fmm — increased to %.0fmm",
+                    link_part.name, link_w,
+                    parent.name if parent is not link_part else child.name,
+                    joint_d, min_w,
+                )
+                link_part.dimensions["width"] = min_w
+            if link_h > 0 and link_h < min_h:
+                logger.info(
+                    "Proportion fix: link '%s' height %.0fmm < 0.50× joint "
+                    "'%s' diameter %.0fmm — increased to %.0fmm",
+                    link_part.name, link_h,
+                    parent.name if parent is not link_part else child.name,
+                    joint_d, min_h,
+                )
+                link_part.dimensions["height"] = min_h
+
     return assembly
 
 
@@ -1523,9 +1643,11 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
         val = float(injected[child])
         # Moderate cap so the arm tilts up without folding back.
         if pitch_idx == 0:
-            cap = 25.0      # Shoulder: sets the overall reach angle.
+            cap = 35.0      # Shoulder: sets the overall reach angle.
+            min_mag = 30.0  # Minimum shoulder tilt for a working-arm look.
         else:
-            cap = 30.0      # Subsequent pitches reinforce the rise.
+            cap = 40.0      # Subsequent pitches reinforce the rise.
+            min_mag = 30.0  # Minimum elbow/wrist tilt.
         rl = range_limit.get(child)
         if rl is not None and rl > 0:
             cap = min(cap, rl)
@@ -1534,9 +1656,11 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
         # so the arm rises in Z instead of cancelling out flat.
         if clamped > 0:
             clamped = -clamped
-        # Ensure a non-trivial tilt (flat arms fail the VLM/prevalidation).
-        if abs(clamped) < 15.0:
-            clamped = -min(20.0, cap)
+        # Ensure a non-trivial tilt so the arm looks articulated, not flat.
+        # Small LLM-provided angles (e.g. -15°) produce a nearly-straight
+        # arm that reads as a "model" rather than a working robot.
+        if abs(clamped) < min_mag:
+            clamped = -min(min_mag, cap)
         if abs(clamped - val) > 0.05:
             adjusted.append((child, val, clamped))
             injected[child] = round(clamped, 1)

@@ -89,7 +89,7 @@ class TestFitCheck:
         verifier = AssemblyVerifier()
         checks = verifier.check_joint_fits(assembly)
         assert len(checks) == 1
-        assert checks[0].fits  # Default to True when can't check
+        assert checks[0].fits is None  # Inconclusive when dimensions missing
         assert "不完整" in checks[0].notes
 
 

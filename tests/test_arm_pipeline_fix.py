@@ -260,10 +260,10 @@ def test_ensure_arm_default_angles_respects_existing_nonzero():
     """LLM-provided non-zero angles are clamped; sign forced negative (upward)."""
     asm = _make_arm_assembly(default_angles={"shoulder_link": -42.0})
     result = _ensure_arm_default_angles(asm)
-    # Shoulder clamped to ±25° (first-pitch cap) and kept negative (upward).
+    # Shoulder clamped to ±35° (first-pitch cap) and kept negative (upward).
     val = result.default_angles.get("shoulder_link")
     assert val is not None and val < 0, "shoulder_link must be negative (upward)"
-    assert abs(val) <= 25.0, f"shoulder_link must be clamped to ±25°, got {val}"
+    assert abs(val) <= 35.0, f"shoulder_link must be clamped to ±35°, got {val}"
 
 
 def test_ensure_arm_default_angles_no_op_for_non_arm():
@@ -313,7 +313,7 @@ def test_ensure_arm_default_angles_fills_per_joint_with_partial_nonzero():
     ej = angles.get("elbow_joint")
     assert ej is not None and abs(ej) > 5.0, f"elbow_joint must be non-zero, got {ej}"
     assert ej < 0, f"elbow_joint must be negative (upward), got {ej}"
-    assert abs(ej) <= 30.0, f"elbow_joint must be clamped to ±30°, got {ej}"
+    assert abs(ej) <= 40.0, f"elbow_joint must be clamped to ±40°, got {ej}"
     # The other pitch joints (zero/missing) are now filled with bends.
     assert abs(angles["shoulder_link"]) > 5.0
     assert abs(angles["elbow_link"]) > 5.0
@@ -852,4 +852,59 @@ def test_proportion_validation_link_length_ratio():
         f"Lower link length {ll.dimensions['length']} should be >= 60 "
         f"(upper_link 150 / 2.5 max ratio)"
     )
+
+
+def test_proportion_validation_joint_link_section():
+    """Link cross-section should grow when dwarfed by a joint cylinder.
+
+    Regression for the joint-link intersection seen in the 4dof_arm render:
+    shoulder_joint (diameter=40) connecting to shoulder_link (25×15) left
+    the 20 mm joint radius extending well past the 15 mm link height, so the
+    joint visually "swallowed" the link.  The validator should enlarge the
+    link cross-section so it is at least 0.55× the joint diameter.
+    """
+    joint = _cyl("shoulder_joint", diameter=40, height=35)
+    link = _box("shoulder_link", length=120, width=25, height=15)
+    asm = Assembly(
+        name="test",
+        parts=[joint, link],
+        joints=[
+            Joint("revolute", "shoulder_joint", "shoulder_link",
+                  parent_anchor="front", child_anchor="back"),
+        ],
+    )
+    result = _validate_proportions(asm)
+    out_link = [p for p in result.parts if p.name == "shoulder_link"][0]
+    # 0.55 × 40 = 22 mm width, 0.50 × 40 = 20 mm height
+    assert out_link.dimensions["width"] >= 22.0, (
+        f"Link width {out_link.dimensions['width']} should be >= 22 "
+        f"(0.55 × joint diameter 40)"
+    )
+    assert out_link.dimensions["height"] >= 20.0, (
+        f"Link height {out_link.dimensions['height']} should be >= 20 "
+        f"(0.50 × joint diameter 40)"
+    )
+
+
+def test_proportion_validation_link_to_joint_reverse():
+    """Same joint/link rule applies when the link is the parent."""
+    link = _box("wrist_link", length=60, width=20, height=12)
+    joint = _cyl("wrist_joint", diameter=28, height=28)
+    asm = Assembly(
+        name="test",
+        parts=[link, joint],
+        joints=[
+            Joint("revolute", "wrist_link", "wrist_joint",
+                  parent_anchor="front", child_anchor="back"),
+        ],
+    )
+    result = _validate_proportions(asm)
+    out_link = [p for p in result.parts if p.name == "wrist_link"][0]
+    # 0.55 × 28 = 15.4 mm, link width 20 is already > 15.4, so unchanged.
+    # 0.50 × 28 = 14 mm, link height 12 < 14, so should be increased.
+    assert out_link.dimensions["height"] >= 14.0, (
+        f"Link height {out_link.dimensions['height']} should be >= 14 "
+        f"(0.50 × joint diameter 28)"
+    )
+
 

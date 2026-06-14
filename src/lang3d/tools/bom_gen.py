@@ -187,6 +187,9 @@ def _infer_standard_parts(assembly: Assembly) -> list[dict[str, Any]]:
     for joint in assembly.joints:
         cm = getattr(joint, 'connection', None)
         if cm is None:
+            # Prismatic joints are sliding interfaces — no fasteners (P0-3).
+            if joint.type == "prismatic":
+                continue
             # Fallback: default M3×10 per joint
             _add_default_fasteners(std_parts)
             continue
@@ -236,20 +239,47 @@ def _infer_standard_parts(assembly: Assembly) -> list[dict[str, Any]]:
 
 
 def _estimate_joint_grip(assembly: Assembly, joint) -> float:
-    """Estimate grip length for a joint from part dimensions."""
+    """Estimate bolt grip length for a joint from part dimensions.
+
+    The grip is the material thickness the bolt shank passes through.
+    Uses the same face-thickness logic as the CAD feature engine
+    (``ConnectionFeatureEngine._infer_thickness``) so BOM bolt lengths
+    match the actual drilled geometry.
+
+    P0-1 fix: previously this summed BOTH parent and child parts' height
+    (e.g. 20+35=55mm → M3×55), which was far too long.  The correct grip
+    is just the structural part's face thickness at the connection anchor.
+    """
+    from .connection_features import ConnectionFeatureEngine
+
     parts_by_name = {p.name: p for p in assembly.parts}
     parent = parts_by_name.get(joint.parent)
     child = parts_by_name.get(joint.child)
+    if not parent or not child:
+        return 10.0
 
-    grip = 0.0
-    for p in (parent, child):
-        if p is None:
-            continue
-        for k in ("thickness", "height"):
-            if k in p.dimensions:
-                grip += p.dimensions[k]
-                break
-    return max(grip, 3.0) if grip > 0 else 10.0
+    parent_d = parent.dimensions or {}
+    child_d = child.dimensions or {}
+
+    # Use the structural part's face thickness.  The structural part is
+    # the one with length/width (box-like); the cylindrical part (only
+    # diameter/height) is typically the motor/housing and the bolt goes
+    # through the plate/link, not the cylinder body.
+    for part, anchor, dims in [
+        (parent, joint.parent_anchor, parent_d),
+        (child, joint.child_anchor, child_d),
+    ]:
+        if "length" in dims or "width" in dims:
+            t = ConnectionFeatureEngine._infer_thickness(dims, anchor)
+            return max(t, 5.0)
+
+    # Both cylindrical — use height as a reasonable fallback
+    for dims in (parent_d, child_d):
+        h = dims.get("height", 0)
+        if h > 0:
+            return max(h, 8.0)
+
+    return 10.0
 
 
 def _add_default_fasteners(std_parts: list[dict[str, Any]]) -> None:

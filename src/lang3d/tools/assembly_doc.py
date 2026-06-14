@@ -23,6 +23,7 @@ from ..knowledge.sensors import get_sensor
 from ..models.base import ToolDefinition
 from .assembly_solver import _resolve_assembly
 from .base import Tool
+from .bom_gen import _estimate_joint_grip
 from .code_gen import _assign_pins
 
 
@@ -30,16 +31,27 @@ from .code_gen import _assign_pins
 # Assembly guide generation
 # ---------------------------------------------------------------------------
 
-def _connection_steps(joint) -> list[str]:
+def _connection_steps(joint, assembly: Assembly | None = None) -> list[str]:
     """Generate connection-method-specific assembly steps for a joint.
 
     Returns operation instruction strings.  Falls back to the legacy
     hardcoded M3×10 instructions when ``joint.connection`` is None
     (backward compatibility for assemblies without connection data).
+
+    When *assembly* is provided, bolt lengths are computed from actual
+    part dimensions (P0-1 fix) so step text matches the BOM.
     """
     cm = getattr(joint, "connection", None)
 
     if cm is None:
+        # Prismatic joints are sliding interfaces — intentionally no
+        # fastener.  Bolting them shut would prevent the gripper from
+        # opening/closing (P0-3 fix).
+        if joint.type == "prismatic":
+            return [
+                "对准线性导轨/滑槽，将手指滑入基座导轨",
+                "确认滑动顺畅、无卡顿——滑动配合，无需紧固件",
+            ]
         # Legacy fallback — preserve old behaviour.
         if joint.type == "revolute":
             return [
@@ -54,7 +66,13 @@ def _connection_steps(joint) -> list[str]:
         bolt_size = cm.bolt_size or "M3"
         bolt_count = cm.bolt_count or 4
         torque = cm.torque_nm or get_torque(bolt_size, "PLA")
-        bolt_length = int(recommend_bolt_length(10.0))
+        # P0-1 fix: bolt length from actual part dimensions so step text
+        # matches the BOM (previously hardcoded 10mm).
+        if assembly is not None:
+            grip = _estimate_joint_grip(assembly, joint)
+            bolt_length = int(recommend_bolt_length(grip))
+        else:
+            bolt_length = int(recommend_bolt_length(10.0))
         steps = [
             f"用 {bolt_size}×{bolt_length} 螺丝 + 螺母固定（{bolt_count} 个）",
             f"拧紧扭矩: {torque} N·m",
@@ -124,12 +142,18 @@ def _standard_parts_from_connections(assembly: Assembly) -> list[str]:
     for j in assembly.joints:
         cm = getattr(j, "connection", None)
         if cm is None:
+            # Prismatic joints are sliding interfaces — no fasteners (P0-3).
+            if j.type == "prismatic":
+                continue
             key = "M3×10"
             bolt_counts[key] = bolt_counts.get(key, 0) + 4
         elif cm.type == "bolted":
             size = cm.bolt_size or "M3"
             count = cm.bolt_count or 4
-            length = int(recommend_bolt_length(10.0))
+            # P0-1 fix: use the same grip calculation as the BOM so
+            # bolt lengths agree between BOM and assembly guide.
+            grip = _estimate_joint_grip(assembly, j)
+            length = int(recommend_bolt_length(grip))
             key = f"{size}×{length}"
             bolt_counts[key] = bolt_counts.get(key, 0) + count
         elif cm.type == "press_fit":
@@ -242,7 +266,7 @@ def generate_assembly_guide(
             lines.append(f"{step_idx}. 安装轴承（MR105ZZ × 2）")
             step_idx += 1
         # Connection-specific steps from the helper.
-        for step_text in _connection_steps(j):
+        for step_text in _connection_steps(j, assembly):
             # Skip bearing line if the helper already includes it (legacy fallback).
             if "轴承" in step_text and j.type == "revolute" and step_idx > 3:
                 continue

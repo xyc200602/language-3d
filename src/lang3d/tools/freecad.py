@@ -1141,6 +1141,20 @@ def _compute_bolt_hole_world_positions(
     structural = _pick_structural_part(parent_part, child_part)
     structural_name = structural.name
 
+    # Fallback: if the picked structural part is cylindrical (only
+    # diameter/height, no length/width face for bolt layout), try the
+    # other part.  This happens because _pick_structural_part is called
+    # with both categories set to "structural" (we don't have the real
+    # categories here), so name heuristics may pick a cylindrical joint
+    # over a box link.  The cylindrical part cannot receive a bolt layout.
+    _sd = part_dims.get(structural_name, {})
+    if "length" not in _sd and "width" not in _sd:
+        _other = child_part if structural is parent_part else parent_part
+        _od = part_dims.get(_other.name, {})
+        if "length" in _od or "width" in _od:
+            structural = _other
+            structural_name = structural.name
+
     is_structural_child = structural_name == child_name
     anchor = joint.child_anchor if is_structural_child else joint.parent_anchor
 
@@ -1148,7 +1162,7 @@ def _compute_bolt_hole_world_positions(
     if not d:
         return []
 
-    # Skip cylindrical parts (no length/width face for bolt layout)
+    # Skip if still cylindrical after fallback (both parts cylindrical)
     if "length" not in d and "width" not in d:
         return []
 

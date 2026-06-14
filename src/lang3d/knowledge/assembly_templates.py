@@ -174,9 +174,9 @@ _register(AssemblyTemplate(
         TemplatePartSpec("gripper_base", "structural", "夹爪基座", "PLA",
                          {"length": 28, "width": 50, "height": 32}),
         TemplatePartSpec("gripper_finger_left", "structural", "夹爪左手指", "PLA",
-                         {"length": 60, "width": 10, "height": 28}),
+                         {"length": 60, "width": 14, "height": 28}),
         TemplatePartSpec("gripper_finger_right", "structural", "夹爪右手指", "PLA",
-                         {"length": 60, "width": 10, "height": 28}),
+                         {"length": 60, "width": 14, "height": 28}),
     ],
     joints=[
         # joint1: base yaw — servo sits on base, rotates around Z

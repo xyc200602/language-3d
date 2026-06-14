@@ -643,6 +643,11 @@ class AssemblyToURDF:
             axis_el.set("xyz", " ".join(f"{v:.1f}" for v in joint.axis))
 
             if joint.type in ("revolute", "prismatic"):
+                # URDF spec order: dynamics before limit. Typical hobby-servo
+                # joint values; downstream can override via actuator catalog.
+                dynamics_el = ET.SubElement(joint_el, "dynamics")
+                dynamics_el.set("damping", "0.1")
+                dynamics_el.set("friction", "0.05")
                 limit_el = ET.SubElement(joint_el, "limit")
                 limit_el.set("lower", f"{joint.lower:.4f}")
                 limit_el.set("upper", f"{joint.upper:.4f}")
