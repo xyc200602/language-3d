@@ -964,6 +964,29 @@ class AssemblySolver:
             _mat_vec(anchor_rot, child_anchor_neg),
         )
 
+        # --- Center-anchor half-extent offset ---
+        # When child_anchor="center" but parent_anchor is a face anchor
+        # (top/bottom/front/back/left/right), child_anchor_neg is (0,0,0)
+        # so the child CENTER sits at the parent's face.  But the child has
+        # dimensions — half of it extends INTO the parent, causing visual
+        # intersection.  Push the child outward along the parent anchor
+        # normal by the child's half-extent so the child's near face
+        # aligns with the parent's face instead.
+        # center/center pairs (e.g. bearing press-fit) are excluded — those
+        # are intentionally concentric.
+        if joint.child_anchor == "center" and joint.parent_anchor != "center":
+            child_half = _half_extent(child_part, joint.parent_anchor)
+            if child_half > 0:
+                _center_normal = ANCHOR_DIRECTIONS.get(
+                    joint.parent_anchor, (0, 0, 1),
+                )
+                _center_normal_global = _mat_vec(parent_rot, _center_normal)
+                child_center = _vec_add(child_center, (
+                    _center_normal_global[0] * child_half,
+                    _center_normal_global[1] * child_half,
+                    _center_normal_global[2] * child_half,
+                ))
+
         # --- Revolute joint clearance ---
         # Movable joints (revolute/gear/belt) need a visible physical gap
         # between the parent face and the child face — this represents the

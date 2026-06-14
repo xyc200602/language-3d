@@ -611,6 +611,8 @@ def generate_assembly_from_nl(
     # Inject non-zero default_angles for arm postures if the LLM omitted them
     if is_arm:
         assembly = _ensure_arm_default_angles(assembly)
+        # Clamp disproportionate part dimensions for visual realism
+        assembly = _validate_proportions(assembly)
 
     # Validate the assembly
     _validate_assembly(assembly)
@@ -1202,39 +1204,28 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     left_joint.no_distribute = True
     right_joint.no_distribute = True
 
-    # Compute lateral gap from the parent (gripper base) width.
-    # The gap MUST be large enough that finger outer edges clearly exceed the
-    # parent half-width by a visible margin, otherwise the fingers are hidden
-    # behind the gripper_base block from front/iso/right render views and the
-    # VLM perceives a single "solid block" instead of a functional gripper.
+    # Compute lateral gap so fingers stay WITHIN the gripper base width
+    # and align with the rail grooves on the base front face.
+    # The finger bars extend FORWARD (FreeCAD +X → solver -Y after swap_xy)
+    # so visibility comes from forward protrusion, NOT lateral protrusion.
+    # Keeping fingers within the base width ensures the rail tabs engage
+    # with the rail grooves machined into the base front face.
     parent_part = parts_by_name.get(left_joint.parent)
-    gap = 18.0
-    z_lift = 0.0
+    gap = 16.0
     if parent_part and parent_part.dimensions:
         w = parent_part.dimensions.get("width",
                     parent_part.dimensions.get("depth", 40))
         finger_part = parts_by_name.get(left_joint.child)
         finger_w = 10.0
-        finger_h = 28.0
         if finger_part and finger_part.dimensions:
             finger_w = finger_part.dimensions.get("width", 10.0)
-            finger_h = finger_part.dimensions.get("height", 28.0)
-        # Target: finger outer edge must protrude at least 15mm beyond parent
-        # half-width so it is clearly visible in renders (not flush with the
-        # base block edge).  outer_edge = gap + finger_w/2 >= w/2 + 15.
-        min_visible_gap = w / 2.0 + finger_w / 2.0 + 15.0
-        gap = max(w * 0.5, min_visible_gap)
-        gap = max(18.0, min(gap, 50.0))
-
-        # Lift fingers along the arm direction (local Z) so they extend past
-        # the gripper_base block instead of being embedded inside it.  Without
-        # this lift, the fingers are at the same Z as the base center and are
-        # completely occluded by the opaque base block in front/iso/right
-        # renders — the VLM then reports "no gripper visible".
-        parent_h = parent_part.dimensions.get("height", 30)
-        z_lift = parent_h / 2.0  # finger center at base top face
-        # Ensure at least 10mm of finger extends past the base top.
-        z_lift = max(z_lift, parent_h / 2.0)
+        # Target: finger centers at ±16mm (matches LLM template offset).
+        # Inner faces at ±11mm → 22mm grip gap (good for grasping).
+        # Outer faces at ±21mm < base half-width (25mm for w=50).
+        # This keeps fingers connected to the base, not floating.
+        min_gap = finger_w / 2.0 + 6.0   # minimum 6mm clear grip gap
+        max_gap = w / 2.0 - 2.0           # finger stays within base
+        gap = max(min_gap, min(16.0, max_gap))
 
     # Separate fingers on X (lateral) so the finger bars extend forward (Y).
     #
@@ -1259,8 +1250,8 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     # direction, not forward/back along the arm.
     for j in (left_joint, right_joint):
         j.axis = "x"
-    left_joint.offset = (-gap, 0.0, z_lift)
-    right_joint.offset = (gap, 0.0, z_lift)
+    left_joint.offset = (-gap, 0.0, 0.0)
+    right_joint.offset = (gap, 0.0, 0.0)
 
     # Clear connection_method on prismatic finger joints — sliding interfaces
     # are not fastenings.  The LLM frequently marks them "bolted" which is
@@ -1293,9 +1284,79 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
 
     logger.info(
         "Sanitizer: normalized gripper fingers '%s'/'%s' — "
-        "anchors=center/center, axis=y, gap=±%.1fmm (Y)",
+        "anchors=center/center, axis=x, gap=±%.1fmm (X), z_lift=0",
         left_name, right_name, gap,
     )
+    return assembly
+
+
+def _validate_proportions(assembly: Assembly) -> Assembly:
+    """Validate and auto-correct part proportions for visual realism.
+
+    The LLM often generates disproportionate parts (e.g. a gripper_base
+    wider than the arm links it attaches to, or consecutive links with
+    wildly different lengths).  This sanitizer clamps extreme ratios so
+    the rendered assembly looks mechanically coherent.
+
+    Checks:
+    1. gripper_base width ≤ 1.8 × parent link width
+    2. Consecutive link length ratio < 3.0 (clamp to 2.5)
+    """
+    parts_by_name = {p.name: p for p in assembly.parts}
+
+    for joint in assembly.joints:
+        parent = parts_by_name.get(joint.parent)
+        child = parts_by_name.get(joint.child)
+        if not parent or not child:
+            continue
+        if not parent.dimensions or not child.dimensions:
+            continue
+
+        parent_w = parent.dimensions.get("width", 0)
+        child_w = child.dimensions.get("width", 0)
+        parent_l = parent.dimensions.get("length", 0)
+        child_l = child.dimensions.get("length", 0)
+
+        # Check 1: gripper_base width should not dwarf the parent link
+        child_nl = child.name.lower()
+        if ("gripper" in child_nl and "base" in child_nl
+                and parent_w > 0 and child_w > 0):
+            max_w = parent_w * 1.8
+            if child_w > max_w:
+                logger.info(
+                    "Proportion fix: gripper_base '%s' width %.0fmm > 1.8× "
+                    "parent '%s' width %.0fmm — clamped to %.0fmm",
+                    child.name, child_w, parent.name, parent_w, max_w,
+                )
+                child.dimensions["width"] = max_w
+
+        # Check 2: consecutive link length ratio
+        parent_nl = parent.name.lower()
+        if (parent_l > 0 and child_l > 0
+                and "link" in parent_nl and "link" in child_nl):
+            ratio = max(parent_l, child_l) / min(parent_l, child_l)
+            if ratio > 3.0:
+                if parent_l < child_l:
+                    # Child is too long — clamp down to parent_l * 2.5
+                    target = parent_l * 2.5
+                    logger.info(
+                        "Proportion fix: link '%s' length %.0fmm is %.1f× "
+                        "parent '%s' (%.0fmm) — clamped to %.0fmm",
+                        child.name, child_l, ratio,
+                        parent.name, parent_l, target,
+                    )
+                    child.dimensions["length"] = target
+                else:
+                    # Parent is longer — increase child to parent_l / 2.5
+                    target = parent_l / 2.5
+                    logger.info(
+                        "Proportion fix: link '%s' length %.0fmm vs parent "
+                        "'%s' (%.0fmm) ratio %.1f — increased to %.0fmm",
+                        child.name, child_l, parent.name, parent_l,
+                        ratio, target,
+                    )
+                    child.dimensions["length"] = target
+
     return assembly
 
 
@@ -1713,10 +1774,22 @@ _VLM_FIX_PROMPT = (
 def _geometric_prevalidation(
     parts: list[dict],
     positions: dict[str, dict],
+    joints: list[dict] | None = None,
 ) -> list[str]:
     """Deterministic geometric checks. Returns problem descriptions."""
     import math as _math
     problems = []
+
+    # Build adjacency set from joints (parent-child pairs are expected
+    # to be close — they are connected and should not trigger overlap warns)
+    _adjacent_pairs: set[tuple[str, str]] = set()
+    if joints:
+        for j in joints:
+            p = j.get("parent", "")
+            c = j.get("child", "")
+            if p and c:
+                _adjacent_pairs.add((p, c))
+                _adjacent_pairs.add((c, p))
 
     # 1. Collision proxy: parts at same position
     seen: dict[str, str] = {}
@@ -1826,6 +1899,46 @@ def _geometric_prevalidation(
                             f"lateral offset so fingers are clearly separated "
                             f"(>= 35mm gap)."
                         )
+
+    # 6. Bounding-box overlap detection for non-adjacent parts.
+    #    Parts connected by joints are expected to be close.  Non-adjacent
+    #    parts that are closer than 20% of their combined max dimension are
+    #    likely intersecting and should be flagged for the VLM fix loop.
+    _part_dims = {}
+    for p in parts:
+        pname = p.get("name", "")
+        pdims = p.get("dimensions", {})
+        if pname and pdims:
+            _part_dims[pname] = pdims
+    _pos_list = list(positions.items())
+    for i in range(len(_pos_list)):
+        na, da = _pos_list[i]
+        dims_a = _part_dims.get(na)
+        if not dims_a:
+            continue
+        pa = da["position"]
+        max_a = max(dims_a.values()) if dims_a else 20
+        for j_idx in range(i + 1, len(_pos_list)):
+            nb, db = _pos_list[j_idx]
+            if (na, nb) in _adjacent_pairs:
+                continue
+            dims_b = _part_dims.get(nb)
+            if not dims_b:
+                continue
+            pb = db["position"]
+            max_b = max(dims_b.values()) if dims_b else 20
+            dist = _math.sqrt(
+                (pa[0] - pb[0]) ** 2
+                + (pa[1] - pb[1]) ** 2
+                + (pa[2] - pb[2]) ** 2
+            )
+            min_sep = (max_a + max_b) * 0.20
+            if min_sep > 8 and dist < min_sep:
+                problems.append(
+                    f"Parts '{na}' and '{nb}' are {dist:.0f}mm apart but "
+                    f"have combined extent {max_a + max_b:.0f}mm — likely "
+                    f"overlapping. Check their anchors and offsets."
+                )
 
     return problems
 
@@ -2089,7 +2202,7 @@ def _vlm_check_assembly(
     passed = pass_count > total_views / 2
 
     # Geometric pre-validation as safety net
-    geo_problems = _geometric_prevalidation(parts, positions)
+    geo_problems = _geometric_prevalidation(parts, positions, joints)
     if geo_problems:
         passed = False
         for p in geo_problems:
@@ -2273,6 +2386,7 @@ def generate_assembly_with_vlm_loop(
             assembly = _normalize_gripper_fingers(assembly)
             if is_arm_check:
                 assembly = _ensure_arm_default_angles(assembly)
+                assembly = _validate_proportions(assembly)
             _validate_assembly(assembly)
 
         print(f"  Assembly: {assembly.name}, {len(assembly.parts)} parts, "

@@ -25,6 +25,8 @@ from lang3d.tools.assembly_generator import (
     _gripper_geometry_ok,
     _is_joint_like,
     _is_link_like,
+    _normalize_gripper_fingers,
+    _validate_proportions,
     EXAMPLE_ARM_STANDALONE,
     EXAMPLE_5DOF_ARM_REALISTIC,
     EXAMPLE_6DOF_BELT_DRIVE_ARM,
@@ -720,3 +722,134 @@ def test_examples_default_angles_nonzero():
         assert any(
             abs(float(v)) > 1e-6 for v in data["default_angles"].values()
         ), f"{data['name']} has all-zero default_angles"
+
+
+# ---------------------------------------------------------------------------
+# Structural quality fix tests (gripper gap, center anchor, proportions)
+# ---------------------------------------------------------------------------
+
+def test_gripper_fingers_gap_within_base():
+    """Gripper finger centers must stay within the base width so they
+    connect to the rail grooves instead of floating in space."""
+    base = _box("gripper_base", length=28, width=50, height=32)
+    lf = _box("gripper_finger_left", length=60, width=10, height=28)
+    rf = _box("gripper_finger_right", length=60, width=10, height=28)
+    asm = Assembly(
+        name="test",
+        parts=[base, lf, rf],
+        joints=[
+            Joint("prismatic", "gripper_base", "gripper_finger_left",
+                  parent_anchor="center", child_anchor="center"),
+            Joint("prismatic", "gripper_base", "gripper_finger_right",
+                  parent_anchor="center", child_anchor="center"),
+        ],
+    )
+    asm = _normalize_gripper_fingers(asm)
+    left = [j for j in asm.joints if j.child == "gripper_finger_left"][0]
+    right = [j for j in asm.joints if j.child == "gripper_finger_right"][0]
+
+    # Gap must be within the base half-width (25mm for w=50)
+    gap = abs(left.offset[0])
+    assert gap <= 22.0, f"Gap {gap}mm exceeds base half-width — fingers float"
+
+    # z_lift must be 0 — fingers at base center height, not floating above
+    assert left.offset[2] == 0.0, f"Left z_lift should be 0, got {left.offset[2]}"
+    assert right.offset[2] == 0.0, f"Right z_lift should be 0, got {right.offset[2]}"
+
+
+def test_fixed_joint_center_anchor_no_overlap():
+    """Center+face anchor should push child outside parent, not embed it."""
+    from lang3d.tools.assembly_solver import AssemblySolver
+
+    parent = _box("parent_block", length=60, width=40, height=20)
+    child = _box("child_cap", length=50, width=35, height=10)
+    asm = Assembly(
+        name="test",
+        parts=[parent, child],
+        joints=[
+            Joint("fixed", "parent_block", "child_cap",
+                  parent_anchor="top", child_anchor="center"),
+        ],
+    )
+    solver = AssemblySolver(asm)
+    positions = solver.solve()
+
+    parent_z = positions["parent_block"]["position"][2]
+    child_z = positions["child_cap"]["position"][2]
+    parent_top = parent_z + 10  # half of height=20
+
+    # Child center should be ABOVE parent top face by at least child_half (5mm)
+    assert child_z >= parent_top + 4.0, (
+        f"Child Z={child_z:.1f} should be >= {parent_top + 5:.1f} "
+        f"(parent top + child half-extent) — parts are intersecting"
+    )
+
+
+def test_center_center_bearing_unchanged():
+    """Center/center anchor (bearing press-fit) should NOT be offset."""
+    from lang3d.tools.assembly_solver import AssemblySolver
+
+    housing = _box("housing", length=40, width=40, height=20)
+    bearing = _cyl("bearing", diameter=22, height=7)
+    asm = Assembly(
+        name="test",
+        parts=[housing, bearing],
+        joints=[
+            Joint("fixed", "housing", "bearing",
+                  parent_anchor="center", child_anchor="center"),
+        ],
+    )
+    solver = AssemblySolver(asm)
+    positions = solver.solve()
+
+    h_z = positions["housing"]["position"][2]
+    b_z = positions["bearing"]["position"][2]
+
+    # Center/center: bearing should be concentric with housing (same Z)
+    assert abs(b_z - h_z) < 1.0, (
+        f"Bearing Z={b_z:.1f} should equal housing Z={h_z:.1f} "
+        f"for center/center press-fit"
+    )
+
+
+def test_proportion_validation_clamps_gripper_width():
+    """Gripper_base wider than 1.8× parent link should be clamped."""
+    wrist = _box("wrist_link", length=60, width=20, height=12)
+    gripper = _box("gripper_base", length=28, width=80, height=32)
+    asm = Assembly(
+        name="test",
+        parts=[wrist, gripper],
+        joints=[
+            Joint("fixed", "wrist_link", "gripper_base",
+                  parent_anchor="front", child_anchor="back"),
+        ],
+    )
+    result = _validate_proportions(asm)
+    gb = [p for p in result.parts if p.name == "gripper_base"][0]
+    assert gb.dimensions["width"] <= 36.0, (
+        f"Gripper width {gb.dimensions['width']} should be <= 36 "
+        f"(1.8 × wrist width 20)"
+    )
+
+
+def test_proportion_validation_link_length_ratio():
+    """Consecutive links with length ratio > 3.0 should be clamped."""
+    link1 = _box("upper_link", length=150, width=25, height=15)
+    link2 = _box("lower_link", length=30, width=25, height=15)
+    asm = Assembly(
+        name="test",
+        parts=[link1, link2],
+        joints=[
+            Joint("fixed", "upper_link", "lower_link",
+                  parent_anchor="front", child_anchor="back"),
+        ],
+    )
+    result = _validate_proportions(asm)
+    ll = [p for p in result.parts if p.name == "lower_link"][0]
+    # Ratio was 5.0, should be clamped so ratio <= 2.5
+    # upper_link=150, so lower_link should be at least 150/2.5 = 60
+    assert ll.dimensions["length"] >= 60.0, (
+        f"Lower link length {ll.dimensions['length']} should be >= 60 "
+        f"(upper_link 150 / 2.5 max ratio)"
+    )
+

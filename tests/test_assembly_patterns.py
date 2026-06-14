@@ -470,17 +470,18 @@ class TestExample4DofArmTopology:
         assert joint["type"] == "revolute"
         assert joint["axis"] == "z"
 
-    def test_has_wrist_roll_z(self, arm):
-        # wrist_joint -> wrist_link must be revolute around Z (wrist roll).
-        # In the vertical arm geometry the arm extends along Z, so the roll
-        # axis (spinning the end effector about the arm direction) is Z.
+    def test_has_wrist_roll_y(self, arm):
+        # wrist_joint -> wrist_link must be revolute around Y (wrist roll).
+        # In the horizontal arm geometry the arm extends along Y (front/back
+        # anchors), so the roll axis (spinning the end effector about the
+        # arm direction) is Y.
         wrist = [
             j for j in arm["joints"]
             if j["parent"] == "wrist_joint" and j["child"] == "wrist_link"
         ]
         assert len(wrist) == 1
         assert wrist[0]["type"] == "revolute"
-        assert wrist[0]["axis"] == "z"
+        assert wrist[0]["axis"] == "y"
 
     def test_elbow_to_elbow_link_is_fixed(self, arm):
         # Motor housing -> output link must be fixed, not a phantom revolute DOF
