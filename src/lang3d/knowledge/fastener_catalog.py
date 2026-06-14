@@ -175,6 +175,7 @@ class TapHoleSpec:
 
 # Socket head cap screws — DIN 912 / ISO 4762
 BOLT_SPECS: dict[str, BoltSpec] = {
+    "M1.6": BoltSpec("M1.6", 1.6, 0.35, 3.00, 1.60, 1.25, 0.85),
     "M2":   BoltSpec("M2",   2.0, 0.40, 3.80, 2.00, 1.5, 1.0),
     "M2.5": BoltSpec("M2.5", 2.5, 0.45, 4.50, 2.50, 2.0, 1.2),
     "M3":   BoltSpec("M3",   3.0, 0.50, 5.50, 3.00, 2.5, 1.3),
@@ -282,6 +283,7 @@ SPRING_PIN_SPECS: dict[str, DowelPinSpec] = {
 
 # Clearance holes — ISO 273
 CLEARANCE_HOLE_SPECS: dict[str, ClearanceHoleSpec] = {
+    "M1.6": ClearanceHoleSpec("M1.6", 2.0, 1.85, 2.2),
     "M2":   ClearanceHoleSpec("M2",   2.4, 2.2, 2.8),
     "M2.5": ClearanceHoleSpec("M2.5", 2.9, 2.7, 3.3),
     "M3":   ClearanceHoleSpec("M3",   3.4, 3.2, 3.9),

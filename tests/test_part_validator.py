@@ -141,7 +141,7 @@ class TestSTLValidation:
     """Verify STL file validation logic."""
 
     def test_missing_file_fails(self):
-        ok, size, err = _validate_stl("/nonexistent/path.stl")
+        ok, size, err, _quality = _validate_stl("/nonexistent/path.stl")
         assert not ok
         assert size == 0
         assert "not found" in err
@@ -149,17 +149,20 @@ class TestSTLValidation:
     def test_too_small_fails(self, tmp_path):
         stl = tmp_path / "tiny.stl"
         stl.write_bytes(b"solid\nendsolid\n")
-        ok, size, err = _validate_stl(str(stl))
+        ok, size, err, _quality = _validate_stl(str(stl))
         assert not ok
         assert "too small" in err
 
     def test_valid_stl_passes(self, tmp_path):
         stl = tmp_path / "valid.stl"
         stl.write_bytes(b"x" * 5000)
-        ok, size, err = _validate_stl(str(stl))
+        ok, size, err, quality = _validate_stl(str(stl))
         assert ok
         assert size == 5000
         assert err == ""
+        # trimesh cannot parse 5000 bytes of 'x' — geometric check must
+        # degrade gracefully instead of blocking the pipeline.
+        assert quality.get("checked") is False
 
 
 # ============================================================================

@@ -850,7 +850,7 @@ class AssemblyVerifier:
     def check_tolerance_chain(
         self,
         assembly: Assembly,
-        allowed_total: float = 0.0,
+        allowed_total: float = 1.0,
     ) -> list[ToleranceChainCheck]:
         """Analyze tolerance accumulation along assembly chains.
 

@@ -51,6 +51,12 @@ class PartValidationResult:
     vlm_observed: str = ""
     vlm_match: bool | None = None
     vlm_error: str = ""
+    # trimesh geometric analysis (watertight, winding, body_count, ...).
+    # Populated only when trimesh was able to load the STL; empty dict means
+    # the geometric check was skipped (e.g. trimesh import failed or the
+    # file could not be parsed).  Never blocks the pipeline on its own —
+    # only ``watertight=False`` flips the part to FAIL.
+    quality: dict[str, Any] = field(default_factory=dict)
 
     @property
     def stl_size_kb(self) -> float:
@@ -95,6 +101,7 @@ class BatchValidationReport:
                     "vlm_verified": r.vlm_verified,
                     "vlm_match": r.vlm_match,
                     "vlm_error": r.vlm_error,
+                    "quality": r.quality,
                     "error": r.freecad_error,
                 }
                 for r in self.results
@@ -160,19 +167,97 @@ _MIN_STL_BYTES = 100  # anything smaller is likely garbage
 _MAX_STL_BYTES = 100 * 1024 * 1024  # 100 MB sanity cap
 
 
-def _validate_stl(stl_path: str) -> tuple[bool, int, str]:
-    """Check STL file exists and has reasonable size.
+def _validate_stl(stl_path: str) -> tuple[bool, int, str, dict[str, Any]]:
+    """Check STL file exists, has reasonable size, and run geometric checks.
 
-    Returns (ok, size_bytes, error_message).
+    After the size gate passes, loads the STL via trimesh and inspects:
+
+    - ``mesh.is_watertight`` — closed surface, no holes (FAIL if False)
+    - ``mesh.is_winding_consistent`` — face normals agree (warning only)
+    - ``mesh.split()`` length — multiple disjoint bodies (warning only)
+
+    The geometric results are returned in the ``quality`` dict so they can
+    be attached to the ``PartValidationResult`` and serialized into the
+    validation report JSON.
+
+    trimesh failures (import error, parse error) are logged as warnings
+    and degrade gracefully — they never block the pipeline.  Only a
+    successfully-loaded non-watertight mesh flips ``ok`` to False.
+
+    Returns ``(ok, size_bytes, error_message, quality)``.
     """
+    quality: dict[str, Any] = {}
     if not os.path.isfile(stl_path):
-        return False, 0, f"STL file not found: {stl_path}"
+        return False, 0, f"STL file not found: {stl_path}", quality
     size = os.path.getsize(stl_path)
     if size < _MIN_STL_BYTES:
-        return False, size, f"STL too small ({size} bytes, minimum {_MIN_STL_BYTES})"
+        return False, size, f"STL too small ({size} bytes, minimum {_MIN_STL_BYTES})", quality
     if size > _MAX_STL_BYTES:
-        return False, size, f"STL suspiciously large ({size} bytes)"
-    return True, size, ""
+        return False, size, f"STL suspiciously large ({size} bytes)", quality
+
+    # ---- trimesh geometric analysis (graceful degradation) ----
+    try:
+        import trimesh
+        # process=True is required for is_watertight / split() to work —
+        # STL stores each triangle with its own vertices, so the loader
+        # must merge duplicates to recover the true topology.
+        mesh = trimesh.load(stl_path, force="mesh", process=True)
+        # trimesh may return a Scene or list for multi-body files; coerce
+        # to a single Trimesh by concatenating.
+        if not isinstance(mesh, trimesh.Trimesh):
+            try:
+                mesh = trimesh.util.concatenate(
+                    [m for m in (mesh.geometry.values()
+                                 if hasattr(mesh, "geometry")
+                                 else [mesh])
+                     if isinstance(m, trimesh.Trimesh)]
+                )
+            except Exception:
+                mesh = None
+        if mesh is None or len(getattr(mesh, "vertices", [])) == 0:
+            quality["checked"] = False
+            quality["error"] = "trimesh returned empty mesh"
+            logger.warning(
+                "trimesh loaded no geometry for %s — skipping geometric checks",
+                stl_path,
+            )
+            return True, size, "", quality
+
+        bodies = mesh.split() if hasattr(mesh, "split") else [mesh]
+        body_count = len(bodies) if bodies is not None else 1
+
+        quality["checked"] = True
+        quality["watertight"] = bool(mesh.is_watertight)
+        quality["winding_consistent"] = bool(mesh.is_winding_consistent)
+        quality["body_count"] = int(body_count)
+        quality["vertex_count"] = int(len(mesh.vertices))
+        quality["triangle_count"] = int(len(mesh.faces))
+
+        if not quality["watertight"]:
+            return False, size, (
+                f"mesh not watertight (bodies={body_count}, "
+                f"tris={quality['triangle_count']}, "
+                f"winding={quality['winding_consistent']})"
+            ), quality
+
+        if body_count > 1:
+            logger.warning(
+                "STL %s contains %d disjoint bodies (winding_consistent=%s)",
+                os.path.basename(stl_path), body_count, quality["winding_consistent"],
+            )
+        if not quality["winding_consistent"]:
+            logger.warning(
+                "STL %s has inconsistent face winding", os.path.basename(stl_path),
+            )
+    except Exception as e:
+        quality["checked"] = False
+        quality["error"] = f"{type(e).__name__}: {e}"
+        logger.warning(
+            "trimesh geometry check skipped for %s: %s",
+            os.path.basename(stl_path), e,
+        )
+
+    return True, size, "", quality
 
 
 # ============================================================================
@@ -245,7 +330,7 @@ def validate_part(
         ok, stdout, stderr = _run_and_check(ops, stl_path, workspace, timeout)
 
         if ok:
-            stl_ok, stl_size, stl_err = _validate_stl(stl_path)
+            stl_ok, stl_size, stl_err, quality = _validate_stl(stl_path)
             if stl_ok:
                 result.passed = True
                 result.stl_path = stl_path
@@ -253,6 +338,7 @@ def validate_part(
                 result.freecad_stdout = stdout
                 result.simplification_level = level
                 result.simplification_note = note
+                result.quality = quality
                 logger.info(
                     "Part '%s' PASSED at simplification level %d (%s, %d KB)",
                     part.name, level, note, stl_size // 1024,

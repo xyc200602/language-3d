@@ -2,7 +2,7 @@
   "total_parts": 41,
   "total_pairs": 780,
   "collision_free": false,
-  "total_collisions": 20,
+  "total_collisions": 16,
   "severe_collisions": 0,
   "collision_details": [
     {
@@ -62,30 +62,6 @@
     {
       "part_a": "top_plate",
       "part_b": "arm_r_upper_link",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "wheel_fl",
-      "part_b": "encoder_fl",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "wheel_fr",
-      "part_b": "encoder_fr",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "wheel_rl",
-      "part_b": "encoder_rl",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "wheel_rr",
-      "part_b": "encoder_rr",
       "penetration_mm": 0.0,
       "contact_points": 1
     },

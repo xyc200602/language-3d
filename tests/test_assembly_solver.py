@@ -307,7 +307,17 @@ class TestRevoluteJoint:
                           parent_anchor="top", child_anchor="bottom")],
         )).solve()
 
-        assert p0["arm"]["position"] == pytest.approx(pf["arm"]["position"], abs=0.01)
+        # Revolute joints include a clearance gap (bearing interface) that
+        # fixed joints don't — see _compute_child_transform in
+        # assembly_solver.py.  At angle=0 the ONLY positional difference
+        # should be this clearance along the anchor normal (+Z for "top").
+        _expected_clearance = max(3.0, min(8.0, 20 * 0.12))  # parent_h=20
+        assert p0["arm"]["position"][0] == pytest.approx(
+            pf["arm"]["position"][0], abs=0.01)
+        assert p0["arm"]["position"][1] == pytest.approx(
+            pf["arm"]["position"][1], abs=0.01)
+        assert p0["arm"]["position"][2] == pytest.approx(
+            pf["arm"]["position"][2] + _expected_clearance, abs=0.01)
 
     def test_nonzero_angle_changes_rotation(self):
         parts = [

@@ -654,13 +654,15 @@ def _add_fasteners_for_joints(
     positions: dict[str, dict],
     parts: list[dict],
 ) -> None:
-    """Add bolt/washer/nut cylinders at bolted joints for VTK rendering.
+    """Add bolt/washer/nut cylinders at REAL bolt hole positions for VTK rendering.
 
-    Mirrors the FreeCAD ``_fastener_script_lines`` logic so the VTK render
-    shows the same fasteners that appear in the exported CAD assembly.
-    Prismatic joints are skipped (sliding interface, no bolts).
+    Uses :func:`_compute_bolt_hole_world_positions` to place each fastener at
+    the actual hole location on the structural part's anchor face, oriented
+    along the face normal.  This replaces the previous midpoint + circular
+    approximation which placed fasteners between parent and child centres
+    rather than at the drilled holes.
     """
-    from .freecad import _FASTENER_DIMS
+    from .freecad import _FASTENER_DIMS, _compute_bolt_hole_world_positions
 
     # Build part dimensions lookup: name -> dimensions dict
     part_dims: dict[str, dict] = {}
@@ -671,78 +673,91 @@ def _add_fasteners_for_joints(
 
     for joint in joints or []:
         conn = getattr(joint, "connection", None)
-        if conn is None:
-            continue
-        if getattr(conn, "type", "") != "bolted":
+        if conn is None or getattr(conn, "type", "") != "bolted":
             continue
         if getattr(joint, "type", "") == "prismatic":
             continue
 
-        parent_name = getattr(joint, "parent", "")
-        child_name = getattr(joint, "child", "")
-        pp = positions.get(parent_name, {}).get("position", [0, 0, 0])
-        cp = positions.get(child_name, {}).get("position", [0, 0, 0])
+        # Compute world-space bolt hole positions from the structural part's
+        # connection feature layout (same holes that were drilled in the STL).
+        bolt_holes = _compute_bolt_hole_world_positions(joint, positions, part_dims)
+        if not bolt_holes:
+            continue
 
-        cx = (pp[0] + cp[0]) / 2.0
-        cy = (pp[1] + cp[1]) / 2.0
-        cz = (pp[2] + cp[2]) / 2.0
-
-        pd = part_dims.get(parent_name, {})
-        cd = part_dims.get(child_name, {})
-        pw = pd.get("width", pd.get("diameter", 30))
-        cw = cd.get("width", cd.get("diameter", 30))
-        radius = max(min(pw, cw) * 0.35, 6.0)
-
-        bolt_size = getattr(conn, "bolt_size", "M3")
-        count = getattr(conn, "bolt_count", 2) or 2
+        bolt_size = getattr(conn, "bolt_size", "M3") or "M3"
         dims = _FASTENER_DIMS.get(bolt_size, _FASTENER_DIMS["M3"])
         head_r, head_h, shank_r, washer_r, washer_h, nut_r, nut_h = dims
 
-        ph = pd.get("height", pd.get("diameter", 15))
-        ch = cd.get("height", cd.get("diameter", 15))
-        length = max(ph + ch + nut_h + washer_h, 12.0)
+        for world_pos, normal, thickness in bolt_holes:
+            # Bolt length: grip thickness + washer + nut engagement
+            length = max(thickness + washer_h + nut_h + 2.0, 12.0)
 
-        for b in range(count):
-            ang = 2.0 * math.pi * b / count
-            bx = cx + radius * math.cos(ang)
-            by = cy + radius * math.sin(ang)
+            # Rotation to align default-Z cylinder with the anchor normal.
+            rot = _rotation_from_z_to(normal)
 
-            # VTK cylinders are centred at *position*; the FreeCAD script
-            # uses the cylinder base.  Convert base-Z → centre-Z by adding
-            # half the height.
-            head_base_z = cz + length / 2.0
-            shank_base_z = cz - length / 2.0
+            nx, ny, nz = normal
+            px, py, pz = world_pos
+            half_len = length / 2.0
 
-            # Bolt head
+            # Bolt head: sits on the exterior (+normal side) of the face.
+            head_d = half_len + head_h / 2.0
             renderer.add_cylinder(
                 radius=head_r, height=head_h,
                 color=(0.80, 0.80, 0.82),
-                position=(bx, by, head_base_z + head_h / 2.0),
+                position=(px + nx * head_d, py + ny * head_d, pz + nz * head_d),
+                rotation=rot,
                 category="bearing",
             )
-            # Bolt shank
+            # Bolt shank: centred on the hole, running along the normal.
             renderer.add_cylinder(
                 radius=shank_r, height=length,
                 color=(0.75, 0.75, 0.78),
-                position=(bx, by, shank_base_z + length / 2.0),
+                position=(px, py, pz),
+                rotation=rot,
                 category="bearing",
             )
-            # Washer
-            washer_base_z = head_base_z - washer_h
+            # Washer: on the interior (−normal side) of the face.
+            washer_d = half_len + washer_h / 2.0
             renderer.add_cylinder(
                 radius=washer_r, height=washer_h,
                 color=(0.70, 0.70, 0.72),
-                position=(bx, by, washer_base_z + washer_h / 2.0),
+                position=(px - nx * washer_d, py - ny * washer_d, pz - nz * washer_d),
+                rotation=rot,
                 category="bearing",
             )
-            # Nut
-            nut_base_z = shank_base_z - nut_h
+            # Nut: beyond the washer on the interior side.
+            nut_d = half_len + washer_h + nut_h / 2.0
             renderer.add_cylinder(
                 radius=nut_r, height=nut_h,
                 color=(0.65, 0.65, 0.68),
-                position=(bx, by, nut_base_z + nut_h / 2.0),
+                position=(px - nx * nut_d, py - ny * nut_d, pz - nz * nut_d),
+                rotation=rot,
                 category="bearing",
             )
+
+
+def _rotation_from_z_to(
+    normal: tuple[float, float, float],
+) -> tuple[float, float, float, float] | None:
+    """Axis-angle rotation that maps the +Z direction to *normal*.
+
+    VTK cylinders are created along Z (after the internal RotateX(90)).
+    This returns the (ax, ay, az, angle_deg) tuple to pass to
+    ``add_cylinder(rotation=...)`` so the cylinder aligns with *normal*.
+    Returns None when no rotation is needed (normal already ≈ +Z).
+    """
+    nx, ny, nz = normal
+    dot = nz  # cos(angle) since |(0,0,1)| = 1 and |normal| = 1
+    if dot > 0.9999:
+        return None
+    if dot < -0.9999:
+        # 180° rotation — any horizontal axis works; use X.
+        return (1.0, 0.0, 0.0, 180.0)
+    # Rotation axis = (0,0,1) × normal = (-ny, nx, 0)
+    ax_raw, ay_raw = -ny, nx
+    al = math.sqrt(ax_raw * ax_raw + ay_raw * ay_raw)
+    angle = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+    return (ax_raw / al, ay_raw / al, 0.0, angle)
 
 
 def _symmetrize_gripper_fingers(

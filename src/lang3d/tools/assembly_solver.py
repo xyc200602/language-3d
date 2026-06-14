@@ -963,6 +963,29 @@ class AssemblySolver:
             parent_anchor_global,
             _mat_vec(anchor_rot, child_anchor_neg),
         )
+
+        # --- Revolute joint clearance ---
+        # Movable joints (revolute/gear/belt) need a visible physical gap
+        # between the parent face and the child face — this represents the
+        # bearing/shaft interface that allows rotation.  Without it, parts
+        # sit flush against each other and look "fused" in renders.
+        # The clearance is proportional to the parent's height so it
+        # scales naturally across large bases and small servos.
+        if joint.type in ("revolute", "gear", "belt"):
+            parent_h = parent_part.dimensions.get(
+                "height", parent_part.dimensions.get("length", 20.0),
+            )
+            _clearance_mm = max(3.0, min(8.0, parent_h * 0.12))
+            _anchor_normal_local = ANCHOR_DIRECTIONS.get(
+                joint.parent_anchor, (0, 0, 1),
+            )
+            _anchor_normal_global = _mat_vec(parent_rot, _anchor_normal_local)
+            child_center = _vec_add(child_center, (
+                _anchor_normal_global[0] * _clearance_mm,
+                _anchor_normal_global[1] * _clearance_mm,
+                _anchor_normal_global[2] * _clearance_mm,
+            ))
+
         # Add explicit offset (rotated by anchor rotation so it moves with the joint)
         joint_offset = joint.offset or (0, 0, 0)
         rotated_offset = _mat_vec(anchor_rot, joint_offset)

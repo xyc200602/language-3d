@@ -1,7 +1,7 @@
 {
   "requirement": "设计一个 3 自由度桌面机械臂，工作半径 300mm，负载 200g，用 SG90 舵机",
   "all_passed": true,
-  "total_time_ms": 178.0,
+  "total_time_ms": 160.9,
   "stages": [
     {
       "name": "Assembly Definition",
@@ -17,7 +17,7 @@
     {
       "name": "Assembly Solving",
       "success": true,
-      "duration_ms": 0.2,
+      "duration_ms": 0.1,
       "details": {
         "parts_positioned": 8
       },
@@ -26,11 +26,11 @@
     {
       "name": "Inverse Kinematics",
       "success": true,
-      "duration_ms": 176.8,
+      "duration_ms": 159.7,
       "details": {
         "targets_tested": 4,
         "reachable": 4,
-        "avg_error_mm": 1.98
+        "avg_error_mm": 1.97
       },
       "error": null
     },

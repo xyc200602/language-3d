@@ -235,9 +235,10 @@ class TestFastenerSetRecommendation:
 class TestUtilityFunctions:
     def test_list_available_sizes(self):
         sizes = list_available_sizes()
+        assert "M1.6" in sizes
         assert "M3" in sizes
         assert "M6" in sizes
-        assert len(sizes) == 9
+        assert len(sizes) == 10
 
     def test_validate_size(self):
         assert validate_size("M3") is True

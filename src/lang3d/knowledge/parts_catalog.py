@@ -3348,6 +3348,58 @@ PART_CATALOG: dict[str, PartTemplate] = {
         ],
     ),
 
+    "bearing_626": PartTemplate(
+        id="bearing_626",
+        name_en="626 Deep Groove Ball Bearing",
+        name_cn="626 深沟球轴承",
+        category="bearing",
+        subcategory="ball_bearing",
+        description="626 系列深沟球轴承，6mm内径，小型电机/传动常用",
+        tags=["轴承", "626", "深沟球", "bearing", "small motor"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="626-2RS",
+        parameters=[
+            ParamDef("inner_diameter", "内径", "mm", 6, 1, 100, 1),
+            ParamDef("outer_diameter", "外径", "mm", 19, 5, 200, 1),
+            ParamDef("width", "宽度", "mm", 6, 1, 50, 1),
+            ParamDef("bearing_detail", "轴承细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("ball_count", "滚珠数量", "", 0, 0, 50, 1),
+        ],
+        fc_script_template=_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"inner_diameter": 6, "outer_diameter": 19, "width": 6},
+        ],
+    ),
+
+    "bearing_688": PartTemplate(
+        id="bearing_688",
+        name_en="688 Deep Groove Ball Bearing",
+        name_cn="688 深沟球轴承",
+        category="bearing",
+        subcategory="ball_bearing",
+        description="688 系列微型深沟球轴承，8mm内径薄型，小型滑轮/微型电机常用",
+        tags=["轴承", "688", "深沟球", "bearing", "miniature", "thin section"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various", model_number="688-2RS",
+        parameters=[
+            ParamDef("inner_diameter", "内径", "mm", 8, 1, 100, 1),
+            ParamDef("outer_diameter", "外径", "mm", 16, 5, 200, 1),
+            ParamDef("width", "宽度", "mm", 4, 1, 50, 1),
+            ParamDef("bearing_detail", "轴承细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+            ParamDef("ball_count", "滚珠数量", "", 0, 0, 50, 1),
+        ],
+        fc_script_template=_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"inner_diameter": 8, "outer_diameter": 16, "width": 4},
+        ],
+    ),
+
     "servo_sg90": PartTemplate(
         id="servo_sg90",
         name_en="SG90 Micro Servo",
@@ -4482,6 +4534,33 @@ PART_CATALOG: dict[str, PartTemplate] = {
     ),
 
     # ---- Task 74: Linear motion & advanced actuator parts ----
+
+    "linear_bearing_lm6uu": PartTemplate(
+        id="linear_bearing_lm6uu",
+        name_en="LM6UU Linear Ball Bearing",
+        name_cn="LM6UU 直线球轴承",
+        category="bearing",
+        subcategory="linear_bearing",
+        description="LM6UU 直线运动球轴承，用于 6mm 光轴上的直线往复运动，微型3D打印机/CNC常用",
+        tags=["直线轴承", "LM6UU", "linear bearing", "ball bearing", "直线运动", "3D printer"],
+        part_class="functional", scalable=False, real_part=True,
+        manufacturer="Various (MISUMI/THK clone)", model_number="LM6UU",
+        parameters=[
+            ParamDef("inner_diameter", "内径", "mm", 6.0, 4, 60, 0.1, fixed=True),
+            ParamDef("outer_diameter", "外径", "mm", 12.0, 8, 62, 0.1, fixed=True),
+            ParamDef("length", "长度", "mm", 19.0, 10, 80, 0.5, fixed=True),
+            ParamDef("ball_count", "滚珠数", "", 0, 0, 50, 1, fixed=True),
+            ParamDef("bearing_detail", "细节", param_type="string",
+                     choices=["simplified", "realistic"], default="simplified"),
+        ],
+        fc_script_template=_LINEAR_BEARING_SCRIPT,
+        fc_script_alternatives={"realistic": _LINEAR_BEARING_REALISTIC_SCRIPT},
+        quality_levels=["simplified", "realistic"],
+        standard_sizes=[
+            {"inner_diameter": 6.0, "outer_diameter": 12.0, "length": 19.0},
+        ],
+        notes="LM6UU用于6mm光轴。最小型直线轴承，适合紧凑型机构。",
+    ),
 
     "linear_bearing_lm8uu": PartTemplate(
         id="linear_bearing_lm8uu",
@@ -6010,6 +6089,26 @@ MOUNTING_INTERFACES: dict[str, MountingInterface] = {
         shoulder_diameter=18.0,
         shoulder_depth=0.8,
     ),
+    "bearing_626": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(0.0, 1.0, 0.0),
+        bore_diameter=19.0,
+        bore_depth=6.0,
+        press_fit_interference=0.04,
+        shoulder_diameter=22.0,
+        shoulder_depth=0.8,
+    ),
+    "bearing_688": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(0.0, 1.0, 0.0),
+        bore_diameter=16.0,
+        bore_depth=4.0,
+        press_fit_interference=0.03,
+        shoulder_diameter=18.0,
+        shoulder_depth=0.6,
+    ),
 
     # ---- Sensors ----
     "sensor_rplidar_a1": MountingInterface(
@@ -6265,6 +6364,15 @@ MOUNTING_INTERFACES: dict[str, MountingInterface] = {
         bore_depth=24.0,
         press_fit_interference=0.02,
         notes="LM8UU直线轴承。外径压入壳体孔。内径8mm配光轴。",
+    ),
+    "linear_bearing_lm6uu": MountingInterface(
+        interface_type="press_fit",
+        contact_face="side",
+        contact_face_normal=(1.0, 0.0, 0.0),
+        bore_diameter=12.0,
+        bore_depth=19.0,
+        press_fit_interference=0.02,
+        notes="LM6UU直线轴承。外径压入壳体孔。内径6mm配光轴。",
     ),
     "linear_bearing_lm10uu": MountingInterface(
         interface_type="press_fit",
@@ -6887,7 +6995,7 @@ _SUBSYSTEM_COMPAT: dict[str, list[str]] = {
                       "spider_coupling", "bellows_coupling",
                       "flexible_coupling", "nema17_stepper", "nema23_stepper",
                       "linear_shaft", "hub_adapter"],
-    "linear_motion": ["linear_bearing_lm8uu", "linear_bearing_lm10uu", "linear_bearing_lm12uu",
+    "linear_motion": ["linear_bearing_lm6uu", "linear_bearing_lm8uu", "linear_bearing_lm10uu", "linear_bearing_lm12uu",
                        "linear_guide_mgn12h", "t8_leadscrew", "t8_nut",
                        "linear_shaft", "nema17_stepper", "nema23_stepper",
                        "bldc_motor_5010", "bldc_motor_2208",

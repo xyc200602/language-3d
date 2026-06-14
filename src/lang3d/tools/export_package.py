@@ -229,6 +229,14 @@ def build_complex_robot() -> Assembly:
               parent_anchor="top", child_anchor="bottom", offset=(0, 0, 80)),
     ])
 
+    # Apply default ConnectionMethod to any joint that lacks one so the
+    # connection feature engine (bolt holes, bearing seats) fires on
+    # hand-authored assemblies the same way it does on LLM-generated ones.
+    # Without this, build_complex_robot()'s 41 parts would ship with STLs
+    # that have no mounting holes even though the BOM lists 100+ fasteners.
+    from .assembly_generator import apply_default_connection_methods
+    apply_default_connection_methods(joints)
+
     return Assembly(
         name="4-Wheel Mobile Robot with Dual Arms",
         description="4轮差速底盘移动机器人 + 工控机 + 双 3-DOF 机械臂",
@@ -527,7 +535,7 @@ def export_engineering_package(
     mass_result = ctx.ensure_mass()
 
     # ---- Step 3: Generate FreeCAD scripts ----
-    from .freecad import _build_script, _build_batch_script
+    from .freecad import _build_script, _build_batch_script, _run_freecad_script
     fc_dir = output_dir / "freecad_scripts"
     fc_dir.mkdir(parents=True, exist_ok=True)
 
@@ -632,6 +640,43 @@ def export_engineering_package(
                 )
         except Exception as e:
             logger.warning("FreeCAD part validation skipped: %s", e)
+
+    # ---- Step 4b: Export per-part STEP files ----
+    # STEP (B-rep) exports give downstream CAD tools (SolidWorks, Fusion 360,
+    # KiCad MCAD, FreeCAD itself) precise geometry instead of tessellated
+    # STL meshes.  Reuses the existing ``export_step`` op handler in
+    # ``_build_script`` — appends one op per part to the same geometry ops
+    # already produced above (with simplifications applied during Step 3a).
+    step_dir = output_dir / "step_parts"
+    step_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from .freecad import _find_freecad_python
+        if _find_freecad_python():
+            step_ok, step_total = 0, len(assembly.parts)
+            for i, part in enumerate(assembly.parts):
+                # Strip the STL export op so the script only writes STEP —
+                # avoids regenerating STLs we already have.
+                step_ops = [op for op in all_part_ops[i]
+                            if op.get("type") != "export_stl"]
+                step_path = step_dir / f"{part.name}.step"
+                step_ops.append({"type": "export_step", "path": str(step_path)})
+                step_script = _build_script(step_ops).replace(
+                    "{WORKSPACE}", str(fc_dir.parent).replace("\\", "/"))
+                try:
+                    _run_freecad_script(step_script, timeout=120)
+                    if step_path.exists():
+                        step_ok += 1
+                        generated_files.append(str(step_path))
+                except Exception as e:
+                    logger.warning(
+                        "STEP export failed for '%s': %s", part.name, e,
+                    )
+            logger.info(
+                "STEP export: %d/%d parts written to %s",
+                step_ok, step_total, step_dir,
+            )
+    except Exception as e:
+        logger.warning("STEP export skipped: %s", e)
 
     # ---- Step 3b: Render assembly ----
     from .freecad import (
@@ -1070,6 +1115,8 @@ def export_engineering_package(
 ├── cable_routing_report.md       # 电缆走线报告
 ├── urdf.xml                      # URDF 机器人描述文件
 ├── freecad_scripts/              # FreeCAD 建模脚本 ({len(assembly.parts)} 个零件)
+├── stl_parts/                    # STL 网格 (3D打印用)
+├── step_parts/                   # STEP B-rep 模型 (CAD 互操作)
 ├── firmware/                     # 固件代码
 │   ├── robot_arm.ino             # 机械臂主程序
 │   ├── ik_solver.h               # 逆运动学求解器

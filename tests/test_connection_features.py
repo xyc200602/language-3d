@@ -473,12 +473,30 @@ class TestPickStructuralPart:
         assert _pick_structural_part(sensor, mount) == mount
 
     def test_name_based_detection(self):
-        """Parts with motor/servo in name are treated as functional."""
-        servo = Part("arm_servo_holder", "structural", "Servo holder")
+        """Parts with motor/servo as a whole-word token (and no structural
+        indicator such as mount/bracket/holder) are treated as functional.
+
+        This codifies the audit-E fix: ``motor_mount_bracket`` and
+        ``arm_servo_holder`` are STRUCTURAL because the bracket/holder is
+        what gets drilled — the motor/servo reference in the name is just
+        describing what the bracket holds.  A bare servo with no structural
+        indicator still falls through to functional.
+        """
+        # Real servo (no structural indicator) → functional
+        servo = Part("shoulder_servo", "actuator", "Servo")
         bracket = Part("L_bracket", "structural", "Bracket")
-        # 'servo' in name should make it functional
         result = _pick_structural_part(servo, bracket)
         assert result == bracket
+        # Bracket whose name mentions a motor is STILL structural.
+        motor_bracket = Part("motor_mount_bracket", "structural", "Motor mount")
+        motor = Part("drive_motor", "actuator", "Motor")
+        result = _pick_structural_part(motor_bracket, motor)
+        assert result == motor_bracket
+        # Servo holder is structural (holder wins over servo).
+        servo_holder = Part("arm_servo_holder", "structural", "Servo holder")
+        result = _pick_structural_part(servo_holder, bracket)
+        # Both structural → parent default
+        assert result == servo_holder
 
 
 # ============================================================================

@@ -503,57 +503,24 @@ def _suffix_feature_names(ops: list[dict], joint_idx: int) -> None:
             op["object"] = rename[op["object"]]
 
 
-def generate_ops(
+def _generate_standard_body(
     part: Part,
-    config: FeatureConfig | None = None,
-    joints: list[Joint] | None = None,
-) -> list[dict]:
-    """Return a list of FreeCAD operation dicts for *part*.
+    d: dict,
+    name: str,
+    family: str,
+    config: FeatureConfig,
+    sn: _StepNamer,
+    ops: list[dict],
+) -> str:
+    """Run Steps 1-9 for a standard (non-raw_script) part.
 
-    If *config* is ``None`` it is inferred via :func:`infer_features`.
-
-    If *joints* is provided, connection features (bolt holes, bearing seats,
-    etc.) are generated from ``Joint.connection`` metadata and merged into
-    the ops list before the final export.
-
-    The function tracks the **current body name** through every operation
-    that creates a new document object (``boolean``, ``shell``, ``pocket``).
-    Old bodies are deleted so FreeCAD's document stays consistent and no
-    name clashes occur.
+    Appends base-primitive, shell, holes, bore, keyway, cable-channel,
+    fillet, and chamfer operations to *ops* and returns the final body
+    name.  Extracted from ``generate_ops`` so that raw_script families
+    (arm_link / arm_joint / gripper / gripper_finger) can skip these
+    steps while still receiving Step 10 (connection_features) and
+    Step 11 (export_stl) downstream.
     """
-    if config is None:
-        config = infer_features(part)
-
-    d = part.dimensions
-    name = part.name
-    ops: list[dict] = [{"type": "new_doc", "name": name}]
-    family = _classify(name)
-    sn = _StepNamer(name)
-
-    # --- Specialized geometry for arm parts (C-channel links,
-    #     servo-mount joints, parallel-jaw gripper) ---
-    if family == "arm_link":
-        ops.extend(_arm_link_ops(name, d))
-        ops.append({"type": "export_stl", "object": f"{name}_final",
-                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
-        return ops
-    if family == "arm_joint":
-        ops.extend(_arm_joint_ops(name, d))
-        ops.append({"type": "export_stl", "object": f"{name}_final",
-                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
-        return ops
-    if family == "gripper_finger":
-        ops.extend(_gripper_finger_ops(name, d))
-        ops.append({"type": "export_stl", "object": f"{name}_final",
-                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
-        return ops
-    if family == "gripper":
-        ops.extend(_gripper_ops(name, d))
-        ops.append({"type": "export_stl", "object": f"{name}_final",
-                     "name": name, "path": f"{{WORKSPACE}}/{name}.stl"})
-        return ops
-
-    # ``body`` tracks the internal name of the current main solid.
     body = name
 
     # ------------------------------------------------------------------
@@ -716,6 +683,60 @@ def generate_ops(
             "size": c["size_mm"],
         })
 
+    return body
+
+
+def generate_ops(
+    part: Part,
+    config: FeatureConfig | None = None,
+    joints: list[Joint] | None = None,
+) -> list[dict]:
+    """Return a list of FreeCAD operation dicts for *part*.
+
+    If *config* is ``None`` it is inferred via :func:`infer_features`.
+
+    If *joints* is provided, connection features (bolt holes, bearing seats,
+    etc.) are generated from ``Joint.connection`` metadata and merged into
+    the ops list before the final export.
+
+    The function tracks the **current body name** through every operation
+    that creates a new document object (``boolean``, ``shell``, ``pocket``).
+    Old bodies are deleted so FreeCAD's document stays consistent and no
+    name clashes occur.
+    """
+    if config is None:
+        config = infer_features(part)
+
+    d = part.dimensions
+    name = part.name
+    ops: list[dict] = [{"type": "new_doc", "name": name}]
+    family = _classify(name)
+    sn = _StepNamer(name)
+
+    # --- Specialized geometry for arm parts (C-channel links,
+    #     servo-mount joints, parallel-jaw gripper) ---
+    # raw_script families produce the full body via inline FreeCAD Python
+    # and expose it as ``{name}_final``.  They then FALL THROUGH to
+    # Step 10 (connection_features) and Step 11 (export_stl) so that
+    # bolt holes, bearing seats, and other connection geometry are
+    # generated on top of the raw_script body — closing the integration
+    # gap where arm parts previously had no connection features at all.
+    _RAW_SCRIPT_FAMILIES = ("arm_link", "arm_joint", "gripper_finger", "gripper")
+    is_raw_script = family in _RAW_SCRIPT_FAMILIES
+    if is_raw_script:
+        if family == "arm_link":
+            ops.extend(_arm_link_ops(name, d))
+        elif family == "arm_joint":
+            ops.extend(_arm_joint_ops(name, d))
+        elif family == "gripper_finger":
+            ops.extend(_gripper_finger_ops(name, d))
+        else:  # gripper
+            ops.extend(_gripper_ops(name, d))
+        body = f"{name}_final"
+    else:
+        # Standard path: Steps 1-9 (base primitive → fillets/chamfers).
+        body = _generate_standard_body(part, d, name, family, config, sn, ops)
+
     # ------------------------------------------------------------------
     # 10. Connection features — from Joint.connection metadata
     # ------------------------------------------------------------------
@@ -749,6 +770,12 @@ def generate_ops(
                     if op.get("type") == "boolean" and op.get("operation") == "cut":
                         body = op.get("result_name", body)
                         break
+            # NOTE: result.fastener_ops (bolt/nut/washer 3D models) are
+            # intentionally NOT merged into the part STL.  Fasteners span
+            # the joint interface between TWO parts, so positioning them
+            # in part-local coordinates is geometrically incorrect.
+            # Adding them as separate assembly-level parts is the right
+            # architecture (tracked as a separate P0 task).
             joint.connection.features_generated = True
 
     # ------------------------------------------------------------------

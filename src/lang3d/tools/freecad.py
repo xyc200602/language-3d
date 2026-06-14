@@ -1051,6 +1051,195 @@ _FASTENER_DIMS: dict[str, tuple[float, ...]] = {
 }
 
 
+# Anchor face outward-normal directions in FreeCAD-local coordinates.
+# FreeCAD make_box creates parts at corner-origin with X=length, Y=width,
+# Z=height, so: top=+Z, bottom=-Z, front=-Y(width), back=+Y(width),
+# left=-X(length), right=+X(length).
+_FREECAD_ANCHOR_NORMALS: dict[str, tuple[float, float, float]] = {
+    "top":    (0, 0, 1),
+    "bottom": (0, 0, -1),
+    "front":  (0, -1, 0),
+    "back":   (0, 1, 0),
+    "left":   (-1, 0, 0),
+    "right":  (1, 0, 0),
+}
+
+
+def _z_to_normal_rotation(
+    normal: tuple[float, float, float],
+) -> tuple[float, float, float, float] | None:
+    """Axis-angle rotation mapping +Z to *normal*.
+
+    FreeCAD cylinders from ``Part.makeCylinder`` align along +Z.  This
+    returns ``(ax, ay, az, angle_deg)`` for ``Shape.rotate()`` so the
+    cylinder aligns with the anchor face normal.  Returns None if no
+    rotation is needed.
+    """
+    import math as _math
+    nx, ny, nz = normal
+    dot = nz
+    if dot > 0.9999:
+        return None
+    if dot < -0.9999:
+        return (1.0, 0.0, 0.0, 180.0)
+    ax_raw, ay_raw = -ny, nx
+    al = _math.sqrt(ax_raw * ax_raw + ay_raw * ay_raw)
+    angle = _math.degrees(_math.acos(max(-1.0, min(1.0, dot))))
+    return (ax_raw / al, ay_raw / al, 0.0, angle)
+
+
+def _compute_bolt_hole_world_positions(
+    joint,
+    positions: dict[str, dict],
+    part_dims: dict[str, dict],
+) -> list[tuple[tuple[float, float, float], tuple[float, float, float], float]]:
+    """Compute world-space positions of bolt holes for a single bolted joint.
+
+    Reuses :class:`ConnectionFeatureEngine` to get the same bolt layout that
+    was used to drill the holes in the STL, then transforms each hole from
+    FreeCAD part-local (corner-origin, X=length/Y=width/Z=height) to world
+    coordinates using the same transform chain the VTK renderer applies:
+    center → R_z(-90°) swap → solver rotation → translate.
+
+    Args:
+        joint: Joint object with ``connection.type == "bolted"``.
+        positions: Solver output ``{part_name: {"position": [...], "rotation": [...]}}``.
+        part_dims: ``{part_name: dimensions_dict}`` lookup.
+
+    Returns:
+        List of ``(world_pos, normal_world, thickness)`` tuples where:
+        - ``world_pos`` is ``(x, y, z)`` of the bolt hole centre on the face.
+        - ``normal_world`` is the unit outward normal of the face in world
+          space (bolt head sits on the +normal side, nut on the −normal side).
+        - ``thickness`` is the part thickness at this face (for bolt length).
+        Empty list if the joint is not bolted or cannot be resolved.
+    """
+    import math as _math
+
+    conn = getattr(joint, "connection", None)
+    if conn is None or getattr(conn, "type", "") != "bolted":
+        return []
+    if getattr(joint, "type", "") == "prismatic":
+        return []
+
+    parent_name = getattr(joint, "parent", "")
+    child_name = getattr(joint, "child", "")
+
+    # Determine which part is structural (gets drilled) → its anchor positions the holes.
+    # Deferred imports to avoid circular dependency (connection_features ← freecad is safe,
+    # but connection_features imports knowledge.mechanics which other tools import).
+    from .connection_features import ConnectionFeatureEngine, _pick_structural_part
+    from .assembly_solver import _rotation_matrix_axis_angle, _mat_vec
+    from ..knowledge.mechanics import Part
+
+    parent_dims = part_dims.get(parent_name, {})
+    child_dims = part_dims.get(child_name, {})
+    parent_part = Part(name=parent_name, category="structural",
+                       description="", dimensions=parent_dims)
+    child_part = Part(name=child_name, category="structural",
+                      description="", dimensions=child_dims)
+    structural = _pick_structural_part(parent_part, child_part)
+    structural_name = structural.name
+
+    is_structural_child = structural_name == child_name
+    anchor = joint.child_anchor if is_structural_child else joint.parent_anchor
+
+    d = part_dims.get(structural_name, {})
+    if not d:
+        return []
+
+    # Skip cylindrical parts (no length/width face for bolt layout)
+    if "length" not in d and "width" not in d:
+        return []
+
+    bolt_size = getattr(conn, "bolt_size", "M3") or "M3"
+    count = getattr(conn, "bolt_count", 4) or 4
+    if count <= 0:
+        return []
+
+    # Hole diameter (try catalog, fall back to heuristic)
+    try:
+        from ..knowledge.fastener_catalog import get_clearance_hole_with_tolerance
+        hole_d, _, _ = get_clearance_hole_with_tolerance(bolt_size)
+    except Exception:
+        try:
+            hole_d = float(bolt_size.lstrip("M")) + 0.4
+        except Exception:
+            hole_d = 3.4
+
+    engine = ConnectionFeatureEngine()
+    bolt_layout = engine._auto_layout_bolts(count, d, anchor, hole_d)
+    if not bolt_layout:
+        return []
+
+    thickness = ConnectionFeatureEngine._infer_thickness(d, anchor)
+
+    # Solver world transform for the structural part
+    pos_data = positions.get(structural_name, {})
+    if not pos_data:
+        return []
+    part_pos = pos_data.get("position", [0, 0, 0])
+    part_rot = pos_data.get("rotation", [0, 0, 1, 0])
+
+    # Build solver rotation matrix from axis-angle degrees
+    ax_r, ay_r, az_r, angle_deg = part_rot
+    axis_len = _math.sqrt(ax_r * ax_r + ay_r * ay_r + az_r * az_r)
+    if axis_len < 1e-10 or abs(angle_deg) < 1e-6:
+        R_solver = [[1.0, 0, 0], [0, 1.0, 0], [0, 0, 1.0]]
+    else:
+        R_solver = _rotation_matrix_axis_angle(
+            (ax_r / axis_len, ay_r / axis_len, az_r / axis_len),
+            _math.radians(angle_deg),
+        )
+
+    # Part dimensions in FreeCAD-local convention
+    L = d.get("length", 20)
+    W = d.get("width", 20)
+    H = d.get("height", d.get("thickness", 10))
+
+    # Anchor normal in FreeCAD-local
+    fc_normal = _FREECAD_ANCHOR_NORMALS.get(anchor, (0, 0, 1))
+
+    # Apply R_z(-90°) to the normal: (x,y,z) → (y, -x, z)
+    # This is the renderer's swap_xy transform.
+    swapped_normal = (fc_normal[1], -fc_normal[0], fc_normal[2])
+
+    # Apply solver rotation to the swapped normal → world-space normal
+    normal_world = _mat_vec(R_solver, swapped_normal)
+    nl = _math.sqrt(normal_world[0]**2 + normal_world[1]**2 + normal_world[2]**2)
+    if nl > 1e-10:
+        normal_world = (normal_world[0]/nl, normal_world[1]/nl, normal_world[2]/nl)
+
+    results = []
+    for uv_pos, _hole_dia in bolt_layout:
+        # Bolt hole position in FreeCAD-local (corner-origin, X=length/Y=width/Z=height)
+        fc_pos = engine._position_on_face(uv_pos, anchor, d, thickness)
+        fc_x, fc_y, fc_z = fc_pos
+
+        # Step 1: Subtract part centre (corner → centre origin)
+        cx = fc_x - L / 2.0
+        cy = fc_y - W / 2.0
+        cz = fc_z - H / 2.0
+
+        # Step 2: Apply R_z(-90°): (x,y,z) → (y, -x, z)
+        # This mirrors the VTK renderer's swap_xy transform.
+        sx = cy        # swapped X = original Y (width)
+        sy = -cx       # swapped Y = -original X (length)
+        sz = cz        # Z unchanged
+
+        # Step 3: Apply solver rotation
+        rx, ry, rz = _mat_vec(R_solver, (sx, sy, sz))
+
+        # Step 4: Translate to world
+        world_x = part_pos[0] + rx
+        world_y = part_pos[1] + ry
+        world_z = part_pos[2] + rz
+
+        results.append(((world_x, world_y, world_z), normal_world, thickness))
+
+    return results
+
+
 def _fastener_script_lines(
     joints: list,
     positions: dict[str, dict],
@@ -1058,10 +1247,10 @@ def _fastener_script_lines(
 ) -> list[str]:
     """Generate FreeCAD script lines for bolts, washers, and nuts.
 
-    For each joint whose ``connection.type == "bolted"``, places
-    ``bolt_count`` fasteners in a circular pattern at the parent–child
-    interface.  Each fastener consists of a socket-head cap screw
-    (head + shank), a flat washer, and a hex nut.
+    Uses :func:`_compute_bolt_hole_world_positions` to place each fastener at
+    the actual bolt hole location on the structural part's anchor face,
+    oriented along the face normal.  Each fastener consists of a socket-head
+    cap screw (head + shank), a flat washer, and a hex nut.
 
     Prismatic joints (sliding gripper fingers) are skipped — they don't
     use bolts.
@@ -1073,110 +1262,95 @@ def _fastener_script_lines(
 
     for joint in joints:
         conn = getattr(joint, "connection", None)
-        if conn is None:
-            continue
-        if getattr(conn, "type", "") != "bolted":
+        if conn is None or getattr(conn, "type", "") != "bolted":
             continue
         if getattr(joint, "type", "") == "prismatic":
             continue
 
-        parent_name = getattr(joint, "parent", "")
-        child_name = getattr(joint, "child", "")
-        pp = positions.get(parent_name, {}).get("position", [0, 0, 0])
-        cp = positions.get(child_name, {}).get("position", [0, 0, 0])
+        bolt_holes = _compute_bolt_hole_world_positions(joint, positions, part_dims)
+        if not bolt_holes:
+            continue
 
-        cx = (pp[0] + cp[0]) / 2.0
-        cy = (pp[1] + cp[1]) / 2.0
-        cz = (pp[2] + cp[2]) / 2.0
-
-        pd = part_dims.get(parent_name, {})
-        cd = part_dims.get(child_name, {})
-        pw = pd.get("width", pd.get("diameter", 30))
-        cw = cd.get("width", cd.get("diameter", 30))
-        radius = max(min(pw, cw) * 0.35, 6.0)
-
-        bolt_size = getattr(conn, "bolt_size", "M3")
-        count = getattr(conn, "bolt_count", 2) or 2
+        bolt_size = getattr(conn, "bolt_size", "M3") or "M3"
         dims = _FASTENER_DIMS.get(bolt_size, _FASTENER_DIMS["M3"])
         head_r, head_h, shank_r, washer_r, washer_h, nut_r, nut_h = dims
 
-        ph = pd.get("height", pd.get("diameter", 15))
-        ch = cd.get("height", cd.get("diameter", 15))
-        length = max(ph + ch + nut_h + washer_h, 12.0)
-
+        parent_name = getattr(joint, "parent", "")
+        child_name = getattr(joint, "child", "")
         lines.append(
-            f"# --- Bolts {bolt_size} x{count}: "
+            f"# --- Bolts {bolt_size}: "
             f"{parent_name} -> {child_name} ---"
         )
 
-        for b in range(count):
-            ang = 2.0 * _math.pi * b / count
-            bx = cx + radius * _math.cos(ang)
-            by = cy + radius * _math.sin(ang)
-            hz = cz + length / 2.0
-            sz = cz - length / 2.0
-            wz = hz - washer_h
-            nz = sz - nut_h
+        for world_pos, normal, thickness in bolt_holes:
+            length = max(thickness + washer_h + nut_h + 2.0, 12.0)
 
-            # Bolt head
-            lines.append(
-                f"_f = Part.makeCylinder({head_r}, {head_h})"
-            )
-            lines.append(
-                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {hz:.1f}))"
-            )
-            lines.append(
-                f'_o = doc.addObject("Part::Feature", '
-                f'"bolt_{bolt_size}_head_{fidx}")'
-            )
-            lines.append("_o.Shape = _f")
-            lines.append("_o.ViewObject.ShapeColor = (0.80, 0.80, 0.82)")
-            lines.append("doc.recompute()")
+            # Rotation to align +Z cylinder with the anchor normal.
+            rot = _z_to_normal_rotation(normal)
+            rot_ax, rot_ay, rot_az, rot_ang = rot if rot else (0, 0, 1, 0.0)
 
-            # Bolt shank
-            lines.append(
-                f"_f = Part.makeCylinder({shank_r}, {length})"
-            )
-            lines.append(
-                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {sz:.1f}))"
-            )
-            lines.append(
-                f'_o = doc.addObject("Part::Feature", '
-                f'"bolt_{bolt_size}_shank_{fidx}")'
-            )
-            lines.append("_o.Shape = _f")
-            lines.append("_o.ViewObject.ShapeColor = (0.80, 0.80, 0.82)")
-            lines.append("doc.recompute()")
+            nx, ny, nz = normal
+            px, py, pz = world_pos
+            half_len = length / 2.0
 
-            # Washer
-            lines.append(
-                f"_f = Part.makeCylinder({washer_r}, {washer_h})"
-            )
-            lines.append(
-                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {wz:.1f}))"
-            )
-            lines.append(
-                f'_o = doc.addObject("Part::Feature", '
-                f'"washer_{bolt_size}_{fidx}")'
-            )
-            lines.append("_o.Shape = _f")
-            lines.append("_o.ViewObject.ShapeColor = (0.70, 0.70, 0.72)")
-            lines.append("doc.recompute()")
+            def _emit_cylinder(
+                radius: float, height: float,
+                cx: float, cy: float, cz: float,
+                name: str, color: tuple,
+            ) -> None:
+                """Emit FreeCAD lines for a cylinder centred at (cx,cy,cz)."""
+                # makeCylinder base at z=0, top at z=height.
+                # Centre it: translate base by -height/2 in Z.
+                lines.append(f"_f = Part.makeCylinder({radius}, {height})")
+                lines.append(
+                    f"_f.translate(FreeCAD.Vector(0, 0, {-height / 2.0:.2f}))"
+                )
+                if abs(rot_ang) > 0.01:
+                    lines.append(
+                        f"_f.rotate(FreeCAD.Vector(0,0,0), "
+                        f"FreeCAD.Vector({rot_ax:.2f},{rot_ay:.2f},{rot_az:.2f}), "
+                        f"{rot_ang:.1f})"
+                    )
+                lines.append(
+                    f"_f.translate(FreeCAD.Vector({cx:.1f}, {cy:.1f}, {cz:.1f}))"
+                )
+                lines.append(
+                    f'_o = doc.addObject("Part::Feature", "{name}_{fidx}")'
+                )
+                lines.append("_o.Shape = _f")
+                lines.append(f"_o.ViewObject.ShapeColor = {color}")
+                lines.append("doc.recompute()")
 
-            # Nut
-            lines.append(
-                f"_f = Part.makeCylinder({nut_r}, {nut_h})"
+            # Bolt head: exterior (+normal) side
+            head_d = half_len + head_h / 2.0
+            _emit_cylinder(
+                head_r, head_h,
+                px + nx * head_d, py + ny * head_d, pz + nz * head_d,
+                f"bolt_{bolt_size}_head", (0.80, 0.80, 0.82),
             )
-            lines.append(
-                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {nz:.1f}))"
+
+            # Bolt shank: centred on the hole
+            _emit_cylinder(
+                shank_r, length,
+                px, py, pz,
+                f"bolt_{bolt_size}_shank", (0.80, 0.80, 0.82),
             )
-            lines.append(
-                f'_o = doc.addObject("Part::Feature", '
-                f'"nut_{bolt_size}_{fidx}")'
+
+            # Washer: interior (−normal) side
+            washer_d = half_len + washer_h / 2.0
+            _emit_cylinder(
+                washer_r, washer_h,
+                px - nx * washer_d, py - ny * washer_d, pz - nz * washer_d,
+                f"washer_{bolt_size}", (0.70, 0.70, 0.72),
             )
-            lines.append("_o.Shape = _f")
-            lines.append("_o.ViewObject.ShapeColor = (0.65, 0.65, 0.68)")
-            lines.append("doc.recompute()")
+
+            # Nut: further interior
+            nut_d = half_len + washer_h + nut_h / 2.0
+            _emit_cylinder(
+                nut_r, nut_h,
+                px - nx * nut_d, py - ny * nut_d, pz - nz * nut_d,
+                f"nut_{bolt_size}", (0.65, 0.65, 0.68),
+            )
 
             fidx += 1
 

@@ -4,6 +4,50 @@
 
 ---
 
+## 2026-06-14 - 审计 P0 修复：ConnectionMethod 集成 + _pick_structural_part 词边界匹配 + 紧固件嵌入回归修复
+
+### What was done:
+
+**背景**: 上一个 Claude Code 终端尝试让紧固件（螺栓/螺母/垫圈）在 STL 渲染中可见，把 fastener_ops 嵌入每个零件的 STL。但该改动触发了多处 bug，导致 3 个零件 STL 完全缺失（elbow_joint / gripper_base / wrist_link）。终端在 e2e 测试期间因内存耗尽崩溃。
+
+**根因分析（紧固件嵌入失败）**:
+1. `_suffix_feature_names` 只重命名 CREATE op 的 `name` 字段和 MOVE op 的 `object` 字段，**没处理 BOOLEAN fuse op 的 `object1`/`object2` 操作数**。当一个零件有多个 joint（ji>0）时，fuse op 引用的 `bolt_M3_2_head`（无后缀）找不到实际创建的对象 `bolt_M3_2_head_j1`（有后缀），Python 报错，整个 FreeCAD 脚本崩溃。
+2. 即使修了这个 bug，把紧固件嵌入每个零件 STL 在**几何上也不对**——紧固件应横跨关节界面（属于装配体层面），而不是每个零件各自一份。
+
+**修复 1（撤销紧固件嵌入回归）**:
+- `src/lang3d/tools/part_feature_engine.py`：移除 fastener_ops 合并逻辑，恢复 export_stl 用 `object=body`（只导出零件本体）。**保留**上一个终端有价值的重构（raw_script 家族 arm_link/arm_joint/gripper/gripper_finger 现在 fall through 到 Step 10/11，接收连接特征）。
+- `src/lang3d/tools/connection_features.py`：移除 _generate_bolted_features 中新增的 fastener 定位 move ops（这些 move ops 引用错误的对象名 `bolt_{size}_{i}`，实际创建名是 `bolt_{size}_{i}_head/shank/outer`）。fastener_ops 生成保留，留给未来装配体层面的独立零件使用。
+- `tests/test_part_feature_engine.py::test_export_stl_references_final_body`：还原为原始形式（移除 object="" 特殊处理）。
+
+**验证**: e2e 4dof_arm 测试 91.4% 通过，0 失败。11/11 STL 全部恢复（从 8 个回到 11 个）。
+
+**修复 2（审计 P0：build_complex_robot 补 ConnectionMethod）**:
+- `src/lang3d/tools/assembly_generator.py`：提取 `apply_default_connection_methods(joints)` 为公共函数（fixed→bolted M3x4，revolute→press_fit 0.01mm，prismatic→None）。LLM 路径原来的内联逻辑替换为对该函数的调用。
+- `src/lang3d/tools/export_package.py::build_complex_robot()`：在返回 Assembly 前调用 `apply_default_connection_methods(joints)`。
+
+**验证**: 40/40 joints 都有 connection（28 bolted + 12 press_fit）。base_plate 从 4 个角孔增加到 44 个孔（4 模板孔 + 40 连接特征孔），生成 80 个 boolean cut 操作。top_plate 32 cuts，standoff_fl 8 cuts，ipc_bracket 18 cuts，arm_l_shoulder/elbow 8 cuts（raw_script 家族首次接收连接特征）。
+
+**修复 3（审计 P0：_pick_structural_part 词边界匹配）**:
+- `src/lang3d/tools/connection_features.py::_pick_structural_part`：
+  - 原代码用 substring 匹配（`kw in name`），`motor_mount_bracket` 会被误判为功能件（含 "motor"），导致支架不被钻孔。
+  - 改为词边界匹配（`re.split(r"[_\-\s]+", name)`），并新增 structural_indicators 集合（mount/bracket/housing/plate/standoff/link/adapter/holder/seat/frame/support/arm/post/tower/base/chassis/rib/gusset）。结构指示词优先级最高——名字含 "bracket" 一律是结构件，即使也提到 motor。
+  - functional_cats 加入 `controller`（ipc_body 等控制器件不应被钻孔）。
+- `tests/test_connection_features.py::test_name_based_detection`：原测试固化了旧的 buggy 行为（`arm_servo_holder` 被判为功能件）。更新为验证新正确行为：真 servo→功能件；`motor_mount_bracket`→结构件；`arm_servo_holder`→结构件。
+
+### Testing:
+- 语法检查：4 个修改文件全部通过 `ast.parse`
+- 单元测试：250 通过（test_assembly_solver / test_assembly_templates / test_part_feature_engine / test_assembly_fixes / test_connection_recommend / test_connection_features / test_connection_methods）
+- test_build_complex_robot：通过（验证 ConnectionMethod 分配不破坏装配体结构）
+- e2e 4dof_arm：91.4%，35 checks 中 32 pass / 0 fail / 3 warn / 0 skip，11/11 STL 恢复
+- Smoke test：build_complex_robot() + generate_assembly_connection_features 在 25/41 零件上生成连接特征；base_plate 得到 80 cuts / 80 cylinders / 240 fastener_ops
+
+### Notes:
+- **Task.json 状态不变**：没有 task 被标记为 passes:true。相关 task（69 装配连接方式 / 71 紧固件生成 / 72 标准紧固件库 / 76 接口标准 / 78 装配模板自动匹配）原本就是 passes:true，本次修复只是让它们在 hand-authored 装配路径上真正生效。
+- **审计 Task 77 (MatingConstraint) 仍是虚标**：本次工作未涉及 mating_constraint.py 求解器，该 task 状态问题需要单独处理。
+- **紧固件实体可见性仍未解决**：审计 P0 #2（把 fastener_ops 作为独立零件追加到 assembly.parts）需要装配体层面的架构改动，本次只完成了 bug 撤销和基础集成。建议后续：(1) 在 assembly 求解后遍历每个 bolted joint，(2) 在 joint 位置生成 bolt/washer/nut 零件实例，(3) 加入 assembly.parts 并标记为 fastener 子集。
+
+---
+
 ## 2026-06-12 - 夹爪可视化修复：手指尺寸放大 + FreeCAD makeBox 轴向修正
 
 ### What was done:

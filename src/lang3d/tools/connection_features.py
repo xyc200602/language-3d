@@ -385,7 +385,10 @@ class ConnectionFeatureEngine:
                 "dx": cbore_x, "dy": cbore_y, "dz": cbore_z,
             })
 
-        # Generate fastener models
+        # Generate fastener models (bolt + nut + washer per hole).
+        # These are returned in result.fastener_ops for the assembly-level
+        # pipeline to position at joint interfaces; they are NOT embedded
+        # in this part's STL because fasteners span two parts.
         for i, (pos, dia) in enumerate(positions):
             fastener_ops.extend(
                 self._generate_fastener_set(bolt_size, thickness, i)
@@ -1568,21 +1571,48 @@ def _pick_structural_part(part_a: Part, part_b: Part) -> Part:
     Functional parts (motors, sensors, bearings) have fixed dimensions
     and should NOT receive holes.  Structural parts (brackets, plates,
     links) are custom and should receive matching features.
+
+    Naming heuristic: tokens are matched as whole words (split on
+    underscore/dash/space) so "base_plate" is not misclassified by an
+    accidental substring.  A structural indicator (mount, bracket,
+    housing, plate, standoff, link, ...) always wins — a
+    "motor_mount_bracket" is structural because it's the bracket, not
+    the motor.
     """
+    import re
+
     # Categories that are typically functional (don't drill holes in them)
-    functional_cats = {"actuator", "sensor", "electronics", "fastener"}
-    # Part names that suggest functional parts (exact word match, not substring)
-    functional_keywords = [
+    functional_cats = {
+        "actuator", "sensor", "electronics", "fastener", "controller",
+    }
+    # Whole-word tokens that mark a part as structural even if its name
+    # also references a functional component.
+    structural_indicators = {
+        "mount", "bracket", "housing", "plate", "standoff", "link",
+        "adapter", "holder", "seat", "frame", "support", "arm",
+        "post", "tower", "base", "chassis", "rib", "gusset",
+    }
+    # Whole-word tokens that mark a part as functional.
+    functional_keywords = {
         "motor", "servo", "stepper", "nema", "bearing", "encoder",
         "imu", "lidar", "camera", "arduino", "esp32",
         "driver", "board", "pcb",
-    ]
+    }
 
     def _is_functional(part: Part) -> bool:
         if part.category in functional_cats:
+            # Category wins — unless the name has a structural indicator.
+            # E.g. category="actuator" but name="motor_mount_bracket" is
+            # almost certainly mis-categorized and the bracket should be
+            # drilled, not treated as a motor.
+            tokens = set(re.split(r"[_\-\s]+", part.name.lower()))
+            if tokens & structural_indicators:
+                return False
             return True
-        name = part.name.lower()
-        return any(kw in name for kw in functional_keywords)
+        tokens = set(re.split(r"[_\-\s]+", part.name.lower()))
+        if tokens & structural_indicators:
+            return False
+        return bool(tokens & functional_keywords)
 
     if _is_functional(part_a) and not _is_functional(part_b):
         return part_b

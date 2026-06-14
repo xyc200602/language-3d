@@ -134,7 +134,7 @@ class TestSearch:
     def test_search_category_bearing(self):
         from lang3d.knowledge.parts_catalog import search_parts
         results = search_parts(category="bearing")
-        assert len(results) == 7
+        assert len(results) >= 10  # 608,623,625,626,688 + LM6UU/LM8UU/LM10UU/LM12UU + MGN12H
 
     def test_search_category_actuator(self):
         from lang3d.knowledge.parts_catalog import search_parts

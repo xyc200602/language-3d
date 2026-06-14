@@ -776,3 +776,166 @@ class TestRawScriptHoleDiameters:
         raw = next((o for o in ops if o["type"] == "raw_script"), None)
         if raw:
             assert "makeCylinder(1.5" not in raw["script"]
+
+
+# ============================================================================
+# Connection features on raw_script parts (integration fix)
+# ============================================================================
+
+
+class TestConnectionFeaturesOnRawScriptParts:
+    """Verify that arm/gripper parts (raw_script families) now receive
+    connection feature ops (bolt holes, bearing seats) when joints are
+    provided.
+
+    Before the fix, generate_ops() early-returned for these families,
+    skipping Step 10 (connection_features) entirely — leaving arm parts
+    with no visible engineering connection geometry.
+    """
+
+    @staticmethod
+    def _make_arm_joint():
+        return Part(
+            "arm_l_joint", "actuator", "test",
+            dimensions=dict(diameter=60, height=35),
+        )
+
+    @staticmethod
+    def _make_bolted_joint(part_name: str, parent: str = "base_plate"):
+        from lang3d.knowledge.mechanics import ConnectionMethod, Joint
+        return Joint(
+            type="fixed", parent=parent, child=part_name,
+            connection=ConnectionMethod(
+                type="bolted", bolt_size="M3", bolt_count=4,
+            ),
+        )
+
+    def test_arm_joint_without_joints_has_no_connection_ops(self):
+        """Baseline: arm_joint without joints should produce only
+        new_doc → raw_script → export_stl (no boolean cuts)."""
+        ops = generate_ops(self._make_arm_joint())
+        types = [op["type"] for op in ops]
+        assert types == ["new_doc", "raw_script", "export_stl"]
+        assert not any(op.get("type") == "boolean" for op in ops)
+
+    def test_arm_joint_with_joints_has_connection_ops(self):
+        """Fix verification: arm_joint WITH a bolted joint should now
+        produce boolean cut ops (bolt holes) after the raw_script."""
+        part = self._make_arm_joint()
+        joint = self._make_bolted_joint(part.name)
+        ops = generate_ops(part, joints=[joint])
+        types = [op["type"] for op in ops]
+        # Must still start with new_doc + raw_script
+        assert types[0] == "new_doc"
+        assert "raw_script" in types
+        # Must now have boolean cut ops (connection features)
+        boolean_cuts = [
+            op for op in ops
+            if op.get("type") == "boolean" and op.get("operation") == "cut"
+        ]
+        assert len(boolean_cuts) >= 4, (
+            f"Expected at least 4 boolean cuts for 4-bolt pattern, got {len(boolean_cuts)}"
+        )
+        # Must have make_cylinder ops (bolt hole tools)
+        cyl_count = sum(1 for op in ops if op.get("type") == "make_cylinder")
+        assert cyl_count >= 4, (
+            f"Expected at least 4 make_cylinder ops, got {cyl_count}"
+        )
+
+    def test_arm_joint_with_joints_more_ops_than_without(self):
+        """Connection features should significantly increase ops count."""
+        part = self._make_arm_joint()
+        ops_no = generate_ops(part)
+        joint = self._make_bolted_joint(part.name)
+        ops_yes = generate_ops(part, joints=[joint])
+        assert len(ops_yes) > len(ops_no) + 10, (
+            f"Expected ops to grow significantly: {len(ops_no)} → {len(ops_yes)}"
+        )
+
+    def test_raw_script_body_name_is_referenced_in_cuts(self):
+        """Boolean cuts must reference the raw_script body ({name}_final)
+        as object1 for the first cut in the chain."""
+        part = self._make_arm_joint()
+        joint = self._make_bolted_joint(part.name)
+        ops = generate_ops(part, joints=[joint])
+        boolean_cuts = [
+            op for op in ops
+            if op.get("type") == "boolean" and op.get("operation") == "cut"
+        ]
+        assert len(boolean_cuts) > 0
+        # First cut should target the raw_script body
+        first_cut = boolean_cuts[0]
+        assert first_cut["object1"] == f"{part.name}_final", (
+            f"First boolean cut should reference {part.name}_final, "
+            f"got {first_cut['object1']}"
+        )
+
+    def test_export_stl_references_final_body(self):
+        """export_stl must reference a body that exists in the ops chain
+        (either {name}_final or a boolean cut result)."""
+        part = self._make_arm_joint()
+        joint = self._make_bolted_joint(part.name)
+        ops = generate_ops(part, joints=[joint])
+        export_op = next(op for op in ops if op["type"] == "export_stl")
+        referenced = export_op["object"]
+        # Must be either the raw_script final or a cut result
+        all_names: set[str] = set()
+        for op in ops:
+            for key in ("name", "result_name"):
+                if key in op:
+                    all_names.add(op[key])
+        assert referenced in all_names, (
+            f"export_stl references '{referenced}' which was never created. "
+            f"Known names: {sorted(all_names)}"
+        )
+
+    def test_no_duplicate_export_stl(self):
+        """Each part must have exactly ONE export_stl op."""
+        part = self._make_arm_joint()
+        joint = self._make_bolted_joint(part.name)
+        ops = generate_ops(part, joints=[joint])
+        export_ops = [op for op in ops if op["type"] == "export_stl"]
+        assert len(export_ops) == 1, (
+            f"Expected exactly 1 export_stl, got {len(export_ops)}"
+        )
+
+    def test_gripper_with_joints_generates_bolt_holes(self):
+        """Gripper parts should also receive connection features."""
+        p = Part(
+            "gripper_base", "structural", "t",
+            dimensions=dict(length=40, width=35, height=15),
+        )
+        joint = self._make_bolted_joint(p.name, parent="wrist_link")
+        ops = generate_ops(p, joints=[joint])
+        boolean_cuts = [
+            op for op in ops
+            if op.get("type") == "boolean" and op.get("operation") == "cut"
+        ]
+        assert len(boolean_cuts) >= 1, (
+            "Gripper part should get bolt hole cuts when joints are provided"
+        )
+
+    def test_arm_link_with_revolute_gets_press_fit(self):
+        """Revolute joints (press_fit) should also generate features
+        when the part has a bore_diameter (bearing seat)."""
+        from lang3d.knowledge.mechanics import ConnectionMethod, Joint
+        p = Part(
+            "arm_l_upper_link", "structural", "t",
+            dimensions=dict(length=120, width=40, height=30, bore_diameter=22),
+        )
+        joint = Joint(
+            type="revolute", parent="arm_l_joint", child=p.name,
+            axis="y", range_deg=(-90, 90),
+            connection=ConnectionMethod(
+                type="press_fit", interference_mm=0.01,
+            ),
+        )
+        ops = generate_ops(p, joints=[joint])
+        # Press-fit should produce at least a bore operation
+        boolean_cuts = [
+            op for op in ops
+            if op.get("type") == "boolean" and op.get("operation") == "cut"
+        ]
+        assert len(boolean_cuts) >= 1, (
+            "Arm link should get press-fit bore cut for revolute joint"
+        )

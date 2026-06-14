@@ -443,6 +443,52 @@ EXAMPLE_6DOF_BELT_DRIVE_ARM = """\
 # Assembly Generator
 # ---------------------------------------------------------------------------
 
+
+def apply_default_connection_methods(joints: list) -> None:
+    """Assign a default ``ConnectionMethod`` to joints that lack one.
+
+    Fixed joints in robotic assemblies are almost always bolted; defaulting
+    here ensures the connection feature engine generates mounting holes even
+    when the caller (LLM path or ``build_complex_robot``) omits the
+    ``connection`` field.  Revolute joints are physically realized via a
+    bearing press-fit into the housing bore, so ``press_fit`` is the
+    mechanically correct default.  Prismatic (sliding) interfaces are not
+    fastenings and intentionally stay null.
+
+    Mutates *joints* in place.  Shared by the LLM assembly path and the
+    hand-authored ``build_complex_robot()`` assembly so both produce the
+    same connection features on exported STLs.
+    """
+    for joint in joints:
+        if joint.connection is not None:
+            continue
+        if joint.type == "fixed":
+            joint.connection = ConnectionMethod(
+                type="bolted", bolt_size="M3", bolt_count=4,
+            )
+            logger.debug(
+                "Defaulted joint %s->%s to bolted M3x4",
+                joint.parent, joint.child,
+            )
+        elif joint.type == "revolute":
+            # Revolute joints physically realized via a bearing press-fit
+            # into the housing; 0.01 mm is a typical small-bearing interference.
+            joint.connection = ConnectionMethod(
+                type="press_fit", interference_mm=0.01,
+            )
+            logger.debug(
+                "Defaulted revolute joint %s->%s to press_fit (bearing seat)",
+                joint.parent, joint.child,
+            )
+        elif joint.type == "prismatic":
+            # Sliding interface is not a fastening method; null is intentional.
+            logger.info(
+                "Prismatic joint %s->%s has no connection_method "
+                "(sliding fit, expected)",
+                joint.parent, joint.child,
+            )
+
+
 def generate_assembly_from_nl(
     description: str,
     api_key: str | None = None,
@@ -788,40 +834,9 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
     _fix_arm_chain_anchors(joints, parts)
 
     # Default connection_method for joints that lack one.
-    # Fixed joints in robotic assemblies are almost always bolted; defaulting
-    # here ensures the connection feature engine generates mounting holes
-    # even when the LLM omits the connection_method field. Revolute joints are
-    # physically realized via a bearing press-fit into the housing bore, so
-    # press_fit is the mechanically correct default. Prismatic (sliding)
-    # interfaces are not fastenings and intentionally stay null.
-    for joint in joints:
-        if joint.connection is not None:
-            continue
-        if joint.type == "fixed":
-            joint.connection = ConnectionMethod(
-                type="bolted", bolt_size="M3", bolt_count=4,
-            )
-            logger.debug(
-                "Defaulted joint %s->%s to bolted M3x4",
-                joint.parent, joint.child,
-            )
-        elif joint.type == "revolute":
-            # Revolute joints physically realized via a bearing press-fit
-            # into the housing; 0.01 mm is a typical small-bearing interference.
-            joint.connection = ConnectionMethod(
-                type="press_fit", interference_mm=0.01,
-            )
-            logger.debug(
-                "Defaulted revolute joint %s->%s to press_fit (bearing seat)",
-                joint.parent, joint.child,
-            )
-        elif joint.type == "prismatic":
-            # Sliding interface is not a fastening method; null is intentional.
-            logger.info(
-                "Prismatic joint %s->%s has no connection_method "
-                "(sliding fit, expected)",
-                joint.parent, joint.child,
-            )
+    # See apply_default_connection_methods() for the shared rule set used by
+    # both the LLM assembly path and build_complex_robot().
+    apply_default_connection_methods(joints)
 
     assembly = Assembly(
         name=data.get("name", "generated_assembly"),
@@ -2477,6 +2492,14 @@ def _dump_assembly_json(assembly: Assembly, output_dir: str, round_num: int) -> 
                     "connection_method": (
                         j.connection.type if j.connection else None
                     ),
+                    "connection_detail": (
+                        {
+                            "bolt_size": j.connection.bolt_size,
+                            "bolt_count": j.connection.bolt_count,
+                        }
+                        if j.connection and j.connection.type == "bolted"
+                        else {}
+                    ),
                 }
                 for j in assembly.joints
             ],
@@ -2505,7 +2528,12 @@ def _assembly_to_json(assembly: Assembly) -> str:
              "range_deg": list(j.range_deg), "axis": j.axis,
              "parent_anchor": j.parent_anchor, "child_anchor": j.child_anchor,
              "distribution_group": j.distribution_group,
-             "no_distribute": j.no_distribute}
+             "no_distribute": j.no_distribute,
+             "connection_method": j.connection.type if j.connection else "",
+             "connection_detail": {
+                 "bolt_size": j.connection.bolt_size,
+                 "bolt_count": j.connection.bolt_count,
+             } if j.connection and j.connection.type == "bolted" else {}}
             for j in assembly.joints
         ],
     }
