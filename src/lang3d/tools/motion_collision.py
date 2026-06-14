@@ -961,6 +961,95 @@ class CollisionFixSuggester:
 
         return "\n".join(lines)
 
+    # ------------------------------------------------------------------
+    # Auto-apply: turn structured suggestions into assembly mutations
+    # ------------------------------------------------------------------
+
+    def apply_fixes(
+        self,
+        assembly: Assembly,
+        fixes: "CollisionFixReport",
+        min_confidence: float = 0.6,
+    ) -> Assembly:
+        """Apply suggested fixes to an assembly (returns modified copy).
+
+        Counterpart to :meth:`suggest_fixes`.  Mutates a deep-copied
+        assembly so the caller's original is untouched.  Low-confidence
+        suggestions are skipped.
+
+        Args:
+            assembly: The original assembly (not mutated).
+            fixes: The fix report from :meth:`suggest_fixes`.
+            min_confidence: Skip suggestions below this threshold.
+
+        Returns:
+            A new Assembly with adjusted ``part.dimensions``,
+            ``joint.range_deg``, ``joint.offset``, and
+            ``assembly.default_angles``.
+        """
+        import copy as _copy
+
+        new_assembly = _copy.deepcopy(assembly)
+        parts_by_name = {p.name: p for p in new_assembly.parts}
+
+        for suggestion in fixes.suggestions:
+            if suggestion.confidence < min_confidence:
+                continue
+
+            child_name = suggestion.joint_name
+
+            if suggestion.fix_type == "reduce_link_length":
+                # Shorten the child part's dominant dimension.
+                part = parts_by_name.get(child_name)
+                if part:
+                    for key in ("length", "height", "width"):
+                        if key in part.dimensions:
+                            part.dimensions[key] = suggestion.suggested_value
+                            break
+
+            elif suggestion.fix_type == "limit_joint_range":
+                # Restrict the joint's range_deg to the collision-free segment.
+                # suggestion.suggested_value is the new midpoint; reconstruct
+                # the range from the original span centred on the new midpoint.
+                for joint in new_assembly.joints:
+                    if joint.child == child_name and joint.range_deg:
+                        original_span = (
+                            joint.range_deg[1] - joint.range_deg[0]
+                        )
+                        new_mid = suggestion.suggested_value
+                        half = original_span / 2.0
+                        # Apply a 10% safety shrink so the new range sits
+                        # comfortably inside the collision-free segment.
+                        half *= 0.9
+                        joint.range_deg = [
+                            round(new_mid - half, 1),
+                            round(new_mid + half, 1),
+                        ]
+                        break
+
+            elif suggestion.fix_type == "add_offset":
+                # Shift the joint's home angle so the arm starts in a
+                # collision-free position rather than at zero.
+                if hasattr(new_assembly, "default_angles") and \
+                        new_assembly.default_angles is not None:
+                    new_assembly.default_angles[child_name] = (
+                        suggestion.suggested_value
+                    )
+
+            elif suggestion.fix_type == "increase_spacing":
+                # Push the child part away from the parent by adding a
+                # Z-axis offset to the connecting joint.
+                for joint in new_assembly.joints:
+                    if joint.child == child_name:
+                        current = (
+                            list(joint.offset) if joint.offset else [0.0, 0.0, 0.0]
+                        )
+                        current[2] += suggestion.suggested_value
+                        joint.offset = current
+                        break
+
+        return new_assembly
+
 
 # ---------------------------------------------------------------------------
 # Agent Tool: collision_fix_suggest

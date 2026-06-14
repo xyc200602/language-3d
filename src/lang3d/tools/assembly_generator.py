@@ -2538,6 +2538,56 @@ def generate_assembly_with_vlm_loop(
 
         print(f"  Solved: {len(positions)} positions")
 
+        # --- Step B.5: Collision check + auto-resolve ---
+        # Run the mesh-collision detector before VLM so simple overlaps
+        # (which the VLM may not see clearly) are caught and fixed
+        # deterministically.  Only auto-resolve in early rounds; the
+        # final round lets the LLM handle it via the normal VLM loop.
+        if round_num < max_rounds:
+            try:
+                from .mesh_collision import MeshCollisionChecker
+                _collision_checker = MeshCollisionChecker()
+                _collision_result = _collision_checker.check_assembly_collisions(
+                    assembly, positions, skip_adjacent=True,
+                )
+                _severe = [
+                    p for p in _collision_result.pairs
+                    if p.is_collision and p.penetration_depth_mm > 1.0
+                ]
+                if _severe:
+                    print(
+                        f"  Collisions: {len(_severe)} severe pairs "
+                        f"(of {_collision_result.pairs_checked} checked)"
+                    )
+                    from .collision_resolver import CollisionResolver
+                    _resolver = CollisionResolver(max_rounds=2)
+                    _resolution = _resolver.resolve(assembly, positions)
+                    if _resolution.modified_assembly is not None:
+                        assembly = _resolution.modified_assembly
+                        positions = _resolution.modified_positions
+                        # Refresh the solver context so downstream renders
+                        # use the resolved positions.
+                        ctx = AssemblyContext(assembly=assembly)
+                        ctx._positions = positions
+                    if _resolution.resolved:
+                        print(
+                            f"  Collision-resolved in "
+                            f"{_resolution.rounds_used} round(s)"
+                        )
+                    else:
+                        print(
+                            f"  Collision partial: "
+                            f"{_resolution.remaining_count} remain "
+                            f"(history {_resolution.collision_history})"
+                        )
+            except ImportError:
+                pass  # trimesh/python-fcl not installed — skip silently
+            except Exception as _e:
+                logger.debug(
+                    "Collision check skipped in round %d: %s",
+                    round_num, _e,
+                )
+
         # --- Step C: Render + VLM check ---
         parts_dicts = [
             {"name": p.name, "category": p.category, "dimensions": p.dimensions}

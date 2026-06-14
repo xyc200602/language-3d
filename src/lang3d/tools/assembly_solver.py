@@ -589,6 +589,8 @@ class AssemblySolver:
         self,
         joint_angles: dict[str, float] | None = None,
         base_position: tuple[float, float, float] = (0, 0, 0),
+        resolve_collisions: bool = False,
+        collision_max_rounds: int = 2,
     ) -> dict[str, dict[str, Any]]:
         """Solve for every part's global Placement.
 
@@ -777,6 +779,36 @@ class AssemblySolver:
                     "position": [base_position[0], base_position[1], base_position[2]],
                     "rotation": [0, 0, 1, 0],
                 }
+
+        # Phase 4: Collision resolution (opt-in).
+        # Runs a detect→fix→re-solve loop on the solved placements.
+        # Default off so existing callers see no behaviour change.
+        if resolve_collisions:
+            try:
+                from .collision_resolver import CollisionResolver
+                resolver = CollisionResolver(max_rounds=collision_max_rounds)
+                resolution = resolver.resolve(
+                    self.assembly, placements, joint_angles,
+                )
+                if resolution.resolved:
+                    logger.info(
+                        "Collision resolution succeeded in %d round(s)",
+                        resolution.rounds_used,
+                    )
+                    placements = resolution.modified_positions
+                elif resolution.modified_positions:
+                    logger.warning(
+                        "Collision resolution incomplete: %d remaining "
+                        "(history: %s)",
+                        resolution.remaining_count,
+                        resolution.collision_history,
+                    )
+                    placements = resolution.modified_positions
+            except Exception as exc:
+                logger.warning(
+                    "Collision resolution skipped (%s); returning base solve",
+                    exc,
+                )
 
         return placements
 

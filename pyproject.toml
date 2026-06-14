@@ -37,6 +37,10 @@ gui = [
     "pyautogui>=0.9.54",
     "pyperclip>=1.8.0",
 ]
+collision = [
+    "trimesh>=4.0.0",
+    "python-fcl>=0.7.0",
+]
 dev = [
     "pytest>=8.2.0",
     "pytest-asyncio>=0.23.0",
