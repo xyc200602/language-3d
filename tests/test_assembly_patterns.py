@@ -439,3 +439,64 @@ class TestNewConnectionPatterns:
     def test_pattern_count_increased(self):
         from lang3d.knowledge.assembly_patterns import CONNECTION_PATTERNS
         assert len(CONNECTION_PATTERNS) >= 18
+
+
+# ---------------------------------------------------------------------------
+# 7. 4-DOF arm example DOF topology (URDF DOF correctness)
+# ---------------------------------------------------------------------------
+
+class TestExample4DofArmTopology:
+    """Snapshot tests for EXAMPLE_ARM_STANDALONE joint topology.
+
+    Guards against regressions where the 4-DOF example loses its
+    shoulder-yaw (Z) and wrist-roll (Y) degrees of freedom.
+    """
+
+    @pytest.fixture(scope="class")
+    def arm(self):
+        import json
+        from lang3d.tools.assembly_generator import EXAMPLE_ARM_STANDALONE
+        return json.loads(EXAMPLE_ARM_STANDALONE)
+
+    def test_has_exactly_4_revolute_joints(self, arm):
+        revolute = [j for j in arm["joints"] if j["type"] == "revolute"]
+        assert len(revolute) == 4
+
+    def test_has_shoulder_yaw_z(self, arm):
+        # base_plate -> shoulder_joint must be revolute around Z (shoulder yaw)
+        joint = arm["joints"][0]
+        assert joint["parent"] == "base_plate"
+        assert joint["child"] == "shoulder_joint"
+        assert joint["type"] == "revolute"
+        assert joint["axis"] == "z"
+
+    def test_has_wrist_roll_z(self, arm):
+        # wrist_joint -> wrist_link must be revolute around Z (wrist roll).
+        # In the vertical arm geometry the arm extends along Z, so the roll
+        # axis (spinning the end effector about the arm direction) is Z.
+        wrist = [
+            j for j in arm["joints"]
+            if j["parent"] == "wrist_joint" and j["child"] == "wrist_link"
+        ]
+        assert len(wrist) == 1
+        assert wrist[0]["type"] == "revolute"
+        assert wrist[0]["axis"] == "z"
+
+    def test_elbow_to_elbow_link_is_fixed(self, arm):
+        # Motor housing -> output link must be fixed, not a phantom revolute DOF
+        elbow = [
+            j for j in arm["joints"]
+            if j["parent"] == "elbow_joint" and j["child"] == "elbow_link"
+        ]
+        assert len(elbow) == 1
+        assert elbow[0]["type"] == "fixed"
+
+    def test_revolute_axes_are_diverse(self, arm):
+        # Revolute axes should span Z (yaw/roll) and Y (pitch), not all the
+        # same axis. In the vertical arm geometry pitch joints bend about Y
+        # (perpendicular to the Z link direction) and yaw/roll rotate about Z.
+        axes = {j["axis"] for j in arm["joints"] if j["type"] == "revolute"}
+        assert "z" in axes
+        assert "y" in axes
+        assert len(axes) >= 2
+

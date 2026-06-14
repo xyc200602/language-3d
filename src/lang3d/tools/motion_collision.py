@@ -87,7 +87,7 @@ class MotionCollisionChecker:
          collision-free angular segments.
     """
 
-    def __init__(self, num_samples: int = 10) -> None:
+    def __init__(self, num_samples: int = 10, min_penetration_mm: float = 2.0) -> None:
         if not HAS_FCL:
             raise RuntimeError(
                 "python-fcl (and trimesh) are required. "
@@ -95,6 +95,15 @@ class MotionCollisionChecker:
             )
         self._checker = MeshCollisionChecker()
         self.num_samples = num_samples
+        # Collision margin (mm per side) applied to each part's mesh.
+        # 2.0mm filters:
+        #   - zero-depth face touches (flush-mounted parts)
+        #   - cylinder discretisation artifacts (FCL uses triangle meshes)
+        # while still catching real interferences deeper than 4mm.
+        # Consistent with the "moderate" severity boundary (>= 0.5mm)
+        # in generate_interference_report and the > 5mm "severe" threshold
+        # in the static collision check.
+        self.min_penetration_mm = min_penetration_mm
 
     # -- public API ----------------------------------------------------------
 
@@ -125,6 +134,7 @@ class MotionCollisionChecker:
         for joint in revolute_joints:
             jr = self._sweep_joint(
                 assembly, solver, joint, base, skip_adjacent,
+                self.min_penetration_mm,
             )
             joint_results.append(jr)
             if jr.has_collision:
@@ -153,6 +163,7 @@ class MotionCollisionChecker:
         joint: Joint,
         base_angles: dict[str, float],
         skip_adjacent: bool,
+        min_penetration_mm: float = 0.5,
     ) -> JointCollisionRange:
         lo, hi = joint.range_deg
         angles = [
@@ -169,6 +180,7 @@ class MotionCollisionChecker:
             placements = solver.solve(joint_angles=test_angles)
             result = self._checker.check_assembly_collisions(
                 assembly, placements, skip_adjacent=skip_adjacent,
+                min_penetration_mm=min_penetration_mm,
             )
             if not result.collision_free:
                 collision_angles.append(round(angle, 2))

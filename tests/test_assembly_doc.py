@@ -23,6 +23,40 @@ from lang3d.tools.base import ToolRegistry
 
 
 # ============================================================================
+# Test: Connection-aware assembly steps (P1 fix)
+# ============================================================================
+
+class TestConnectionAwareSteps:
+    """Assembly steps should reflect the joint's connection method."""
+
+    def test_bolted_connection_shows_bolt_spec_and_torque(self):
+        """A bolted joint should show bolt size and torque, not hardcoded M3×10."""
+        from lang3d.knowledge.mechanics import (
+            Assembly, Joint, Part, ConnectionMethod,
+        )
+        parts = [
+            Part("part_a", "structural", "A", dimensions={"length": 50, "width": 40, "height": 8}),
+            Part("part_b", "structural", "B", dimensions={"length": 50, "width": 40, "height": 8}),
+        ]
+        joint = Joint(
+            "fixed", "part_a", "part_b", description="bolted",
+            parent_anchor="top", child_anchor="bottom",
+            connection=ConnectionMethod(
+                type="bolted", bolt_size="M4", bolt_count=4, torque_nm=0.7,
+            ),
+        )
+        asm = Assembly(name="t", description="t", parts=parts, joints=[joint])
+        guide = generate_assembly_guide(asm)
+        assert "M4" in guide   # bolt size from connection data
+        assert "0.7" in guide  # torque value
+
+    def test_none_connection_falls_back_to_m3(self):
+        """Backward compat: joints without connection still show M3×10."""
+        guide = generate_assembly_guide(ROBOTIC_ARM_ASSEMBLY)
+        assert "M3×10 螺丝" in guide
+
+
+# ============================================================================
 # Test: Guide structure
 # ============================================================================
 

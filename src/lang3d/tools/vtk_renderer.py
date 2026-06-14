@@ -648,6 +648,256 @@ def render_stl_multi_angle(
     return r.render_all_views(output_dir, views=views)
 
 
+def _add_fasteners_for_joints(
+    renderer: VTKOffscreenRenderer,
+    joints: list,
+    positions: dict[str, dict],
+    parts: list[dict],
+) -> None:
+    """Add bolt/washer/nut cylinders at bolted joints for VTK rendering.
+
+    Mirrors the FreeCAD ``_fastener_script_lines`` logic so the VTK render
+    shows the same fasteners that appear in the exported CAD assembly.
+    Prismatic joints are skipped (sliding interface, no bolts).
+    """
+    from .freecad import _FASTENER_DIMS
+
+    # Build part dimensions lookup: name -> dimensions dict
+    part_dims: dict[str, dict] = {}
+    for p in parts:
+        name = p.get("name")
+        if name:
+            part_dims[name] = p.get("dimensions", {}) or {}
+
+    for joint in joints or []:
+        conn = getattr(joint, "connection", None)
+        if conn is None:
+            continue
+        if getattr(conn, "type", "") != "bolted":
+            continue
+        if getattr(joint, "type", "") == "prismatic":
+            continue
+
+        parent_name = getattr(joint, "parent", "")
+        child_name = getattr(joint, "child", "")
+        pp = positions.get(parent_name, {}).get("position", [0, 0, 0])
+        cp = positions.get(child_name, {}).get("position", [0, 0, 0])
+
+        cx = (pp[0] + cp[0]) / 2.0
+        cy = (pp[1] + cp[1]) / 2.0
+        cz = (pp[2] + cp[2]) / 2.0
+
+        pd = part_dims.get(parent_name, {})
+        cd = part_dims.get(child_name, {})
+        pw = pd.get("width", pd.get("diameter", 30))
+        cw = cd.get("width", cd.get("diameter", 30))
+        radius = max(min(pw, cw) * 0.35, 6.0)
+
+        bolt_size = getattr(conn, "bolt_size", "M3")
+        count = getattr(conn, "bolt_count", 2) or 2
+        dims = _FASTENER_DIMS.get(bolt_size, _FASTENER_DIMS["M3"])
+        head_r, head_h, shank_r, washer_r, washer_h, nut_r, nut_h = dims
+
+        ph = pd.get("height", pd.get("diameter", 15))
+        ch = cd.get("height", cd.get("diameter", 15))
+        length = max(ph + ch + nut_h + washer_h, 12.0)
+
+        for b in range(count):
+            ang = 2.0 * math.pi * b / count
+            bx = cx + radius * math.cos(ang)
+            by = cy + radius * math.sin(ang)
+
+            # VTK cylinders are centred at *position*; the FreeCAD script
+            # uses the cylinder base.  Convert base-Z → centre-Z by adding
+            # half the height.
+            head_base_z = cz + length / 2.0
+            shank_base_z = cz - length / 2.0
+
+            # Bolt head
+            renderer.add_cylinder(
+                radius=head_r, height=head_h,
+                color=(0.80, 0.80, 0.82),
+                position=(bx, by, head_base_z + head_h / 2.0),
+                category="bearing",
+            )
+            # Bolt shank
+            renderer.add_cylinder(
+                radius=shank_r, height=length,
+                color=(0.75, 0.75, 0.78),
+                position=(bx, by, shank_base_z + length / 2.0),
+                category="bearing",
+            )
+            # Washer
+            washer_base_z = head_base_z - washer_h
+            renderer.add_cylinder(
+                radius=washer_r, height=washer_h,
+                color=(0.70, 0.70, 0.72),
+                position=(bx, by, washer_base_z + washer_h / 2.0),
+                category="bearing",
+            )
+            # Nut
+            nut_base_z = shank_base_z - nut_h
+            renderer.add_cylinder(
+                radius=nut_r, height=nut_h,
+                color=(0.65, 0.65, 0.68),
+                position=(bx, by, nut_base_z + nut_h / 2.0),
+                category="bearing",
+            )
+
+
+def _symmetrize_gripper_fingers(
+    parts: list[dict[str, Any]],
+    positions: dict[str, dict[str, Any]],
+) -> None:
+    """Ensure gripper fingers are symmetric, visible, and extend beyond the base.
+
+    The solver applies cumulative rotations along the kinematic chain.  By the
+    time the chain reaches the gripper, the rotation can be a complex 3-D
+    quaternion.  Two problems arise:
+
+    1. **Asymmetry** — the two fingers end up at different X/Z positions
+       because the rotation mixes the Y-offset into other axes differently
+       for +Y vs −Y offsets.
+    2. **Occlusion** — the solver's local offsets ``[0, ±gap, z_lift]`` may
+       place finger *centres* inside the gripper_base bounding box after
+       rotation, hiding the fingers inside the base mesh.
+
+    This render-only fixup recomputes finger positions so that:
+
+    * Both fingers share the same X/Z (the midpoint of the solver output).
+    * The gap is **at least** ``base_width + 25`` mm so fingers are clearly
+      outside the base mesh on both sides.
+    * Fingers are pushed slightly further from the base centre along the
+      arm's forward direction so they extend beyond the base.
+    * The gap direction is the horizontal lateral (perpendicular to the
+      arm forward vector), not raw world-Y, so it works for any arm pose.
+    """
+    import math
+
+    # --- Locate fingers and gripper base ---
+    left_name: str | None = None
+    right_name: str | None = None
+    base_name: str | None = None
+    base_width = 50.0
+    base_length = 30.0
+    for p in parts:
+        nl = p.get("name", "").lower()
+        if "finger" in nl and "left" in nl:
+            left_name = p["name"]
+        elif "finger" in nl and "right" in nl:
+            right_name = p["name"]
+        elif "gripper" in nl and "base" in nl:
+            base_name = p["name"]
+            dims = p.get("dimensions", {})
+            if isinstance(dims, dict):
+                base_width = float(dims.get("width", 50.0))
+                base_length = float(dims.get("length", 30.0))
+
+    if not left_name or not right_name:
+        return
+
+    lp = positions.get(left_name)
+    rp = positions.get(right_name)
+    if not lp or not rp:
+        return
+
+    lpos = lp.get("position", [0, 0, 0])
+    rpos = rp.get("position", [0, 0, 0])
+
+    # Midpoint of the two fingers (solver output, before fixup)
+    mid_x = (lpos[0] + rpos[0]) / 2.0
+    mid_y = (lpos[1] + rpos[1]) / 2.0
+    mid_z = (lpos[2] + rpos[2]) / 2.0
+
+    # --- Compute arm forward direction ---
+    # Use the vector from the arm root (first part, e.g. base_plate) through
+    # the gripper base to approximate the reach direction.  If gripper base
+    # position is unavailable, fall back to the midpoint-to-origin vector.
+    base_pos: list[float] | None = None
+    if base_name:
+        bp = positions.get(base_name)
+        if bp:
+            base_pos = list(bp.get("position", [0, 0, 0]))
+
+    root_pos: list[float] | None = None
+    if parts:
+        first = parts[0].get("name")
+        if first:
+            fp = positions.get(first)
+            if fp:
+                root_pos = list(fp.get("position", [0, 0, 0]))
+
+    fwd = (-1.0, 0.0, 0.0)  # default forward
+    if base_pos and root_pos:
+        dx = base_pos[0] - root_pos[0]
+        dy = base_pos[1] - root_pos[1]
+        dz = base_pos[2] - root_pos[2]
+        dlen = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if dlen > 1.0:
+            fwd = (dx / dlen, dy / dlen, dz / dlen)
+
+    # Lateral = forward × world-up (horizontal perpendicular to arm)
+    up = (0.0, 0.0, 1.0)
+    lat = (
+        fwd[1] * up[2] - fwd[2] * up[1],
+        fwd[2] * up[0] - fwd[0] * up[2],
+        fwd[0] * up[1] - fwd[1] * up[0],
+    )
+    lat_len = math.sqrt(lat[0] ** 2 + lat[1] ** 2 + lat[2] ** 2)
+    if lat_len > 0.01:
+        lat = (lat[0] / lat_len, lat[1] / lat_len, lat[2] / lat_len)
+    else:
+        lat = (0.0, 1.0, 0.0)
+
+    # --- Push fingers further from the base centre ---
+    # Extend the base→midpoint vector so fingers are clearly beyond the base
+    # mesh.  The fingers are rendered as 50 mm-wide boxes (±25 mm in X from
+    # centre), so the push plus fwd_offset places finger centres far enough
+    # forward that the back of each finger clears the base.
+    if base_pos:
+        vx = mid_x - base_pos[0]
+        vy = mid_y - base_pos[1]
+        vz = mid_z - base_pos[2]
+        push = 1.5
+        mid_x = base_pos[0] + vx * push
+        mid_y = base_pos[1] + vy * push
+        mid_z = base_pos[2] + vz * push
+
+    # --- Gap: wide enough that finger centres are outside the base ---
+    raw_gap = abs(lpos[1] - rpos[1])
+    gap = max(raw_gap, base_width + 30.0, 65.0)
+
+    # Horizontal forward direction (project fwd onto XY plane) for placing
+    # fingers so they extend forward without changing their Z height.
+    fwd_h_len = math.sqrt(fwd[0] ** 2 + fwd[1] ** 2)
+    if fwd_h_len > 0.01:
+        fhx = fwd[0] / fwd_h_len
+        fhy = fwd[1] / fwd_h_len
+    else:
+        fhx, fhy = -1.0, 0.0
+
+    # Place fingers symmetrically along the lateral direction.
+    # Push finger centres forward horizontally so the finger boxes
+    # (rendered as oversized world-axis-aligned prongs) extend beyond
+    # the arm tip without overlapping the servo or base.
+    fwd_offset = 30.0
+    lp["position"] = [
+        mid_x + fhx * fwd_offset + lat[0] * (-gap / 2.0),
+        mid_y + fhy * fwd_offset + lat[1] * (-gap / 2.0),
+        mid_z,
+    ]
+    rp["position"] = [
+        mid_x + fhx * fwd_offset + lat[0] * (gap / 2.0),
+        mid_y + fhy * fwd_offset + lat[1] * (gap / 2.0),
+        mid_z,
+    ]
+
+    # No rotation — fingers are rendered as world-axis-aligned boxes
+    # (long along X=forward, narrow along Y=gap, tall along Z).
+    lp["rotation"] = None
+    rp["rotation"] = None
+
+
 def render_assembly_from_positions(
     parts: list[dict[str, Any]],
     positions: dict[str, dict[str, Any]],
@@ -656,6 +906,7 @@ def render_assembly_from_positions(
     stl_dir: str | None = None,
     width: int = 1200,
     height: int = 900,
+    joints: list | None = None,
 ) -> list[str]:
     """Render an assembly from part definitions and solved positions.
 
@@ -666,6 +917,8 @@ def render_assembly_from_positions(
         stl_dir: Optional directory to look for STL files. If found, uses real mesh.
         views: Camera angle names.
         width/height: Image resolution.
+        joints: Optional list of Joint objects.  When provided, bolt/washer/nut
+            cylinders are rendered at every bolted connection.
 
     Returns:
         List of rendered PNG file paths.
@@ -689,6 +942,14 @@ def render_assembly_from_positions(
         # Convert rotation list to tuple if present
         rot_tuple = tuple(rot) if rot and rot[3] != 0.0 else None
 
+        # All parts — including gripper fingers — use swap_xy=True.  FreeCAD
+        # generates STLs with length on X; swap_xy (R_z(-90°)) maps FreeCAD
+        # +X → solver -Y (front), so the long axis ends up pointing forward
+        # along the arm.  For fingers, the L-shaped tips (FreeCAD ±Y) map to
+        # solver ∓X, so the left finger tip (at solver -X) curves toward +X
+        # and the right finger tip (at solver +X) curves toward -X — the
+        # grip surfaces face each other correctly.
+
         # Try STL first (real geometry)
         stl_loaded = False
         if stl_dir:
@@ -700,6 +961,10 @@ def render_assembly_from_positions(
         # Fallback to dimension-based approximation
         if not stl_loaded:
             _add_dimension_approximation(r, dims, color, pos, rot_tuple, category=category)
+
+    # Fasteners (bolts, washers, nuts) at bolted joints
+    if joints:
+        _add_fasteners_for_joints(r, joints, positions, parts)
 
     r.add_axes(length=25)
     r.add_floor_grid(size=400, spacing=50, z_position=0)

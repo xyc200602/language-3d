@@ -516,8 +516,16 @@ class TestStep5Verification:
             allowed_tolerance_total=1.0,
         )
 
-        assert result.collision_free, \
-            f"Assembly should be collision-free. Checks: {result.collision_checks}"
+        # F3: when FCL is unavailable collision_free is False (UNVERIFIED),
+        # not True.  Assert the correct semantics: either genuinely free
+        # (FCL installed, no collision) or explicitly UNVERIFIED.
+        from lang3d.tools.mesh_collision import HAS_FCL
+        if HAS_FCL:
+            assert result.collision_free, \
+                f"Assembly should be collision-free. Checks: {result.collision_checks}"
+        else:
+            assert not result.collision_free
+            assert any("UNVERIFIED" in c.notes for c in result.collision_checks)
 
 
 # ============================================================================
@@ -809,7 +817,13 @@ class TestFullPipelineIntegration:
 
         # === Step 6: Validate results ===
         assert isinstance(result, AssemblyVerificationResult)
-        assert result.collision_free
+        # F3: collision_free reflects FCL availability — when FCL is missing
+        # the check is UNVERIFIED (False), not silently True.
+        from lang3d.tools.mesh_collision import HAS_FCL
+        if HAS_FCL:
+            assert result.collision_free
+        else:
+            assert not result.collision_free
 
         # Mating surface: top-bottom anchors → anti-parallel normals
         assert len(result.mating_surface_checks) == 1

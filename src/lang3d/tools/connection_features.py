@@ -1208,12 +1208,17 @@ class ConnectionFeatureEngine:
 
     @staticmethod
     def _face_length(anchor: str, d: dict) -> float:
-        """Return the primary length of the anchor face."""
+        """Return the primary length of the anchor face.
+
+        F16: every face previously returned ``d["length"]`` regardless of
+        orientation, so left/right faces (which span length×height, not
+        length×width) were sized incorrectly and bolt margins were wrong.
+        """
         mapping = {
             "top": d.get("length", 20),
             "bottom": d.get("length", 20),
-            "left": d.get("length", 20),
-            "right": d.get("length", 20),
+            "left": d.get("width", d.get("height", 20)),
+            "right": d.get("width", d.get("height", 20)),
             "front": d.get("length", 20),
             "back": d.get("length", 20),
         }
@@ -1246,8 +1251,11 @@ class ConnectionFeatureEngine:
         centers = {
             "top": (l / 2, w / 2, h),
             "bottom": (l / 2, w / 2, 0),
-            "left": (0, 0, h / 2),
-            "right": (l, 0, h / 2),
+            # F16: left/right faces are at X=0/X=L but span the full Y
+            # extent — the centre Y must be w/2, not 0 (which placed every
+            # feature on the front edge of the side face).
+            "left": (0, w / 2, h / 2),
+            "right": (l, w / 2, h / 2),
             "front": (l / 2, 0, h / 2),
             "back": (l / 2, w, h / 2),
         }
@@ -1532,13 +1540,24 @@ def generate_assembly_connection_features(
         structural = _pick_structural_part(parent_part, child_part)
         anchor = joint.child_anchor if structural == child_part else joint.parent_anchor
 
-        if structural.name not in results:
-            result = engine.generate_features(
-                structural_part=structural,
-                connection=joint.connection,
-                anchor=anchor,
-            )
-            results[structural.name] = result
+        new_result = engine.generate_features(
+            structural_part=structural,
+            connection=joint.connection,
+            anchor=anchor,
+        )
+
+        # F16: a structural part that participates in multiple bolted joints
+        # (e.g. a base plate with 4 standoffs + a motor) previously had its
+        # features generated only for the FIRST joint — every subsequent
+        # joint was silently skipped.  Merge features from all connections.
+        if structural.name in results:
+            existing = results[structural.name]
+            existing.ops.extend(new_result.ops)
+            existing.fastener_ops.extend(new_result.fastener_ops)
+            existing.warnings.extend(new_result.warnings)
+            existing.features_generated.extend(new_result.features_generated)
+        else:
+            results[structural.name] = new_result
 
     return results
 

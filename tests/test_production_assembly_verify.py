@@ -201,11 +201,17 @@ class TestBoltHoleAlignmentCheck:
 class TestCollisionCheckEnhanced:
 
     def test_no_placements_no_collision(self, tmp_path):
-        """Without placements, collision check should not run."""
+        """Without placements, collisions are UNVERIFIED (F3).
+
+        Previously the verifier returned an empty list + collision_free=True,
+        creating an always-pass path.  Now it emits an UNVERIFIED warning and
+        collision_free=False so the assembly cannot silently pass.
+        """
         verifier = AssemblyVerifier()
         result = verifier.verify_assembly(ROBOTIC_ARM_ASSEMBLY, tmp_path)
-        assert result.collision_checks == []
-        assert result.collision_free is True
+        assert len(result.collision_checks) > 0
+        assert "UNVERIFIED" in result.collision_checks[0].notes
+        assert result.collision_free is False
 
     def test_check_collisions_returns_fcl_flag(self):
         """check_collisions should return fcl_available flag."""
@@ -339,6 +345,7 @@ class TestVerificationItems:
             assert item.category in (
                 "mating_surface", "bolt_alignment", "collision",
                 "tolerance", "sequence",
+                "motion_collision", "stability",
             )
             assert isinstance(item.passed, bool)
 

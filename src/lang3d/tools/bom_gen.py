@@ -158,8 +158,9 @@ def _part_to_bom_entry(part: Part) -> dict[str, Any]:
     elif "length" in dims and "width" in dims:
         vol_mm3 = dims["length"] * dims["width"] * dims.get("thickness", 5)
 
-    # PLA density ~1.25 g/cm³ = 0.00125 g/mm³
-    weight_g = vol_mm3 * 0.00125
+    # Material-aware density (kg/m³ → g/mm³ = kg/m³ × 1e-6)
+    density_g_mm3 = part.effective_density() * 1e-6
+    weight_g = vol_mm3 * density_g_mm3
     cost = weight_g * PLA_COST_PER_G
 
     return {

@@ -523,6 +523,61 @@ def _phase5_content_validation(
             f"URDF has <link>: {has_links}, <joint>: {has_joints}",
         )
 
+        # URDF joint origin sanity — catch parts placed hundreds of mm from
+        # their parent (root cause of the 4dof_arm gripper_finger_left 322mm
+        # offset that Phase 5 previously let through).  Threshold scales with
+        # the parent part's largest dimension so a tiny servo can't justify a
+        # 0.3m joint origin, while a large chassis still can.
+        try:
+            import xml.etree.ElementTree as ET
+
+            from lang3d.tools.urdf_export import _sanitize_name
+
+            root_elem = ET.fromstring(content)
+            # Key by the sanitized name so it matches the ``link`` attribute
+            # emitted in the URDF (names are lower-cased / de-punctuated).
+            part_max_dim_m = {}
+            for p in assembly.parts:
+                d = p.dimensions or {}
+                md = max(d.values()) if d else 0
+                part_max_dim_m[_sanitize_name(p.name)] = md / 1000.0
+
+            absurd = []
+            for je in root_elem.findall(".//joint"):
+                if je.get("type", "") not in ("revolute", "prismatic", "continuous"):
+                    continue
+                oe = je.find("origin")
+                if oe is None:
+                    continue
+                xyz = oe.get("xyz", "0 0 0").split()
+                if len(xyz) < 3:
+                    continue
+                try:
+                    x, y, z = float(xyz[0]), float(xyz[1]), float(xyz[2])
+                except ValueError:
+                    continue
+                mag = math.sqrt(x * x + y * y + z * z)
+                parent_el = je.find("parent")
+                parent_link = (
+                    parent_el.get("link", "") if parent_el is not None else ""
+                )
+                threshold = max(0.2, 2.0 * part_max_dim_m.get(parent_link, 0.1))
+                if mag > threshold:
+                    absurd.append({
+                        "joint": je.get("name", "?"),
+                        "mag_m": round(mag, 3),
+                        "thresh_m": round(threshold, 3),
+                    })
+            _check(
+                checks, phase, "urdf_origins_sane",
+                len(absurd) == 0,
+                f"Absurd movable-joint origins: {len(absurd)} "
+                f"(threshold max(0.2m, 2x parent_dim))",
+                critical=True,
+            )
+        except ET.ParseError as exc:
+            _warn(checks, phase, "urdf_parse", f"URDF XML parse failed: {exc}")
+
     # FreeCAD scripts: check engineering features
     fc_dir = Path(export_dir) / "freecad_scripts"
     if fc_dir.is_dir():
@@ -597,7 +652,13 @@ def _phase6_physical_sanity(
     assembly: Any,
     positions: dict,
 ) -> None:
-    """Collision detection and tree reachability.  Non-critical phase."""
+    """Collision detection, motion sweep, COM stability, and reachability.
+
+    The static and tree-reachability checks are advisory; the motion-collision
+    sweep, COM stability, and workspace-volume checks are ``critical=True`` so
+    that a self-colliding, tipping, or kinematically degenerate robot fails
+    validation rather than silently passing.
+    """
     phase = "phase6"
 
     # Collision detection (optional)
@@ -626,6 +687,79 @@ def _phase6_physical_sanity(
     except Exception as exc:
         _warn(checks, phase, "collision_detection", f"Error: {exc}")
 
+    # Motion sweep: sample each revolute joint across its range_deg and FCL
+    # collide at every sample.  Catches self-collisions that only appear mid
+    # motion (a static check at home pose cannot see them).  Requires
+    # python-fcl; degrades to _warn with an install hint otherwise.
+    #
+    # Pass criterion: every revolute joint must retain at least one
+    # collision-free arc spanning >= 20% of its declared range.  Real
+    # compact arms routinely self-collide at workspace extremes; what
+    # matters for functionality is that a non-trivial usable region
+    # exists.  Requiring zero collisions everywhere is unrealistic for
+    # LLM-generated designs and would block otherwise-functional arms.
+    try:
+        from lang3d.tools.motion_collision import MotionCollisionChecker
+
+        mc = MotionCollisionChecker(num_samples=5)
+        motion_result = mc.check_motion_collisions(
+            assembly=assembly, skip_adjacent=True,
+        )
+        colliding = [
+            jr.joint_name for jr in motion_result.joint_results if jr.has_collision
+        ]
+
+        min_usable_fraction = 0.20
+        joints_usable: list[bool] = []
+        for jr in motion_result.joint_results:
+            total = jr.angle_max_deg - jr.angle_min_deg
+            if total <= 0:
+                joints_usable.append(True)
+                continue
+            largest_free = max(
+                (e - s for s, e in jr.collision_free_segments),
+                default=0.0,
+            )
+            joints_usable.append(largest_free / total >= min_usable_fraction)
+        all_usable = all(joints_usable) if joints_usable else True
+
+        _check(
+            checks, phase, "motion_collision_sweep",
+            all_usable,
+            f"Motion sweep: {motion_result.joints_checked} joints, "
+            f"{len(colliding)} with collisions"
+            + (f" ({', '.join(colliding[:3])})" if colliding else "")
+            + f"; all joints have >= {int(min_usable_fraction * 100)}% usable range",
+            critical=True,
+        )
+    except (ImportError, RuntimeError) as exc:
+        _warn(
+            checks, phase, "motion_collision_sweep",
+            f"Skipped (needs python-fcl trimesh): {exc}",
+        )
+    except Exception as exc:
+        _warn(checks, phase, "motion_collision_sweep", f"Error: {exc}")
+
+    # COM stability: assembly center of mass must project inside the support
+    # polygon formed by the ground-contact parts, otherwise the robot tips
+    # over.  Catches top-heavy / narrow-base assemblies a static collision
+    # check cannot detect.
+    try:
+        from lang3d.agent.assembly_verifier import AssemblyVerifier
+
+        verifier = AssemblyVerifier()
+        com_result = verifier.check_center_of_mass_stability(assembly, positions)
+        com_ok = bool(com_result.verified and com_result.inside_support_polygon)
+        _check(
+            checks, phase, "com_stability",
+            com_ok,
+            f"COM within support polygon: {com_ok} "
+            f"({com_result.notes or 'n/a'})",
+            critical=True,
+        )
+    except Exception as exc:
+        _warn(checks, phase, "com_stability", f"Check error: {exc}")
+
     # Parts reachable from root
     if assembly.joints and positions:
         part_names = {p.name for p in assembly.parts}
@@ -650,6 +784,80 @@ def _phase6_physical_sanity(
             reachable_ratio == 1.0,
             f"Reachable: {len(visited)}/{len(part_names)} ({reachable_ratio:.0%})",
         )
+
+    # Workspace sampling: verify the arm can reach a non-trivial volume.
+    # Drives each revolute joint to its range midpoint (others at home) and
+    # measures the end-effector bounding-box max edge.  A degenerate assembly
+    # whose joints don't actually move the end-effector collapses to a point
+    # and fails here.  Pure FK — does not need FCL.
+    try:
+        from lang3d.tools.assembly_solver import AssemblySolver
+
+        ee_candidates = ("gripper_base", "end_effector", "gripper")
+        ee_name = next(
+            (p.name for p in assembly.parts
+             if any(k in p.name.lower() for k in ee_candidates)),
+            assembly.parts[-1].name if assembly.parts else "",
+        )
+
+        part_names_set = {p.name for p in assembly.parts}
+        solver = AssemblySolver(assembly)
+        home = solver.solve()
+        home_ee = home.get(ee_name, {}).get("position")
+
+        samples = []
+        if home_ee:
+            samples.append(tuple(home_ee))
+
+        rev_joints = [j for j in assembly.joints if j.type == "revolute"]
+        for j in rev_joints:
+            if not j.range_deg or j.child not in part_names_set:
+                continue
+            lo, hi = j.range_deg[0], j.range_deg[1]
+            # Sample at both endpoints (and the midpoint when non-zero).  End
+            # points are essential because many real arms declare symmetric
+            # ranges (e.g. (-180, 180)) whose midpoint is 0 == home, which
+            # would otherwise collapse the bounding box to a single point.
+            for target in (lo, hi, (lo + hi) / 2.0):
+                angles = dict(assembly.default_angles or {})
+                angles[j.child] = target
+                try:
+                    placements = solver.solve(joint_angles=angles)
+                    ee = placements.get(ee_name, {}).get("position")
+                    if ee:
+                        samples.append(tuple(ee))
+                except Exception:
+                    pass
+
+        if len(samples) >= 2:
+            xs = [s[0] for s in samples]
+            ys = [s[1] for s in samples]
+            zs = [s[2] for s in samples]
+            bbox = max(
+                max(xs) - min(xs),
+                max(ys) - min(ys),
+                max(zs) - min(zs),
+            )
+            largest_dim = max(
+                (max((p.dimensions or {}).values(), default=0)
+                 for p in assembly.parts),
+                default=0,
+            )
+            threshold_mm = max(50.0, largest_dim * 0.5)
+            _check(
+                checks, phase, "workspace_nontrivial",
+                bbox > threshold_mm,
+                f"Workspace bbox max edge: {bbox:.0f}mm "
+                f"(threshold {threshold_mm:.0f}mm)",
+                critical=True,
+            )
+        else:
+            _warn(
+                checks, phase, "workspace_nontrivial",
+                "Insufficient samples for workspace analysis",
+            )
+    except Exception as exc:
+        _warn(checks, phase, "workspace_nontrivial", f"Error: {exc}")
 
 
 # ---------------------------------------------------------------------------

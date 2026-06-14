@@ -114,6 +114,30 @@ class AssemblySequenceCheck:
 
 
 @dataclass
+class MotionCollisionSummary:
+    """Summary of a joint-sweep motion collision scan (F5)."""
+
+    joints_checked: int = 0
+    collision_free: bool = True
+    joints_with_collisions: int = 0
+    verified: bool = False        # False when FCL unavailable / placements missing
+    notes: str = ""
+
+
+@dataclass
+class CenterOfMassStabilityCheck:
+    """Result of center-of-mass / support-polygon stability check (F6)."""
+
+    center_of_mass_mm: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    support_polygon_xy: list[tuple[float, float]] = field(default_factory=list)
+    inside_support_polygon: bool = True
+    margin_mm: float = 0.0        # distance from COM projection to nearest polygon edge (- = outside)
+    total_mass_kg: float = 0.0
+    verified: bool = False        # False when mass/positions unavailable
+    notes: str = ""
+
+
+@dataclass
 class VerificationItem:
     """A single verification check result (pass/fail + data)."""
 
@@ -144,6 +168,13 @@ class AssemblyVerificationResult:
     sequence_checks: list[AssemblySequenceCheck] = field(default_factory=list)
     verification_items: list[VerificationItem] = field(default_factory=list)
     fcl_available: bool = True
+    # --- F5/F6: motion collision sweep + COM stability ---
+    motion_collision: MotionCollisionSummary = field(
+        default_factory=MotionCollisionSummary,
+    )
+    com_stability: CenterOfMassStabilityCheck = field(
+        default_factory=CenterOfMassStabilityCheck,
+    )
 
 
 class AssemblyVerifier:
@@ -159,7 +190,7 @@ class AssemblyVerifier:
         workspace: str | Path,
         parts_results: dict[str, dict[str, Any]] | None = None,
         placements: dict | None = None,
-        allowed_tolerance_total: float = 0.0,
+        allowed_tolerance_total: float | None = None,
     ) -> AssemblyVerificationResult:
         """Run full assembly verification.
 
@@ -170,12 +201,18 @@ class AssemblyVerifier:
             placements: Optional solved placements dict (from assembly_solve).
                         When provided, runs collision detection.
             allowed_tolerance_total: Max acceptable total tolerance band (mm).
-                                    0 = no tolerance chain check.
+                ``None`` (default) enables a conservative 1.0 mm limit.
+                ``0`` explicitly disables the tolerance chain check.
 
         Returns:
             AssemblyVerificationResult with all checks.
         """
         workspace = Path(workspace)
+
+        # F8: tolerance chain was disabled by default (allowed_total=0),
+        # masking tolerance stackup failures.  Use a conservative default.
+        if allowed_tolerance_total is None:
+            allowed_tolerance_total = 1.0
 
         part_checks = self.check_part_completeness(assembly, workspace, parts_results)
         fit_checks = self.check_joint_fits(assembly)
@@ -193,6 +230,9 @@ class AssemblyVerifier:
         tolerance_issues.extend(screw_issues)
 
         # --- Task 63: collision checks ---
+        # F3: when placements are not provided, collisions are UNVERIFIED —
+        # we must not treat this as collision-free.  Setting
+        # collision_free=False forces overall_pass to reflect the gap.
         collision_checks: list[CollisionCheck] = []
         collision_free = True
         fcl_available = True
@@ -200,12 +240,28 @@ class AssemblyVerifier:
             collision_checks, collision_free, fcl_available = self.check_collisions(
                 assembly, placements,
             )
+        else:
+            collision_checks = [CollisionCheck(
+                part_a="*",
+                part_b="*",
+                is_collision=False,
+                notes="UNVERIFIED: no solver placements provided — collisions NOT checked, "
+                      "assembly must NOT be labeled 'production-grade'",
+            )]
+            collision_free = False
+            fcl_available = False
 
         # --- Task 80: production-grade verification ---
         mating_checks = self.check_mating_surfaces(assembly, placements)
         bolt_checks = self.check_bolt_hole_alignment(assembly)
         tol_chain_checks = self.check_tolerance_chain(assembly, allowed_tolerance_total)
         seq_checks = self.check_assembly_sequence(assembly)
+
+        # --- F5: motion-range collision sweep ---
+        motion_summary = self.check_motion_collisions(assembly, placements)
+
+        # --- F6: center-of-mass / support-polygon stability ---
+        com_check = self.check_center_of_mass_stability(assembly, placements)
 
         # Build structured verification items
         verification_items: list[VerificationItem] = []
@@ -233,12 +289,14 @@ class AssemblyVerifier:
                 data={"max_deviation_mm": bc.max_position_deviation_mm},
             ))
 
-        # Collision items
+        # Collision items — UNVERIFIED checks (no placements / no FCL) must
+        # NOT count as passed, otherwise the score is meaningless.  F3.
         for cc in collision_checks:
+            is_unverified = "UNVERIFIED" in cc.notes
             verification_items.append(VerificationItem(
                 name=f"collision_{cc.part_a}_{cc.part_b}",
                 category="collision",
-                passed=not cc.is_collision,
+                passed=(not cc.is_collision) and not is_unverified,
                 details=cc.notes,
                 data={"penetration_mm": cc.penetration_depth_mm},
             ))
@@ -262,6 +320,31 @@ class AssemblyVerifier:
                 details=sc.notes,
             ))
 
+        # F5: motion collision item
+        verification_items.append(VerificationItem(
+            name="motion_collision_sweep",
+            category="motion_collision",
+            passed=motion_summary.collision_free if motion_summary.verified else False,
+            details=motion_summary.notes,
+            data={
+                "joints_checked": motion_summary.joints_checked,
+                "joints_with_collisions": motion_summary.joints_with_collisions,
+            },
+        ))
+
+        # F6: COM stability item
+        verification_items.append(VerificationItem(
+            name="com_stability",
+            category="stability",
+            passed=com_check.inside_support_polygon if com_check.verified else False,
+            details=com_check.notes,
+            data={
+                "com_mm": list(com_check.center_of_mass_mm),
+                "margin_mm": com_check.margin_mm,
+                "total_mass_kg": com_check.total_mass_kg,
+            },
+        ))
+
         # Determine overall pass
         all_parts_exist = all(pc.exists for pc in part_checks)
         all_fits_ok = all(fc.fits for fc in fit_checks)
@@ -278,6 +361,8 @@ class AssemblyVerifier:
             and all_bolts_ok
             and all_tol_ok
             and all_seq_ok
+            and motion_summary.collision_free
+            and com_check.inside_support_polygon
         )
 
         # Build summary
@@ -296,6 +381,17 @@ class AssemblyVerifier:
             + f"\n- 配合面检查: {len(mating_checks)} 对"
             + f"\n- 螺栓对齐: {len(bolt_checks)} 组"
             + f"\n- 公差链: {len(tol_chain_checks)} 条"
+            + f"\n- 运动碰撞扫描: "
+            + (motion_summary.notes if not motion_summary.verified
+               else f"{motion_summary.joints_checked} 关节, "
+                    f"{motion_summary.joints_with_collisions} 有碰撞")
+            + f"\n- 重心稳定性: "
+            + (com_check.notes if not com_check.verified
+               else f"COM=({com_check.center_of_mass_mm[0]:.1f},"
+                    f"{com_check.center_of_mass_mm[1]:.1f},"
+                    f"{com_check.center_of_mass_mm[2]:.1f}) "
+                    f"{'在' if com_check.inside_support_polygon else '不在'}"
+                    f"支撑多边形内")
             + f"\n- 结构化检查: {n_items_pass}/{n_items_total} 通过"
             + "\n"
             f"- 总体结果: {'通过' if overall_pass else '未通过'}"
@@ -316,6 +412,8 @@ class AssemblyVerifier:
             sequence_checks=seq_checks,
             verification_items=verification_items,
             fcl_available=fcl_available,
+            motion_collision=motion_summary,
+            com_stability=com_check,
         )
 
     def check_part_completeness(
@@ -486,7 +584,11 @@ class AssemblyVerifier:
             ]
             return checks, result.collision_free, True
         except ImportError:
-            # FCL not available — collision status is UNVERIFIED, not "safe"
+            # FCL not available — collision status is UNVERIFIED, NOT "safe".
+            # F3: returning collision_free=True here created an always-pass
+            # path that masked broken kinematics.  Now we return False so the
+            # assembly cannot be labelled "collision-free" without actually
+            # checking collisions.
             warning_check = CollisionCheck(
                 part_a="*",
                 part_b="*",
@@ -494,7 +596,7 @@ class AssemblyVerifier:
                 notes="UNVERIFIED: FCL (python-fcl) not installed — collisions NOT checked, "
                       "assembly must NOT be labeled 'production-grade'",
             )
-            return [warning_check], True, False
+            return [warning_check], False, False
         except Exception as e:
             warning_check = CollisionCheck(
                 part_a="*",
@@ -503,7 +605,7 @@ class AssemblyVerifier:
                 notes=f"UNVERIFIED: Collision check failed: {e} — "
                       "assembly must NOT be labeled 'production-grade'",
             )
-            return [warning_check], True, False
+            return [warning_check], False, False
 
     # ------------------------------------------------------------------
     # Task 80: Mating surface verification
@@ -633,13 +735,18 @@ class AssemblyVerifier:
             if conn is None or conn.type != "bolted":
                 continue
 
-            # Count holes
+            # Count holes on the parent side from the connection spec.
             parent_holes = len(conn.bolt_holes) if conn.bolt_holes else conn.bolt_count
             if parent_holes == 0:
                 parent_holes = 4  # default 4-bolt pattern
 
-            # For the child (functional part), infer holes from MountingInterface
-            child_holes = parent_holes  # assume same number (catalog parts match)
+            # F8: previously the child hole count was blindly copied from
+            # the parent (``child_holes = parent_holes``), which made the
+            # count-match check a tautology.  Now we infer the child's hole
+            # count independently: functional parts expose their mounting
+            # pattern via ``notes`` or dimensions; if unknown we report
+            # ``child_holes = -1`` so the alignment cannot silently pass.
+            child_holes = self._infer_child_hole_count(child, conn)
 
             # Check position alignment
             if conn.bolt_holes and len(conn.bolt_holes) > 0:
@@ -655,9 +762,12 @@ class AssemblyVerifier:
                     center_dev = math.sqrt(cx ** 2 + cy ** 2)
                     max_dev = center_dev
 
-                aligned = max_dev < 0.5 and parent_holes == child_holes
+                count_ok = child_holes < 0 or parent_holes == child_holes
+                aligned = max_dev < 0.5 and count_ok
                 notes = ""
-                if parent_holes != child_holes:
+                if child_holes < 0:
+                    notes = "子件孔数未知，孔数匹配未验证"
+                elif parent_holes != child_holes:
                     notes = f"孔数量不匹配: {parent_holes} vs {child_holes}"
                 elif max_dev >= 0.5:
                     notes = f"孔位偏差过大: {max_dev:.3f}mm"
@@ -674,17 +784,64 @@ class AssemblyVerifier:
                     notes=notes,
                 ))
             else:
-                # No explicit holes — infer from dimensions
+                # No explicit holes — cannot verify alignment.
+                # F8: previously this was auto-pass; now we only pass when
+                # the child hole count is independently known to match.
+                count_ok = child_holes < 0 or parent_holes == child_holes
+                if child_holes < 0:
+                    hole_notes = "无显式孔位数据，子件孔数未知"
+                elif not count_ok:
+                    hole_notes = f"孔数量不匹配: {parent_holes} vs {child_holes}"
+                else:
+                    hole_notes = "无显式孔位数据，孔数匹配"
                 checks.append(BoltHoleAlignmentCheck(
                     parent_part=joint.parent,
                     child_part=joint.child,
                     hole_count_parent=parent_holes,
                     hole_count_child=child_holes,
-                    notes="无显式孔位数据，跳过对齐检查",
-                    aligned=True,
+                    notes=hole_notes,
+                    aligned=count_ok and child_holes >= 0,
                 ))
 
         return checks
+
+    @staticmethod
+    def _infer_child_hole_count(child: Part, conn) -> int:
+        """Infer the child part's bolt hole count independently.
+
+        Returns the inferred count, or ``-1`` when it cannot be determined
+        (meaning the count-match check cannot be resolved and should not
+        silently pass).
+        """
+        # 1. Check the child's notes for a catalog mounting pattern hint
+        notes = (child.notes or "").lower()
+        for token, count in [
+            ("4xm3", 4), ("4xm4", 4), ("4xm5", 4), ("4xm6", 4),
+            ("2xm3", 2), ("2xm4", 2), ("2xm2", 2),
+            ("bolt_count:4", 4), ("bolt_count:2", 2),
+        ]:
+            if token in notes:
+                return count
+
+        # 2. Category-based defaults: functional parts (motors, bearings)
+        #    have well-known mounting patterns.
+        cat = (child.category or "").lower()
+        name = child.name.lower()
+        if any(kw in name for kw in ("nema17", "nema23", "stepper")):
+            return 4  # NEMA steppers use 4-bolt flange
+        if "mg996r" in name or "sg90" in name:
+            return 2  # hobby servos use 2-bolt mount
+        if "bearing" in name or cat == "bearing":
+            return 0  # press-fit, no bolts
+
+        # 3. If the child is functional (actuator/sensor/electronics) but
+        #    we can't determine the pattern, leave unknown.
+        if cat in ("actuator", "sensor", "electronics", "fastener", "bearing"):
+            return -1
+
+        # 4. Structural parts: assume they match the joint's bolt_count,
+        #    since the connection spec applies to both mating parts.
+        return conn.bolt_count if conn.bolt_count > 0 else 4
 
     # ------------------------------------------------------------------
     # Task 80: Tolerance chain analysis
@@ -828,6 +985,234 @@ class AssemblyVerifier:
                 assembled.add(joint.child)
 
         return checks
+
+    # ------------------------------------------------------------------
+    # F5: Motion-range collision sweep
+    # ------------------------------------------------------------------
+
+    def check_motion_collisions(
+        self,
+        assembly: Assembly,
+        placements: dict | None = None,
+    ) -> MotionCollisionSummary:
+        """Sweep each revolute joint through its range and check for collisions.
+
+        Reuses the existing ``MotionCollisionChecker`` which was previously
+        never called from the verifier — meaning a robot whose kinematics
+        self-collide through its motion range would still pass verification.
+
+        When FCL is unavailable or placements are missing, returns a summary
+        marked ``verified=False`` so the caller knows the check did not run.
+        """
+        revolute_count = sum(1 for j in assembly.joints if j.type == "revolute")
+        if revolute_count == 0:
+            return MotionCollisionSummary(
+                joints_checked=0,
+                collision_free=True,
+                verified=True,
+                notes="无旋转关节，跳过运动碰撞扫描",
+            )
+
+        if placements is None:
+            return MotionCollisionSummary(
+                joints_checked=revolute_count,
+                collision_free=False,
+                verified=False,
+                notes="UNVERIFIED: 无位置数据，运动碰撞未检查",
+            )
+
+        try:
+            from ..tools.motion_collision import MotionCollisionChecker
+            checker = MotionCollisionChecker(num_samples=7)
+            result = checker.check_motion_collisions(assembly)
+            n_col = sum(1 for jr in result.joint_results if jr.has_collision)
+            return MotionCollisionSummary(
+                joints_checked=result.joints_checked,
+                collision_free=result.collision_free,
+                joints_with_collisions=n_col,
+                verified=True,
+                notes=result.summary,
+            )
+        except RuntimeError as e:
+            # FCL / trimesh not installed
+            return MotionCollisionSummary(
+                joints_checked=revolute_count,
+                collision_free=False,
+                verified=False,
+                notes=f"UNVERIFIED: 运动碰撞检查依赖不可用 ({e})",
+            )
+        except Exception as e:
+            return MotionCollisionSummary(
+                joints_checked=revolute_count,
+                collision_free=False,
+                verified=False,
+                notes=f"UNVERIFIED: 运动碰撞检查异常 ({e})",
+            )
+
+    # ------------------------------------------------------------------
+    # F6: Center-of-mass / support-polygon stability
+    # ------------------------------------------------------------------
+
+    def check_center_of_mass_stability(
+        self,
+        assembly: Assembly,
+        placements: dict | None = None,
+    ) -> CenterOfMassStabilityCheck:
+        """Check that the assembly COM projects inside the base support polygon.
+
+        Computes the assembly mass / COM via ``compute_assembly_mass`` and
+        builds a support polygon from the convex hull of the base-part
+        contact points (lowest parts).  If the XY projection of the COM
+        falls outside this polygon, the assembly would tip over — a failure
+        that was previously never caught.
+        """
+        if placements is None:
+            return CenterOfMassStabilityCheck(
+                verified=False,
+                notes="UNVERIFIED: 无位置数据，重心稳定性未检查",
+            )
+
+        try:
+            from ..knowledge.mechanics import compute_assembly_mass
+            mass_result = compute_assembly_mass(assembly, positions=placements)
+        except Exception as e:
+            return CenterOfMassStabilityCheck(
+                verified=False,
+                notes=f"UNVERIFIED: 质量计算失败 ({e})",
+            )
+
+        com = mass_result.get("center_of_mass_mm", [0.0, 0.0, 0.0])
+        com_xy = (com[0], com[1])
+        total_mass = mass_result.get("total_mass_kg", 0.0)
+
+        # Build support polygon from the lowest parts (ground contact).
+        # Parts within 5mm of the minimum Z are considered "on the ground".
+        if not placements:
+            return CenterOfMassStabilityCheck(
+                center_of_mass_mm=tuple(com),
+                total_mass_kg=total_mass,
+                verified=False,
+                notes="UNVERIFIED: 无位置数据",
+            )
+
+        min_z = min(
+            p["position"][2] for p in placements.values()
+        )
+        ground_parts = []
+        for name, place in placements.items():
+            z = place["position"][2]
+            part = next((p for p in assembly.parts if p.name == name), None)
+            if part is None:
+                continue
+            dims = part.dimensions
+            h = dims.get("height", dims.get("thickness",
+                    dims.get("length", 10)))
+            low = z - h / 2
+            if low <= min_z + 5.0:
+                # Contact point footprint: approximate as box XY extents
+                l = dims.get("length", dims.get("diameter", 10))
+                w = dims.get("width", dims.get("diameter", l))
+                ground_parts.append((name, place["position"], l, w))
+
+        if not ground_parts:
+            return CenterOfMassStabilityCheck(
+                center_of_mass_mm=tuple(com),
+                total_mass_kg=total_mass,
+                verified=True,
+                inside_support_polygon=True,
+                notes="无接地零件，跳过稳定性检查",
+            )
+
+        # Collect footprint corner points (XY) from ground-contact parts.
+        # Solver convention: the part's `length` dimension maps to the
+        # solver Y axis (forward), `width` to X (lateral) — so the polygon
+        # X extent uses width and Y extent uses length.
+        poly_points: list[tuple[float, float]] = []
+        for _, pos, l, w in ground_parts:
+            cx, cy = pos[0], pos[1]
+            poly_points.extend([
+                (cx - w / 2, cy - l / 2),
+                (cx + w / 2, cy - l / 2),
+                (cx - w / 2, cy + l / 2),
+                (cx + w / 2, cy + l / 2),
+            ])
+
+        inside, margin = self._point_in_convex_polygon(com_xy, poly_points)
+
+        notes = (
+            f"COM=({com[0]:.1f},{com[1]:.1f},{com[2]:.1f})mm, "
+            f"{'在' if inside else '不在'}支撑多边形内"
+            f" (裕量 {margin:.1f}mm)"
+        )
+
+        return CenterOfMassStabilityCheck(
+            center_of_mass_mm=tuple(com),
+            support_polygon_xy=poly_points,
+            inside_support_polygon=inside,
+            margin_mm=margin,
+            total_mass_kg=total_mass,
+            verified=True,
+            notes=notes,
+        )
+
+    @staticmethod
+    def _point_in_convex_polygon(
+        point: tuple[float, float],
+        poly_points: list[tuple[float, float]],
+    ) -> tuple[bool, float]:
+        """Test if a 2D point is inside the convex hull of poly_points.
+
+        Returns (inside, margin) where margin is the signed distance to the
+        nearest edge (positive = inside, negative = outside).
+        """
+        if len(poly_points) < 3:
+            return True, 0.0
+
+        # Compute convex hull via Andrew's monotone chain
+        points = sorted(set(poly_points))
+        if len(points) < 3:
+            # Degenerate: treat as inside
+            return True, 0.0
+
+        def cross(o, a, b):
+            return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+        lower: list[tuple[float, float]] = []
+        for p in points:
+            while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+                lower.pop()
+            lower.append(p)
+
+        upper: list[tuple[float, float]] = []
+        for p in reversed(points):
+            while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+                upper.pop()
+            upper.append(p)
+
+        hull = lower[:-1] + upper[:-1]
+        n = len(hull)
+        if n < 3:
+            return True, 0.0
+
+        inside = True
+        min_margin = float("inf")
+        for i in range(n):
+            a = hull[i]
+            b = hull[(i + 1) % n]
+            # Edge vector
+            ex, ey = b[0] - a[0], b[1] - a[1]
+            edge_len = math.sqrt(ex * ex + ey * ey)
+            if edge_len < 1e-9:
+                continue
+            # Outward normal (for CCW hull, left-hand normal points inward;
+            # we want the sign that is positive when point is inside)
+            nx, ny = -ey / edge_len, ex / edge_len
+            # Signed distance from point to edge line
+            dist = nx * (point[0] - a[0]) + ny * (point[1] - a[1])
+            if dist < 0:
+                inside = False
+            min_margin = min(min_margin, dist)
+        return inside, round(min_margin, 2)
 
     # ------------------------------------------------------------------
     # Helpers

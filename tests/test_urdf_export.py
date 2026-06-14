@@ -491,3 +491,62 @@ class TestRoboticArmIntegration:
             urdf = (Path(path) / "urdf" / "robotic_arm.urdf").read_text()
             assert "<robot" in urdf
             assert "base_plate" in urdf or "base" in urdf
+
+
+# ============================================================================
+# Prismatic vs revolute limit unit handling
+# ============================================================================
+
+class TestPrismaticLimitUnits:
+    """Verify prismatic joint limits export in meters while revolute stays in radians."""
+
+    def _make_assembly(self, joint):
+        parts = [
+            Part("base", "structural", "base",
+                 dimensions={"length": 50, "width": 30, "height": 10}),
+            Part("child", "mechanical", "child",
+                 dimensions={"length": 20, "width": 10, "height": 10}),
+        ]
+        return Assembly(
+            name="limit_unit_test",
+            description="unit test for joint limit conversion",
+            parts=parts,
+            joints=[joint],
+        )
+
+    def test_prismatic_limits_in_meters(self):
+        joint = Joint(
+            "prismatic", "base", "child",
+            range_deg=(-8, 12),
+            description="finger slide",
+            parent_anchor="front", child_anchor="back",
+            axis="x",
+        )
+        assembly = self._make_assembly(joint)
+        converter = AssemblyToURDF(assembly)
+        converter.convert()
+        joints = converter.get_joints()
+        assert len(joints) == 1
+        j = joints[0]
+        # range_deg [-8, 12] (millimeters) -> meters [-0.008, 0.012]
+        assert j.lower == round(_mm_to_m(-8), 4)
+        assert j.upper == round(_mm_to_m(12), 4)
+
+    def test_revolute_limits_still_in_radians(self):
+        joint = Joint(
+            "revolute", "base", "child",
+            range_deg=(-90, 90),
+            description="shoulder pitch",
+            parent_anchor="front", child_anchor="back",
+            axis="x",
+        )
+        assembly = self._make_assembly(joint)
+        converter = AssemblyToURDF(assembly)
+        converter.convert()
+        joints = converter.get_joints()
+        assert len(joints) == 1
+        j = joints[0]
+        # range_deg [-90, 90] -> radians [-pi/2, pi/2], rounded to 4 decimals
+        assert j.lower == round(math.radians(-90), 4)
+        assert j.upper == round(math.radians(90), 4)
+

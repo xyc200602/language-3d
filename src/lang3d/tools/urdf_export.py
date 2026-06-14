@@ -290,8 +290,8 @@ class URDFJoint:
     axis: tuple[float, float, float] = (0.0, 0.0, 1.0)
     lower: float = 0.0  # radians
     upper: float = 0.0  # radians
-    effort: float = 100.0  # N or Nm
-    velocity: float = 3.14  # m/s or rad/s
+    effort: float = 5.0  # N·m — typical hobby servo (was 100.0, 20× too high)
+    velocity: float = 5.2  # rad/s — ~0.1s/60° (was 3.14)
     mimic_joint: str = ""           # If set, this joint mimics another
     mimic_multiplier: float = 1.0
     mimic_offset: float = 0.0
@@ -425,26 +425,61 @@ class AssemblyToURDF:
                 # For non-root children, estimate origin from parent part dimensions
                 parent_part = self._part_index.get(joint.parent)
                 if parent_part and origin_xyz == (0.0, 0.0, 0.0):
-                    h = parent_part.dimensions.get(
-                        "height",
-                        parent_part.dimensions.get("thickness", 0.0),
-                    )
-                    if h > 0:
-                        anchor = joint.parent_anchor.lower()
-                        if anchor == "top":
-                            origin_xyz = (0.0, 0.0, _mm_to_m(h))
+                    anchor = joint.parent_anchor.lower()
+                    dims = parent_part.dimensions
+                    origin_m: tuple[float, float, float] | None = None
+                    if anchor in ("top", "bottom"):
+                        h = dims.get("height", dims.get("thickness", 0.0))
+                        if h > 0:
+                            origin_m = (0.0, 0.0, _mm_to_m(h))
+                    elif anchor in ("front", "back"):
+                        # front/back faces have outward normals along ±Y, so
+                        # the child sits offset along the part's length axis.
+                        ln = dims.get("length", dims.get("depth", 0.0))
+                        if ln > 0:
+                            origin_m = (0.0, _mm_to_m(ln), 0.0)
+                    elif anchor in ("left", "right"):
+                        w = dims.get("width", dims.get("diameter", 0.0))
+                        if w > 0:
+                            origin_m = (_mm_to_m(w), 0.0, 0.0)
+                    if origin_m is not None:
+                        origin_xyz = origin_m
 
                 origin_rpy = (0.0, 0.0, 0.0)
 
             axis_vec = _resolve_axis(joint)
-            lower_rad = math.radians(joint.range_deg[0])
-            upper_rad = math.radians(joint.range_deg[1])
+            if joint.type == "prismatic":
+                # prismatic range_deg semantically holds millimeters; URDF limit is in meters
+                lower_rad = _mm_to_m(joint.range_deg[0])
+                upper_rad = _mm_to_m(joint.range_deg[1])
+            else:
+                lower_rad = math.radians(joint.range_deg[0])
+                upper_rad = math.radians(joint.range_deg[1])
 
             # Resolve mimic joint: convert child part name to URDF joint name
             mimic_joint_name = ""
             if joint.mimic_joint:
                 mimic_child = _sanitize_name(joint.mimic_joint)
                 mimic_joint_name = child_to_joint_name.get(mimic_child, "")
+
+            # Infer effort/velocity from actuator catalog reference.
+            # Falls back to dataclass defaults (5.0 N·m, 5.2 rad/s) when no
+            # catalog info is available — much more realistic than the old
+            # 100.0 N·m which was 500× too high for hobby servos.
+            _effort = 5.0
+            _velocity = 5.2
+            _child_part = self._part_index.get(joint.child)
+            if _child_part and _child_part.notes and "catalog:" in _child_part.notes:
+                try:
+                    from ..knowledge.actuators import get_actuator, torque_to_nm
+                    _cat = _child_part.notes.split("catalog:")[1].split()[0].split(",")[0]
+                    _act_id = _cat.split("_")[-1].upper()
+                    _act = get_actuator(_act_id)
+                    if _act and _act.torque_kgcm > 0:
+                        _effort = round(torque_to_nm(_act.torque_kgcm) * 2.0, 2)
+                        _velocity = round(math.pi / (3.0 * max(_act.speed_s_per_60deg, 0.01)), 2)
+                except Exception:
+                    pass
 
             self._joints.append(URDFJoint(
                 name=f"{parent_name}_to_{child_name}",
@@ -456,6 +491,8 @@ class AssemblyToURDF:
                 axis=tuple(axis_vec),  # type: ignore[arg-type]
                 lower=round(lower_rad, 4),
                 upper=round(upper_rad, 4),
+                effort=_effort,
+                velocity=_velocity,
                 mimic_joint=mimic_joint_name,
                 mimic_multiplier=joint.mimic_multiplier,
                 mimic_offset=joint.mimic_offset,
@@ -692,6 +729,14 @@ class ROS2PackageBuilder:
         (base / "config" / "joint_names.yaml").write_text(
             self._joint_names_yaml(), encoding="utf-8"
         )
+        (base / "config" / "rviz.rviz").write_text(
+            self._rviz_config(), encoding="utf-8"
+        )
+
+        # Gazebo launch file
+        (base / "launch" / "gazebo.launch.py").write_text(
+            self._gazebo_launch_file(), encoding="utf-8"
+        )
 
         return str(base)
 
@@ -711,6 +756,8 @@ class ROS2PackageBuilder:
   <exec_depend>joint_state_publisher_gui</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>xacro</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>gazebo_ros2_control</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
@@ -778,6 +825,87 @@ def generate_launch_description():
             names = []
         joint_list = "\n".join(f"  - \"{n}\"" for n in names)
         return f"joint_names:\n{joint_list}\n"
+
+    def _rviz_config(self) -> str:
+        """Minimal RViz2 config: RobotModel + TF + grid."""
+        return f"""\
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Description Topic:
+        Value: /robot_description
+      Visual Enabled: true
+      Collision Enabled: false
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Show Axes: true
+      Show Names: false
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Cell Size: 0.5
+      Plane Cell Count: 20
+  Global Options:
+    Fixed Frame: base_plate
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Distance: 1.5
+      Focal Point:
+        X: 0.0
+        Y: 0.0
+        Z: 0.3
+"""
+
+    def _gazebo_launch_file(self) -> str:
+        """Launch file: start Gazebo, spawn the robot, publish state."""
+        return f"""\
+import os
+from launch import LaunchDescription
+from launch.actions import ExecuteProcess, IncludeLaunchDescription
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch_ros.actions import Node
+from ament_index_python.packages import get_package_share_directory
+
+
+def generate_launch_description():
+    pkg_dir = get_package_share_directory('{self.package_name}')
+    urdf_file = os.path.join(pkg_dir, 'urdf', '{self.package_name}.urdf')
+
+    with open(urdf_file, 'r') as f:
+        robot_description = f.read()
+
+    # Start Gazebo
+    gazebo = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            os.path.join(get_package_share_directory('gazebo_ros'),
+                         'launch', 'gazebo.launch.py')
+        ),
+    )
+
+    # Spawn the robot in Gazebo
+    spawn = Node(
+        package='gazebo_ros',
+        executable='spawn_entity.py',
+        arguments=['-entity', '{self.package_name}',
+                   '-topic', '/robot_description'],
+        output='screen',
+    )
+
+    # Publish robot state
+    robot_state_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        parameters=[{{'robot_description': robot_description}}],
+        output='screen',
+    )
+
+    return LaunchDescription([gazebo, spawn, robot_state_publisher])
+"""
 
 
 # ============================================================================

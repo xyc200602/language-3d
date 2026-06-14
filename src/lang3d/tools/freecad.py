@@ -1039,12 +1039,174 @@ SUBSYSTEM_COLORS: dict[str, tuple[float, float, float]] = {
 }
 
 
+# Simplified fastener dimensions: (head_r, head_h, shank_r, washer_r,
+# washer_h, nut_r, nut_h) in mm.  Derived from DIN 912 / 934 / 125 specs.
+_FASTENER_DIMS: dict[str, tuple[float, ...]] = {
+    "M2":   (1.9, 2.0, 1.0,  2.5, 0.3, 2.3, 1.6),
+    "M2.5": (2.25, 2.0, 1.25, 3.0, 0.5, 2.9, 2.0),
+    "M3":   (2.75, 2.5, 1.5,  3.5, 0.5, 3.2, 2.4),
+    "M4":   (3.5, 3.0, 2.0,  4.5, 0.8, 4.05, 3.2),
+    "M5":   (4.25, 4.0, 2.5, 5.0, 1.0, 4.6, 4.7),
+    "M6":   (5.0, 5.0, 3.0,  6.0, 1.6, 5.75, 5.2),
+}
+
+
+def _fastener_script_lines(
+    joints: list,
+    positions: dict[str, dict],
+    part_dims: dict[str, dict],
+) -> list[str]:
+    """Generate FreeCAD script lines for bolts, washers, and nuts.
+
+    For each joint whose ``connection.type == "bolted"``, places
+    ``bolt_count`` fasteners in a circular pattern at the parent–child
+    interface.  Each fastener consists of a socket-head cap screw
+    (head + shank), a flat washer, and a hex nut.
+
+    Prismatic joints (sliding gripper fingers) are skipped — they don't
+    use bolts.
+    """
+    import math as _math
+
+    lines: list[str] = []
+    fidx = 0
+
+    for joint in joints:
+        conn = getattr(joint, "connection", None)
+        if conn is None:
+            continue
+        if getattr(conn, "type", "") != "bolted":
+            continue
+        if getattr(joint, "type", "") == "prismatic":
+            continue
+
+        parent_name = getattr(joint, "parent", "")
+        child_name = getattr(joint, "child", "")
+        pp = positions.get(parent_name, {}).get("position", [0, 0, 0])
+        cp = positions.get(child_name, {}).get("position", [0, 0, 0])
+
+        cx = (pp[0] + cp[0]) / 2.0
+        cy = (pp[1] + cp[1]) / 2.0
+        cz = (pp[2] + cp[2]) / 2.0
+
+        pd = part_dims.get(parent_name, {})
+        cd = part_dims.get(child_name, {})
+        pw = pd.get("width", pd.get("diameter", 30))
+        cw = cd.get("width", cd.get("diameter", 30))
+        radius = max(min(pw, cw) * 0.35, 6.0)
+
+        bolt_size = getattr(conn, "bolt_size", "M3")
+        count = getattr(conn, "bolt_count", 2) or 2
+        dims = _FASTENER_DIMS.get(bolt_size, _FASTENER_DIMS["M3"])
+        head_r, head_h, shank_r, washer_r, washer_h, nut_r, nut_h = dims
+
+        ph = pd.get("height", pd.get("diameter", 15))
+        ch = cd.get("height", cd.get("diameter", 15))
+        length = max(ph + ch + nut_h + washer_h, 12.0)
+
+        lines.append(
+            f"# --- Bolts {bolt_size} x{count}: "
+            f"{parent_name} -> {child_name} ---"
+        )
+
+        for b in range(count):
+            ang = 2.0 * _math.pi * b / count
+            bx = cx + radius * _math.cos(ang)
+            by = cy + radius * _math.sin(ang)
+            hz = cz + length / 2.0
+            sz = cz - length / 2.0
+            wz = hz - washer_h
+            nz = sz - nut_h
+
+            # Bolt head
+            lines.append(
+                f"_f = Part.makeCylinder({head_r}, {head_h})"
+            )
+            lines.append(
+                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {hz:.1f}))"
+            )
+            lines.append(
+                f'_o = doc.addObject("Part::Feature", '
+                f'"bolt_{bolt_size}_head_{fidx}")'
+            )
+            lines.append("_o.Shape = _f")
+            lines.append("_o.ViewObject.ShapeColor = (0.80, 0.80, 0.82)")
+            lines.append("doc.recompute()")
+
+            # Bolt shank
+            lines.append(
+                f"_f = Part.makeCylinder({shank_r}, {length})"
+            )
+            lines.append(
+                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {sz:.1f}))"
+            )
+            lines.append(
+                f'_o = doc.addObject("Part::Feature", '
+                f'"bolt_{bolt_size}_shank_{fidx}")'
+            )
+            lines.append("_o.Shape = _f")
+            lines.append("_o.ViewObject.ShapeColor = (0.80, 0.80, 0.82)")
+            lines.append("doc.recompute()")
+
+            # Washer
+            lines.append(
+                f"_f = Part.makeCylinder({washer_r}, {washer_h})"
+            )
+            lines.append(
+                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {wz:.1f}))"
+            )
+            lines.append(
+                f'_o = doc.addObject("Part::Feature", '
+                f'"washer_{bolt_size}_{fidx}")'
+            )
+            lines.append("_o.Shape = _f")
+            lines.append("_o.ViewObject.ShapeColor = (0.70, 0.70, 0.72)")
+            lines.append("doc.recompute()")
+
+            # Nut
+            lines.append(
+                f"_f = Part.makeCylinder({nut_r}, {nut_h})"
+            )
+            lines.append(
+                f"_f.translate(FreeCAD.Vector({bx:.1f}, {by:.1f}, {nz:.1f}))"
+            )
+            lines.append(
+                f'_o = doc.addObject("Part::Feature", '
+                f'"nut_{bolt_size}_{fidx}")'
+            )
+            lines.append("_o.Shape = _f")
+            lines.append("_o.ViewObject.ShapeColor = (0.65, 0.65, 0.68)")
+            lines.append("doc.recompute()")
+
+            fidx += 1
+
+        lines.append("")
+
+    if lines:
+        lines.insert(
+            0,
+            "# =========================================================",
+        )
+        lines.insert(
+            1,
+            "# FASTENERS — bolts, washers, nuts at bolted connections",
+        )
+        lines.insert(
+            2,
+            "# =========================================================",
+        )
+        lines.insert(3, "")
+
+    return lines
+
+
 def build_assembly_script(
     assembly_parts: list[dict],
     positions: dict[str, dict],
     output_path: str = "",
     exploded: bool = False,
     explode_factor: float = 1.5,
+    joints: list | None = None,
 ) -> str:
     """Build a FreeCAD script that renders a full assembly with positioned parts.
 
@@ -1054,6 +1216,8 @@ def build_assembly_script(
         output_path: If set, save FCStd and export STL/STEP here
         exploded: If True, offset parts along their position vector for exploded view
         explode_factor: Distance multiplier for exploded view
+        joints: Optional list of Joint objects.  When provided, bolt/nut/washer
+            geometry is generated at every bolted connection.
 
     Returns:
         FreeCAD Python script text.
@@ -1085,22 +1249,34 @@ def build_assembly_script(
                 scale = 1.0 + (explode_factor - 1.0) * min(dist / 200.0, 1.0)
                 pos = [pos[0] * scale, pos[1] * scale, pos[2] * scale]
 
-        # Create shape
+        # Create shape — prefer real STL geometry, fall back to primitive
+        stl_path = part_info.get("stl_path")
+        if stl_path:
+            lines.append("import os as _os")
+            lines.append(f"_stl_path = {json.dumps(str(stl_path))}")
+            lines.append("if _os.path.exists(_stl_path):")
+            lines.append("    _mesh = Mesh.read(_stl_path)")
+            lines.append("    _shape = Part.Shape(_mesh.topology)")
+            lines.append("else:")
+            _indent = "    "
+        else:
+            _indent = ""
+
         if shape_type == "cylinder" or "diameter" in dims or "outer_diameter" in dims:
             r = dims.get("diameter", dims.get("outer_diameter", 10)) / 2
             h = dims.get("height", 10)
-            lines.append(f"_shape = Part.makeCylinder({r}, {h})")
+            lines.append(f"{_indent}_shape = Part.makeCylinder({r}, {h})")
         elif shape_type == "box" or ("length" in dims and "width" in dims):
             l = dims.get("length", 10)
             w = dims.get("width", 10)
             h = dims.get("height", 10)
             # Solver convention: X=width (left/right), Y=length (front/back), Z=height.
             # FreeCAD makeBox(X, Y, Z), so pass (width, length, height) to match solver.
-            lines.append(f"_shape = Part.makeBox({w}, {l}, {h})")
+            lines.append(f"{_indent}_shape = Part.makeBox({w}, {l}, {h})")
         else:
             r = dims.get("diameter", 10) / 2
             h = dims.get("height", 10)
-            lines.append(f"_shape = Part.makeCylinder({r}, {h})")
+            lines.append(f"{_indent}_shape = Part.makeCylinder({r}, {h})")
 
         # Apply rotation around origin, then translate to position
         if rot and len(rot) == 4 and abs(rot[3]) > 1e-6:
@@ -1118,6 +1294,16 @@ def build_assembly_script(
         lines.append(f"_obj.ViewObject.ShapeColor = ({color[0]}, {color[1]}, {color[2]})")
         lines.append("doc.recompute()")
         lines.append("")
+
+    # --- Fasteners (bolts, washers, nuts) at bolted connections ---
+    if joints and not exploded:
+        part_dims_lookup = {
+            p["name"]: p.get("dimensions", {}) for p in assembly_parts
+        }
+        fastener_lines = _fastener_script_lines(
+            joints, positions, part_dims_lookup
+        )
+        lines.extend(fastener_lines)
 
     # Save and export
     if output_path:

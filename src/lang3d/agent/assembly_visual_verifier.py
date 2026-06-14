@@ -218,6 +218,20 @@ def _generate_constraint_corrections(
             for part_name in problem.affected_parts:
                 for i, joint in enumerate(assembly.joints):
                     if joint.child == part_name or joint.parent == part_name:
+                        # Skip mimic-linked joints: nudging one finger's offset
+                        # breaks the antagonist pair's synchronised motion
+                        # (right finger mimics left; editing either desyncs).
+                        is_mimic_linked = bool(getattr(joint, "mimic_joint", "")) or any(
+                            getattr(j, "mimic_joint", "") == joint.child
+                            for j in assembly.joints
+                        )
+                        if is_mimic_linked:
+                            logger.info(
+                                "Skipping collision correction for mimic-linked "
+                                "joint %s->%s",
+                                joint.parent, joint.child,
+                            )
+                            break
                         corrections.append({
                             "joint_index": i,
                             "correction_type": "offset",
@@ -277,6 +291,12 @@ def apply_corrections(
                 joint = new_joints[idx]
                 ctype = corr["correction_type"]
                 if ctype == "offset":
+                    # Prismatic joints (gripper fingers) have sanitizer-
+                    # normalised offsets; VLM repositioning them inflates the
+                    # offset and produces absurd URDF origins (4dof audit:
+                    # finger offset grew to 330mm). Skip prismatic joints.
+                    if joint.type == "prismatic":
+                        continue
                     # Adjust position by adding Z offset
                     current_offset = joint.offset or (0, 0, 0)
                     joint.offset = (
@@ -284,12 +304,10 @@ def apply_corrections(
                         current_offset[1],
                         current_offset[2] + corr["value"],
                     )
-                elif ctype == "angle":
-                    if not hasattr(joint, "angle"):
-                        joint.angle = corr["value"]
-                    else:
-                        joint.angle = corr["value"]
                 elif ctype == "reposition":
+                    # Same prismatic guard as offset corrections.
+                    if joint.type == "prismatic":
+                        continue
                     # Large position correction via delta_xyz applied to offset
                     current_offset = joint.offset or (0, 0, 0)
                     dx, dy, dz = corr.get("delta_xyz", [0, 0, 0])
@@ -416,12 +434,14 @@ def verify_assembly_visual(
 
         # Parse problems
         problems = _parse_layout_problems(vlm_response)
-        passed = len(problems) == 0
-
-        # Check if the JSON says passed and no problems
-        if '"passed": true' in vlm_response or '"passed":true' in vlm_response:
-            if not problems:
-                passed = True
+        # Fail-closed: only pass when the VLM explicitly declares passed:true
+        # AND no problems were parsed. Previously `passed = len(problems) == 0`
+        # which mis-judged parse failures (empty list) as PASSED, bypassing
+        # the quality gate whenever the VLM returned malformed output.
+        has_explicit_pass = (
+            '"passed": true' in vlm_response or '"passed":true' in vlm_response
+        )
+        passed = has_explicit_pass and len(problems) == 0
 
         result = AssemblyVisualVerificationResult(
             passed=passed,

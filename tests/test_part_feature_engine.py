@@ -691,3 +691,88 @@ class TestBodyNameChain:
                             f"{part.name}: duplicate created name '{n}'"
                         )
                         created.add(n)
+
+
+# ============================================================================
+# Hole diameter ISO 273 compliance (P0 fix)
+# ============================================================================
+
+
+class TestClearanceHoleCompliance:
+    """Verify all inferred mounting holes match ISO 273 clearance specs."""
+
+    def test_base_plate_uses_m4_clearance(self):
+        from lang3d.knowledge.fastener_catalog import get_clearance_hole
+        p = Part("base_plate", "structural", "t",
+                 dimensions=dict(length=300, width=200, height=5))
+        cfg = infer_features(p)
+        assert cfg.mounting_holes[0]["diameter_mm"] == get_clearance_hole("M4")
+
+    def test_top_plate_uses_m3_clearance(self):
+        from lang3d.knowledge.fastener_catalog import get_clearance_hole
+        p = Part("top_plate", "structural", "t",
+                 dimensions=dict(length=280, width=180, height=3))
+        cfg = infer_features(p)
+        assert cfg.mounting_holes[0]["diameter_mm"] == get_clearance_hole("M3")
+
+    def test_standoff_bore_is_m3_clearance(self):
+        """Standoff bore must be M3 clearance (3.4mm), not the old 2.6mm."""
+        from lang3d.knowledge.fastener_catalog import get_clearance_hole
+        p = Part("standoff_fl", "structural", "t",
+                 dimensions=dict(length=8, diameter=6, height=50))
+        cfg = infer_features(p)
+        assert cfg.bore["diameter_mm"] == get_clearance_hole("M3")
+
+    def test_motor_mounting_holes_m3(self):
+        from lang3d.knowledge.fastener_catalog import get_clearance_hole
+        p = Part("motor_fl", "actuator", "t",
+                 dimensions=dict(length=40, width=30, height=25))
+        cfg = infer_features(p)
+        assert cfg.mounting_holes[0]["diameter_mm"] == get_clearance_hole("M3")
+
+    def test_no_hardcoded_3_0_mounting_holes(self):
+        """No mounting hole should have the old wrong Ø3.0mm value."""
+        test_parts = [
+            Part("motor_fl", "actuator", "t", dimensions=dict(length=40, width=30, height=25)),
+            Part("gripper_base", "structural", "t", dimensions=dict(length=40, width=35, height=15)),
+            Part("pcb_main", "structural", "t", dimensions=dict(length=80, width=50, height=3)),
+            Part("bracket_l", "structural", "t", dimensions=dict(length=50, width=30, height=20)),
+        ]
+        for p in test_parts:
+            cfg = infer_features(p)
+            for h in cfg.mounting_holes:
+                assert h["diameter_mm"] != 3.0, (
+                    f"{p.name}: still has hardcoded Ø3.0mm"
+                )
+
+
+class TestRawScriptHoleDiameters:
+    """Verify raw_script templates use correct M3 clearance radius (1.7mm)."""
+
+    def test_arm_link_script_uses_clearance_radius(self):
+        p = Part("arm_l_upper_link", "structural", "t",
+                 dimensions=dict(length=150, width=40, height=30))
+        ops = generate_ops(p)
+        raw = next((o for o in ops if o["type"] == "raw_script"), None)
+        assert raw is not None
+        script = raw["script"]
+        # Must NOT contain the old hardcoded radius 1.5
+        assert "makeCylinder(1.5" not in script
+        # Should contain 1.7 (3.4/2) for M3 clearance
+        assert "1.7" in script
+
+    def test_arm_joint_script_uses_clearance_radius(self):
+        p = Part("arm_l_base", "joint", "t",
+                 dimensions=dict(outer_diameter=80, height=40))
+        ops = generate_ops(p)
+        raw = next((o for o in ops if o["type"] == "raw_script"), None)
+        assert raw is not None
+        assert "makeCylinder(1.5" not in raw["script"]
+
+    def test_gripper_base_script_uses_clearance_radius(self):
+        p = Part("gripper_base", "structural", "t",
+                 dimensions=dict(length=40, width=35, height=15))
+        ops = generate_ops(p)
+        raw = next((o for o in ops if o["type"] == "raw_script"), None)
+        if raw:
+            assert "makeCylinder(1.5" not in raw["script"]

@@ -1,0 +1,722 @@
+"""Tests for the pipeline-level arm geometry fix (flat bar → 3D bent arm).
+
+Covers the four layers of the systematic fix:
+
+  - Layer 2 (sanitizer): ``_fix_arm_chain_anchors`` now FLIPS front/back →
+    top/bottom (the opposite of its old behaviour), and switches pitch axis
+    x → y.  Motor mounts (back/front, fixed), bearings (center/center), and
+    prismatic fingers are left untouched.
+  - Layer 2 (sanitizer): ``_ensure_arm_default_angles`` injects a zig-zag
+    bend when the LLM emitted all-zero default_angles, and is a no-op when
+    non-zero angles already exist.
+  - Layer 3 (prevalidation): ``_geometric_prevalidation`` flags an arm whose
+    Z span is tiny relative to its horizontal span ("too flat").
+  - Layer 4 (examples): the 3 few-shot examples use top/bottom + axis y for
+    pitch joints, and keep motor mounts / bearings unchanged.
+"""
+
+from __future__ import annotations
+
+from lang3d.knowledge.mechanics import Assembly, Joint, Part
+from lang3d.tools.assembly_generator import (
+    _ensure_arm_default_angles,
+    _fix_arm_chain_anchors,
+    _geometric_prevalidation,
+    _gripper_geometry_ok,
+    _is_joint_like,
+    _is_link_like,
+    EXAMPLE_ARM_STANDALONE,
+    EXAMPLE_5DOF_ARM_REALISTIC,
+    EXAMPLE_6DOF_BELT_DRIVE_ARM,
+)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _box(name: str, length=80, width=25, height=15, category="structural") -> Part:
+    return Part(
+        name=name,
+        category=category,
+        description=name,
+        dimensions={"length": length, "width": width, "height": height},
+    )
+
+
+def _cyl(name: str, diameter=36, height=30, category="actuator") -> Part:
+    return Part(
+        name=name,
+        category=category,
+        description=name,
+        dimensions={"diameter": diameter, "height": height},
+    )
+
+
+def _make_flat_arm_parts() -> list[Part]:
+    """Parts for a 4-DOF arm (same naming as the real e2e failure)."""
+    return [
+        _box("base_plate", length=200, width=150, height=8),
+        _cyl("shoulder_joint", diameter=40, height=35),
+        _box("shoulder_link", length=120, width=25, height=15),
+        _cyl("elbow_joint", diameter=36, height=30),
+        _box("elbow_link", length=100, width=25, height=15),
+        _cyl("wrist_joint", diameter=28, height=28),
+        _box("wrist_link", length=60, width=20, height=12),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# _is_joint_like / _is_link_like
+# ---------------------------------------------------------------------------
+
+def test_is_joint_like_detects_servo_housing_joint():
+    assert _is_joint_like("shoulder_joint")
+    assert _is_joint_like("elbow_servo")
+    assert _is_joint_like("wrist_housing")
+    assert _is_joint_like("base_motor")
+
+
+def test_is_joint_like_rejects_plain_link():
+    assert not _is_joint_like("shoulder_link")
+    assert not _is_joint_like("upper_arm")
+
+
+def test_is_link_like_detects_link_arm():
+    assert _is_link_like("shoulder_link")
+    assert _is_link_like("forearm")
+    assert _is_link_like("upper_arm")
+
+
+# ---------------------------------------------------------------------------
+# _fix_arm_chain_anchors — the FLIP
+# ---------------------------------------------------------------------------
+
+def test_fix_arm_chain_anchors_flips_top_bottom_to_front_back():
+    """Legacy top/bottom+y arm joints must be converted to front/back+x."""
+    parts = _make_flat_arm_parts()
+    joints = [
+        Joint("revolute", "base_plate", "shoulder_joint",
+              axis="z", parent_anchor="top", child_anchor="bottom"),
+        Joint("revolute", "shoulder_joint", "shoulder_link",
+              axis="y", parent_anchor="top", child_anchor="bottom",
+              range_deg=(-120, 120)),
+        Joint("revolute", "shoulder_link", "elbow_joint",
+              axis="y", parent_anchor="top", child_anchor="bottom",
+              range_deg=(-150, 150)),
+        Joint("fixed", "elbow_joint", "elbow_link",
+              parent_anchor="top", child_anchor="bottom"),
+        Joint("revolute", "elbow_link", "wrist_joint",
+              axis="y", parent_anchor="top", child_anchor="bottom",
+              range_deg=(-150, 150)),
+    ]
+    _fix_arm_chain_anchors(joints, parts)
+
+    # Every legacy top/bottom arm-chain joint should now be front/back.
+    for j in joints[1:]:
+        assert j.parent_anchor == "front", f"{j.parent}->{j.child} parent_anchor"
+        assert j.child_anchor == "back", f"{j.parent}->{j.child} child_anchor"
+    # Pitch axes y → x.
+    assert joints[1].axis == "x"
+    assert joints[2].axis == "x"
+    assert joints[4].axis == "x"
+    # Base yaw joint (top/bottom, axis z) is untouched.
+    assert joints[0].parent_anchor == "top"
+    assert joints[0].axis == "z"
+
+
+def test_fix_arm_chain_anchors_leaves_motor_mounts_untouched():
+    """A fixed back/front motor mount inside a housing must NOT be converted."""
+    parts = [
+        _box("shoulder_housing", length=50, width=40, height=45),
+        _cyl("shoulder_motor", diameter=42, height=40),
+    ]
+    joints = [
+        Joint("revolute", "base", "shoulder_housing",
+              axis="z", parent_anchor="top", child_anchor="bottom"),
+        Joint("revolute", "base", "elbow_joint",
+              axis="x", parent_anchor="front", child_anchor="back"),
+        # The motor mount we care about — must stay back/front.
+        Joint("fixed", "shoulder_housing", "shoulder_motor",
+              parent_anchor="back", child_anchor="front"),
+    ]
+    _fix_arm_chain_anchors(joints, parts)
+    mm = joints[2]
+    assert mm.parent_anchor == "back"
+    assert mm.child_anchor == "front"
+
+
+def test_fix_arm_chain_anchors_leaves_bearings_untouched():
+    """center/center bearing press-fits must NOT be converted."""
+    parts = [
+        _box("shoulder_housing", length=50, width=40, height=45),
+        _cyl("bearing_shoulder", diameter=22, height=7, category="bearing"),
+        _cyl("elbow_joint", diameter=36, height=30),
+    ]
+    joints = [
+        Joint("revolute", "base", "shoulder_housing",
+              axis="z", parent_anchor="top", child_anchor="bottom"),
+        Joint("revolute", "base", "elbow_joint",
+              axis="x", parent_anchor="front", child_anchor="back"),
+        Joint("fixed", "shoulder_housing", "bearing_shoulder",
+              parent_anchor="center", child_anchor="center"),
+    ]
+    _fix_arm_chain_anchors(joints, parts)
+    bearing = joints[2]
+    assert bearing.parent_anchor == "center"
+    assert bearing.child_anchor == "center"
+
+
+def test_fix_arm_chain_anchors_leaves_prismatic_untouched():
+    """Prismatic gripper fingers must NOT be converted here."""
+    parts = [
+        _box("gripper_base", length=28, width=50, height=32),
+        _box("gripper_finger_left", length=60, width=10, height=28),
+        _box("elbow_joint", length=40, width=35, height=40),
+    ]
+    joints = [
+        Joint("revolute", "base", "elbow_joint",
+              axis="x", parent_anchor="front", child_anchor="back"),
+        Joint("revolute", "base", "wrist_joint",
+              axis="x", parent_anchor="front", child_anchor="back"),
+        Joint("prismatic", "gripper_base", "gripper_finger_left",
+              axis="x", parent_anchor="front", child_anchor="back"),
+    ]
+    _fix_arm_chain_anchors(joints, parts)
+    finger = joints[2]
+    assert finger.parent_anchor == "front"
+    assert finger.child_anchor == "back"
+
+
+def test_fix_arm_chain_anchors_leaves_z_axis_untouched():
+    """A front/back revolute with axis=z (wrist roll) is left untouched."""
+    parts = _make_flat_arm_parts()
+    joints = [
+        Joint("revolute", "base_plate", "shoulder_joint",
+              axis="z", parent_anchor="top", child_anchor="bottom"),
+        Joint("revolute", "shoulder_joint", "shoulder_link",
+              axis="x", parent_anchor="front", child_anchor="back"),
+        Joint("revolute", "wrist_link", "wrist_rotate",
+              axis="z", parent_anchor="front", child_anchor="back",
+              range_deg=(-180, 180)),
+    ]
+    _fix_arm_chain_anchors(joints, parts)
+    # The front/back+z joint stays as-is (only top/bottom+y gets converted).
+    wrist_roll = joints[2]
+    assert wrist_roll.parent_anchor == "front"
+    assert wrist_roll.child_anchor == "back"
+    assert wrist_roll.axis == "z"
+
+
+# ---------------------------------------------------------------------------
+# _ensure_arm_default_angles
+# ---------------------------------------------------------------------------
+
+def _make_arm_assembly(default_angles=None) -> Assembly:
+    parts = _make_flat_arm_parts()
+    joints = [
+        Joint("revolute", "base_plate", "shoulder_joint",
+              axis="z", parent_anchor="top", child_anchor="bottom",
+              range_deg=(-180, 180)),
+        Joint("revolute", "shoulder_joint", "shoulder_link",
+              axis="y", parent_anchor="top", child_anchor="bottom",
+              range_deg=(-120, 120)),
+        Joint("revolute", "shoulder_link", "elbow_joint",
+              axis="y", parent_anchor="top", child_anchor="bottom",
+              range_deg=(-150, 150)),
+        Joint("revolute", "elbow_joint", "elbow_link",
+              axis="y", parent_anchor="top", child_anchor="bottom",
+              range_deg=(-150, 150)),
+    ]
+    return Assembly(
+        name="test_arm",
+        parts=parts,
+        joints=joints,
+        default_angles=dict(default_angles or {}),
+    )
+
+
+def test_ensure_arm_default_angles_injects_when_all_zero():
+    asm = _make_arm_assembly(default_angles={})
+    result = _ensure_arm_default_angles(asm)
+    angles = result.default_angles
+    # Should have injected something non-zero.
+    assert any(abs(float(v)) > 1e-6 for v in angles.values())
+    # Base yaw (first revolute, axis=z) should be 0.
+    assert angles.get("shoulder_joint") == 0.0
+    # Pitch joints should all tilt the same direction (negative = upward
+    # in the front/back convention) so the arm rises in Z.
+    vals = [angles["shoulder_link"], angles["elbow_joint"], angles["elbow_link"]]
+    assert abs(vals[0]) > 5.0
+    assert abs(vals[1]) > 5.0
+    assert abs(vals[2]) > 5.0
+    # All same sign (negative = upward tilt) — reinforcing, not cancelling.
+    assert all(v < 0 for v in vals), f"all pitch should be negative, got {vals}"
+
+
+def test_ensure_arm_default_angles_respects_existing_nonzero():
+    """LLM-provided non-zero angles are clamped; sign forced negative (upward)."""
+    asm = _make_arm_assembly(default_angles={"shoulder_link": -42.0})
+    result = _ensure_arm_default_angles(asm)
+    # Shoulder clamped to ±25° (first-pitch cap) and kept negative (upward).
+    val = result.default_angles.get("shoulder_link")
+    assert val is not None and val < 0, "shoulder_link must be negative (upward)"
+    assert abs(val) <= 25.0, f"shoulder_link must be clamped to ±25°, got {val}"
+
+
+def test_ensure_arm_default_angles_no_op_for_non_arm():
+    """A wheeled robot (no link parts, < 2 revolute) should not be touched."""
+    parts = [
+        _box("base_plate", length=300, width=200, height=5),
+        _cyl("motor_fl", diameter=30, height=40),
+        _cyl("wheel_fl", diameter=65, height=26, category="mechanical"),
+    ]
+    joints = [
+        Joint("fixed", "base_plate", "motor_fl"),
+        Joint("revolute", "motor_fl", "wheel_fl", axis="y"),
+    ]
+    asm = Assembly(name="wheeled", parts=parts, joints=joints, default_angles={})
+    result = _ensure_arm_default_angles(asm)
+    # No link-like part → no injection.
+    assert result.default_angles == {}
+
+
+def test_ensure_arm_default_angles_clamps_to_range():
+    """Injected angles must stay within each joint's range_deg."""
+    asm = _make_arm_assembly(default_angles={})
+    # Tighten the ranges to verify clamping.
+    for j in asm.joints:
+        j.range_deg = (-20, 20)
+    result = _ensure_arm_default_angles(asm)
+    angles = result.default_angles
+    name_to_joint = {j.child: j for j in asm.joints}
+    for child, angle in angles.items():
+        lo, hi = name_to_joint[child].range_deg
+        assert lo - 0.5 <= angle <= hi + 0.5, f"{child}={angle} not in [{lo},{hi}]"
+
+
+def test_ensure_arm_default_angles_fills_per_joint_with_partial_nonzero():
+    """A stray non-zero value must NOT cause all other pitch joints to be skipped.
+
+    Regression: previously the sanitizer bailed entirely if ANY single
+    default_angle was non-zero.  The LLM frequently gives only the wrist roll
+    a non-zero value while leaving every pitch joint at 0 — the arm then
+    renders as a straight column.
+    """
+    asm = _make_arm_assembly(default_angles={"elbow_joint": 45.0})
+    result = _ensure_arm_default_angles(asm)
+    angles = result.default_angles
+    # All pitch angles are forced to negative (upward tilt, same sign) and
+    # clamped: shoulder ±25°, subsequent pitches ±30°.
+    ej = angles.get("elbow_joint")
+    assert ej is not None and abs(ej) > 5.0, f"elbow_joint must be non-zero, got {ej}"
+    assert ej < 0, f"elbow_joint must be negative (upward), got {ej}"
+    assert abs(ej) <= 30.0, f"elbow_joint must be clamped to ±30°, got {ej}"
+    # The other pitch joints (zero/missing) are now filled with bends.
+    assert abs(angles["shoulder_link"]) > 5.0
+    assert abs(angles["elbow_link"]) > 5.0
+
+
+def test_ensure_arm_default_angles_cleans_non_revolute_keys():
+    """default_angles keys that are not revolute-joint children must be removed."""
+    asm = _make_arm_assembly(
+        default_angles={"gripper_base": 0.0, "wrist_link": 108.0},
+    )
+    result = _ensure_arm_default_angles(asm)
+    angles = result.default_angles
+    # gripper_base is a fixed-joint child → removed.
+    assert "gripper_base" not in angles
+    # Pitch joints that were zero are now filled.
+    assert abs(angles.get("shoulder_link", 0.0)) > 5.0
+
+
+# ---------------------------------------------------------------------------
+# _normalize_gripper_fingers — prismatic connection_method + mimic_joint
+# ---------------------------------------------------------------------------
+
+def test_normalize_gripper_fingers_clears_prismatic_connection():
+    """Prismatic finger joints must not carry connection_method='bolted'."""
+    from lang3d.knowledge.mechanics import ConnectionMethod
+    parts = [
+        _box("gripper_base", length=28, width=50, height=32),
+        _box("gripper_finger_left", length=60, width=10, height=28),
+        _box("gripper_finger_right", length=60, width=10, height=28),
+    ]
+    joints = [
+        Joint("prismatic", "gripper_base", "gripper_finger_left",
+              axis="y", parent_anchor="center", child_anchor="center",
+              connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=2)),
+        Joint("prismatic", "gripper_base", "gripper_finger_right",
+              axis="y", parent_anchor="center", child_anchor="center",
+              connection=ConnectionMethod(type="bolted", bolt_size="M3", bolt_count=2)),
+    ]
+    asm = Assembly(name="gripper_test", parts=parts, joints=joints, default_angles={})
+    from lang3d.tools.assembly_generator import _normalize_gripper_fingers
+    result = _normalize_gripper_fingers(asm)
+    for j in result.joints:
+        if j.type == "prismatic":
+            assert j.connection is None, (
+                f"Prismatic {j.parent}->{j.child} should have no connection_method"
+            )
+
+
+def test_normalize_gripper_fingers_injects_mimic_joint():
+    """Right finger must mimic left finger with multiplier=-1 for antagonistic grip."""
+    parts = [
+        _box("gripper_base", length=28, width=50, height=32),
+        _box("gripper_finger_left", length=60, width=10, height=28),
+        _box("gripper_finger_right", length=60, width=10, height=28),
+    ]
+    joints = [
+        Joint("prismatic", "gripper_base", "gripper_finger_left",
+              axis="y", parent_anchor="center", child_anchor="center"),
+        Joint("prismatic", "gripper_base", "gripper_finger_right",
+              axis="y", parent_anchor="center", child_anchor="center"),
+    ]
+    asm = Assembly(name="gripper_test", parts=parts, joints=joints, default_angles={})
+    from lang3d.tools.assembly_generator import _normalize_gripper_fingers
+    result = _normalize_gripper_fingers(asm)
+    left = [j for j in result.joints if j.child == "gripper_finger_left"][0]
+    right = [j for j in result.joints if j.child == "gripper_finger_right"][0]
+    # Right finger mimics left.
+    assert right.mimic_joint == "gripper_finger_left"
+    assert right.mimic_multiplier == -1.0
+    # Left finger is the driver — no mimic.
+    assert left.mimic_joint == ""
+
+
+def test_normalize_gripper_fingers_preserves_existing_mimic():
+    """If the LLM already set a mimic_joint, the sanitizer must not overwrite."""
+    parts = [
+        _box("gripper_base", length=28, width=50, height=32),
+        _box("gripper_finger_left", length=60, width=10, height=28),
+        _box("gripper_finger_right", length=60, width=10, height=28),
+    ]
+    joints = [
+        Joint("prismatic", "gripper_base", "gripper_finger_left",
+              axis="y", parent_anchor="center", child_anchor="center"),
+        Joint("prismatic", "gripper_base", "gripper_finger_right",
+              axis="y", parent_anchor="center", child_anchor="center",
+              mimic_joint="gripper_finger_left", mimic_multiplier=-1.0),
+    ]
+    asm = Assembly(name="gripper_test", parts=parts, joints=joints, default_angles={})
+    from lang3d.tools.assembly_generator import _normalize_gripper_fingers
+    result = _normalize_gripper_fingers(asm)
+    right = [j for j in result.joints if j.child == "gripper_finger_right"][0]
+    assert right.mimic_joint == "gripper_finger_left"
+    assert right.mimic_multiplier == -1.0
+
+
+# ---------------------------------------------------------------------------
+# _geometric_prevalidation — arm-too-flat detection
+# ---------------------------------------------------------------------------
+
+def test_geometric_prevalidation_flags_flat_arm():
+    """A flat arm (small Z span, large Y span) must be flagged."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+    )]
+    # Flat bar: Z span ~20mm, Y span ~500mm.
+    ys = [0, 0, -100, -200, -300, -400, -500]
+    positions = {}
+    for n, y in zip(
+        ("base_plate", "shoulder_joint", "shoulder_link",
+         "elbow_joint", "elbow_link", "wrist_joint", "wrist_link"),
+        ys,
+    ):
+        positions[n] = {"position": [0, y, 10]}
+
+    problems = _geometric_prevalidation(parts, positions)
+    flat_problems = [p for p in problems if "flat" in p.lower() or "horizontal" in p.lower()]
+    assert flat_problems, f"Expected a too-flat/horizontal problem, got: {problems}"
+
+
+def test_geometric_prevalidation_passes_3d_arm():
+    """A properly 3D arm (large Z span) should not trigger the flat check."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+    )]
+    # 3D bent arm: Z span ~300mm, Y span ~150mm.
+    positions = {
+        "base_plate": {"position": [0, 0, 0]},
+        "shoulder_joint": {"position": [0, 0, 40]},
+        "shoulder_link": {"position": [0, 30, 140]},
+        "elbow_joint": {"position": [0, 50, 240]},
+        "elbow_link": {"position": [0, 20, 320]},
+        "wrist_joint": {"position": [0, -10, 280]},
+        "wrist_link": {"position": [0, -30, 220]},
+    }
+    problems = _geometric_prevalidation(parts, positions)
+    flat_problems = [p for p in problems if "flat" in p.lower() or "horizontal" in p.lower()]
+    assert not flat_problems, f"Unexpected flat flag on 3D arm: {flat_problems}"
+
+
+def test_geometric_prevalidation_ignores_non_arm_assemblies():
+    """A wheeled robot with few arm-keyword parts should not trigger arm check."""
+    parts = [{"name": n} for n in ("base_plate", "motor_fl", "wheel_fl")]
+    positions = {
+        "base_plate": {"position": [0, 0, 30]},
+        "motor_fl": {"position": [-100, 80, 10]},
+        "wheel_fl": {"position": [-100, 80, 30]},
+    }
+    problems = _geometric_prevalidation(parts, positions)
+    flat_problems = [p for p in problems if "flat" in p.lower() or "horizontal" in p.lower()]
+    assert not flat_problems
+
+
+def test_geometric_prevalidation_flags_missing_gripper_fingers():
+    """An arm with fewer than 2 finger parts must be flagged."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+        "gripper_base",
+    )]
+    positions = {
+        "base_plate": {"position": [0, 0, 0]},
+        "shoulder_joint": {"position": [0, 0, 40]},
+        "shoulder_link": {"position": [0, 30, 140]},
+        "elbow_joint": {"position": [0, 50, 240]},
+        "elbow_link": {"position": [0, 20, 320]},
+        "wrist_joint": {"position": [0, -10, 280]},
+        "wrist_link": {"position": [0, -30, 220]},
+        "gripper_base": {"position": [0, -40, 200]},
+    }
+    problems = _geometric_prevalidation(parts, positions)
+    gripper_problems = [p for p in problems if "gripper" in p.lower() or "finger" in p.lower()]
+    assert gripper_problems, (
+        f"Expected a missing-gripper-fingers problem, got: {problems}"
+    )
+
+
+def test_geometric_prevalidation_flags_close_fingers():
+    """Two fingers < 25mm apart must be flagged as fused block."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+        "gripper_base", "gripper_finger_left", "gripper_finger_right",
+    )]
+    positions = {
+        "base_plate": {"position": [0, 0, 0]},
+        "shoulder_joint": {"position": [0, 0, 40]},
+        "shoulder_link": {"position": [0, 30, 140]},
+        "elbow_joint": {"position": [0, 50, 240]},
+        "elbow_link": {"position": [0, 20, 320]},
+        "wrist_joint": {"position": [0, -10, 280]},
+        "wrist_link": {"position": [0, -30, 220]},
+        "gripper_base": {"position": [0, -40, 200]},
+        # Fingers only 10mm apart → fused block
+        "gripper_finger_left": {"position": [0, -45, 200]},
+        "gripper_finger_right": {"position": [0, -35, 200]},
+    }
+    problems = _geometric_prevalidation(parts, positions)
+    close_problems = [p for p in problems if "apart" in p.lower() or "fuse" in p.lower()]
+    assert close_problems, (
+        f"Expected a fingers-too-close problem, got: {problems}"
+    )
+
+
+def test_geometric_prevalidation_passes_well_separated_fingers():
+    """Two fingers >= 25mm apart should NOT trigger the closeness check."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+        "gripper_base", "gripper_finger_left", "gripper_finger_right",
+    )]
+    positions = {
+        "base_plate": {"position": [0, 0, 0]},
+        "shoulder_joint": {"position": [0, 0, 40]},
+        "shoulder_link": {"position": [0, 30, 140]},
+        "elbow_joint": {"position": [0, 50, 240]},
+        "elbow_link": {"position": [0, 20, 320]},
+        "wrist_joint": {"position": [0, -10, 280]},
+        "wrist_link": {"position": [0, -30, 220]},
+        "gripper_base": {"position": [0, -40, 200]},
+        # Fingers 90mm apart → clearly separated
+        "gripper_finger_left": {"position": [0, -85, 216]},
+        "gripper_finger_right": {"position": [0, 5, 216]},
+    }
+    problems = _geometric_prevalidation(parts, positions)
+    close_problems = [p for p in problems if "apart" in p.lower() or "fuse" in p.lower()]
+    assert not close_problems, (
+        f"Unexpected fingers-too-close flag on well-separated fingers: {close_problems}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# _gripper_geometry_ok — deterministic gripper ground-truth
+# ---------------------------------------------------------------------------
+
+def test_gripper_geometry_ok_passes_well_separated():
+    """Arm with 2 fingers >= 25mm apart → (True, desc)."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+        "gripper_base", "gripper_finger_left", "gripper_finger_right",
+    )]
+    positions = {
+        "base_plate": {"position": [0, 0, 0]},
+        "shoulder_joint": {"position": [0, 0, 40]},
+        "shoulder_link": {"position": [0, 30, 140]},
+        "elbow_joint": {"position": [0, 50, 240]},
+        "elbow_link": {"position": [0, 20, 320]},
+        "wrist_joint": {"position": [0, -10, 280]},
+        "wrist_link": {"position": [0, -30, 220]},
+        "gripper_base": {"position": [0, -40, 200]},
+        "gripper_finger_left": {"position": [0, -85, 216]},
+        "gripper_finger_right": {"position": [0, 5, 216]},
+    }
+    ok, desc = _gripper_geometry_ok(positions, parts)
+    assert ok, f"Expected True, got: {desc}"
+
+
+def test_gripper_geometry_ok_fails_missing_fingers():
+    """Arm with fewer than 2 fingers → (False, desc)."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+        "gripper_base",
+    )]
+    positions = {
+        "base_plate": {"position": [0, 0, 0]},
+        "shoulder_joint": {"position": [0, 0, 40]},
+        "shoulder_link": {"position": [0, 30, 140]},
+        "elbow_joint": {"position": [0, 50, 240]},
+        "elbow_link": {"position": [0, 20, 320]},
+        "wrist_joint": {"position": [0, -10, 280]},
+        "wrist_link": {"position": [0, -30, 220]},
+        "gripper_base": {"position": [0, -40, 200]},
+    }
+    ok, desc = _gripper_geometry_ok(positions, parts)
+    assert not ok, f"Expected False (no fingers), got: {desc}"
+
+
+def test_gripper_geometry_ok_fails_close_fingers():
+    """Arm with fingers < 25mm apart → (False, desc)."""
+    parts = [{"name": n} for n in (
+        "base_plate", "shoulder_joint", "shoulder_link",
+        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
+        "gripper_base", "gripper_finger_left", "gripper_finger_right",
+    )]
+    positions = {
+        "base_plate": {"position": [0, 0, 0]},
+        "shoulder_joint": {"position": [0, 0, 40]},
+        "shoulder_link": {"position": [0, 30, 140]},
+        "elbow_joint": {"position": [0, 50, 240]},
+        "elbow_link": {"position": [0, 20, 320]},
+        "wrist_joint": {"position": [0, -10, 280]},
+        "wrist_link": {"position": [0, -30, 220]},
+        "gripper_base": {"position": [0, -40, 200]},
+        # Only 10mm apart
+        "gripper_finger_left": {"position": [0, -45, 216]},
+        "gripper_finger_right": {"position": [0, -35, 216]},
+    }
+    ok, desc = _gripper_geometry_ok(positions, parts)
+    assert not ok, f"Expected False (fingers too close), got: {desc}"
+
+
+def test_gripper_geometry_ok_non_arm_returns_true():
+    """Non-arm assembly (< 4 arm parts) → (True, 'N/A')."""
+    parts = [{"name": n} for n in ("chassis", "wheel_fl", "wheel_fr")]
+    positions = {
+        "chassis": {"position": [0, 0, 0]},
+        "wheel_fl": {"position": [-50, 40, 0]},
+        "wheel_fr": {"position": [50, 40, 0]},
+    }
+    ok, desc = _gripper_geometry_ok(positions, parts)
+    assert ok, f"Expected True (not an arm), got: {desc}"
+
+
+# ---------------------------------------------------------------------------
+# Few-shot examples — vertical pattern assertions
+# ---------------------------------------------------------------------------
+
+def test_example_arm_standalone_uses_horizontal_anchors():
+    """EXAMPLE_ARM_STANDALONE arm-chain joints use front/back, pitch axis=x."""
+    import json
+    data = json.loads(EXAMPLE_ARM_STANDALONE)
+    joints = data["joints"]
+    arm_joints = [
+        j for j in joints
+        if j.get("parent_anchor") in ("top", "front")
+        and "gripper_finger" not in j["child"]
+    ]
+    # Every arm-chain joint (non-prismatic, non-servo-mount, non-base-yaw) is front/back.
+    for j in arm_joints:
+        if j.get("type") == "prismatic":
+            continue
+        if j["parent"] == "gripper_base" and j["child"] == "gripper_servo":
+            continue
+        # Base yaw (axis=z) correctly keeps top/bottom.
+        if j.get("axis") == "z":
+            continue
+        assert j["parent_anchor"] == "front", f"{j['parent']}->{j['child']}"
+        assert j["child_anchor"] == "back", f"{j['parent']}->{j['child']}"
+    # Shoulder/elbow pitch joints use axis=x (horizontal convention).
+    pitch_children = {"shoulder_link", "elbow_joint"}
+    for j in joints:
+        if j["child"] in pitch_children and j.get("type") == "revolute":
+            assert j["axis"] == "x", f"{j['child']} axis should be x"
+    # default_angles has non-zero values.
+    assert any(abs(float(v)) > 1e-6 for v in data["default_angles"].values())
+
+
+def test_example_5dof_keeps_motor_mounts_back_front():
+    """Motor mount joints (back/front, fixed) must remain unchanged in 5DOF."""
+    import json
+    data = json.loads(EXAMPLE_5DOF_ARM_REALISTIC)
+    motor_mounts = [
+        j for j in data["joints"]
+        if j.get("type") == "fixed"
+        and j.get("parent_anchor") == "back"
+        and j.get("child_anchor") == "front"
+    ]
+    # There are several motor mounts and they all stay back/front.
+    assert len(motor_mounts) >= 3
+    for j in motor_mounts:
+        assert "motor" in j["child"].lower()
+
+
+def test_example_5dof_pitch_joints_are_horizontal():
+    """5DOF pitch joints use front/back + axis=x."""
+    import json
+    data = json.loads(EXAMPLE_5DOF_ARM_REALISTIC)
+    for j in data["joints"]:
+        if j.get("type") == "revolute" and j.get("axis") == "x":
+            assert j["parent_anchor"] == "front", f"{j['parent']}->{j['child']}"
+            assert j["child_anchor"] == "back"
+
+
+def test_example_6dof_pitch_joints_are_horizontal():
+    """6DOF pitch joints use front/back + axis=x."""
+    import json
+    data = json.loads(EXAMPLE_6DOF_BELT_DRIVE_ARM)
+    pitch_joints = [
+        j for j in data["joints"]
+        if j.get("type") == "revolute" and j.get("axis") == "x"
+    ]
+    assert len(pitch_joints) >= 3
+    for j in pitch_joints:
+        assert j["parent_anchor"] == "front"
+        assert j["child_anchor"] == "back"
+    # Bearings still center/center.
+    bearings = [
+        j for j in data["joints"]
+        if j.get("parent_anchor") == "center"
+    ]
+    assert len(bearings) >= 3
+
+
+def test_examples_default_angles_nonzero():
+    """All three arm examples have at least one non-zero default_angle."""
+    import json
+    for example in (
+        EXAMPLE_ARM_STANDALONE,
+        EXAMPLE_5DOF_ARM_REALISTIC,
+        EXAMPLE_6DOF_BELT_DRIVE_ARM,
+    ):
+        data = json.loads(example)
+        assert any(
+            abs(float(v)) > 1e-6 for v in data["default_angles"].values()
+        ), f"{data['name']} has all-zero default_angles"

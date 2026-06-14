@@ -67,8 +67,13 @@ def generate_firmware(
     joint_ranges = [(j.range_deg[0], j.range_deg[1]) for j in revolute_joints]
     joint_axes = [j.axis for j in revolute_joints]
 
-    # Link lengths for IK (only pitch-axis links)
-    pitch_links = [l for l in links if l.axis == "y"]
+    # Link lengths for IK (only pitch-axis links).
+    # Under the clean arm convention pitch joints use axis="x"; legacy
+    # assemblies used axis="y". Accept both, but prefer "x" when both are
+    # present so mixed conventions resolve to the cleaner chain.
+    pitch_links_x = [l for l in links if l.axis == "x"]
+    pitch_links_y = [l for l in links if l.axis == "y"]
+    pitch_links = pitch_links_x if pitch_links_x else pitch_links_y
     L1 = pitch_links[0].length if len(pitch_links) > 0 else 100.0
     L2 = pitch_links[1].length if len(pitch_links) > 1 else 80.0
 
@@ -148,10 +153,12 @@ def _gen_main_ino(
         f"  servo_{i}.attach({pin});"
         for i, pin in enumerate(servo_pins)
     )
-    servo_decls = "\n".join(
-        f"Servo servo_{i};  // {joint_names[i]}"
-        for i in range(n)
+    servo_decls_lines = [f"Servo servo_{i};  // {joint_names[i]}" for i in range(n)]
+    servo_decls_lines.append(
+        f"Servo* const SERVO_OBJECTS[NUM_JOINTS] = {{"
+        + ", ".join(f"&servo_{i}" for i in range(n)) + "};"
     )
+    servo_decls = "\n".join(servo_decls_lines)
     includes_lib = "ESP32Servo.h" if controller == "esp32" else "Servo.h"
 
     # Sensor includes and init
@@ -339,6 +346,12 @@ void parse_angles(String args, float *angles) {{
       start = i + 1;
     }}
   }}
+}}
+
+// Direct PWM write bridge for servo_driver.cpp
+void servo_raw_write(int id, int pin, int pwm) {{
+  if (id < 0 || id >= NUM_JOINTS) return;
+  SERVO_OBJECTS[id]->writeMicroseconds(pwm);
 }}
 """
 

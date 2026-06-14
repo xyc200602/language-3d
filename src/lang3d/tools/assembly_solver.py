@@ -612,11 +612,14 @@ class AssemblySolver:
         # Resolve mimic joints: if a joint mimics another, compute its angle
         # from the mimicked joint's angle.  This ensures the solver places
         # coupled parts (e.g. gripper fingers) at the correct position.
-        for j in self._joints:
-            if j.mimic_joint:
-                source_angle = joint_angles.get(j.mimic_joint, 0.0)
-                resolved = source_angle * j.mimic_multiplier + j.mimic_offset
-                joint_angles[j.child] = resolved
+        # F13: two-pass to remove ordering dependency — a mimic source may
+        # itself be resolved in the same loop, so we iterate twice.
+        for _pass in range(2):
+            for j in self._joints:
+                if j.mimic_joint:
+                    source_angle = joint_angles.get(j.mimic_joint, 0.0)
+                    resolved = source_angle * j.mimic_multiplier + j.mimic_offset
+                    joint_angles[j.child] = resolved
 
         # Build adjacency: parent -> list of (joint, child)
         children_of: dict[str, list[tuple[Joint, str]]] = {}
@@ -650,7 +653,8 @@ class AssemblySolver:
             # Fallback: use the first part
             roots = {self.assembly.parts[0].name} if self.assembly.parts else set()
 
-        # Phase 1: BFS from roots
+        # Phase 1: DFS from roots (uses stack.pop(); F14 corrected comment).
+
         positions: dict[str, tuple[float, float, float]] = {}
         rot_mats: dict[str, list[list[float]]] = {}
 
@@ -751,14 +755,19 @@ class AssemblySolver:
                 delta_rot = _mat_mul(avg_rot, old_rot_inv)
                 self._apply_rotation_delta(
                     child_name, delta_rot, rot_mats, children_of,
+                    positions=positions,
                 )
 
-        # Phase 3: Convert to output format
+        # Phase 3: Convert to output format.
+        # Apply visual cylinder orientation as a post-processing step so
+        # cylindrical parts (servo motors) render aligned with their rotation
+        # axis without contaminating the kinematic chain (CYL-FIX).
         placements: dict[str, dict[str, Any]] = {}
         for pname in self._parts_by_name:
             if pname in positions:
                 p = positions[pname]
                 r = rot_mats.get(pname, _identity_matrix())
+                r = self._visual_rotation_for_part(pname, r)
                 placements[pname] = {
                     "position": [round(p[0], 4), round(p[1], 4), round(p[2], 4)],
                     "rotation": _rot_mat_to_axis_angle_deg(r),
@@ -803,8 +812,17 @@ class AssemblySolver:
         delta_rot: list[list[float]],
         rot_mats: dict[str, list[list[float]]],
         children_of: dict[str, list[tuple[Joint, str]]],
+        positions: dict[str, tuple[float, float, float]] | None = None,
     ) -> None:
-        """Apply a rotation delta to a part and all its BFS descendants."""
+        """Apply a rotation delta to a part and all its BFS descendants.
+
+        F12: previously only ``rot_mats`` was updated, leaving descendant
+        positions stale — so rotating a multi-parent part did not move its
+        children, causing visible misalignment in render.  Now when
+        ``positions`` is provided we rotate each descendant's position
+        around the root part's position (the pivot).
+        """
+        pivot = positions.get(root_name) if positions else None
         queue: deque[str] = deque([root_name])
         visited: set[str] = set()
         while queue:
@@ -814,6 +832,17 @@ class AssemblySolver:
             visited.add(name)
             if name in rot_mats:
                 rot_mats[name] = _mat_mul(delta_rot, rot_mats[name])
+            # Rotate the position around the pivot so children follow the
+            # rotation delta applied to the root.
+            if positions is not None and pivot is not None and name in positions:
+                pos = positions[name]
+                rel = (pos[0] - pivot[0], pos[1] - pivot[1], pos[2] - pivot[2])
+                rotated = _mat_vec(delta_rot, rel)
+                positions[name] = (
+                    pivot[0] + rotated[0],
+                    pivot[1] + rotated[1],
+                    pivot[2] + rotated[2],
+                )
             for _, child in children_of.get(name, []):
                 if child not in visited:
                     queue.append(child)
@@ -870,60 +899,73 @@ class AssemblySolver:
         angle_deg = joint_angles.get(joint.child, 0.0)
         if angle_deg == 0.0:
             angle_deg = joint_angles.get(joint.description, 0.0)
+
+        # F10: clamp the joint value to its declared range so solver input
+        # (or a bad default_angles entry) can't drive a part beyond its
+        # mechanical limits.  For prismatic joints range_deg holds mm, not
+        # degrees, but the clamp still applies.
+        if joint.range_deg:
+            lo, hi = joint.range_deg[0], joint.range_deg[1]
+            if lo <= hi:
+                angle_deg = max(lo, min(hi, angle_deg))
         angle_rad = math.radians(angle_deg)
 
         # Anchor alignment: rotate child so its anchor faces the parent's anchor
         align_rot = _anchor_alignment_rotation(joint.parent_anchor, joint.child_anchor)
 
-        # Cylinder base orientation: for cylindrical parts on revolute joints
-        # with child_anchor="center", rotate from default Z-axis to joint axis.
-        rot_axis_local = _revolute_axis(joint) if joint.type in ("revolute", "gear", "belt") else (0, 0, 1)
-        cylinder_orient = _identity_matrix()
-        if (joint.type in ("revolute", "gear", "belt")
-                and joint.child_anchor == "center"
-                and _is_cylindrical_part(child_part)):
-            cylinder_orient = _cylinder_base_orientation(rot_axis_local)
-
-        # Compute child rotation: parent_rot @ joint_rot @ align_rot @ cylinder_orient
+        # Compute child rotation (kinematic only — NO visual cylinder_orient).
+        #
+        # CYL-FIX: cylinder_orient (which orients cylindrical parts along
+        # their rotation axis for rendering) is applied as a POST-PROCESSING
+        # step at output time (see _visual_rotation_for_part).  Including it
+        # here would contaminate the kinematic chain because rot_mats[name]
+        # is used as parent_rot for children — the visual rotation would
+        # leak into child position computations, breaking IK and FK.
+        #
+        # F15: the rotation order ``joint_rot @ parent_rot @ align`` is
+        # correct because ``joint_rot`` is a rotation about a GLOBAL axis
+        # (rot_axis_global transforms the local axis into the parent frame),
+        # so it must LEFT-multiply parent_rot.
         if joint.type in ("revolute", "gear", "belt"):
+            rot_axis_local = _revolute_axis(joint)
             rot_axis_global = _mat_vec(parent_rot, rot_axis_local)
-
-            # Support eccentric rotation: apply rotation about an offset axis
-            eccentric = getattr(joint, 'eccentric_offset', None) or (0, 0, 0)
-            if any(e != 0 for e in eccentric):
-                # Translate to eccentric center, rotate, translate back
-                # eccentric is in local frame — transform to global first
-                eccentric_global = _mat_vec(parent_rot, eccentric)
-                parent_anchor_global = _vec_add(parent_anchor_global, eccentric_global)
-
             joint_rot = _rotation_matrix_axis_angle(rot_axis_global, angle_rad)
-            child_rot = _mat_mul(joint_rot, _mat_mul(parent_rot, _mat_mul(align_rot, cylinder_orient)))
+            anchor_rot = _mat_mul(joint_rot, _mat_mul(parent_rot, align_rot))
         elif joint.type == "prismatic":
             # Translation along the joint axis (e.g. axis="x" for gripper
             # fingers that slide left/right).  Fall back to anchor direction
             # for legacy assemblies without an explicit axis.
+            #
+            # F9: the joint value for a prismatic joint is a displacement in
+            # mm (consistent with urdf_export, which treats range_deg as mm
+            # and converts to metres).  Previously the value was converted to
+            # radians and multiplied by 100 — a unit mismatch that inflated
+            # real offsets (a 12mm finger stroke became ~21mm, and larger
+            # LLM-generated values blew up to hundreds of mm, the 467mm
+            # symptom).  Use the raw mm value directly.
             if joint.axis in _EXPLICIT_AXES:
                 slide_dir = _EXPLICIT_AXES[joint.axis]
             else:
                 slide_dir = ANCHOR_DIRECTIONS.get(joint.parent_anchor, (0, 0, 1))
             slide_global = _mat_vec(parent_rot, slide_dir)
-            offset = (slide_global[0] * angle_rad * 100,
-                      slide_global[1] * angle_rad * 100,
-                      slide_global[2] * angle_rad * 100)
+            displacement_mm = angle_deg  # mm, NOT angle_rad * 100
+            offset = (slide_global[0] * displacement_mm,
+                      slide_global[1] * displacement_mm,
+                      slide_global[2] * displacement_mm)
             parent_anchor_global = _vec_add(parent_anchor_global, offset)
-            child_rot = _mat_mul(parent_rot, _mat_mul(align_rot, cylinder_orient))
+            anchor_rot = _mat_mul(parent_rot, align_rot)
         else:
             # Fixed joint: inherit parent rotation + anchor alignment
-            child_rot = _mat_mul(parent_rot, _mat_mul(align_rot, cylinder_orient))
+            anchor_rot = _mat_mul(parent_rot, align_rot)
 
         # Child center = parent anchor point + rotated child anchor offset
         child_center = _vec_add(
             parent_anchor_global,
-            _mat_vec(child_rot, child_anchor_neg),
+            _mat_vec(anchor_rot, child_anchor_neg),
         )
-        # Add explicit offset (rotated by child rotation so it moves with the joint)
+        # Add explicit offset (rotated by anchor rotation so it moves with the joint)
         joint_offset = joint.offset or (0, 0, 0)
-        rotated_offset = _mat_vec(child_rot, joint_offset)
+        rotated_offset = _mat_vec(anchor_rot, joint_offset)
         child_center = _vec_add(
             child_center,
             rotated_offset,
@@ -941,7 +983,62 @@ class AssemblySolver:
             parent_pos, child_center, parent_part, child_part,
         )
 
-        return child_center, child_rot
+        return child_center, anchor_rot
+
+    def _find_driving_axis(
+        self, part_name: str,
+    ) -> tuple[float, float, float] | None:
+        """Find the rotation axis a cylindrical part drives as a parent.
+
+        Searches for revolute/gear/belt joints where *part_name* is the
+        PARENT.  Returns the first matching joint's local rotation axis,
+        or ``None`` if the part doesn't drive any rotary joint.
+
+        This lets us orient cylinders connected via *fixed* joints along
+        their functional rotation axis (e.g. a wrist motor bolted to the
+        elbow link still needs its cylinder axis aligned with the wrist
+        rotation axis).
+        """
+        for j in self._joints:
+            if j.parent == part_name and j.type in ("revolute", "gear", "belt"):
+                return _revolute_axis(j)
+        return None
+
+    def _visual_rotation_for_part(
+        self, part_name: str, kinematic_rot: list[list[float]],
+    ) -> list[list[float]]:
+        """Apply visual cylinder orientation to a part's kinematic rotation.
+
+        This is a POST-PROCESSING step that orients cylindrical parts (servo
+        motors, actuators) so their central axis aligns with the relevant
+        rotation axis for rendering.  It does NOT affect the kinematic chain
+        — the solver's internal ``rot_mats`` always stores pure kinematic
+        rotations, and this method is only called when building the output
+        placements dict.
+
+        For a cylindrical part connected via a revolute/gear/belt joint, the
+        cylinder is oriented along that joint's rotation axis.  For a
+        cylindrical part connected via a fixed joint that *drives* a rotary
+        joint as a parent (e.g. a wrist motor), the driving axis is used.
+        """
+        part = self._parts_by_name.get(part_name)
+        if not part or not _is_cylindrical_part(part):
+            return kinematic_rot
+
+        # Find the joint connecting this part to its parent (first match).
+        cylinder_orient = _identity_matrix()
+        for j in self._joints:
+            if j.child != part_name:
+                continue
+            if j.type in ("revolute", "gear", "belt"):
+                cylinder_orient = _cylinder_base_orientation(_revolute_axis(j))
+            elif j.type == "fixed":
+                driving_axis = self._find_driving_axis(part_name)
+                if driving_axis:
+                    cylinder_orient = _cylinder_base_orientation(driving_axis)
+            break  # use the first parent joint
+
+        return _mat_mul(kinematic_rot, cylinder_orient)
 
     def _apply_constraint_refinement(
         self,

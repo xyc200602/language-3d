@@ -17,6 +17,7 @@ import json
 from typing import Any
 
 from ..knowledge.actuators import get_actuator
+from ..knowledge.fastener_catalog import get_torque, recommend_bolt_length
 from ..knowledge.mechanics import Assembly
 from ..knowledge.sensors import get_sensor
 from ..models.base import ToolDefinition
@@ -28,6 +29,132 @@ from .code_gen import _assign_pins
 # ---------------------------------------------------------------------------
 # Assembly guide generation
 # ---------------------------------------------------------------------------
+
+def _connection_steps(joint) -> list[str]:
+    """Generate connection-method-specific assembly steps for a joint.
+
+    Returns operation instruction strings.  Falls back to the legacy
+    hardcoded M3×10 instructions when ``joint.connection`` is None
+    (backward compatibility for assemblies without connection data).
+    """
+    cm = getattr(joint, "connection", None)
+
+    if cm is None:
+        # Legacy fallback — preserve old behaviour.
+        if joint.type == "revolute":
+            return [
+                "安装轴承（MR105ZZ × 2）",
+                "穿入轴销，两端用 M3×10 螺丝 + 螺母固定",
+            ]
+        return ["用 M3×10 螺丝 + 螺母固定（4 个）"]
+
+    ct = cm.type
+
+    if ct == "bolted":
+        bolt_size = cm.bolt_size or "M3"
+        bolt_count = cm.bolt_count or 4
+        torque = cm.torque_nm or get_torque(bolt_size, "PLA")
+        bolt_length = int(recommend_bolt_length(10.0))
+        steps = [
+            f"用 {bolt_size}×{bolt_length} 螺丝 + 螺母固定（{bolt_count} 个）",
+            f"拧紧扭矩: {torque} N·m",
+        ]
+        return steps
+
+    if ct == "press_fit":
+        interference = cm.interference_mm or 0.05
+        return [
+            f"压入配合（过盈量 {interference}mm）",
+            "使用压机或台钳缓慢压入，注意对准方向",
+        ]
+
+    if ct == "snap_fit":
+        snap_count = cm.snap_count or 2
+        force = cm.snap_force_n or 5.0
+        return [
+            f"对准卡扣位置（{snap_count} 处）",
+            f"施加约 {force}N 力压入，听到咔嗒声表示卡扣就位",
+        ]
+
+    if ct == "adhesive":
+        adhesive = cm.adhesive_type or "环氧树脂胶"
+        cure_map = {
+            "epoxy": "24小时", "cyanoacrylate": "1小时",
+            "structural_acrylic": "4小时", "hot_melt": "10分钟",
+        }
+        cure = cure_map.get(adhesive, "按胶水说明")
+        return [
+            f"在结合面涂抹{adhesive}",
+            f"对准贴合后加压固定，等待固化（约 {cure}）",
+        ]
+
+    if ct == "welded":
+        weld = cm.weld_type or "fillet"
+        names = {"butt": "对接焊", "fillet": "角焊", "spot": "点焊"}
+        return [
+            f"使用{names.get(weld, weld)}连接",
+            "焊接后打磨焊缝，检查焊接质量",
+        ]
+
+    if ct == "magnetic":
+        return ["对准磁吸位置，靠近后自动吸附", "检查磁吸力是否足够固定"]
+
+    if ct == "set_screw":
+        size = getattr(cm, "set_screw_size", None) or cm.bolt_size or "M3"
+        return [
+            "对准轴上的平面（D-cut 面）",
+            f"拧入 {size} 紧定螺钉，固定轴与孔",
+        ]
+
+    if ct == "dowel_pin":
+        return ["在两零件的定位孔中插入定位销", "确认销钉完全插入，无松动"]
+
+    # Unknown type — use describe() if available.
+    desc = cm.describe() if hasattr(cm, "describe") else ct
+    return [f"按 {desc} 方式连接"]
+
+
+def _standard_parts_from_connections(assembly: Assembly) -> list[str]:
+    """Build the standard-parts checklist from per-joint connection data."""
+    revolute_joints = [j for j in assembly.joints if j.type == "revolute"]
+    lines: list[str] = []
+    bolt_counts: dict[str, int] = {}  # "M3×10" -> total count
+    has_press = has_adhesive = has_snap = False
+
+    for j in assembly.joints:
+        cm = getattr(j, "connection", None)
+        if cm is None:
+            key = "M3×10"
+            bolt_counts[key] = bolt_counts.get(key, 0) + 4
+        elif cm.type == "bolted":
+            size = cm.bolt_size or "M3"
+            count = cm.bolt_count or 4
+            length = int(recommend_bolt_length(10.0))
+            key = f"{size}×{length}"
+            bolt_counts[key] = bolt_counts.get(key, 0) + count
+        elif cm.type == "press_fit":
+            has_press = True
+        elif cm.type == "adhesive":
+            has_adhesive = True
+        elif cm.type == "snap_fit":
+            has_snap = True
+
+    for spec, count in bolt_counts.items():
+        size = spec.split("×")[0]
+        lines.append(f"- {spec} 螺丝 × {count}")
+        lines.append(f"- {size} 螺母 × {count}")
+
+    if revolute_joints:
+        lines.append(f"- MR105ZZ 轴承 × {len(revolute_joints) * 2}")
+    if has_press:
+        lines.append("- 压机或台钳（用于压入配合）")
+    if has_adhesive:
+        lines.append("- 环氧树脂胶（或等效结构胶）")
+    if has_snap:
+        lines.append("- 无需额外紧固件（卡扣集成在零件上）")
+
+    return lines
+
 
 def generate_assembly_guide(
     assembly: Assembly,
@@ -66,16 +193,11 @@ def generate_assembly_guide(
             lines.append(f"   - 备注: {part.notes}")
     lines.append("")
 
-    # Standard parts
+    # Standard parts (connection-aware)
     lines.append("### 标准件")
     lines.append("")
-    revolute_joints = [j for j in assembly.joints if j.type == "revolute"]
-    fixed_joints = [j for j in assembly.joints if j.type == "fixed"]
-    joint_count = len(revolute_joints) + len(fixed_joints)
-    lines.append(f"- M3×10 螺丝 × {joint_count * 4}")
-    lines.append(f"- M3 螺母 × {joint_count * 4}")
-    if revolute_joints:
-        lines.append(f"- MR105ZZ 轴承 × {len(revolute_joints) * 2}")
+    for std_line in _standard_parts_from_connections(assembly):
+        lines.append(std_line)
     lines.append("")
 
     # Tools needed
@@ -103,6 +225,10 @@ def generate_assembly_guide(
         lines.append(f"- 关节类型: {'旋转关节' if j.type == 'revolute' else '固定连接' if j.type == 'fixed' else '滑动关节'}")
         if j.type == "revolute":
             lines.append(f"- 旋转范围: {j.range_deg[0]}° ~ {j.range_deg[1]}°")
+        cm = getattr(j, "connection", None)
+        if cm:
+            desc = cm.describe() if hasattr(cm, "describe") else cm.type
+            lines.append(f"- 连接方式: {desc}")
         lines.append(f"- 父件: **{j.parent}**（{j.parent_anchor}面）")
         lines.append(f"- 子件: **{j.child}**（{j.child_anchor}面）")
         lines.append(f"- 说明: {j.description or '将子件安装到父件上'}")
@@ -110,15 +236,22 @@ def generate_assembly_guide(
         lines.append(f"操作:")
         lines.append(f"1. 将 **{j.child}** 的 {j.child_anchor} 面对准 **{j.parent}** 的 {j.parent_anchor} 面")
         lines.append(f"2. 对准安装孔位")
+        # Revolute joints always need bearings regardless of connection type.
+        step_idx = 3
         if j.type == "revolute":
-            lines.append(f"3. 安装轴承（MR105ZZ × 2）")
-            lines.append(f"4. 穿入轴销，两端用 M3×10 螺丝 + 螺母固定")
-            if actuator_ids and step_num - 1 < len(actuator_ids):
-                a = get_actuator(actuator_ids[step_num - 1])
-                if a:
-                    lines.append(f"5. 安装 {a.name} 舵机到关节位置")
-        else:
-            lines.append(f"3. 用 M3×10 螺丝 + 螺母固定（4 个）")
+            lines.append(f"{step_idx}. 安装轴承（MR105ZZ × 2）")
+            step_idx += 1
+        # Connection-specific steps from the helper.
+        for step_text in _connection_steps(j):
+            # Skip bearing line if the helper already includes it (legacy fallback).
+            if "轴承" in step_text and j.type == "revolute" and step_idx > 3:
+                continue
+            lines.append(f"{step_idx}. {step_text}")
+            step_idx += 1
+        if j.type == "revolute" and actuator_ids and step_num - 1 < len(actuator_ids):
+            a = get_actuator(actuator_ids[step_num - 1])
+            if a:
+                lines.append(f"{step_idx}. 安装 {a.name} 舵机到关节位置")
         lines.append(f"")
         step_num += 1
 

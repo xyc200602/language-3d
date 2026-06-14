@@ -406,11 +406,23 @@ class TestRoboticArmChain:
         assert p_home["base_joint_housing"]["rotation"][3] == pytest.approx(0, abs=0.1)
         assert p_rotated["base_joint_housing"]["rotation"][3] == pytest.approx(90, abs=0.1)
 
-        # Children should inherit the rotation
+        # Non-cylindrical children inherit the joint rotation directly
         assert p_rotated["shoulder_link"]["rotation"][3] == pytest.approx(90, abs=0.1)
-        assert p_rotated["end_effector_mount"]["rotation"][3] == pytest.approx(90, abs=0.1)
 
-        # Home should have zero rotation
+        # Cylindrical children (elbow_joint, wrist_joint, end_effector_mount)
+        # have compound rotation due to cylinder_orient — the solver orients
+        # servo cylinders along their functional rotation axis, which adds
+        # a base orientation that compounds with the joint angle.  Verify
+        # propagation by checking the rotation CHANGED from home, not that
+        # the absolute angle equals 90°.
+        home_angle = p_home["end_effector_mount"]["rotation"][3]
+        rotated_angle = p_rotated["end_effector_mount"]["rotation"][3]
+        assert abs(rotated_angle - home_angle) > 5, (
+            f"end_effector_mount rotation did not propagate: "
+            f"home={home_angle}°, rotated={rotated_angle}°"
+        )
+
+        # Home: non-cylindrical parts should have zero rotation
         assert p_home["shoulder_link"]["rotation"][3] == pytest.approx(0, abs=0.1)
 
     def test_offset_creates_lateral_movement_on_rotation(self):

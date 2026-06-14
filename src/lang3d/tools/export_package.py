@@ -255,6 +255,113 @@ def _freecad_ops_for_part(part: Part, joints: list | None = None) -> list[dict]:
 
 
 # ============================================================================
+# Real FreeCAD STL generation (reusable)
+# ============================================================================
+
+
+def generate_part_stls(
+    assembly: Assembly,
+    stl_dir: Path | str,
+    fc_dir: Path | str | None = None,
+    timeout: int = 60,
+) -> tuple[str, dict[str, Any]]:
+    """Generate real FreeCAD STLs for each part in the assembly.
+
+    Extracted from ``export_engineering_package`` so the same STL generation
+    can run *before* the VLM verification loop — giving the VLM (and the
+    user) real C-channel / servo-housing / gripper-finger geometry instead
+    of trimesh box approximations.
+
+    Args:
+        assembly: The mechanical assembly.
+        stl_dir: Directory where per-part ``{name}.stl`` files are written.
+        fc_dir: Directory for human-readable FreeCAD scripts.  When
+            ``None``, defaults to ``{stl_dir parent}/freecad_scripts``.
+        timeout: FreeCAD subprocess timeout per part (seconds).
+
+    Returns:
+        ``(stl_dir_path, validation_report_dict)``.  When FreeCAD is not
+        available the report dict contains ``{"skipped": True}`` and no
+        STLs are generated — the caller should fall back to trimesh
+        previews.
+    """
+    from .freecad import _build_script, _find_freecad_python
+
+    stl_dir_p = Path(stl_dir)
+    stl_dir_p.mkdir(parents=True, exist_ok=True)
+
+    if fc_dir is None:
+        fc_dir = stl_dir_p.parent / "freecad_scripts"
+    fc_dir = Path(fc_dir)
+    fc_dir.mkdir(parents=True, exist_ok=True)
+
+    # Build per-part joint lookup so connection features (bolt holes, bearing
+    # seats, snap-fits, etc.) are generated for each part.
+    joints_by_part: dict[str, list] = {}
+    for joint in assembly.joints:
+        for pn in (joint.parent, joint.child):
+            joints_by_part.setdefault(pn, []).append(joint)
+
+    # Build all part operation lists and write standalone scripts
+    all_part_ops: list[list[dict]] = []
+    for part in assembly.parts:
+        part_joints = joints_by_part.get(part.name, [])
+        ops = _freecad_ops_for_part(part, joints=part_joints)
+        for op in ops:
+            if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
+                op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
+        all_part_ops.append(ops)
+
+    for i, part in enumerate(assembly.parts):
+        script = _build_script(all_part_ops[i])
+        script_path = fc_dir / f"{part.name}.py"
+        script_path.write_text(script, encoding="utf-8")
+
+    # Check FreeCAD availability — bail out early if not installed so the
+    # caller can fall back to trimesh preview STLs.
+    if not _find_freecad_python():
+        logger.info("FreeCAD not available — skipping real STL generation")
+        return (str(stl_dir_p), {"skipped": True})
+
+    # Run FreeCAD to generate the actual STLs
+    try:
+        from .part_validator import validate_all_parts, _simplify_config
+        validation_report = validate_all_parts(
+            assembly.parts, str(stl_dir_p), timeout=timeout,
+            joints_by_part=joints_by_part,
+        )
+
+        # Rewrite standalone scripts for parts that were simplified so the
+        # saved scripts match the geometry that was actually exported.
+        from .part_feature_engine import infer_features, generate_ops as _gen
+        for r in validation_report.results:
+            if r.simplification_level > 0 and r.passed:
+                part_obj = next(p for p in assembly.parts if p.name == r.part_name)
+                cfg = infer_features(part_obj)
+                cfg_simple = _simplify_config(cfg, r.simplification_level)
+                simplified_ops = _gen(part_obj, config=cfg_simple)
+                for op in simplified_ops:
+                    if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
+                        op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
+                script = _build_script(simplified_ops)
+                script_path = fc_dir / f"{r.part_name}.py"
+                script_path.write_text(script, encoding="utf-8")
+                logger.info(
+                    "Part '%s' simplified to level %d (%s)",
+                    r.part_name, r.simplification_level, r.simplification_note,
+                )
+        logger.info(
+            "Part STL generation: %d/%d passed (%.0f%%)",
+            validation_report.passed, validation_report.total_parts,
+            validation_report.pass_rate * 100,
+        )
+        return (str(stl_dir_p), validation_report.to_dict())
+    except Exception as e:
+        logger.warning("FreeCAD STL generation failed: %s", e)
+        return (str(stl_dir_p), {"skipped": True, "error": str(e)})
+
+
+# ============================================================================
 # Subsystem decomposition
 # ============================================================================
 
@@ -320,6 +427,7 @@ def export_engineering_package(
     components: list[str] | None = None,
     verification_status: str = "UNKNOWN",
     verification_warnings: list[str] | None = None,
+    existing_stl_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """Export a complete engineering package for the assembly.
 
@@ -334,6 +442,10 @@ def export_engineering_package(
             downstream consumers can detect unverified packages.
         verification_warnings: VLM problems from the last round. Stored
             alongside the status in design_report.json.
+        existing_stl_dir: When provided, copy the already-generated STLs
+            from this directory into ``{output_dir}/stl_parts`` and skip
+            the FreeCAD validation subprocess (the STLs were produced
+            during the VLM loop).  Avoids a redundant ~2 min FreeCAD run.
 
     Returns:
         Dict with generated file list and key metrics.
@@ -357,9 +469,14 @@ def export_engineering_package(
     positions = ctx.ensure_positions()
 
     # ---- Step 1b: VLM visual verification ----
-    # Try to run closed-loop VLM verification: render → VLM check → fix → re-solve
+    # Try to run closed-loop VLM verification: render → VLM check → fix → re-solve.
+    # Skip when the generate phase already PASSED — re-verifying risks the
+    # independent VLM call disagreeing and apply_corrections perturbing a
+    # known-good assembly (root cause of the earlier 330mm finger-origin bug).
     vlm_result = None
     vlm_backend = None
+    if verification_status == "PASSED":
+        logger.info("VLM visual verification skipped (already PASSED in generate phase)")
     try:
         from ..models.glm import GLMBackend
         import os as _os
@@ -370,7 +487,7 @@ def export_engineering_package(
         )
         vision_model = _os.environ.get("VISION_MODEL", "GLM-4V-Plus")
 
-        if api_key:
+        if api_key and verification_status != "PASSED":
             vlm_backend = GLMBackend(
                 api_key=api_key,
                 base_url=base_url,
@@ -395,8 +512,11 @@ def export_engineering_package(
             if vlm_result.corrections_applied and not vlm_result.passed:
                 from ..agent.assembly_visual_verifier import apply_corrections
                 corrected_assembly = apply_corrections(assembly, vlm_result.corrections_applied)
-                solver = AssemblySolver(corrected_assembly)
-                positions = solver.solve()
+                # Re-normalise gripper fingers: apply_corrections can perturb
+                # finger offsets; restore the symmetric centre-anchored geometry
+                # so URDF origins stay sane.
+                from .assembly_generator import _normalize_gripper_fingers
+                corrected_assembly = _normalize_gripper_fingers(corrected_assembly)
                 assembly = corrected_assembly
                 ctx = AssemblyContext(assembly=assembly)
                 positions = ctx.ensure_positions()
@@ -443,60 +563,75 @@ def export_engineering_package(
     stl_dir.mkdir(parents=True, exist_ok=True)
     validation_report_path = output_dir / "part_validation_report.json"
 
-    try:
-        from .freecad import _find_freecad_python
-        if _find_freecad_python():
-            from .part_validator import validate_all_parts
-            logger.info("Running FreeCAD validation for %d parts (vlm_backend=%s)",
-                        len(assembly.parts), "available" if vlm_backend else "None")
-            validation_report = validate_all_parts(
-                assembly.parts, str(stl_dir), timeout=60,
-                vlm_router=vlm_backend,
-                vlm_sample=len(assembly.parts),
-                joints_by_part=joints_by_part,
-            )
-            # Save validation report
-            validation_report_path.write_text(
-                json.dumps(validation_report.to_dict(), indent=2, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            generated_files.append(str(validation_report_path))
+    # When the VLM loop already generated real STLs, copy them across and
+    # skip the redundant FreeCAD subprocess run.
+    if existing_stl_dir is not None:
+        import shutil as _shutil
+        _src = Path(existing_stl_dir)
+        _copied = 0
+        if _src.is_dir():
+            for _stl in _src.glob("*.stl"):
+                _shutil.copy2(_stl, stl_dir / _stl.name)
+                _copied += 1
+        logger.info(
+            "Reused %d existing STLs from %s (skipping FreeCAD validation)",
+            _copied, _src,
+        )
+    else:
+        try:
+            from .freecad import _find_freecad_python
+            if _find_freecad_python():
+                from .part_validator import validate_all_parts
+                logger.info("Running FreeCAD validation for %d parts (vlm_backend=%s)",
+                            len(assembly.parts), "available" if vlm_backend else "None")
+                validation_report = validate_all_parts(
+                    assembly.parts, str(stl_dir), timeout=60,
+                    vlm_router=vlm_backend,
+                    vlm_sample=len(assembly.parts),
+                    joints_by_part=joints_by_part,
+                )
+                # Save validation report
+                validation_report_path.write_text(
+                    json.dumps(validation_report.to_dict(), indent=2, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                generated_files.append(str(validation_report_path))
 
-            # Replace full-feature ops with simplified ops for parts that needed it
-            simplified_count = 0
-            for r in validation_report.results:
-                if r.simplification_level > 0 and r.passed:
-                    part_obj = next(p for p in assembly.parts if p.name == r.part_name)
-                    from .part_validator import _simplify_config
-                    from .part_feature_engine import infer_features, generate_ops as _gen
-                    cfg = infer_features(part_obj)
-                    cfg_simple = _simplify_config(cfg, r.simplification_level)
-                    simplified_ops = _gen(part_obj, config=cfg_simple)
-                    # Fix workspace placeholder
-                    for op in simplified_ops:
-                        if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
-                            op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
-                    # Replace in all_part_ops
-                    idx = next(i for i, p in enumerate(assembly.parts) if p.name == r.part_name)
-                    all_part_ops[idx] = simplified_ops
-                    # Rewrite the script with simplified ops
-                    script = _build_script(simplified_ops)
-                    script_path = fc_dir / f"{r.part_name}.py"
-                    script_path.write_text(script, encoding="utf-8")
-                    simplified_count += 1
-                    logger.info(
-                        "Part '%s' simplified to level %d (%s)",
-                        r.part_name, r.simplification_level, r.simplification_note,
-                    )
-            if simplified_count > 0:
-                logger.info("%d parts were simplified for FreeCAD compatibility", simplified_count)
-            logger.info(
-                "Part validation: %d/%d passed (%.0f%%)",
-                validation_report.passed, validation_report.total_parts,
-                validation_report.pass_rate * 100,
-            )
-    except Exception as e:
-        logger.warning("FreeCAD part validation skipped: %s", e)
+                # Replace full-feature ops with simplified ops for parts that needed it
+                simplified_count = 0
+                for r in validation_report.results:
+                    if r.simplification_level > 0 and r.passed:
+                        part_obj = next(p for p in assembly.parts if p.name == r.part_name)
+                        from .part_validator import _simplify_config
+                        from .part_feature_engine import infer_features, generate_ops as _gen
+                        cfg = infer_features(part_obj)
+                        cfg_simple = _simplify_config(cfg, r.simplification_level)
+                        simplified_ops = _gen(part_obj, config=cfg_simple)
+                        # Fix workspace placeholder
+                        for op in simplified_ops:
+                            if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
+                                op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
+                        # Replace in all_part_ops
+                        idx = next(i for i, p in enumerate(assembly.parts) if p.name == r.part_name)
+                        all_part_ops[idx] = simplified_ops
+                        # Rewrite the script with simplified ops
+                        script = _build_script(simplified_ops)
+                        script_path = fc_dir / f"{r.part_name}.py"
+                        script_path.write_text(script, encoding="utf-8")
+                        simplified_count += 1
+                        logger.info(
+                            "Part '%s' simplified to level %d (%s)",
+                            r.part_name, r.simplification_level, r.simplification_note,
+                        )
+                if simplified_count > 0:
+                    logger.info("%d parts were simplified for FreeCAD compatibility", simplified_count)
+                logger.info(
+                    "Part validation: %d/%d passed (%.0f%%)",
+                    validation_report.passed, validation_report.total_parts,
+                    validation_report.pass_rate * 100,
+                )
+        except Exception as e:
+            logger.warning("FreeCAD part validation skipped: %s", e)
 
     # ---- Step 3b: Render assembly ----
     from .freecad import (
@@ -507,17 +642,20 @@ def export_engineering_package(
     )
     assembly_parts_info = []
     for p in assembly.parts:
+        _stl = stl_dir / f"{p.name}.stl"
         assembly_parts_info.append({
             "name": p.name,
             "shape_type": _shape_type_for_part(p),
             "dimensions": p.dimensions,
             "subsystem": _subsystem_for_part(p.name),
+            "stl_path": str(_stl) if _stl.exists() else None,
         })
     render_path = output_dir / "assembly"
     assembly_script = build_assembly_script(
         assembly_parts=assembly_parts_info,
         positions=positions,
         output_path=str(render_path),
+        joints=assembly.joints,
     )
     (output_dir / "assembly_render_script.py").write_text(assembly_script, encoding="utf-8")
     generated_files.append(str(output_dir / "assembly_render_script.py"))
@@ -554,6 +692,18 @@ def export_engineering_package(
     ros2_dir = output_dir / "ros2_package"
     builder.write(str(ros2_dir))
     generated_files.append(str(ros2_dir))
+
+    # Copy STL meshes into ROS2 package meshes/ directory
+    import shutil
+    from .urdf_export import _sanitize_name
+    ros2_meshes = ros2_dir / _sanitize_name(assembly.name) / "meshes"
+    ros2_meshes.mkdir(parents=True, exist_ok=True)
+    for part in assembly.parts:
+        stl_src = stl_dir / f"{part.name}.stl"
+        if stl_src.exists():
+            shutil.copy2(str(stl_src), str(ros2_meshes / f"{_sanitize_name(part.name)}.stl"))
+        else:
+            logger.warning("STL not found for ROS2 mesh copy: %s", stl_src)
 
     # ---- Step 5: Generate BOM ----
     from .bom_gen import generate_bom, format_bom_markdown
@@ -594,10 +744,36 @@ def export_engineering_package(
     actuator_names_set = set(actuator_names) | {p.name for p in actuator_parts}
     servo_ids = ["MG996R"] * len(actuator_names_set) if actuator_names_set else ["MG996R"]
 
+    # Build the firmware sub-assembly. Previously this kept only the revolute
+    # joints, which dropped every fixed connector between a servo and its link.
+    # The kinematic chain then broke and `_extract_chain` collapsed every
+    # segment length to 0. We now take the closure of the arm chain — seed
+    # with the actuator parts and keep absorbing any joint that touches the
+    # growing set — so all fixed connectors survive and the chain stays
+    # connected. `generate_firmware` still selects servos via `j.type ==
+    # "revolute"`, so the firmware output is unchanged.
+    chain_names = set(actuator_names_set)
+    # Seed the closure with the actuator parents too, so a servo that sits
+    # between two links pulls in both neighbouring structural parts.
+    for j in revolute_joints:
+        chain_names.add(j.parent)
+
+    changed = True
+    while changed:
+        changed = False
+        for j in assembly.joints:
+            if (j.parent in chain_names) != (j.child in chain_names):
+                chain_names.add(j.parent)
+                chain_names.add(j.child)
+                changed = True
+
     arm_sub_assembly = Assembly(
         name=assembly.name + "_actuators",
-        parts=[p for p in assembly.parts if p.name in actuator_names_set],
-        joints=revolute_joints,
+        parts=[p for p in assembly.parts if p.name in chain_names],
+        joints=[
+            j for j in assembly.joints
+            if j.parent in chain_names and j.child in chain_names
+        ],
     )
 
     firmware = generate_firmware(
@@ -709,14 +885,38 @@ def export_engineering_package(
             pos = positions[f"wheel_{s}"]["position"]
             contacts.append([pos[0], pos[1], pos[2]])
     else:
-        # Use parts whose Z-center is near the ground (bottom 10% of Z range)
+        # Expand ground-contact parts into footprint corners using their
+        # dimensions.  Solver convention: length→Y (forward), width→X
+        # (lateral) — same as assembly_verifier.py's COM check.  Using
+        # only the centre point (the old behaviour) produces a degenerate
+        # polygon for single-base robots, always reporting "unstable".
+        parts_by_name = {p.name: p for p in assembly.parts}
         z_vals = [p["position"][2] for p in positions.values()]
         z_min, z_max = min(z_vals), max(z_vals)
         z_range = z_max - z_min if z_max > z_min else 1.0
         for pname, pdata in positions.items():
             z = pdata["position"][2]
-            if z <= z_min + z_range * 0.1:
-                contacts.append(pdata["position"][:3])
+            if z > z_min + z_range * 0.1:
+                continue
+            pos = pdata["position"]
+            part = parts_by_name.get(pname)
+            dims = part.dimensions if part and part.dimensions else {}
+            cx, cy, cz = pos[0], pos[1], pos[2]
+            if "length" in dims and "width" in dims:
+                # Box footprint: 4 corners (width→X, length→Y).
+                hx = dims["width"] / 2.0
+                hy = dims["length"] / 2.0
+                for dx, dy in [(-hx, -hy), (hx, -hy), (-hx, hy), (hx, hy)]:
+                    contacts.append([cx + dx, cy + dy, cz])
+            elif "diameter" in dims:
+                # Circular footprint: 8-point polygon.
+                r = dims["diameter"] / 2.0
+                import math as _m
+                for i in range(8):
+                    a = i * _m.pi / 4
+                    contacts.append([cx + r * _m.cos(a), cy + r * _m.sin(a), cz])
+            else:
+                contacts.append([cx, cy, cz])
         # If still empty, use the first part (root)
         if not contacts and positions:
             first_pos = next(iter(positions.values()))["position"]

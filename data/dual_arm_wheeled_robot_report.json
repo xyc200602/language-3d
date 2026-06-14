@@ -22,14 +22,14 @@
   },
   "verification": {
     "overall_pass": false,
-    "collision_free": true,
-    "fcl_available": false,
+    "collision_free": false,
+    "fcl_available": true,
     "mating_surface_checks": 36,
     "bolt_alignment_checks": 16,
     "sequence_checks": 36,
     "tolerance_chain_checks": 10,
-    "verification_items_total": 99,
-    "verification_items_passed": 69
+    "verification_items_total": 625,
+    "verification_items_passed": 576
   },
   "key_placements": {
     "base_plate": {
@@ -527,25 +527,25 @@
     {
       "parent": "base_plate",
       "child": "motor_fl",
-      "aligned": true,
+      "aligned": false,
       "hole_count_parent": 4
     },
     {
       "parent": "base_plate",
       "child": "motor_fr",
-      "aligned": true,
+      "aligned": false,
       "hole_count_parent": 4
     },
     {
       "parent": "base_plate",
       "child": "motor_rl",
-      "aligned": true,
+      "aligned": false,
       "hole_count_parent": 4
     },
     {
       "parent": "base_plate",
       "child": "motor_rr",
-      "aligned": true,
+      "aligned": false,
       "hole_count_parent": 4
     },
     {
@@ -563,13 +563,13 @@
     {
       "parent": "imu_mount",
       "child": "imu_sensor",
-      "aligned": true,
+      "aligned": false,
       "hole_count_parent": 2
     },
     {
       "parent": "lidar_mount",
       "child": "lidar_sensor",
-      "aligned": true,
+      "aligned": false,
       "hole_count_parent": 4
     }
   ],

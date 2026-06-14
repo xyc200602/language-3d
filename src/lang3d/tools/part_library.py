@@ -105,14 +105,22 @@ _parts_store_lock = threading.Lock()
 
 
 def _get_parts_store() -> PartsStore:
-    """Get or create the singleton PartsStore."""
+    """Get or create the singleton PartsStore.
+
+    Thread-safe via double-checked locking.  The PartsStore is constructed
+    fully inside the lock before assignment, so no other thread can observe
+    a partially-initialised instance.
+    """
     global _parts_store
     if _parts_store is None:
         with _parts_store_lock:
             if _parts_store is None:
                 ws = _workspace_dir()
                 json_path = Path(ws) / "generated_parts.json"
-                _parts_store = PartsStore(json_path)
+                # Construct fully before assigning to the global, so that
+                # no thread ever sees a partially-initialised PartsStore.
+                store = PartsStore(json_path)
+                _parts_store = store
     return _parts_store
 
 
@@ -848,7 +856,7 @@ for _o in _import_doc_{idx}.Objects:
 if _shapes_{idx}:
     _compound_{idx} = Part.makeCompound(_shapes_{idx}) if len(_shapes_{idx}) > 1 else _shapes_{idx}[0]
     rot_{idx} = FreeCAD.Rotation(FreeCAD.Vector({rax}, {ray}, {raz}), {rangle})
-    placement_{idx} = FreeCAD.Placement(FreeCAD.Vector(0, 0, 0), rot_{idx}, FreeCAD.Vector({tx}, {ty}, {tz}))
+    placement_{idx} = FreeCAD.Placement(FreeCAD.Vector({tx}, {ty}, {tz}), rot_{idx})
     obj_{idx} = doc.addObject("Part::Feature", "{name}")
     _compound_{idx}.Placement = placement_{idx}
     obj_{idx}.Shape = _compound_{idx}
@@ -1042,8 +1050,8 @@ if _export_list:
                     p = placements[name]
                     part["position"] = p["position"]
                     part["rotation"] = p["rotation"]
-        except Exception:
-            pass  # Silently fall back to manual positions
+        except Exception as e:
+            logger.warning("Solver position overlay failed, using manual positions: %s", e)
         return parts
 
 

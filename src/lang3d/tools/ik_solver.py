@@ -57,28 +57,76 @@ class LinkSegment:
 # Chain extraction
 # ---------------------------------------------------------------------------
 
+def _forward_link_length(
+    joint: Joint, assembly: Assembly, parts_by_name: dict[str, Part]
+) -> float:
+    """Derive the axis-to-axis link length driven by ``joint``.
+
+    Walks forward from ``joint.child`` through fixed joints to find the first
+    structural part that exposes a ``length`` dimension. Under the clean
+    arm-chain convention (front/back anchors, pitch axis=x) that ``length`` is
+    exactly the distance between this joint's rotation axis and the next one.
+
+    Returns 0.0 when no suitable part is found (caller falls back to
+    centre-to-centre placement distance).
+    """
+    candidate = joint.child
+    visited: set[str] = set()
+    while candidate and candidate not in visited:
+        visited.add(candidate)
+        part = parts_by_name.get(candidate)
+        if part is not None:
+            length = part.dimensions.get("length", 0.0)
+            if isinstance(length, (int, float)) and length > 0:
+                return float(length)
+        # Advance through the single fixed joint leaving this part, so we
+        # traverse housing→link connections without diverging onto motors or
+        # bearings (those attach via their own fixed joints off a sibling).
+        next_candidate: str | None = None
+        for jj in assembly.joints:
+            if jj.parent == candidate and jj.type == "fixed":
+                next_candidate = jj.child
+                break
+        candidate = next_candidate
+    return 0.0
+
+
 def _extract_chain(assembly: Assembly) -> tuple[list[LinkSegment], float]:
     """Extract the kinematic chain and base height from assembly.
 
     Returns (links, base_height) where links are in order from base to tip,
     and base_height is the Z offset of the first revolute joint above origin.
+
+    Link lengths are read directly from the connecting structural part's
+    ``length`` dimension (the authoritative source). This is independent of the
+    solved posture, so a bent ``default_angles`` no longer corrupts the IK link
+    lengths. When no length dimension is available (e.g. base-yaw housings or
+    wrist rolls), we fall back to the centre-to-centre placement distance,
+    which is still preferable to zero.
     """
     solver = AssemblySolver(assembly)
     placements_home = solver.solve()
 
     # Find revolute joints in order
     revolute_joints = [j for j in assembly.joints if j.type == "revolute"]
+    parts_by_name = {p.name: p for p in assembly.parts}
 
-    # Compute segment lengths from home-position 3D positions
     links: list[LinkSegment] = []
-    prev_pos = [0.0, 0.0, 0.0]
+    prev_pos: list[float] = [0.0, 0.0, 0.0]
     for j in revolute_joints:
         child_pos = placements_home.get(j.child, {}).get("position", [0, 0, 0])
-        seg_len = (
-            (child_pos[0] - prev_pos[0]) ** 2
-            + (child_pos[1] - prev_pos[1]) ** 2
-            + (child_pos[2] - prev_pos[2]) ** 2
-        ) ** 0.5
+
+        # Primary: length from the driven structural part's "length" dimension.
+        seg_len = _forward_link_length(j, assembly, parts_by_name)
+
+        # Fallback: centre-to-centre distance from the solved home posture.
+        if seg_len <= 0:
+            seg_len = (
+                (child_pos[0] - prev_pos[0]) ** 2
+                + (child_pos[1] - prev_pos[1]) ** 2
+                + (child_pos[2] - prev_pos[2]) ** 2
+            ) ** 0.5
+
         links.append(LinkSegment(
             name=j.child,
             length=seg_len,

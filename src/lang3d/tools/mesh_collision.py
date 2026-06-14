@@ -86,31 +86,45 @@ class InterferenceReport:
 # Mesh creation helpers
 # ---------------------------------------------------------------------------
 
-def _part_to_box_mesh(part: Part) -> Any:
-    """Create a trimesh box from a Part's dimensions.
+def _part_to_box_mesh(part: Part, shrink_mm: float = 0.0) -> Any:
+    """Create a trimesh collision mesh from a Part's dimensions.
 
-    Falls back to a 20x20x20 mm cube if dimensions are incomplete.
+    Cylindrical parts (those with ``diameter``/``outer_diameter``) get a
+    cylinder mesh; everything else gets a box mesh.  Using the correct
+    primitive avoids false positives: a cylinder approximated as a box
+    has corners that extend up to ~21% beyond the actual surface, which
+    causes phantom collisions between nearby round parts (motors, servos).
+
+    Args:
+        part: The part whose dimensions define the mesh.
+        shrink_mm: If > 0, shrink the mesh by this many millimetres on
+            every side.  Two flush-mounted parts gain a gap of
+            ``2 * shrink_mm`` and are correctly reported as collision-free.
     """
     d = part.dimensions
-    if "outer_diameter" in d:
-        size = d["outer_diameter"]
-        h = d.get("height", size)
-        mesh = trimesh.creation.box(extents=[size, size, h])
-    elif "diameter" in d and "length" not in d:
-        size = d["diameter"]
-        h = d.get("height", size)
-        mesh = trimesh.creation.box(extents=[size, size, h])
-    elif "length" in d and "width" in d:
-        l = d["length"]
-        w = d["width"]
-        h = d.get("height", 20)
-        mesh = trimesh.creation.box(extents=[l, w, h])
+
+    # Cylindrical parts → cylinder mesh
+    dia = d.get("outer_diameter", d.get("diameter"))
+    if dia is not None and "length" not in d and "width" not in d:
+        h = d.get("height", dia)
+        if shrink_mm > 0:
+            dia = max(dia - 2.0 * shrink_mm, 0.1)
+            h = max(h - 2.0 * shrink_mm, 0.1)
+        return trimesh.creation.cylinder(radius=dia / 2.0, height=h)
+
+    # Rectangular parts → box mesh
+    if "length" in d and "width" in d:
+        extents = [d["length"], d["width"], d.get("height", 20)]
     else:
         l = d.get("length", d.get("diameter", 20))
         w = d.get("width", l)
         h = d.get("height", d.get("thickness", 20))
-        mesh = trimesh.creation.box(extents=[l, w, h])
-    return mesh
+        extents = [l, w, h]
+
+    if shrink_mm > 0:
+        extents = [max(e - 2.0 * shrink_mm, 0.1) for e in extents]
+
+    return trimesh.creation.box(extents=extents)
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +157,7 @@ class MeshCollisionChecker:
         assembly: Assembly,
         placements: dict[str, dict],
         skip_adjacent: bool = True,
+        min_penetration_mm: float = 0.0,
     ) -> CollisionResult:
         """Check collisions across all part pairs in a solved assembly.
 
@@ -150,6 +165,14 @@ class MeshCollisionChecker:
             assembly: The Assembly definition.
             placements: ``{part_name: {"position": [x,y,z], "rotation": [...]}}``
             skip_adjacent: If True, skip pairs connected by a joint.
+            min_penetration_mm: Collision margin applied to each part's
+                bounding box.  Each box is shrunk by this many millimetres
+                on every side before the FCL collision test, so two
+                flush-mounted parts (zero-depth face touch) gain a gap of
+                ``2 * min_penetration_mm`` and are correctly reported as
+                collision-free.  Real interferences deeper than
+                ``2 * min_penetration_mm`` are still detected.  Set to 0.0
+                to keep the legacy behaviour (any FCL contact counts).
         """
         parts_by_name = {p.name: p for p in assembly.parts}
         adjacent = set()
@@ -173,6 +196,7 @@ class MeshCollisionChecker:
                     parts_by_name.get(b),
                     placements.get(a, {}),
                     placements.get(b, {}),
+                    collision_margin_mm=min_penetration_mm,
                 )
                 pairs.append(cp)
                 if cp.is_collision:
@@ -182,7 +206,7 @@ class MeshCollisionChecker:
         n_collisions = sum(1 for p in pairs if p.is_collision)
         summary = (
             f"Collision check: {len(names)} parts, {n_pairs} pairs checked, "
-            f"{n_collisions} collisions found. "
+            f"{n_collisions} collisions (margin {min_penetration_mm}mm). "
             f"Result: {'collision-free' if collision_free else 'COLLISIONS DETECTED'}"
         )
 
@@ -351,16 +375,22 @@ class MeshCollisionChecker:
         part_b: Part | None,
         place_a: dict,
         place_b: dict,
+        collision_margin_mm: float = 0.0,
     ) -> CollisionPair:
-        """Check collision between two placed parts using FCL."""
+        """Check collision between two placed parts using FCL.
+
+        Args:
+            collision_margin_mm: Shrink each part's box by this many mm per
+                side before testing.  See :meth:`check_assembly_collisions`.
+        """
         if part_a is None or part_b is None:
             return CollisionPair(
                 part_a=name_a, part_b=name_b,
                 notes="Missing part definition",
             )
 
-        mesh_a = _part_to_box_mesh(part_a)
-        mesh_b = _part_to_box_mesh(part_b)
+        mesh_a = _part_to_box_mesh(part_a, shrink_mm=collision_margin_mm)
+        mesh_b = _part_to_box_mesh(part_b, shrink_mm=collision_margin_mm)
 
         import numpy as np
 
@@ -412,9 +442,33 @@ class MeshCollisionChecker:
 
         ``placement`` has keys ``position`` ([x,y,z]) and optionally
         ``rotation`` ([ax,ay,az,angle_deg]).
+
+        F7: previously the rotation component was silently dropped, so every
+        part was treated as axis-aligned — rotating a part 90° would not
+        change its collision footprint, producing false negatives.  Now we
+        convert the axis-angle rotation to a 3×3 rotation matrix and pass
+        it to ``fcl.Transform``.
         """
         import numpy as np
         pos = placement.get("position", [0, 0, 0])
+        rot = placement.get("rotation", [0, 0, 1, 0])
+        if rot and len(rot) >= 4 and abs(rot[3]) > 1e-9:
+            # Axis-angle → rotation matrix (Rodrigues' formula)
+            ax, ay, az, ang_deg = rot[0], rot[1], rot[2], rot[3]
+            norm = math.sqrt(ax * ax + ay * ay + az * az)
+            if norm < 1e-9:
+                rot_mat = np.eye(3)
+            else:
+                ax, ay, az = ax / norm, ay / norm, az / norm
+                c = math.cos(math.radians(ang_deg))
+                s = math.sin(math.radians(ang_deg))
+                t = 1.0 - c
+                rot_mat = np.array([
+                    [t * ax * ax + c,    t * ax * ay - s * az, t * ax * az + s * ay],
+                    [t * ax * ay + s * az, t * ay * ay + c,    t * ay * az - s * ax],
+                    [t * ax * az - s * ay, t * ay * az + s * ax, t * az * az + c],
+                ], dtype=np.float64)
+            return fcl_mod.Transform(rot_mat, np.array(pos, dtype=np.float64))
         return fcl_mod.Transform(np.array(pos, dtype=np.float64))
 
 

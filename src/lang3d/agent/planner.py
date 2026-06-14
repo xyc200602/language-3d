@@ -222,6 +222,8 @@ COMPLEX_ROBOT_KEYWORDS = [
     "differential drive", "omnidirectional",
     "dual arm", "two arm", "mobile manipulator",
     "4 wheel", "four wheel",
+    "4自由度", "4dof", "4-dof",
+    "6自由度", "6dof", "6-dof",
 ]
 
 

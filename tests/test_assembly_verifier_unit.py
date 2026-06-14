@@ -182,11 +182,19 @@ class TestCollisionCheck:
     """Test collision check integration in AssemblyVerifier (Task 63)."""
 
     def test_verify_without_placements_no_collision(self, tmp_path):
-        """verify_assembly without placements should not run collision checks."""
+        """verify_assembly without placements must NOT report collision-free.
+
+        F3: previously this returned ``collision_checks == []`` and
+        ``collision_free is True``, creating an always-pass path.  Now the
+        verifier emits an UNVERIFIED warning and ``collision_free is False``
+        so an unverified assembly cannot be labelled "production-grade".
+        """
         verifier = AssemblyVerifier()
         result = verifier.verify_assembly(ROBOTIC_ARM_ASSEMBLY, tmp_path)
-        assert result.collision_checks == []
-        assert result.collision_free is True
+        assert len(result.collision_checks) > 0
+        assert "UNVERIFIED" in result.collision_checks[0].notes
+        assert result.collision_free is False
+        assert result.fcl_available is False
 
     def test_verify_with_placements_runs_collision(self, tmp_path):
         """verify_assembly with placements should populate collision_checks."""

@@ -363,7 +363,26 @@ class OrchestratorAgent:
                                 "success": result.success,
                             }
 
-        result = self.verifier.verify_assembly(assembly, self.workspace, parts_results)
+        # F4: solve positions and pass them to the verifier so that
+        # collision detection and mating-surface checks actually run.
+        # Without placements the verifier skipped both and reported an
+        # unconditionally safe result (the "always-pass" problem).
+        placements = None
+        try:
+            from ..tools.assembly_solver import AssemblySolver
+            solver = AssemblySolver(assembly)
+            placements = solver.solve()
+        except Exception as exc:
+            # Solver may fail on malformed assemblies; verification should
+            # still proceed (and report the missing-placement gap).
+            import logging
+            logging.getLogger(__name__).warning(
+                "Assembly solver failed during verification: %s", exc,
+            )
+
+        result = self.verifier.verify_assembly(
+            assembly, self.workspace, parts_results, placements=placements,
+        )
         return AssemblyVerifier.generate_assembly_report(result)
 
     def _cleanup_agents_for_step(self, step_id: str) -> None:

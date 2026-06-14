@@ -2,7 +2,7 @@
   "total_parts": 41,
   "total_pairs": 780,
   "collision_free": false,
-  "total_collisions": 22,
+  "total_collisions": 20,
   "severe_collisions": 0,
   "collision_details": [
     {
@@ -54,6 +54,18 @@
       "contact_points": 1
     },
     {
+      "part_a": "top_plate",
+      "part_b": "arm_l_upper_link",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
+      "part_a": "top_plate",
+      "part_b": "arm_r_upper_link",
+      "penetration_mm": 0.0,
+      "contact_points": 1
+    },
+    {
       "part_a": "wheel_fl",
       "part_b": "encoder_fl",
       "penetration_mm": 0.0,
@@ -84,26 +96,8 @@
       "contact_points": 1
     },
     {
-      "part_a": "ipc_bracket",
-      "part_b": "arm_l_base",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "ipc_bracket",
-      "part_b": "arm_r_base",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
       "part_a": "arm_l_base",
       "part_b": "arm_l_upper_link",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "arm_l_shoulder",
-      "part_b": "arm_l_forearm",
       "penetration_mm": 0.0,
       "contact_points": 1
     },
@@ -116,12 +110,6 @@
     {
       "part_a": "arm_r_base",
       "part_b": "arm_r_upper_link",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "arm_r_shoulder",
-      "part_b": "arm_r_forearm",
       "penetration_mm": 0.0,
       "contact_points": 1
     },

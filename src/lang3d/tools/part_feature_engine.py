@@ -15,7 +15,11 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from ..knowledge.fastener_catalog import get_clearance_hole
 from ..knowledge.mechanics import Part
+
+# M3 clearance hole radius (ISO 273 normal fit) — used in raw_script templates.
+_M3_CLEARANCE_R = get_clearance_hole("M3") / 2  # 1.7mm = Ø3.4mm
 
 if TYPE_CHECKING:
     from ..knowledge.mechanics import Joint
@@ -136,7 +140,8 @@ def infer_features(part: Part) -> FeatureConfig:
     if family == "plate":
         l, w = d["length"], d["width"]
         margin = min(l, w) * 0.08
-        hole_r = 2.0 if name == "base_plate" else 1.5  # M4 vs M3
+        hole_r = (get_clearance_hole("M4") if name == "base_plate"
+                  else get_clearance_hole("M3")) / 2  # M4 vs M3 clearance
         cfg.mounting_holes = [
             {
                 "diameter_mm": hole_r * 2,
@@ -149,7 +154,7 @@ def infer_features(part: Part) -> FeatureConfig:
         cfg.chamfers = [{"size_mm": 0.5}]
 
     elif family == "standoff":
-        cfg.bore = {"diameter_mm": 2.6, "through": True}  # M3 clearance
+        cfg.bore = {"diameter_mm": get_clearance_hole("M3"), "through": True}  # M3 clearance
 
     elif family == "wheel":
         cfg.bore = {
@@ -165,7 +170,7 @@ def infer_features(part: Part) -> FeatureConfig:
         margin_motor = min(l, w) * 0.1
         cfg.mounting_holes = [
             {
-                "diameter_mm": 3.0,
+                "diameter_mm": get_clearance_hole("M3"),
                 "pattern": "grid",
                 "count_x": 2,
                 "count_y": 2,
@@ -196,7 +201,7 @@ def infer_features(part: Part) -> FeatureConfig:
         cfg.fillets = [{"radius_mm": 2.0}]
 
         # Flange mounting holes — 4× polar pattern, M3 for small, M4 for base
-        hole_d = 4.0 if joint_type == "base" else 3.0
+        hole_d = get_clearance_hole("M4") if joint_type == "base" else get_clearance_hole("M3")
         cfg.mounting_holes = [
             {
                 "diameter_mm": hole_d,
@@ -211,7 +216,7 @@ def infer_features(part: Part) -> FeatureConfig:
         # Two end M4 holes
         cfg.mounting_holes = [
             {
-                "diameter_mm": 4.0,
+                "diameter_mm": get_clearance_hole("M4"),
                 "pattern": "two_ends",
             }
         ]
@@ -229,7 +234,7 @@ def infer_features(part: Part) -> FeatureConfig:
     elif family == "gripper":
         cfg.mounting_holes = [
             {
-                "diameter_mm": 3.0,
+                "diameter_mm": get_clearance_hole("M3"),
                 "pattern": "bottom_center",
             }
         ]
@@ -249,7 +254,7 @@ def infer_features(part: Part) -> FeatureConfig:
         margin_bat = min(l, w) * 0.08
         cfg.mounting_holes = [
             {
-                "diameter_mm": 4.0,
+                "diameter_mm": get_clearance_hole("M4"),
                 "pattern": "grid",
                 "count_x": 2,
                 "count_y": 2,
@@ -267,7 +272,7 @@ def infer_features(part: Part) -> FeatureConfig:
         margin_pcb = min(l, w) * 0.08
         cfg.mounting_holes = [
             {
-                "diameter_mm": 3.0,
+                "diameter_mm": get_clearance_hole("M3"),
                 "pattern": "grid",
                 "count_x": 2,
                 "count_y": 2,
@@ -298,7 +303,7 @@ def infer_features(part: Part) -> FeatureConfig:
         margin_bkt = min(l, w) * 0.1
         cfg.mounting_holes = [
             {
-                "diameter_mm": 3.0,
+                "diameter_mm": get_clearance_hole("M3"),
                 "pattern": "two_faces",
                 "margin": margin_bkt,
             }
@@ -310,7 +315,7 @@ def infer_features(part: Part) -> FeatureConfig:
         cfg.bore = {"diameter_mm": 20.0, "through": True}
         cfg.mounting_holes = [
             {
-                "diameter_mm": 3.0,
+                "diameter_mm": get_clearance_hole("M3"),
                 "pattern": "polar",
                 "count": 4,
                 "pitch_radius": od / 2 * 0.8,
@@ -324,7 +329,7 @@ def infer_features(part: Part) -> FeatureConfig:
             # Box-shaped post
             cfg.mounting_holes = [
                 {
-                    "diameter_mm": 3.0,
+                    "diameter_mm": get_clearance_hole("M3"),
                     "pattern": "grid",
                     "count_x": 2,
                     "count_y": 2,
@@ -344,7 +349,7 @@ def infer_features(part: Part) -> FeatureConfig:
             od = d.get("outer_diameter", d.get("diameter", 15))
             cfg.mounting_holes = [
                 {
-                    "diameter_mm": 3.0,
+                    "diameter_mm": get_clearance_hole("M3"),
                     "pattern": "polar",
                     "count": 4,
                     "pitch_radius": od / 2 * 0.7,
@@ -359,7 +364,7 @@ def infer_features(part: Part) -> FeatureConfig:
             margin_sm = min(l, w) * 0.15
             cfg.mounting_holes = [
                 {
-                    "diameter_mm": 2.5,
+                    "diameter_mm": get_clearance_hole("M2.5"),
                     "pattern": "grid",
                     "count_x": 2,
                     "count_y": 2,
@@ -371,7 +376,7 @@ def infer_features(part: Part) -> FeatureConfig:
             cfg.bore = {"diameter_mm": 6.0, "through": True}
             cfg.mounting_holes = [
                 {
-                    "diameter_mm": 2.5,
+                    "diameter_mm": get_clearance_hole("M2.5"),
                     "pattern": "polar",
                     "count": 4,
                     "pitch_radius": od / 2 * 0.7,
@@ -387,7 +392,7 @@ def infer_features(part: Part) -> FeatureConfig:
             if "length" in d and "width" in d:
                 margin_unk = min(d["length"], d["width"]) * 0.1
                 cfg.mounting_holes = [{
-                    "diameter_mm": 3.0,
+                    "diameter_mm": get_clearance_hole("M3"),
                     "pattern": "grid",
                     "count_x": 2,
                     "count_y": 2,
@@ -402,13 +407,13 @@ def infer_features(part: Part) -> FeatureConfig:
             h = d.get("height", d.get("thickness", 0))
             if l > 0 and w > 0:
                 cfg.mounting_holes = [{
-                    "diameter_mm": 4.0,
+                    "diameter_mm": get_clearance_hole("M4"),
                     "pattern": "two_ends",
                 }]
                 cfg.fillets = [{"radius_mm": min(l, w, h) * 0.1 if h > 0 else 2.0}]
         elif cat == "sensor":
             cfg.mounting_holes = [{
-                "diameter_mm": 3.0,
+                "diameter_mm": get_clearance_hole("M3"),
                 "pattern": "grid",
                 "count_x": 2,
                 "count_y": 2,
@@ -1150,7 +1155,7 @@ body = body.cut(pocket)
 # --- M3 mounting holes at both ends ---
 for x_pos in [L * 0.1, L * 0.9]:
     for y_off in [flange_w * 0.5]:
-        h_cyl = Part.makeCylinder(1.5, H + 2)
+        h_cyl = Part.makeCylinder({_M3_CLEARANCE_R}, H + 2)
         h_cyl.translate(FreeCAD.Vector(x_pos, y_off, -1))
         body = body.cut(h_cyl)
 
@@ -1231,7 +1236,7 @@ for i in range(4):
     angle = math.radians(45 + i * 90)
     x = flange_r * 0.75 * math.cos(angle)
     y = flange_r * 0.75 * math.sin(angle)
-    h_cyl = Part.makeCylinder(1.5, flange_h + 2)
+    h_cyl = Part.makeCylinder({_M3_CLEARANCE_R}, flange_h + 2)
     h_cyl.translate(FreeCAD.Vector(x, y, -1))
     body = body.cut(h_cyl)
 
@@ -1324,7 +1329,7 @@ for y_center in [W * 0.25, W * 0.75]:
 # --- Top mounting holes (2x M3 to attach to wrist joint) ---
 for x_off in [L * 0.25, L * 0.75]:
     for y_off in [W * 0.2, W * 0.8]:
-        h_cyl = Part.makeCylinder(1.5, H + 2)
+        h_cyl = Part.makeCylinder({_M3_CLEARANCE_R}, H + 2)
         h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
         body = body.cut(h_cyl)
 
@@ -1426,7 +1431,7 @@ body = body.fuse(lf).fuse(rf)
 # --- M3 mounting holes on base ---
 for x_off in [base_l * 0.3, base_l * 0.7]:
     for y_off in [W * 0.15, W * 0.85]:
-        h_cyl = Part.makeCylinder(1.5, H + 2)
+        h_cyl = Part.makeCylinder({_M3_CLEARANCE_R}, H + 2)
         h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
         body = body.cut(h_cyl)
 

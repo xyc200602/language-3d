@@ -555,8 +555,11 @@ for idx in range(ball_count):
     ))
     try:
         cage = cage.cut(pocket)
-    except Exception:
-        pass
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(
+            "Bearing cage pocket cut failed at idx %s: %s", idx, e
+        )
 
 cage_obj = doc.addObject("Part::Feature", "Cage")
 cage_obj.Shape = cage
@@ -6995,6 +6998,9 @@ def format_fc_script(template: PartTemplate, params: dict[str, Any]) -> str:
     tooth_detail), falling back to the default simplified script.
     Uses Python str.format_map to replace {param_name} placeholders.
     """
+    import logging
+    logger = logging.getLogger(__name__)
+
     # Determine detail level from params
     detail = params.get(
         "thread_detail",
@@ -7013,4 +7019,24 @@ def format_fc_script(template: PartTemplate, params: dict[str, Any]) -> str:
         else:
             clean_params[k] = str(v)
 
-    return script_template.format_map(clean_params)
+    # P0-FIX: Validate that all placeholders in the template have corresponding
+    # parameters.  Previously a missing parameter would raise KeyError at
+    # runtime, producing an unfriendly crash.  Now we log a warning and
+    # substitute 0 for missing values so the script is still usable.
+    class _SafeFormatDict(dict):
+        """Dict that returns '0' for missing keys instead of raising."""
+        def __missing__(self, key):
+            logger.warning(
+                "FreeCAD script for '%s' references missing parameter '%s', "
+                "substituting 0", template.name, key
+            )
+            return '0'
+
+    try:
+        return script_template.format_map(_SafeFormatDict(clean_params))
+    except (KeyError, ValueError, IndexError) as e:
+        logger.error(
+            "FreeCAD script formatting failed for template '%s': %s. "
+            "Returning raw template.", template.name, e
+        )
+        return script_template
