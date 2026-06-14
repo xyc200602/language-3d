@@ -1785,8 +1785,12 @@ def _geometric_prevalidation(
     _adjacent_pairs: set[tuple[str, str]] = set()
     if joints:
         for j in joints:
-            p = j.get("parent", "")
-            c = j.get("child", "")
+            if isinstance(j, dict):
+                p = j.get("parent", "")
+                c = j.get("child", "")
+            else:
+                p = getattr(j, "parent", "")
+                c = getattr(j, "child", "")
             if p and c:
                 _adjacent_pairs.add((p, c))
                 _adjacent_pairs.add((c, p))
