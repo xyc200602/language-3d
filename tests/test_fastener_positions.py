@@ -189,7 +189,12 @@ class TestEdgeCases:
         assert results == []
 
     def test_cylindrical_part_returns_empty(self):
-        """Parts with only diameter (no length/width) → skip bolt layout."""
+        """When BOTH parts are cylindrical (no length/width face), bolt
+        layout cannot be placed on either → skip and return [].
+
+        A single cylindrical part with a box partner falls back to the
+        box partner (covered by test_cylindrical_parent_falls_back_to_box_child).
+        """
         joint = _make_bolted_joint()
         positions = {
             "bracket": {"position": [0, 0, 0], "rotation": [0, 0, 1, 0]},
@@ -197,11 +202,41 @@ class TestEdgeCases:
         }
         part_dims = {
             "bracket": {"diameter": 30, "height": 10},
-            "mount": MOUNT_30x30x10,
+            "mount": {"diameter": 20, "height": 8},  # both cylindrical
         }
 
         results = _compute_bolt_hole_world_positions(joint, positions, part_dims)
         assert results == []
+
+    def test_cylindrical_parent_falls_back_to_box_child(self):
+        """When the heuristic-picked structural part is cylindrical but
+        the other part is a box, _compute_bolt_hole_world_positions must
+        fall back to the box part and place bolts there.
+
+        Engineering rationale: a servo motor (cylinder) bolted to a
+        mounting bracket (box) needs the bolts on the bracket, since
+        the cylindrical housing cannot receive a bolt pattern.
+
+        Regression guard for the fallback introduced in commit 031d82c.
+        """
+        joint = _make_bolted_joint()  # parent=bracket, child=mount
+        positions = {
+            "bracket": {"position": [0, 0, 0], "rotation": [0, 0, 1, 0]},
+            "mount": {"position": [0, 0, 10], "rotation": [0, 0, 1, 0]},
+        }
+        part_dims = {
+            "bracket": {"diameter": 30, "height": 10},   # cylindrical
+            "mount": MOUNT_30x30x10,                      # box
+        }
+        results = _compute_bolt_hole_world_positions(joint, positions, part_dims)
+        # Layout placed on the box (mount), not the cylinder (bracket)
+        assert len(results) == 4, f"Expected 4 bolt holes on mount, got {len(results)}"
+        # All holes should sit on the box's bottom face (child_anchor=bottom)
+        for world_pos, normal, thickness in results:
+            assert thickness == 10, f"Expected mount thickness 10, got {thickness}"
+            assert normal == (0.0, 0.0, -1.0), (
+                f"Expected bottom-face normal (0,0,-1), got {normal}"
+            )
 
     def test_missing_part_in_positions_returns_empty(self):
         """Structural part not in positions dict → empty."""
