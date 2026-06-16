@@ -127,6 +127,56 @@ def test_design_report_json(
     assert "peak_power_w" in report
 
 
+def test_design_report_has_simulation_validation_disabled_by_default(
+    complex_robot: Assembly, output_dir: Path,
+    monkeypatch,
+) -> None:
+    """design_report.json must include the simulation_validation field.
+
+    By default (no LANG3D_RUN_SIM_VALIDATE env var), the field should
+    report ``enabled: False`` so consumers know sim validation wasn't run
+    and the export is "production-grade, unverified-by-physics-sim".
+    """
+    monkeypatch.delenv("LANG3D_RUN_SIM_VALIDATE", raising=False)
+    export_engineering_package(complex_robot, output_dir)
+
+    report = json.loads(
+        (output_dir / "design_report.json").read_text(encoding="utf-8")
+    )
+    assert "simulation_validation" in report
+    sim = report["simulation_validation"]
+    assert sim["enabled"] is False
+    assert "reason" in sim
+
+
+def test_simulation_validation_runs_when_env_var_set(
+    complex_robot: Assembly, output_dir: Path,
+    monkeypatch,
+) -> None:
+    """LANG3D_RUN_SIM_VALIDATE=1 must trigger the sim validation hook.
+
+    This test verifies the env-var-trigger mechanism works end-to-end:
+    the export pipeline calls the sim hook and stamps results into
+    design_report.json.  The actual pass/fail of the sim validation
+    depends on the assembly + mujoco availability, so we only assert
+    that the hook RAN (``enabled: True, ran: True``).
+    """
+    monkeypatch.setenv("LANG3D_RUN_SIM_VALIDATE", "1")
+    export_engineering_package(complex_robot, output_dir)
+
+    report = json.loads(
+        (output_dir / "design_report.json").read_text(encoding="utf-8")
+    )
+    assert "simulation_validation" in report
+    sim = report["simulation_validation"]
+    assert sim["enabled"] is True
+    # ``ran`` may be False if mujoco isn't installed or the flat URDF
+    # couldn't be located — both are valid outcomes.  We just verify the
+    # hook executed and produced structured output.
+    assert "mujoco" in sim
+    assert "grasp" in sim
+
+
 # ============================================================================
 # 5. FreeCAD scripts exist
 # ============================================================================

@@ -696,51 +696,52 @@ def _add_fasteners_for_joints(
         # nominal dimensions for engineering accuracy.
 
         for world_pos, normal, thickness in bolt_holes:
-            # Bolt length: grip thickness + nut engagement + small thread
-            # protrusion.  Washer height is NOT included — the washer is
-            # rendered separately below the nut.  Minimum 6 mm so even the
-            # thinnest plates get enough shank for the nut to grip.
-            length = max(thickness + nut_h + 1.0, 6.0)
+            # Bolt shank length: grip thickness + washer + nut + small
+            # protrusion past the nut.  Minimum 8 mm for nut engagement on
+            # very thin plates.
+            shank_length = max(thickness + washer_h + nut_h + 1.0, 8.0)
 
             # Rotation to align default-Z cylinder with the anchor normal.
             rot = _rotation_from_z_to(normal)
 
             nx, ny, nz = normal
             px, py, pz = world_pos
-            half_len = length / 2.0
 
-            # Bolt head: sits on the exterior (+normal side) of the face.
-            head_d = half_len + head_h / 2.0
+            # world_pos is ON the +normal face.  The bolt goes THROUGH the
+            # part: head flush on +normal face, shank through the body,
+            # washer + nut on the −normal face.
+            hd = head_h / 2.0
             renderer.add_cylinder(
                 radius=head_r, height=head_h,
                 color=(0.80, 0.80, 0.82),
-                position=(px + nx * head_d, py + ny * head_d, pz + nz * head_d),
+                position=(px + nx * hd, py + ny * hd, pz + nz * hd),
                 rotation=rot,
                 category="bearing",
             )
-            # Bolt shank: centred on the hole, running along the normal.
+            # Shank: from +normal face through part to −normal protrusion.
+            sd = shank_length / 2.0
             renderer.add_cylinder(
-                radius=shank_r, height=length,
+                radius=shank_r, height=shank_length,
                 color=(0.75, 0.75, 0.78),
-                position=(px, py, pz),
+                position=(px - nx * sd, py - ny * sd, pz - nz * sd),
                 rotation=rot,
                 category="bearing",
             )
-            # Washer: on the interior (−normal side) of the face.
-            washer_d = half_len + washer_h / 2.0
+            # Washer: flush on the −normal face.
+            wd = thickness + washer_h / 2.0
             renderer.add_cylinder(
                 radius=washer_r, height=washer_h,
                 color=(0.70, 0.70, 0.72),
-                position=(px - nx * washer_d, py - ny * washer_d, pz - nz * washer_d),
+                position=(px - nx * wd, py - ny * wd, pz - nz * wd),
                 rotation=rot,
                 category="bearing",
             )
-            # Nut: beyond the washer on the interior side.
-            nut_d = half_len + washer_h + nut_h / 2.0
+            # Nut: beyond the washer on the −normal side.
+            nd = thickness + washer_h + nut_h / 2.0
             renderer.add_cylinder(
                 radius=nut_r, height=nut_h,
                 color=(0.65, 0.65, 0.68),
-                position=(px - nx * nut_d, py - ny * nut_d, pz - nz * nut_d),
+                position=(px - nx * nd, py - ny * nd, pz - nz * nd),
                 rotation=rot,
                 category="bearing",
             )
@@ -889,7 +890,11 @@ def _symmetrize_gripper_fingers(
         mid_z = base_pos[2] + vz * push
 
     # --- Gap: wide enough that finger centres are outside the base ---
-    raw_gap = abs(lpos[1] - rpos[1])
+    # Project finger separation onto the lateral direction (not just Y).
+    sep_x = rpos[0] - lpos[0]
+    sep_y = rpos[1] - lpos[1]
+    sep_z = rpos[2] - lpos[2]
+    raw_gap = abs(sep_x * lat[0] + sep_y * lat[1] + sep_z * lat[2])
     gap = max(raw_gap, base_width + 30.0, 65.0)
 
     # Horizontal forward direction (project fwd onto XY plane) for placing

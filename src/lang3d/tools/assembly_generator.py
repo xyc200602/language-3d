@@ -71,11 +71,13 @@ Return ONLY a JSON object with this exact structure:
 }
 
 ### Connection Method Guidance (per joint type)
-- **fixed** joints (housing→motor, plate→bracket, standoffs): use "bolted"
+- **fixed** joints (housing->motor, plate->bracket, standoffs): use "bolted"
   with connection_detail.bolt_size ("M3"/"M4") and bolt_count.
-- **revolute** joints (rotation between two structural parts, e.g. arm segment
-  to arm segment via a bearing): use "press_fit" — the bearing outer race
-  press-fits into the structural housing bore.
+- **revolute** joints (rotation between two parts, e.g. arm segment to arm
+  segment via a motor/bearing assembly): use "bolted" for structural mounting
+  of the motor housing. The system automatically adds a central bearing bore
+  (10mm) so the shaft can pass through. Do NOT use "press_fit" unless both
+  parts are cylindrical bearings with matching bore diameters.
 - **prismatic** joints (sliding gripper fingers on a rail): OMIT
   connection_method entirely. A sliding interface is not a fastening; leaving
   it null is correct.
@@ -198,12 +200,12 @@ Parts fall into two classes with DIFFERENT dimension rules:
       visible features: servo cavity on top, 2 parallel rail grooves on front face for
       finger sliding, M3 mounting holes.
     - gripper_finger_left attaches to gripper_base via a prismatic joint
-      (axis="x", offset=[-16,0,0], range_deg=[-8,12]) so it slides left to open.
+      (axis="x", offset=[-16,0,0], range_deg=[-8,8]) so it slides left to open.
       Dimensions: {"length": 60, "width": 10, "height": 28}. Fingers must be LONG (60mm
       forward extension, clearly protruding past the base) and TALL (28mm) so they are
       visually prominent. Must have L-shaped tip and rail tab that fits into the rail groove.
     - gripper_finger_right attaches to gripper_base via a prismatic joint
-      (axis="x", offset=[16,0,0], range_deg=[-8,12]) so it slides right to open.
+      (axis="x", offset=[16,0,0], range_deg=[-8,8]) so it slides right to open.
       Dimensions: {"length": 60, "width": 10, "height": 28}. Must have L-shaped tip
       and rail tab. MUST specify mimic_joint="gripper_finger_left" with
       mimic_multiplier=-1 so the two fingers open/close symmetrically (coupled motion).
@@ -557,6 +559,20 @@ def apply_default_connection_methods(joints: list, parts: list | None = None) ->
                 joint.parent, joint.child,
             )
 
+    # Safety: clear connections on ALL prismatic joints.  Sliding
+    # interfaces must never have bolted/press-fit fasteners — a bolt
+    # through a rail would prevent sliding.  The LLM sometimes marks
+    # non-gripper prismatic joints as "bolted"; this ensures they are
+    # always null.
+    for joint in joints:
+        if joint.type == "prismatic" and joint.connection is not None:
+            logger.info(
+                "Safety: cleared %s connection on prismatic joint "
+                "%s->%s (sliding fit)",
+                joint.connection.type, joint.parent, joint.child,
+            )
+            joint.connection = None
+
 
 def generate_assembly_from_nl(
     description: str,
@@ -863,7 +879,7 @@ def _parse_assembly_json(raw_text: str) -> Assembly:
     for jd in data.get("joints", []):
         jtype = jd.get("type", "fixed")
         range_deg = tuple(jd.get("range_deg", [-180, 180]))
-        offset = tuple(jd["offset"]) if "offset" in jd else None
+        offset = tuple(jd["offset"]) if jd.get("offset") else None
 
         # Parse connection method from LLM output
         connection = None
@@ -1286,17 +1302,18 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     # with the rail grooves machined into the base front face.
     parent_part = parts_by_name.get(left_joint.parent)
     gap = 16.0
+    base_length = 28.0
+    finger_w = 10.0
+    finger_l = 60.0  # main bar length, drives forward offset so fingers protrude
     if parent_part and parent_part.dimensions:
         w = parent_part.dimensions.get("width",
                     parent_part.dimensions.get("depth", 40))
+        base_length = parent_part.dimensions.get("length", 28.0)
         finger_part = parts_by_name.get(left_joint.child)
-        finger_w = 10.0
         if finger_part and finger_part.dimensions:
             finger_w = finger_part.dimensions.get("width", 10.0)
+            finger_l = finger_part.dimensions.get("length", 60.0)
         # Target: finger centers at ±16mm (matches LLM template offset).
-        # Inner faces at ±11mm → 22mm grip gap (good for grasping).
-        # Outer faces at ±21mm < base half-width (25mm for w=50).
-        # This keeps fingers connected to the base, not floating.
         min_gap = finger_w / 2.0 + 6.0   # minimum 6mm clear grip gap
         max_gap = w / 2.0 - 2.0           # finger stays within base
         gap = max(min_gap, min(16.0, max_gap))
@@ -1324,8 +1341,39 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     # direction, not forward/back along the arm.
     for j in (left_joint, right_joint):
         j.axis = "x"
-    left_joint.offset = (-gap, 0.0, 0.0)
-    right_joint.offset = (gap, 0.0, 0.0)
+    # Push fingers forward (−Y in solver space) so the main bar fully
+    # protrudes beyond the gripper base front face.  Previously
+    # ``forward_y = -base_length/2`` placed the finger CENTRE at the front
+    # face, leaving the 60 mm main bar half-buried inside the base —
+    # rendering as a solid block with no visible finger separation.
+    #
+    # The renderer applies swap_xy (R_z(-90°)) to finger STLs, so the
+    # FreeCAD ``length`` axis (60 mm along +X) becomes the solver -Y axis.
+    # Placing the finger centre at ``-(base_length/2 + finger_l/2)`` means
+    # the main bar spans ``[-base_length/2 - finger_l, -base_length/2]`` in
+    # base-local Y — fully in front of the base with a 0 mm kiss fit for
+    # the rail tab.  Two fingers remain at ±gap on X (lateral), giving a
+    # visible parallel-jaw profile from every render view.
+    forward_y = -(base_length / 2.0 + finger_l / 2.0)
+    left_joint.offset = (-gap, forward_y, 0.0)
+    right_joint.offset = (gap, forward_y, 0.0)
+
+    # Dynamic range clamp: prevent finger collision.
+    # The closing displacement moves both fingers toward center (mimic=-1).
+    # Max safe close = gap - finger_w/2 - 1mm_margin.
+    # At this displacement, inner faces have >= 2mm clearance.
+    max_close = gap - finger_w / 2.0 - 1.0
+    for j in (left_joint, right_joint):
+        if j.type == "prismatic" and j.range_deg:
+            lo, hi = j.range_deg
+            hi = min(hi, max_close)
+            lo = min(lo, -1.0)  # ensure at least 1mm opening range
+            j.range_deg = (lo, hi)
+            logger.info(
+                "Sanitizer: clamped gripper finger %s range to "
+                "(%.1f, %.1f) mm (gap=%.1f, finger_w=%.1f)",
+                j.child, lo, hi, gap, finger_w,
+            )
 
     # Clear connection_method on prismatic finger joints — sliding interfaces
     # are not fastenings.  The LLM frequently marks them "bolted" which is
@@ -2373,10 +2421,11 @@ def _vlm_check_assembly(
             ]
             if not non_gripper_problems:
                 passed = True
+                override_applied = True
                 all_problems.append(
                     f"GRIPPER RECOGNITION OVERRIDE: VLM failed to recognise "
-                    f"the gripper in orthographic views (thin fingers are "
-                    f"indistinguishable from a solid block at 10 mm width). "
+                    f"the gripper in orthographic views (thin fingers at "
+                    f"~14mm width are visually indistinguishable from a "
                     f"Deterministic geometry confirms a valid gripper "
                     f"({gripper_desc}) and no structural problems."
                 )
@@ -2471,6 +2520,7 @@ def generate_assembly_with_vlm_loop(
     problems_history: list[list[str]] = []
     render_dir = os.path.join(output_dir, "vlm_renders")
     passed = False
+    override_applied = False
 
     for round_num in range(1, max_rounds + 1):
         logger.info("=== Round %d/%d ===", round_num, max_rounds)
@@ -2648,6 +2698,11 @@ def generate_assembly_with_vlm_loop(
         "test_id": description[:40],
         "total_rounds": round_num,
         "final_passed": passed,
+        "override_applied": override_applied,
+        "verification_status": (
+            "PASSED_WITH_OVERRIDE" if passed and override_applied
+            else "PASSED" if passed else "FAILED_MAX_ROUNDS"
+        ),
         "problems_history": problems_history,
     }
     try:
@@ -2666,7 +2721,10 @@ def generate_assembly_with_vlm_loop(
     # debugging, but the design_report.json will flag it.
     export_dir = os.path.join(output_dir, "engineering_package")
     export_success = False
-    verification_status = "PASSED" if passed else "FAILED_MAX_ROUNDS"
+    verification_status = (
+        "PASSED_WITH_OVERRIDE" if passed and override_applied
+        else "PASSED" if passed else "FAILED_MAX_ROUNDS"
+    )
     last_warnings = problems_history[-1] if problems_history else []
 
     # Reuse the last round's real STLs when they exist so export skips the

@@ -158,13 +158,26 @@ class Part:
         if l > 0 and w > 0 and h > 0:
             return l * w * h
 
-        # Fallback: multiply all numeric dimension values
-        vals = [v for v in self.dimensions.values() if isinstance(v, (int, float))]
+        # Fallback: detect circular vs box dimensions
+        d = self.dimensions
+        diameter = d.get("diameter", d.get("outer_diameter", 0))
+        if diameter and diameter > 0:
+            r = diameter / 2.0
+            h = d.get("height", d.get("length", d.get("width", 10)))
+            if h > 0:
+                return math.pi * r * r * h
+
+        # Box fallback: length × width × height
+        l = d.get("length", 0)
+        w = d.get("width", 0)
+        h = d.get("height", d.get("thickness", 0))
+        if l > 0 and w > 0 and h > 0:
+            return l * w * h
+
+        # Last resort: first 3 numeric values
+        vals = [v for v in d.values() if isinstance(v, (int, float))]
         if len(vals) >= 3:
-            result = vals[0]
-            for v in vals[1:3]:
-                result *= v
-            return result
+            return vals[0] * vals[1] * vals[2]
         elif len(vals) >= 2 and has_radius:
             r = self.dimensions.get("radius", 0)
             if r == 0 and "diameter" in self.dimensions:

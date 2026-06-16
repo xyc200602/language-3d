@@ -1297,7 +1297,7 @@ def _fastener_script_lines(
         )
 
         for world_pos, normal, thickness in bolt_holes:
-            length = max(thickness + washer_h + nut_h + 2.0, 12.0)
+            shank_length = max(thickness + washer_h + nut_h + 1.0, 8.0)
 
             # Rotation to align +Z cylinder with the anchor normal.
             rot = _z_to_normal_rotation(normal)
@@ -1305,7 +1305,6 @@ def _fastener_script_lines(
 
             nx, ny, nz = normal
             px, py, pz = world_pos
-            half_len = length / 2.0
 
             def _emit_cylinder(
                 radius: float, height: float,
@@ -1335,34 +1334,39 @@ def _fastener_script_lines(
                 lines.append(f"_o.ViewObject.ShapeColor = {color}")
                 lines.append("doc.recompute()")
 
-            # Bolt head: exterior (+normal) side
-            head_d = half_len + head_h / 2.0
+            # world_pos is ON the +normal face.  Bolt goes THROUGH the part:
+            # head flush on +normal face, shank through body, washer + nut
+            # on the −normal face.
+
+            # Bolt head: flush on +normal face, extending outward
+            hd = head_h / 2.0
             _emit_cylinder(
                 head_r, head_h,
-                px + nx * head_d, py + ny * head_d, pz + nz * head_d,
+                px + nx * hd, py + ny * hd, pz + nz * hd,
                 f"bolt_{bolt_size}_head", (0.80, 0.80, 0.82),
             )
 
-            # Bolt shank: centred on the hole
+            # Bolt shank: from +normal face through part to −normal protrusion
+            sd = shank_length / 2.0
             _emit_cylinder(
-                shank_r, length,
-                px, py, pz,
+                shank_r, shank_length,
+                px - nx * sd, py - ny * sd, pz - nz * sd,
                 f"bolt_{bolt_size}_shank", (0.80, 0.80, 0.82),
             )
 
-            # Washer: interior (−normal) side
-            washer_d = half_len + washer_h / 2.0
+            # Washer: flush on −normal face
+            wd = thickness + washer_h / 2.0
             _emit_cylinder(
                 washer_r, washer_h,
-                px - nx * washer_d, py - ny * washer_d, pz - nz * washer_d,
+                px - nx * wd, py - ny * wd, pz - nz * wd,
                 f"washer_{bolt_size}", (0.70, 0.70, 0.72),
             )
 
-            # Nut: further interior
-            nut_d = half_len + washer_h + nut_h / 2.0
+            # Nut: beyond washer on −normal side
+            nd = thickness + washer_h + nut_h / 2.0
             _emit_cylinder(
                 nut_r, nut_h,
-                px - nx * nut_d, py - ny * nut_d, pz - nz * nut_d,
+                px - nx * nd, py - ny * nd, pz - nz * nd,
                 f"nut_{bolt_size}", (0.65, 0.65, 0.68),
             )
 

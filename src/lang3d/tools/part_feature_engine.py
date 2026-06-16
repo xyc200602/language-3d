@@ -12,11 +12,14 @@ Old intermediate objects are deleted so the FreeCAD document stays clean.
 from __future__ import annotations
 
 import re
+import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from ..knowledge.fastener_catalog import get_clearance_hole
 from ..knowledge.mechanics import Part
+
+logger = logging.getLogger(__name__)
 
 # M3 clearance hole radius (ISO 273 normal fit) — used in raw_script templates.
 _M3_CLEARANCE_R = get_clearance_hole("M3") / 2  # 1.7mm = Ø3.4mm
@@ -57,12 +60,26 @@ _JOINT_BEARING_MAP: dict[str, tuple[float, float, float]] = {
 }
 
 
-def _classify(name: str) -> str:
-    """Return a broad part family from the part name.
+def _classify(name: str, part: Part | None = None) -> str:
+    """Return a broad part family from the part name and/or category.
 
-    Uses exact matches first, then broad keyword patterns so LLM-generated
-    assemblies with non-standard naming still get engineering features.
+    Uses part.category first (when available) for robust classification,
+    then falls back to name-based patterns for LLM-generated assemblies.
     """
+    # Category-first classification (more robust than name matching)
+    if part is not None:
+        cat = (getattr(part, "category", "") or "").lower()
+        d = getattr(part, "dimensions", {}) or {}
+        if cat == "actuator" and "length" in d and "width" in d:
+            # Box-type actuator (NEMA-style) → motor mounting holes
+            return "motor"
+        elif cat == "sensor":
+            return "sensor_mount"
+        elif cat in ("controller", "electronics"):
+            return "pcb"
+        elif cat == "bearing":
+            return "bearing_seat"
+
     n = name.lower()
 
     # --- Exact / prefix matches (original) ---
@@ -134,7 +151,7 @@ def infer_features(part: Part) -> FeatureConfig:
 
     name = part.name
     d = part.dimensions
-    family = _classify(name)
+    family = _classify(name, part)
     cfg = FeatureConfig()
 
     if family == "plate":
@@ -710,7 +727,7 @@ def generate_ops(
     d = part.dimensions
     name = part.name
     ops: list[dict] = [{"type": "new_doc", "name": name}]
-    family = _classify(name)
+    family = _classify(name, part)
     sn = _StepNamer(name)
 
     # --- Specialized geometry for arm parts (C-channel links,
@@ -760,6 +777,44 @@ def generate_ops(
                 connection=joint.connection,
                 anchor=anchor,
             )
+
+            # For revolute joints with bolted connections, add a central
+            # bearing bore so the shaft can pass through.  Bolts hold the
+            # housing; the bearing bore allows rotation.
+            if joint.type == "revolute" and joint.connection.type == "bolted":
+                d = part.dimensions
+                thickness = ConnectionFeatureEngine._infer_thickness(d, anchor)
+                face_l = ConnectionFeatureEngine._face_length(anchor, d)
+                face_w = ConnectionFeatureEngine._face_width(anchor, d)
+                min_face = min(face_l, face_w)
+
+                # Skip bearing bore if face is too small — the 10mm bore
+                # would overlap with corner bolt holes on faces < 30mm.
+                if min_face >= 30.0:
+                    bore_d = 10.0  # MR105ZZ bearing OD = 10mm
+                    bore_name = f"{name}_bearing_bore_{ji}"
+                    bx, by, bz = ConnectionFeatureEngine._anchor_center(anchor, d, thickness)
+                    result.ops.append({
+                        "type": "make_cylinder",
+                        "radius": bore_d / 2,
+                        "height": thickness + 4,
+                        "name": bore_name,
+                    })
+                    result.ops.append({
+                        "type": "move",
+                        "object": bore_name,
+                        "dx": bx, "dy": by, "dz": bz - 2,
+                    })
+                    result.features_generated.append(
+                        f"Bearing bore O{bore_d:.1f}mm (shaft passage for revolute)"
+                    )
+                else:
+                    logger.info(
+                        "Skipping bearing bore on %s: face %.0fx%.0fmm "
+                        "too small (minimum 30mm for bearing housing)",
+                        name, face_l, face_w,
+                    )
+
             if result.ops:
                 # Add joint-index suffix for cross-joint name uniqueness
                 if ji > 0:

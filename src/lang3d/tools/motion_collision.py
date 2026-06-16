@@ -113,9 +113,34 @@ class MotionCollisionChecker:
         base_angles: dict[str, float] | None = None,
         skip_adjacent: bool = True,
     ) -> MotionCollisionResult:
-        """Sweep every revolute joint and return a full collision report."""
+        """Sweep every revolute joint and return a full collision report.
+
+        Each joint is swept across its ``range_deg`` while the others stay at
+        ``base_angles``.  A collision is attributed to the swept joint only if
+        it is **new** relative to the baseline pose — i.e. the swept motion
+        actually introduced it.  Baseline collisions (e.g. badly-offset gripper
+        fingers touching at home pose) are reported once in
+        ``MotionCollisionResult.baseline_collisions`` instead of being blamed
+        on every joint.  Without this distinction, a single static
+        interference would mark every revolute joint as colliding, masking the
+        joints that are actually fine and hiding the real root cause.
+        """
         solver = AssemblySolver(assembly)
         base = dict(base_angles or assembly.default_angles)
+
+        # Baseline: collisions present at the home pose.  These are subtracted
+        # from each swept pose so only *motion-induced* collisions are
+        # attributed to the joint under test.
+        baseline_placements = solver.solve(joint_angles=base)
+        baseline_result = self._checker.check_assembly_collisions(
+            assembly, baseline_placements,
+            skip_adjacent=skip_adjacent,
+            min_penetration_mm=self.min_penetration_mm,
+        )
+        baseline_keys: set[tuple[str, str]] = {
+            tuple(sorted((c.part_a, c.part_b)))
+            for c in baseline_result.pairs if c.is_collision
+        }
 
         revolute_joints = [
             j for j in assembly.joints if j.type == "revolute"
@@ -135,6 +160,7 @@ class MotionCollisionChecker:
             jr = self._sweep_joint(
                 assembly, solver, joint, base, skip_adjacent,
                 self.min_penetration_mm,
+                baseline_keys=baseline_keys,
             )
             joint_results.append(jr)
             if jr.has_collision:
@@ -143,16 +169,21 @@ class MotionCollisionChecker:
         n_col = sum(1 for jr in joint_results if jr.has_collision)
         summary = (
             f"Motion collision check: {len(revolute_joints)} revolute joints, "
-            f"{n_col} with collisions. "
+            f"{n_col} with motion-induced collisions "
+            f"({len(baseline_keys)} baseline collisions excluded). "
             f"Result: {'collision-free' if overall_free else 'COLLISIONS DETECTED'}"
         )
 
-        return MotionCollisionResult(
+        result = MotionCollisionResult(
             collision_free=overall_free,
             joints_checked=len(revolute_joints),
             joint_results=joint_results,
             summary=summary,
         )
+        # Attach baseline info for downstream diagnostics (attribute set
+        # dynamically to avoid changing the dataclass signature).
+        result.baseline_collisions = sorted(baseline_keys)  # type: ignore[attr-defined]
+        return result
 
     # -- internals -----------------------------------------------------------
 
@@ -164,7 +195,18 @@ class MotionCollisionChecker:
         base_angles: dict[str, float],
         skip_adjacent: bool,
         min_penetration_mm: float = 0.5,
+        baseline_keys: set[tuple[str, str]] | None = None,
     ) -> JointCollisionRange:
+        """Sweep ``joint`` across its range and record motion-induced collisions.
+
+        ``baseline_keys`` is the set of part-pairs already colliding at the
+        home pose.  When provided, only collisions **not** in this set are
+        attributed to the swept joint — those are the new interferences the
+        motion actually caused.  This is the difference between asking
+        "does joint J cause self-collision?" (what we want) and "is there any
+        collision while joint J moves?" (what the old code reported, which
+        blamed every joint for unrelated baseline interferences).
+        """
         lo, hi = joint.range_deg
         angles = [
             lo + (hi - lo) * i / max(self.num_samples - 1, 1)
@@ -183,6 +225,15 @@ class MotionCollisionChecker:
                 min_penetration_mm=min_penetration_mm,
             )
             if not result.collision_free:
+                # Subtract baseline collisions — only NEW contacts count.
+                if baseline_keys is not None:
+                    new_cols = [
+                        c for c in result.pairs
+                        if c.is_collision
+                        and tuple(sorted((c.part_a, c.part_b))) not in baseline_keys
+                    ]
+                    if not new_cols:
+                        continue  # all collisions were pre-existing
                 collision_angles.append(round(angle, 2))
 
         # Compute collision-free segments
@@ -205,7 +256,15 @@ class MotionCollisionChecker:
         collision_angles: list[float],
         tolerance: float = 0.01,
     ) -> list[tuple[float, float]]:
-        """Return maximal angular intervals free of collision."""
+        """Return maximal angular intervals free of collision.
+
+        Two adjacent sample angles that both collide cannot bound a free
+        interval — the joint must move through collision to get from one to
+        the other.  Previously the algorithm assumed the segment between any
+        two collision samples was free, which let it return 8 "free"
+        segments even when all 9 samples collided, masking total-joint-lock
+        failures as partial-range usability.
+        """
         if not collision_angles:
             return [(lo, hi)]
 
@@ -213,12 +272,21 @@ class MotionCollisionChecker:
         segments: list[tuple[float, float]] = []
         current_start = lo
 
-        for ca in sorted_col:
-            if ca - current_start > tolerance:
+        for i, ca in enumerate(sorted_col):
+            # A free segment leading up to ca exists only if current_start is
+            # NOT itself a colliding sample.  When current_start == a previous
+            # collision angle, the interval (prev_col, ca) is bracketed by
+            # collisions on both ends and must be treated as blocked.
+            current_is_collision = any(
+                abs(current_start - c) <= tolerance for c in sorted_col
+            )
+            if not current_is_collision and ca - current_start > tolerance:
                 segments.append((current_start, ca))
             current_start = ca
 
-        if hi - current_start > tolerance:
+        # Final tail: only free if hi is not itself a collision sample.
+        hi_is_collision = any(abs(hi - c) <= tolerance for c in sorted_col)
+        if not hi_is_collision and hi - current_start > tolerance:
             segments.append((current_start, hi))
 
         return segments

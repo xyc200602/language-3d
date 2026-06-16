@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -728,7 +729,14 @@ def export_engineering_package(
 
     # ---- Step 4: Generate URDF + ROS2 package ----
     from .urdf_export import AssemblyToURDF, ROS2PackageBuilder
-    converter = AssemblyToURDF(assembly, positions=positions)
+    # URDF joint origins must describe the home pose (all joint angles = 0),
+    # NOT the default pose.  Using default_angles-baked positions here would
+    # put non-zero rpy into joint origins, making MuJoCo's qpos=0 correspond
+    # to the bent pose instead of the straight/home pose.  This breaks
+    # simulation (joint axes get rotated to non-physical orientations) and
+    # breaks control (PID setpoints become inconsistent with kinematics).
+    home_positions = ctx.ensure_home_positions()
+    converter = AssemblyToURDF(assembly, positions=home_positions)
     urdf_xml = converter.convert()
     (output_dir / "urdf.xml").write_text(urdf_xml, encoding="utf-8")
     generated_files.append(str(output_dir / "urdf.xml"))
@@ -749,6 +757,17 @@ def export_engineering_package(
             shutil.copy2(str(stl_src), str(ros2_meshes / f"{_sanitize_name(part.name)}.stl"))
         else:
             logger.warning("STL not found for ROS2 mesh copy: %s", stl_src)
+
+    # ---- Step 4c: Optional physics + grasp validation (MuJoCo) ----
+    # Triggered by LANG3D_RUN_SIM_VALIDATE=1 so normal exports stay fast.
+    # Runs sim_mujoco (structure + physics) and, if a gripper is detected,
+    # sim_grasp (cube pickup test).  Results are stamped into
+    # design_report.json under "simulation_validation".  Failures are
+    # informational only — they don't abort the export.
+    sim_validation = _run_post_export_sim_validation(
+        ros2_dir / _sanitize_name(assembly.name),
+        assembly_name=_sanitize_name(assembly.name),
+    )
 
     # ---- Step 5: Generate BOM ----
     from .bom_gen import generate_bom, format_bom_markdown
@@ -1065,6 +1084,7 @@ def export_engineering_package(
         "verification_status": verification_status,
         "verification_warnings": list(verification_warnings or []),
         "kinematic_analysis": kinematic,
+        "simulation_validation": sim_validation,
         "warnings": design_warnings,
         "battery_recommendations": [
             {
@@ -1194,6 +1214,178 @@ ros2 launch mobile_robot_dual_arm display.launch.py
 # ============================================================================
 
 _BUILTIN_ASSEMBLIES: dict[str, Assembly] = {}
+
+
+def _run_post_export_sim_validation(
+    pkg_dir: Path,
+    assembly_name: str,
+) -> dict[str, Any]:
+    """Run optional MuJoCo physics + grasp validation on the exported URDF.
+
+    Triggered by environment variable ``LANG3D_RUN_SIM_VALIDATE=1``.
+    When disabled (default), returns ``{"enabled": False}`` immediately
+    so normal exports stay fast.
+
+    When enabled:
+      1. Runs ``sim_mujoco`` on the flat URDF — validates structure
+         (mesh paths resolve, masses non-zero, joints movable) and
+         physics stability (PD-hold under gravity).
+      2. If structure passes and a gripper is detected (≥2 SLIDE joints),
+         runs ``sim_grasp`` — spawns a cube between the fingers and
+         tests whether the gripper can statically hold it.
+
+    Failures are informational only — they're recorded in the returned
+    dict (and stamped into design_report.json) but never abort the export.
+
+    Args:
+        pkg_dir: Path to the ROS2 package directory (containing urdf/
+                 and meshes/ subdirs).
+        assembly_name: Sanitized package name (used to locate URDF files).
+
+    Returns:
+        Dict with ``enabled``, ``mujoco``, and ``grasp`` sub-dicts.
+    """
+    if os.environ.get("LANG3D_RUN_SIM_VALIDATE", "").lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return {"enabled": False, "reason": "LANG3D_RUN_SIM_VALIDATE not set"}
+
+    flat_urdf = pkg_dir / "urdf" / f"{assembly_name}_flat.urdf"
+    if not flat_urdf.exists():
+        return {
+            "enabled": True,
+            "ran": False,
+            "reason": f"flat URDF not found at {flat_urdf}",
+        }
+
+    result: dict[str, Any] = {
+        "enabled": True,
+        "ran": True,
+        "flat_urdf": str(flat_urdf),
+        "mujoco": None,
+        "grasp": None,
+    }
+
+    # ---- sim_mujoco: structure + physics validation ----
+    try:
+        from .sim_mujoco import SimMujocoTool
+        tool = SimMujocoTool()
+        report = tool.execute(
+            urdf_path=str(flat_urdf),
+            mode="validate",
+            duration_sec=1.0,
+        )
+        # Parse the JSON tail of the report
+        json_start = report.find("--- JSON ---")
+        mujoco_summary: dict[str, Any] = {"raw_report": report[:500]}
+        if json_start >= 0:
+            import json as _json
+            try:
+                mujoco_summary = _json.loads(
+                    report[json_start + len("--- JSON ---"):].strip()
+                )
+            except Exception:
+                pass
+        # Extract the key signals
+        result["mujoco"] = {
+            "verdict_ok": mujoco_summary.get("verdict_ok"),
+            "load_ok": mujoco_summary.get("load_ok"),
+            "n_bodies": mujoco_summary.get("n_bodies"),
+            "n_joints": mujoco_summary.get("n_joints"),
+            "physics_stable": (
+                mujoco_summary.get("physics", {}).get("stabilized")
+                if isinstance(mujoco_summary.get("physics"), dict)
+                else None
+            ),
+            "warnings": mujoco_summary.get("warnings", []),
+        }
+        logger.info(
+            "sim_mujoco validation: verdict=%s, physics_stable=%s",
+            result["mujoco"]["verdict_ok"],
+            result["mujoco"]["physics_stable"],
+        )
+    except ImportError:
+        result["mujoco"] = {
+            "ran": False,
+            "reason": "mujoco package not installed (pip install mujoco)",
+        }
+    except Exception as exc:
+        result["mujoco"] = {"ran": False, "reason": f"error: {exc}"}
+        logger.warning("sim_mujoco validation failed: %s", exc)
+
+    # ---- sim_grasp: gripper pickup test ----
+    # Only run if structure validation passed (no point testing grasp on
+    # a URDF that can't even load).
+    mujoco_ok = (
+        result.get("mujoco", {}).get("verdict_ok") is True
+        and result.get("mujoco", {}).get("load_ok") is True
+    )
+    if not mujoco_ok:
+        result["grasp"] = {
+            "ran": False,
+            "reason": "skipped (sim_mujoco structure validation failed)",
+        }
+        return result
+
+    try:
+        from .sim_mujoco import SimGraspTool
+        tool = SimGraspTool()
+        report = tool.execute(
+            urdf_path=str(flat_urdf),
+            cube_size_mm=20.0,
+            cube_mass_g=20.0,
+            grasp_force_n=20.0,
+            duration_sec=2.0,
+        )
+        json_start = report.find("--- JSON ---")
+        grasp_summary: dict[str, Any] = {}
+        if json_start >= 0:
+            import json as _json
+            try:
+                grasp_summary = _json.loads(
+                    report[json_start + len("--- JSON ---"):].strip()
+                )
+            except Exception:
+                pass
+        result["grasp"] = {
+            "ran": True,
+            "grasp_ok": grasp_summary.get("grasp_ok"),
+            "lifted": grasp_summary.get("lifted"),
+            "geometry_ok": grasp_summary.get("geometry_ok"),
+            "held_against_gravity": grasp_summary.get("held_against_gravity"),
+            "phase_a_contacts_max": grasp_summary.get("phase_a_contacts_max"),
+            "slip_b_mm": (
+                grasp_summary.get("slip_b_m", 0) * 1000
+                if grasp_summary.get("slip_b_m") is not None
+                else None
+            ),
+            "lift_c_mm": (
+                grasp_summary.get("lift_c_m", 0) * 1000
+                if grasp_summary.get("lift_c_m") is not None
+                else None
+            ),
+            "note": grasp_summary.get("note"),
+        }
+        if "NO GRIPPER" in report:
+            result["grasp"] = {
+                "ran": False,
+                "reason": "no gripper detected (need 2 SLIDE joints)",
+            }
+        logger.info(
+            "sim_grasp validation: grasp_ok=%s, lifted=%s",
+            result["grasp"].get("grasp_ok"),
+            result["grasp"].get("lifted"),
+        )
+    except ImportError:
+        result["grasp"] = {
+            "ran": False,
+            "reason": "mujoco package not installed",
+        }
+    except Exception as exc:
+        result["grasp"] = {"ran": False, "reason": f"error: {exc}"}
+        logger.warning("sim_grasp validation failed: %s", exc)
+
+    return result
 
 
 def _get_builtin_assembly(name: str) -> Assembly | None:

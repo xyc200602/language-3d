@@ -1558,6 +1558,32 @@ def generate_assembly_connection_features(
             anchor=anchor,
         )
 
+        # For revolute joints with bolted connections, add a central
+        # bearing bore so the shaft can pass through.  Bolts hold the
+        # housing; the bearing bore allows rotation.  Without this, the
+        # joint is physically locked by the solid material between bolts.
+        if joint.type == "revolute" and joint.connection.type == "bolted":
+            d = structural.dimensions
+            thickness = ConnectionFeatureEngine._infer_thickness(d, anchor)
+            bore_d = 10.0  # fits MR105ZZ bearing (OD=10mm, ID=5mm)
+            bore_name = f"{structural.name}_bearing_bore"
+            bx, by, bz = engine._anchor_center(anchor, d, thickness)
+            new_result.ops.append({
+                "type": "make_cylinder",
+                "radius": bore_d / 2,
+                "height": thickness + 4,
+                "name": bore_name,
+            })
+            new_result.ops.append({
+                "type": "move",
+                "object": bore_name,
+                "dx": bx, "dy": by, "dz": bz - 2,
+            })
+            new_result.features_generated.append(
+                f"Bearing bore O{bore_d:.1f}mm (central shaft passage "
+                f"for revolute joint)"
+            )
+
         # F16: a structural part that participates in multiple bolted joints
         # (e.g. a base plate with 4 standoffs + a motor) previously had its
         # features generated only for the FIRST joint — every subsequent

@@ -395,11 +395,15 @@ class TestNormalizeGripperFingersCenterAnchors:
             f"right finger axis must be 'x', got {right_joint.axis!r}"
         )
 
-        # Offsets must be ±X (lateral) so finger bars extend forward in Y.
+        # Offsets must be ±X (lateral) with forward Y component so
+        # finger bars extend forward beyond the gripper base.
         lx, ly, lz = left_joint.offset
         rx, ry, rz = right_joint.offset
-        assert ly == 0.0 and ry == 0.0, (
-            f"finger Y offset must be 0; got left={ly}, right={ry}"
+        assert ly < 0 and ry < 0, (
+            f"finger Y offset must be negative (forward); got left={ly}, right={ry}"
+        )
+        assert ly == ry, (
+            f"forward Y offset must be symmetric; got left_y={ly}, right_y={ry}"
         )
         assert lx < 0 and rx > 0, (
             f"left X offset must be negative, right positive; "

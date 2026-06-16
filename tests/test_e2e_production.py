@@ -709,7 +709,7 @@ def _phase6_physical_sanity(
             jr.joint_name for jr in motion_result.joint_results if jr.has_collision
         ]
 
-        min_usable_fraction = 0.20
+        min_usable_fraction = 0.35
         joints_usable: list[bool] = []
         for jr in motion_result.joint_results:
             total = jr.angle_max_deg - jr.angle_min_deg

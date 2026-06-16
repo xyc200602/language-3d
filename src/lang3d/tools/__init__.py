@@ -52,6 +52,7 @@ _TOOL_MODULES: list[dict[str, Any]] = [
      "kwargs": {"router": "router", "screenshot_dir": "screenshot_dir"}},
     {"module": "motion", "fn": "register_motion_tools"},
     {"module": "motion_collision", "fn": "register_motion_collision_tools"},
+    {"module": "sim_mujoco", "fn": "register_sim_tools"},
 
     # --- Parts & fasteners ---
     {"module": "part_library", "fn": "register_part_library_tools"},
@@ -61,8 +62,6 @@ _TOOL_MODULES: list[dict[str, Any]] = [
 
     # --- Assembly ---
     {"module": "assembly_solver", "fn": "register_assembly_solver_tools"},
-    {"module": "mating_constraint", "fn": "constraint_solve_tool_factory",
-     "factory": True},
     {"module": "assembly_matcher", "fn": "assembly_match_tool_factory",
      "factory": True},
     {"module": "tolerance_analysis", "fn": "tolerance_analysis_tool_factory",

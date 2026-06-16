@@ -122,6 +122,18 @@ FreeCAD 子进程超时已从 60s 提升至 300s 以支持复杂操作。
 detail 级别：fast, standard, detailed, maximum
 单位：mm（毫米）。
 
+URDF 物理仿真验证：用 sim_mujoco（MuJoCo 加载 URDF + 物理 + 关节能动性测试）。生成完整工程包后必须运行 sim_mujoco 验证：
+- 结构验证（PASS）：URDF 可加载，mesh 可解析，质量/惯性合理，关节可驱动
+- 物理稳定性（WARN/PASS）：PD 控制下能否保持初始姿态；不稳定通常意味着 URDF 需要 <actuator> 定义或控制器调参
+自动修复：sim_mujoco 会把 URDF 中相对 mesh 路径（"meshes/X.stl"）改写为绝对路径以解决 urdf/ 子目录解析问题。
+何时用：export_package 生成 ROS2 包后；或直接对任意 URDF 文件做加载检查。
+
+抓取验证：用 sim_grasp（在夹爪间放立方体，闭合手指，测试能否抓起）。三阶段测试：
+- Phase A（零重力）：闭合手指，看几何上能否夹紧立方体（接触数 ≥2 = 几何可行）
+- Phase B（加重力）：测试摩擦+夹持力能否抵抗重力（滑落 <5mm = 夹持力足够）
+- Phase C（抬升）：测试夹爪能跟随机械臂抬起（抬升 >5mm = 抬升成功）
+何时用：sim_mujoco 结构验证通过后；用于验证夹爪装配是否真能抓东西。
+
 质量属性工具：
 - compute_part_mass：根据尺寸和材料计算零件质量（kg）
 - compute_com：计算多零件质心（加权平均）

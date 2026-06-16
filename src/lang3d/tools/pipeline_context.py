@@ -23,20 +23,33 @@ class AssemblyContext:
     Created once at the start of export_engineering_package() and passed
     to all downstream modules so they don't need to recompute positions,
     mass, subsystems, etc.
+
+    Two sets of positions are tracked:
+      * ``positions`` — the *default pose* (with ``assembly.default_angles``
+        applied).  Used for visualization, mass properties, and rendering.
+      * ``home_positions`` — the *home pose* (all joint angles = 0).  Used
+        for URDF export so that joint origins describe the ZERO state
+        rather than baking in default_angles.  Without this split, a
+        URDF for an arm with default_angles={'shoulder': -45} would have
+        the -45° rotation baked into the shoulder joint's ``rpy``,
+        meaning MuJoCo's qpos=0 corresponds to the bent pose instead of
+        the home pose — making downstream simulation and control wrong.
     """
 
     assembly: Assembly
     positions: dict[str, Any] = field(default_factory=dict)
+    home_positions: dict[str, Any] = field(default_factory=dict)
     mass_result: dict[str, Any] = field(default_factory=dict)
     subsystems: dict[str, list[str]] = field(default_factory=dict)
     kinematic_analysis: dict[str, Any] = field(default_factory=dict)
     solved: bool = False
+    home_solved: bool = False
     mass_computed: bool = False
     subsystems_built: bool = False
     kinematic_analyzed: bool = False
 
     def ensure_positions(self) -> dict[str, Any]:
-        """Compute assembly positions if not already done."""
+        """Compute assembly positions (default pose) if not already done."""
         if not self.solved:
             from .assembly_solver import AssemblySolver
 
@@ -52,6 +65,22 @@ class AssemblyContext:
             self._validate_positions()
             self.solved = True
         return self.positions
+
+    def ensure_home_positions(self) -> dict[str, Any]:
+        """Compute positions with all joint angles = 0 (home pose).
+
+        Used for URDF joint origin computation.  See class docstring for
+        why this is distinct from ``ensure_positions()``.
+        """
+        if not self.home_solved:
+            from .assembly_solver import AssemblySolver
+
+            solver = AssemblySolver(self.assembly)
+            # Explicit {} → solver does NOT fall back to default_angles,
+            # so every revolute joint sits at 0°.
+            self.home_positions = solver.solve(joint_angles={})
+            self.home_solved = True
+        return self.home_positions
 
     def _ensure_default_angles(self) -> None:
         """If default_angles are missing, inject reasonable arm bend angles."""

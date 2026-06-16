@@ -147,11 +147,21 @@ def _clamp_child_offset(
     child_part: Part,
     max_factor: float = 3.0,
 ) -> tuple[float, float, float]:
-    """Clamp child-parent offset to a reasonable maximum.
+    """Reject child-parent offsets that exceed a sane engineering bound.
 
-    If the offset exceeds ``max_factor`` times the sum of both parts'
-    largest dimensions, scale it back.  This prevents extreme positions
-    caused by incorrect LLM dimensions or explicit offsets.
+    Per project CLAUDE.md: "LLM 给出离谱尺寸/位置时，应该报错让 LLM 重试，
+    而不是悄悄修正".  The previous implementation silently scaled extreme
+    offsets down to ``max_factor × (parent + child)`` and logged a warning,
+    which let the rest of the pipeline run on corrupted geometry and made
+    downstream failures (collisions, bad URDF origins) hard to attribute.
+
+    Now the function raises ``ValueError`` so the assembly generator's VLM
+    feedback loop can react by regenerating the assembly with explicit
+    guidance about the offending joint.
+
+    The bound is intentionally generous (3× the sum of largest dimensions)
+    so legitimately long reach arms are not falsely rejected; only truly
+    broken offsets (e.g. LLM hallucinating a -1500mm coordinate) raise.
     """
     dx = child_pos[0] - parent_pos[0]
     dy = child_pos[1] - parent_pos[1]
@@ -163,18 +173,13 @@ def _clamp_child_offset(
         max_offset = 500.0  # fallback for parts with no dimensions
 
     if dist > max_offset and dist > 1e-6:
-        scale = max_offset / dist
-        logger.warning(
-            "Clamping extreme offset for '%s'→'%s': %.1fmm → %.1fmm "
-            "(max=%.1fmm = %.1f × (%.0f + %.0f))",
-            parent_part.name, child_part.name,
-            dist, max_offset, max_offset, max_factor,
-            _max_dimension(parent_part), _max_dimension(child_part),
-        )
-        return (
-            parent_pos[0] + dx * scale,
-            parent_pos[1] + dy * scale,
-            parent_pos[2] + dz * scale,
+        raise ValueError(
+            f"Extreme joint offset for '{parent_part.name}'→"
+            f"'{child_part.name}': {dist:.1f}mm exceeds {max_factor:.1f}× "
+            f"({max_factor:.1f} × ({_max_dimension(parent_part):.0f} + "
+            f"{_max_dimension(child_part):.0f}) = {max_offset:.1f}mm). "
+            f"The LLM-generated offset/dimensions are inconsistent; "
+            f"regenerate the assembly with corrected values."
         )
 
     return child_pos
@@ -768,6 +773,19 @@ class AssemblySolver:
         for pname in self._parts_by_name:
             if pname in positions:
                 p = positions[pname]
+                # NaN/Inf check — invalid positions must not silently
+                # propagate to renderers and URDF exporters.
+                if any(not math.isfinite(v) for v in p):
+                    logger.warning(
+                        "Part %s has non-finite position %s — "
+                        "falling back to base",
+                        pname, p,
+                    )
+                    placements[pname] = {
+                        "position": [base_position[0], base_position[1], base_position[2]],
+                        "rotation": [0, 0, 1, 0],
+                    }
+                    continue
                 r = rot_mats.get(pname, _identity_matrix())
                 r = self._visual_rotation_for_part(pname, r)
                 placements[pname] = {
@@ -775,6 +793,11 @@ class AssemblySolver:
                     "rotation": _rot_mat_to_axis_angle_deg(r),
                 }
             else:
+                logger.warning(
+                    "Part %s has no solved position (orphan or "
+                    "disconnected) — placed at base %s",
+                    pname, base_position,
+                )
                 placements[pname] = {
                     "position": [base_position[0], base_position[1], base_position[2]],
                     "rotation": [0, 0, 1, 0],
@@ -1748,7 +1771,7 @@ def _parse_assembly_dict(data: dict[str, Any]) -> Assembly:
             description=j.get("description", ""),
             parent_anchor=j.get("parent_anchor", "top"),
             child_anchor=j.get("child_anchor", "bottom"),
-            offset=tuple(j.get("offset", (0, 0, 0))),
+            offset=tuple(j.get("offset") or (0, 0, 0)),
             axis=j.get("axis", "auto"),
             no_distribute=j.get("no_distribute", False),
             distribution_group=j.get("distribution_group", ""),

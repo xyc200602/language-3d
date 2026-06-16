@@ -201,11 +201,11 @@ _register(AssemblyTemplate(
                           parent_anchor="front", child_anchor="back"),
         # gripper fingers: prismatic (slide open/close), offset to sides
         TemplateJointSpec("prismatic", "gripper_base", "gripper_finger_left",
-                          (-8, 12),
+                          (-8, 8),
                           parent_anchor="front", child_anchor="back",
                           axis="x", offset=(-16, 0, 0)),
         TemplateJointSpec("prismatic", "gripper_base", "gripper_finger_right",
-                          (-8, 12),
+                          (-8, 8),
                           parent_anchor="front", child_anchor="back",
                           axis="x", offset=(16, 0, 0)),
     ],

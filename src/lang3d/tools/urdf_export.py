@@ -76,8 +76,50 @@ def _mm2_to_m2(v: float) -> float:
     return v / 1_000_000.0
 
 
+def _infer_collision_primitive(part: Part) -> tuple[str, tuple[float, ...]] | None:
+    """Infer a simple collision primitive for a part based on its dimensions.
+
+    Returns:
+        ("box", (length_m, width_m, height_m)) for box-like parts
+        ("cylinder", (radius_m, length_m)) for cylindrical parts
+        None if no simple primitive fits (use mesh fallback)
+
+    Standard practice in robotics simulation: use simplified collision
+    geometry (box/cylinder) for contact physics, keep detailed mesh only
+    for visual rendering.  This gives:
+      - Faster collision detection (O(1) vs O(triangles))
+      - Predictable contacts (flat faces vs noisy mesh surface)
+      - Better grasp behavior (parallel clamping surfaces)
+    """
+    d = part.dimensions
+    has_box_dims = (
+        d.get("length", 0) > 0
+        and d.get("width", 0) > 0
+        and d.get("height", 0) > 0
+    )
+    has_cyl_dims = (
+        (d.get("diameter", 0) > 0 or d.get("outer_diameter", 0) > 0)
+        and d.get("height", 0) > 0
+        and "length" not in d
+        and "width" not in d
+    )
+
+    if has_cyl_dims:
+        dia = d.get("diameter", d.get("outer_diameter", 0))
+        h = d["height"]
+        return ("cylinder", (_mm_to_m(dia / 2.0), _mm_to_m(h)))
+
+    if has_box_dims:
+        return ("box", (
+            _mm_to_m(d["length"]),
+            _mm_to_m(d["width"]),
+            _mm_to_m(d["height"]),
+        ))
+
+    return None
+
+
 def _resolve_axis(joint: Joint) -> list[float]:
-    """Resolve joint axis from explicit setting or anchor inference."""
     if joint.axis != "auto" and joint.axis.lower() in _AXIS_MAP:
         return _AXIS_MAP[joint.axis.lower()]
     # Infer from parent_anchor
@@ -276,6 +318,14 @@ class URDFLink:
     visual_mesh: str = ""  # relative STL path
     collision_mesh: str = ""  # relative STL path (may be same as visual)
     material_color: str = "gray"
+    # Optional collision primitive for simplified contact geometry.
+    # When set, the URDF <collision> element uses this primitive instead
+    # of the full STL mesh.  This is standard practice in robotics:
+    # visual geometry is detailed (mesh), collision geometry is simple
+    # (box/cylinder) for fast and predictable contacts.
+    # Tuple format: ("box", (length_m, width_m, height_m)) or
+    #               ("cylinder", (radius_m, length_m))
+    collision_primitive: tuple[str, tuple[float, ...]] | None = None
 
 
 @dataclass
@@ -395,6 +445,7 @@ class AssemblyToURDF:
                 visual_mesh=mesh_file,
                 collision_mesh=mesh_file,
                 material_color=_pick_material_color(part),
+                collision_primitive=_infer_collision_primitive(part),
             ))
 
     def _build_joints(self) -> None:
@@ -617,19 +668,44 @@ class AssemblyToURDF:
             vis_geom = ET.SubElement(visual, "geometry")
             vis_mesh = ET.SubElement(vis_geom, "mesh")
             vis_mesh.set("filename", link.visual_mesh)
+            # STL files are exported by FreeCAD in millimetres, but URDF
+            # convention treats mesh units as metres.  Without an explicit
+            # scale, MuJoCo/PyBullet/Gazebo all interpret a 200mm STL as
+            # a 200-metre robot — producing massive mesh interpenetration
+            # and immediate physics blow-up.  Scale 0.001 converts mm→m.
+            vis_mesh.set("scale", "0.001 0.001 0.001")
             mat_el = ET.SubElement(visual, "material")
             mat_el.set("name", link.material_color)
             color_el = ET.SubElement(mat_el, "color")
             color_el.set("rgba", _DEFAULT_MATERIALS.get(link.material_color, "0.7 0.7 0.7 1.0"))
 
             # Collision
+            # Use simplified primitive geometry when available — standard
+            # robotics practice that gives faster + more predictable
+            # contacts than concave STL meshes.  Visual stays as full mesh.
             collision = ET.SubElement(link_el, "collision")
             col_origin = ET.SubElement(collision, "origin")
             col_origin.set("xyz", "0 0 0")
             col_origin.set("rpy", "0 0 0")
             col_geom = ET.SubElement(collision, "geometry")
-            col_mesh = ET.SubElement(col_geom, "mesh")
-            col_mesh.set("filename", link.collision_mesh)
+            if link.collision_primitive is not None:
+                prim_type, prim_dims = link.collision_primitive
+                if prim_type == "box":
+                    box_el = ET.SubElement(col_geom, "box")
+                    # URDF box size is the FULL edge length
+                    box_el.set(
+                        "size",
+                        f"{prim_dims[0]:.6f} {prim_dims[1]:.6f} {prim_dims[2]:.6f}",
+                    )
+                elif prim_type == "cylinder":
+                    cyl_el = ET.SubElement(col_geom, "cylinder")
+                    cyl_el.set("radius", f"{prim_dims[0]:.6f}")
+                    cyl_el.set("length", f"{prim_dims[1]:.6f}")
+            else:
+                # Fallback: full STL mesh (same as visual)
+                col_mesh = ET.SubElement(col_geom, "mesh")
+                col_mesh.set("filename", link.collision_mesh)
+                col_mesh.set("scale", "0.001 0.001 0.001")
 
         # Joints
         for joint in self._joints:
@@ -660,6 +736,37 @@ class AssemblyToURDF:
                 mimic_el.set("joint", joint.mimic_joint)
                 mimic_el.set("multiplier", f"{joint.mimic_multiplier:.1f}")
                 mimic_el.set("offset", f"{joint.mimic_offset:.4f}")
+
+        # Transmissions for actuated joints (ros2_control / Gazebo).
+        # Each revolute/prismatic joint gets a SimpleTransmission so
+        # gazebo_ros2_control can apply effort commands.
+        for joint in self._joints:
+            if joint.type not in ("revolute", "prismatic"):
+                continue
+            trans_el = ET.SubElement(root, "transmission")
+            trans_el.set("name", f"{joint.name}_trans")
+            type_el = ET.SubElement(trans_el, "type")
+            type_el.text = "transmission_interface/SimpleTransmission"
+            joint_ref = ET.SubElement(trans_el, "joint", name=joint.name)
+            hw_el = ET.SubElement(joint_ref, "hardwareInterface")
+            hw_el.text = "hardware_interface/EffortJointInterface"
+            actuator_el = ET.SubElement(
+                trans_el, "actuator", name=f"{joint.name}_motor",
+            )
+            act_hw_el = ET.SubElement(actuator_el, "hardwareInterface")
+            act_hw_el.text = "hardware_interface/EffortJointInterface"
+            mech_el = ET.SubElement(actuator_el, "mechanicalReduction")
+            mech_el.text = "1"
+
+        # Gazebo ros2_control plugin for simulation actuation
+        gazebo_ctrl = ET.SubElement(root, "gazebo")
+        ctrl_plugin = ET.SubElement(
+            gazebo_ctrl, "plugin",
+            name="gazebo_ros2_control",
+            filename="libgazebo_ros2_control.so",
+        )
+        params_el = ET.SubElement(ctrl_plugin, "parameters")
+        params_el.text = f"{self.package_name}/config/ros2_control.yaml"
 
         # Gazebo plugins
         for plugin in self._gazebo_plugins:
@@ -715,9 +822,23 @@ class ROS2PackageBuilder:
         (base / "launch").mkdir(parents=True, exist_ok=True)
         (base / "config").mkdir(parents=True, exist_ok=True)
 
-        # URDF file
+        # URDF file — rewrite mesh paths to package:// URIs so the URDF
+        # resolves correctly from its urdf/ subdir.  Without this rewrite,
+        # URDFs reference ``meshes/X.stl`` which is interpreted relative
+        # to the URDF location (``urdf/meshes/X.stl``) and the meshes
+        # are not found by ROS2 rviz2/Gazebo, MuJoCo, or PyBullet.
+        urdf_xml_fixed = self._rewrite_mesh_paths_to_package_uri(self.urdf_xml)
         urdf_path = base / "urdf" / f"{self.package_name}.urdf"
-        urdf_path.write_text(self.urdf_xml, encoding="utf-8")
+        urdf_path.write_text(urdf_xml_fixed, encoding="utf-8")
+
+        # Also write a "flat" URDF inside urdf/ alongside the main URDF.
+        # Uses ../meshes/X.stl relative paths so non-ROS2 consumers (MuJoCo,
+        # PyBullet) that don't understand package:// URIs can load it
+        # directly.  Placing it in urdf/ (not package root) makes ../meshes/
+        # resolve correctly to <package>/meshes/.
+        flat_urdf = self._rewrite_mesh_paths_relative(self.urdf_xml, "../meshes")
+        flat_path = base / "urdf" / f"{self.package_name}_flat.urdf"
+        flat_path.write_text(flat_urdf, encoding="utf-8")
 
         # package.xml
         (base / "package.xml").write_text(self._package_xml(), encoding="utf-8")
@@ -734,6 +855,9 @@ class ROS2PackageBuilder:
         (base / "config" / "joint_names.yaml").write_text(
             self._joint_names_yaml(), encoding="utf-8"
         )
+        (base / "config" / "ros2_control.yaml").write_text(
+            self._ros2_control_yaml(), encoding="utf-8"
+        )
         (base / "config" / "rviz.rviz").write_text(
             self._rviz_config(), encoding="utf-8"
         )
@@ -744,6 +868,49 @@ class ROS2PackageBuilder:
         )
 
         return str(base)
+
+    def _rewrite_mesh_paths_to_package_uri(self, urdf_xml: str) -> str:
+        """Rewrite ``meshes/X.stl`` paths to ``package://<pkg>/meshes/X.stl``.
+
+        URDFs generated by AssemblyToURDF use relative mesh paths
+        (``meshes/X.stl``) which don't resolve correctly when the URDF
+        lives in a ``urdf/`` subdirectory of a ROS2 package.  This helper
+        converts every mesh reference to the ROS2-canonical ``package://``
+        URI so the URDF can be loaded from any directory by rviz2, Gazebo,
+        or other ROS2 tools.
+        """
+        import re
+
+        pattern = re.compile(
+            r'(<mesh\s+filename=")(meshes/[^"]+)(")',
+            re.IGNORECASE,
+        )
+
+        def _replace(match: re.Match[str]) -> str:
+            prefix, mesh_path, suffix = match.group(1), match.group(2), match.group(3)
+            return f'{prefix}package://{self.package_name}/{mesh_path}{suffix}'
+
+        return pattern.sub(_replace, urdf_xml)
+
+    def _rewrite_mesh_paths_relative(self, urdf_xml: str, prefix: str) -> str:
+        """Rewrite ``meshes/X.stl`` paths to ``<prefix>/meshes/X.stl``.
+
+        Produces a non-ROS2 URDF for direct loading by MuJoCo / PyBullet
+        without needing package:// resolution.  ``prefix="../meshes"``
+        makes the URDF work from a ``urdf/`` subdir.
+        """
+        import re
+
+        pattern = re.compile(
+            r'(<mesh\s+filename=")(meshes/[^"]+)(")',
+            re.IGNORECASE,
+        )
+
+        def _replace(match: re.Match[str]) -> str:
+            head, mesh_path, tail = match.group(1), match.group(2), match.group(3)
+            return f'{head}{prefix}/{mesh_path.split("/", 1)[1]}{tail}'
+
+        return pattern.sub(_replace, urdf_xml)
 
     def _package_xml(self) -> str:
         return f"""\
@@ -763,6 +930,11 @@ class ROS2PackageBuilder:
   <exec_depend>xacro</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>gazebo_ros2_control</exec_depend>
+  <exec_depend>ros2_control</exec_depend>
+  <exec_depend>ros2_controllers</exec_depend>
+  <exec_depend>joint_trajectory_controller</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
 
   <export>
     <build_type>ament_cmake</build_type>
@@ -830,6 +1002,37 @@ def generate_launch_description():
             names = []
         joint_list = "\n".join(f"  - \"{n}\"" for n in names)
         return f"joint_names:\n{joint_list}\n"
+
+    def _ros2_control_yaml(self) -> str:
+        """Generate ros2_control YAML config for Gazebo simulation."""
+        try:
+            root = ET.fromstring(self.urdf_xml)
+            joints = root.findall(".//joint[@type='revolute']")
+            joints += root.findall(".//joint[@type='prismatic']")
+            names = [j.get("name", "") for j in joints if j.get("name")]
+        except ET.ParseError:
+            names = []
+
+        joint_list = "\n".join(f"      - {n}" for n in names)
+        return f"""\
+controller_manager:
+  ros__parameters:
+    update_rate: 100
+    use_sim_time: true
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_trajectory_controller:
+      type: joint_trajectory_controller/JointTrajectoryController
+
+joint_trajectory_controller:
+  ros__parameters:
+    joints:
+{joint_list}
+    command_interfaces: [position]
+    state_interfaces: [position, velocity]
+"""
 
     def _rviz_config(self) -> str:
         """Minimal RViz2 config: RobotModel + TF + grid."""
@@ -993,7 +1196,10 @@ class URDFExportTool(Tool):
         try:
             from .assembly_solver import AssemblySolver
             solver = AssemblySolver(assembly)
-            positions = solver.solve()
+            # Solve with joint_angles={} so URDF joint origins describe the
+            # home pose (all joints at zero), not the default pose.  See
+            # export_package.py step 4 for the rationale.
+            positions = solver.solve(joint_angles={})
             converter = AssemblyToURDF(
                 assembly,
                 meshes_dir="meshes",
