@@ -22,7 +22,6 @@ from lang3d.tools.assembly_generator import (
     _ensure_arm_default_angles,
     _fix_arm_chain_anchors,
     _geometric_prevalidation,
-    _gripper_geometry_ok,
     _is_joint_like,
     _is_link_like,
     _normalize_gripper_fingers,
@@ -547,90 +546,8 @@ def test_geometric_prevalidation_passes_well_separated_fingers():
 
 
 # ---------------------------------------------------------------------------
-# _gripper_geometry_ok — deterministic gripper ground-truth
-# ---------------------------------------------------------------------------
-
-def test_gripper_geometry_ok_passes_well_separated():
-    """Arm with 2 fingers >= 25mm apart → (True, desc)."""
-    parts = [{"name": n} for n in (
-        "base_plate", "shoulder_joint", "shoulder_link",
-        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
-        "gripper_base", "gripper_finger_left", "gripper_finger_right",
-    )]
-    positions = {
-        "base_plate": {"position": [0, 0, 0]},
-        "shoulder_joint": {"position": [0, 0, 40]},
-        "shoulder_link": {"position": [0, 30, 140]},
-        "elbow_joint": {"position": [0, 50, 240]},
-        "elbow_link": {"position": [0, 20, 320]},
-        "wrist_joint": {"position": [0, -10, 280]},
-        "wrist_link": {"position": [0, -30, 220]},
-        "gripper_base": {"position": [0, -40, 200]},
-        "gripper_finger_left": {"position": [0, -85, 216]},
-        "gripper_finger_right": {"position": [0, 5, 216]},
-    }
-    ok, desc = _gripper_geometry_ok(positions, parts)
-    assert ok, f"Expected True, got: {desc}"
 
 
-def test_gripper_geometry_ok_fails_missing_fingers():
-    """Arm with fewer than 2 fingers → (False, desc)."""
-    parts = [{"name": n} for n in (
-        "base_plate", "shoulder_joint", "shoulder_link",
-        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
-        "gripper_base",
-    )]
-    positions = {
-        "base_plate": {"position": [0, 0, 0]},
-        "shoulder_joint": {"position": [0, 0, 40]},
-        "shoulder_link": {"position": [0, 30, 140]},
-        "elbow_joint": {"position": [0, 50, 240]},
-        "elbow_link": {"position": [0, 20, 320]},
-        "wrist_joint": {"position": [0, -10, 280]},
-        "wrist_link": {"position": [0, -30, 220]},
-        "gripper_base": {"position": [0, -40, 200]},
-    }
-    ok, desc = _gripper_geometry_ok(positions, parts)
-    assert not ok, f"Expected False (no fingers), got: {desc}"
-
-
-def test_gripper_geometry_ok_fails_close_fingers():
-    """Arm with fingers < 25mm apart → (False, desc)."""
-    parts = [{"name": n} for n in (
-        "base_plate", "shoulder_joint", "shoulder_link",
-        "elbow_joint", "elbow_link", "wrist_joint", "wrist_link",
-        "gripper_base", "gripper_finger_left", "gripper_finger_right",
-    )]
-    positions = {
-        "base_plate": {"position": [0, 0, 0]},
-        "shoulder_joint": {"position": [0, 0, 40]},
-        "shoulder_link": {"position": [0, 30, 140]},
-        "elbow_joint": {"position": [0, 50, 240]},
-        "elbow_link": {"position": [0, 20, 320]},
-        "wrist_joint": {"position": [0, -10, 280]},
-        "wrist_link": {"position": [0, -30, 220]},
-        "gripper_base": {"position": [0, -40, 200]},
-        # Only 10mm apart
-        "gripper_finger_left": {"position": [0, -45, 216]},
-        "gripper_finger_right": {"position": [0, -35, 216]},
-    }
-    ok, desc = _gripper_geometry_ok(positions, parts)
-    assert not ok, f"Expected False (fingers too close), got: {desc}"
-
-
-def test_gripper_geometry_ok_non_arm_returns_true():
-    """Non-arm assembly (< 4 arm parts) → (True, 'N/A')."""
-    parts = [{"name": n} for n in ("chassis", "wheel_fl", "wheel_fr")]
-    positions = {
-        "chassis": {"position": [0, 0, 0]},
-        "wheel_fl": {"position": [-50, 40, 0]},
-        "wheel_fr": {"position": [50, 40, 0]},
-    }
-    ok, desc = _gripper_geometry_ok(positions, parts)
-    assert ok, f"Expected True (not an arm), got: {desc}"
-
-
-# ---------------------------------------------------------------------------
 # Few-shot examples — vertical pattern assertions
 # ---------------------------------------------------------------------------
 
@@ -907,4 +824,64 @@ def test_proportion_validation_link_to_joint_reverse():
         f"(0.50 × joint diameter 28)"
     )
 
+# ---------------------------------------------------------------------------
+# Regression: validation errors must enter the LLM retry loop
+# ---------------------------------------------------------------------------
 
+
+def test_validate_assembly_error_enters_retry_loop(monkeypatch, tmp_path):
+    """When _validate_assembly raises RuntimeError, the VLM loop must
+    catch it and route the error into problems_history (so the LLM gets
+    a chance to regenerate), instead of letting the exception escape
+    and kill the pipeline.
+
+    Regression guard for the bug that caused 4wheel_dual_arm to die on
+    "Joint #16: child not in parts list" before reaching Phase 2.
+    """
+    from lang3d.tools import assembly_generator as ag
+    from lang3d.knowledge.mechanics import Assembly, Part, Joint
+
+    # Construct an assembly that _validate_assembly will reject:
+    # joint references a child ("ghost") that is not in parts list.
+    bad = Assembly(
+        name="bad",
+        parts=[
+            Part(
+                name="base",
+                category="link",
+                description="base",
+                dimensions={"length": 10, "width": 10, "height": 10},
+            ),
+        ],
+        joints=[
+            Joint(type="fixed", parent="base", child="ghost"),
+        ],
+    )
+
+    # Stub out the LLM entry point so no real API call is made.
+    monkeypatch.setattr(ag, "generate_assembly_from_nl", lambda **kw: bad)
+
+    # max_rounds=1: round 1 generates bad -> validation fails -> continue
+    # -> loop exits with passed=False. The key assertion is that no
+    # exception escapes generate_assembly_with_vlm_loop.
+    # api_key="dummy" bypasses the GLM_API_KEY gate; no real API call
+    # happens because generate_assembly_from_nl is stubbed.
+    result = ag.generate_assembly_with_vlm_loop(
+        description="test",
+        output_dir=str(tmp_path),
+        max_rounds=1,
+        api_key="dummy",
+    )
+
+    assert result["passed"] is False
+    # The validation error must appear in problems_history (this is the
+    # feedback channel the LLM would see on the next round if max_rounds>1).
+    flat_problems = [
+        p for plist in result["problems_history"] for p in plist
+    ]
+    assert any("validation error" in p.lower() for p in flat_problems), (
+        f"Expected validation error in problems_history, got: {flat_problems}"
+    )
+    assert any("ghost" in p for p in flat_problems), (
+        f"Expected 'ghost' (the bad child name) in error message, got: {flat_problems}"
+    )

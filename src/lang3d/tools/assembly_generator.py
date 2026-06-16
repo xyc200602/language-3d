@@ -699,9 +699,6 @@ def generate_assembly_from_nl(
         # Clamp disproportionate part dimensions for visual realism
         assembly = _validate_proportions(assembly)
 
-    # Validate the assembly
-    _validate_assembly(assembly)
-
     return assembly
 
 
@@ -1746,6 +1743,35 @@ def _validate_assembly(assembly: Assembly) -> None:
                 f"Joint #{i}: child '{joint.child}' not in parts list"
             )
 
+    # Check joint.type is valid (LLM sometimes hallucinates 'rotary' etc.)
+    _VALID_JOINT_TYPES = {"fixed", "revolute", "prismatic", "continuous"}
+    for i, joint in enumerate(assembly.joints):
+        if joint.type not in _VALID_JOINT_TYPES:
+            raise RuntimeError(
+                f"Joint #{i} ('{joint.description}'): invalid type "
+                f"'{joint.type}'. Must be one of {sorted(_VALID_JOINT_TYPES)}"
+            )
+
+    # Check range_deg well-formed for movable joints
+    for i, joint in enumerate(assembly.joints):
+        if joint.type in ("revolute", "continuous", "prismatic"):
+            if not joint.range_deg or len(joint.range_deg) != 2:
+                raise RuntimeError(
+                    f"Joint #{i} ('{joint.description}'): range_deg missing "
+                    f"or not a 2-tuple"
+                )
+            lo, hi = joint.range_deg
+            if lo >= hi:
+                raise RuntimeError(
+                    f"Joint #{i} ('{joint.description}'): range_deg "
+                    f"({lo}, {hi}) invalid, min must be < max"
+                )
+            if abs(lo) > 360 or abs(hi) > 360:
+                raise RuntimeError(
+                    f"Joint #{i} ('{joint.description}'): range_deg "
+                    f"({lo}, {hi}) exceeds +/-360 degrees"
+                )
+
     # Check all parts are connected (reachable from root via joints)
     # Auto-fix: connect any orphaned parts to the nearest reachable parent
     if assembly.joints:
@@ -1758,9 +1784,9 @@ def _validate_assembly(assembly: Assembly) -> None:
         else:
             for key, val in part.dimensions.items():
                 if val <= 0:
-                    logger.warning(
-                        "Part '%s' dimension '%s' = %s (should be > 0)",
-                        part.name, key, val,
+                    raise RuntimeError(
+                        f"Part '{part.name}' dimension '{key}' = {val} "
+                        f"(must be > 0)"
                     )
 
     # Check anchor-dimension compatibility
@@ -2244,53 +2270,6 @@ def _generate_preview_stls(parts: list[dict], output_dir: str) -> str:
     return preview_dir
 
 
-def _gripper_geometry_ok(
-    positions: dict[str, dict], parts: list[dict]
-) -> tuple[bool, str]:
-    """Deterministically verify that the assembly has a proper gripper.
-
-    Returns ``(True, description)`` when all of the following hold:
-      * The assembly is an arm (>= 4 arm-keyword parts).
-      * There are >= 2 finger parts.
-      * Every finger pair is separated by >= 25 mm centre-to-centre.
-
-    This is the ground-truth check used to override VLM false-negatives —
-    the GLM-4.6V-Flash vision model has documented very low accuracy for
-    gripper recognition and frequently reports "no gripper" even when two
-    clearly separated finger prongs are visible in the render.
-    """
-    import math as _math
-
-    arm_names = [
-        n
-        for n in positions
-        if any(k in n.lower() for k in ("link", "arm", "shoulder", "elbow", "wrist"))
-    ]
-    if len(arm_names) < 4:
-        return True, "not an arm assembly (gripper check N/A)"
-
-    finger_names = [n for n in positions if "finger" in n.lower()]
-    if len(finger_names) < 2:
-        return False, f"only {len(finger_names)} finger part(s)"
-
-    min_dist = float("inf")
-    for i in range(len(finger_names)):
-        for j in range(i + 1, len(finger_names)):
-            p1 = positions[finger_names[i]]["position"]
-            p2 = positions[finger_names[j]]["position"]
-            d = _math.sqrt(
-                (p1[0] - p2[0]) ** 2
-                + (p1[1] - p2[1]) ** 2
-                + (p1[2] - p2[2]) ** 2
-            )
-            min_dist = min(min_dist, d)
-
-    if min_dist < 25.0:
-        return False, f"fingers only {min_dist:.1f}mm apart"
-
-    return True, f"{len(finger_names)} fingers {min_dist:.1f}mm apart"
-
-
 def _vlm_check_assembly(
     positions: dict[str, dict],
     parts: list[dict],
@@ -2385,51 +2364,6 @@ def _vlm_check_assembly(
             if p not in all_problems:
                 all_problems.append(p)
 
-    # Scoped gripper-recognition override for thin-finger designs.
-    #
-    # The GLM-4.6V-Flash vision model has a known weakness: thin (≈10mm)
-    # parallel gripper fingers separated by a large gap are visually
-    # indistinguishable from a solid block in front / top / right orthographic
-    # views. The VLM false-fails with "no gripper" / "solid block" even when
-    # the geometry is provably correct (two fingers at a valid distance, both
-    # tips pointing forward symmetrically).
-    #
-    # This override bridges that gap — but ONLY when all three safety
-    # conditions hold:
-    #   1. No structural geo_problems (collisions, floating, flat arm …).
-    #   2. Deterministic geometry confirms a valid gripper (≥2 fingers,
-    #      ≥25 mm apart).
-    #   3. Every reported problem is SOLELY about gripper recognition —
-    #      structural keywords (reversed, backward, collision, floating,
-    #      broken, wrong direction …) disqualify the override.
-    #
-    # Before the swap_xy fix this override was harmful (it suppressed the
-    # real backward-finger bug). Now that prismatic-joint children are
-    # exempt from X↔Y axis swapping, the geometry is provably correct and
-    # the override is safe.
-    if not passed and not geo_problems:
-        gripper_ok, gripper_desc = _gripper_geometry_ok(positions, parts)
-        if gripper_ok:
-            structural_keywords = (
-                "reversed", "backward", "wrong direction", "collision",
-                "floating", "disconnected", "broken", "missing part",
-                "intersect", "overlap", "inside", "inverted", "flipped",
-            )
-            non_gripper_problems = [
-                p for p in all_problems
-                if any(kw in p.lower() for kw in structural_keywords)
-            ]
-            if not non_gripper_problems:
-                passed = True
-                override_applied = True
-                all_problems.append(
-                    f"GRIPPER RECOGNITION OVERRIDE: VLM failed to recognise "
-                    f"the gripper in orthographic views (thin fingers at "
-                    f"~14mm width are visually indistinguishable from a "
-                    f"Deterministic geometry confirms a valid gripper "
-                    f"({gripper_desc}) and no structural problems."
-                )
-
     # Persist per-view VLM responses for debugging across rounds.
     vlm_log = {
         "round": round_num,
@@ -2520,7 +2454,6 @@ def generate_assembly_with_vlm_loop(
     problems_history: list[list[str]] = []
     render_dir = os.path.join(output_dir, "vlm_renders")
     passed = False
-    override_applied = False
 
     for round_num in range(1, max_rounds + 1):
         logger.info("=== Round %d/%d ===", round_num, max_rounds)
@@ -2565,7 +2498,23 @@ def generate_assembly_with_vlm_loop(
             if is_arm_check:
                 assembly = _ensure_arm_default_angles(assembly)
                 assembly = _validate_proportions(assembly)
+
+        # --- Step A.5: Validate assembly (errors enter LLM retry loop) ---
+        # _validate_assembly raises RuntimeError for data-integrity issues
+        # (joint references unknown part, invalid joint.type, range_deg
+        # malformed, non-positive dimensions). Previously such errors
+        # escaped the loop and killed the whole pipeline (root cause of
+        # 4wheel_dual_arm dying on 'Joint #16: child not in parts list').
+        # Now they enter problems_history so the LLM gets a chance to
+        # regenerate with the error message as feedback.
+        try:
             _validate_assembly(assembly)
+        except RuntimeError as e:
+            logger.warning(
+                "Assembly validation failed in round %d: %s", round_num, e
+            )
+            problems_history.append([f"Assembly validation error: {e}"])
+            continue
 
         print(f"  Assembly: {assembly.name}, {len(assembly.parts)} parts, "
               f"{len(assembly.joints)} joints")
@@ -2698,10 +2647,8 @@ def generate_assembly_with_vlm_loop(
         "test_id": description[:40],
         "total_rounds": round_num,
         "final_passed": passed,
-        "override_applied": override_applied,
         "verification_status": (
-            "PASSED_WITH_OVERRIDE" if passed and override_applied
-            else "PASSED" if passed else "FAILED_MAX_ROUNDS"
+            "PASSED" if passed else "FAILED_MAX_ROUNDS"
         ),
         "problems_history": problems_history,
     }
@@ -2721,10 +2668,7 @@ def generate_assembly_with_vlm_loop(
     # debugging, but the design_report.json will flag it.
     export_dir = os.path.join(output_dir, "engineering_package")
     export_success = False
-    verification_status = (
-        "PASSED_WITH_OVERRIDE" if passed and override_applied
-        else "PASSED" if passed else "FAILED_MAX_ROUNDS"
-    )
+    verification_status = "PASSED" if passed else "FAILED_MAX_ROUNDS"
     last_warnings = problems_history[-1] if problems_history else []
 
     # Reuse the last round's real STLs when they exist so export skips the
