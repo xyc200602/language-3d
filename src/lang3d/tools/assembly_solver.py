@@ -711,7 +711,15 @@ class AssemblySolver:
                 )
                 stack.append((child_name, child_pos, child_rot))
 
-        # Phase 2: Multi-parent position and rotation averaging
+        # Phase 2: Multi-parent consistency check.
+        #
+        # P1-2: previously this phase AVERAGED positions from all parents,
+        # which is physically impossible — a rigid plate bolted to 4
+        # standoffs at different heights cannot sit at their average height.
+        # Now we use the FIRST parent's suggestion (tree semantics) and
+        # warn when other parents disagree by more than a tolerance.
+        # Closed-chain kinematic constraints should be handled by
+        # ClosedChainSolver, not by averaging.
         for child_name in multi_parent_parts:
             if child_name not in positions:
                 continue
@@ -738,28 +746,41 @@ class AssemblySolver:
                 rot_suggestions.append(suggested_rot)
 
             if len(pos_suggestions) > 1:
-                n = len(pos_suggestions)
-                avg_pos = (
-                    sum(s[0] for s in pos_suggestions) / n,
-                    sum(s[1] for s in pos_suggestions) / n,
-                    sum(s[2] for s in pos_suggestions) / n,
-                )
+                # Use the FIRST parent's suggestion (tree semantics).
+                first_pos = pos_suggestions[0]
+                first_rot = rot_suggestions[0]
+
+                # Warn when other parents disagree significantly.
+                for idx in range(1, len(pos_suggestions)):
+                    disp = math.sqrt(
+                        (pos_suggestions[idx][0] - first_pos[0]) ** 2
+                        + (pos_suggestions[idx][1] - first_pos[1]) ** 2
+                        + (pos_suggestions[idx][2] - first_pos[2]) ** 2
+                    )
+                    if disp > 5.0:
+                        logger.warning(
+                            "Multi-parent part '%s': parent #%d suggests "
+                            "position %.1fmm from parent #0's suggestion "
+                            "(%.1fmm disagreement). Using first parent. "
+                            "For closed-chain constraints use "
+                            "ClosedChainSolver.",
+                            child_name, idx, disp, disp,
+                        )
+
+                # Apply delta from current position to first-parent suggestion
                 old_pos = positions[child_name]
                 delta = (
-                    avg_pos[0] - old_pos[0],
-                    avg_pos[1] - old_pos[1],
-                    avg_pos[2] - old_pos[2],
+                    first_pos[0] - old_pos[0],
+                    first_pos[1] - old_pos[1],
+                    first_pos[2] - old_pos[2],
                 )
                 self._apply_delta(child_name, delta, positions, children_of)
 
-                # Average rotations via quaternion averaging and propagate
-                avg_rot = _average_rotations(rot_suggestions)
+                # Use first parent's rotation
                 old_rot = rot_mats[child_name]
-                rot_mats[child_name] = avg_rot
-                # Compute the rotation delta and apply to all descendants
-                # delta_rot = avg_rot @ inv(old_rot)
+                rot_mats[child_name] = first_rot
                 old_rot_inv = _matrix_transpose(old_rot)
-                delta_rot = _mat_mul(avg_rot, old_rot_inv)
+                delta_rot = _mat_mul(first_rot, old_rot_inv)
                 self._apply_rotation_delta(
                     child_name, delta_rot, rot_mats, children_of,
                     positions=positions,
@@ -784,13 +805,20 @@ class AssemblySolver:
                     placements[pname] = {
                         "position": [base_position[0], base_position[1], base_position[2]],
                         "rotation": [0, 0, 1, 0],
+                        "kinematic_rotation": [0, 0, 1, 0],
                     }
                     continue
                 r = rot_mats.get(pname, _identity_matrix())
+                # kinematic_rotation = pure joint-chain rotation, used by
+                # URDF/IK consumers that must NOT be contaminated by the
+                # visual cylinder_orient offset (P0-2: previously the visual
+                # rotation leaked into URDF joint origin RPY).
+                r_kin = r
                 r = self._visual_rotation_for_part(pname, r)
                 placements[pname] = {
                     "position": [round(p[0], 4), round(p[1], 4), round(p[2], 4)],
                     "rotation": _rot_mat_to_axis_angle_deg(r),
+                    "kinematic_rotation": _rot_mat_to_axis_angle_deg(r_kin),
                 }
             else:
                 logger.warning(
@@ -801,6 +829,7 @@ class AssemblySolver:
                 placements[pname] = {
                     "position": [base_position[0], base_position[1], base_position[2]],
                     "rotation": [0, 0, 1, 0],
+                    "kinematic_rotation": [0, 0, 1, 0],
                 }
 
         # Phase 4: Collision resolution (opt-in).
@@ -1360,8 +1389,14 @@ class ClosedChainSolver:
             parent_pos = tuple(placements.get(joint.parent, {}).get("position", [0, 0, 0]))
             parent_rot_mat = _identity_matrix()
             parent_placement = placements.get(joint.parent, {})
-            if "rotation" in parent_placement:
-                parent_rot_mat = _axis_angle_deg_to_rot_mat(parent_placement["rotation"])
+            # P0-2: use kinematic_rotation for loop-closure math (visual
+            # rotation must not contaminate the FK recomputation).
+            parent_rot_aa = (
+                parent_placement.get("kinematic_rotation")
+                or parent_placement.get("rotation")
+            )
+            if parent_rot_aa:
+                parent_rot_mat = _axis_angle_deg_to_rot_mat(parent_rot_aa)
             expected_pos, _ = base_solver._compute_child_transform(
                 parent_part=parent_part,
                 child_part=child_part,

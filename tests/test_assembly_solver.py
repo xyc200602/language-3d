@@ -804,8 +804,14 @@ class TestConnectionToConstraints:
 class TestMultiParentTopology:
     """Test multi-parent part handling in AssemblySolver."""
 
-    def test_part_with_two_parents_gets_averaged_position(self):
-        """Part with two parents should get averaged position."""
+    def test_part_with_two_parents_uses_first_parent_position(self):
+        """Part with two parents should use the FIRST parent's position.
+
+        P1-2: previously this test verified position AVERAGING, which is
+        physically impossible (a rigid plate can't sit at the mean of two
+        conflicting positions).  Now the solver uses tree semantics: first
+        parent wins, and a warning is logged when other parents disagree.
+        """
         parts = [
             Part(name="root", category="s", description="",
                  dimensions={"length": 100, "width": 100, "height": 10}),
@@ -839,15 +845,13 @@ class TestMultiParentTopology:
         solver = AssemblySolver(assembly)
         placements = solver.solve()
 
-        # Plate should be centered between the two supports
+        # Plate should be at the FIRST parent's (support_l) suggested position,
+        # NOT the average of both parents.
         plate_x = placements["plate"]["position"][0]
-        # The plate should be closer to x=0 than to either support's position
         support_l_x = placements["support_l"]["position"][0]
-        support_r_x = placements["support_r"]["position"][0]
-        # Averaged x should be between the two supports
-        avg_x = (support_l_x + support_r_x) / 2
-        assert plate_x == pytest.approx(avg_x, abs=1.0), \
-            f"plate_x={plate_x} should be near avg_x={avg_x}"
+        # plate_x should be close to support_l_x, not to the average (0)
+        assert plate_x == pytest.approx(support_l_x, abs=5.0), \
+            f"plate_x={plate_x} should be near first-parent support_l_x={support_l_x}, not averaged"
 
     def test_single_parent_unchanged(self):
         """Single-parent parts should work the same as before."""
@@ -874,8 +878,12 @@ class TestMultiParentTopology:
         # Pillar should be above base
         assert placements["pillar"]["position"][2] > placements["base"]["position"][2]
 
-    def test_four_parent_averaging(self):
-        """Part with four parents (like top_plate on standoffs) gets centered."""
+    def test_four_parent_uses_first_parent(self):
+        """Part with four parents (like top_plate on standoffs) uses first parent.
+
+        P1-2: previously this verified averaging, which is physically
+        impossible.  Now uses tree semantics: first parent (leg_fl) wins.
+        """
         parts = [
             Part(name="root", category="s", description="",
                  dimensions={"length": 200, "width": 200, "height": 5}),
@@ -925,13 +933,13 @@ class TestMultiParentTopology:
         solver = AssemblySolver(assembly)
         placements = solver.solve()
 
-        # Shelf should be centered at x=0, y=0 (averaged from 4 legs)
+        # Shelf should be at the FIRST parent's (leg_fl) position, not
+        # averaged to the center.
         shelf_pos = placements["shelf"]["position"]
-        # The averaged position should be near origin in x,y
-        assert abs(shelf_pos[0]) < 5.0, \
-            f"shelf x={shelf_pos[0]} should be near 0"
-        assert abs(shelf_pos[1]) < 5.0, \
-            f"shelf y={shelf_pos[1]} should be near 0"
+        leg_fl_pos = placements["leg_fl"]["position"]
+        # The shelf should be near leg_fl in x,y (first parent), not at origin
+        assert abs(shelf_pos[0] - leg_fl_pos[0]) < 5.0, \
+            f"shelf x={shelf_pos[0]} should be near first-parent leg_fl x={leg_fl_pos[0]}"
         # Shelf should be above legs
         assert shelf_pos[2] > placements["root"]["position"][2]
 
@@ -1027,11 +1035,13 @@ class TestApplyDeltaGrandchildren:
         # Tower should be above plate
         assert placements["tower"]["position"][2] > placements["plate"]["position"][2]
 
-        # Plate should be centered (averaged from two supports)
+        # P1-2: plate uses FIRST parent (support_l) position, not averaged
         plate_x = placements["plate"]["position"][0]
-        assert abs(plate_x) < 5.0, f"plate_x={plate_x} should be near 0 (averaged)"
+        support_l_x = placements["support_l"]["position"][0]
+        assert abs(plate_x - support_l_x) < 5.0, \
+            f"plate_x={plate_x} should be near first-parent support_l_x={support_l_x}"
 
-        # Tower should also be centered (inherits from plate)
+        # Tower should inherit from plate (delta propagation still works)
         tower_x = placements["tower"]["position"][0]
         assert abs(tower_x - plate_x) < 1.0, \
             f"tower_x={tower_x} should be near plate_x={plate_x}"

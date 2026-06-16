@@ -59,7 +59,15 @@ class AssemblyContext:
             self._ensure_default_angles()
 
             solver = AssemblySolver(self.assembly)
-            self.positions = solver.solve()
+            try:
+                self.positions = solver.solve()
+            except (ValueError, RuntimeError) as e:
+                logger.warning(
+                    "Default-pose solve failed (%s) — using empty "
+                    "positions. Downstream steps will use part defaults.",
+                    e,
+                )
+                self.positions = {}
             # Adjust ground contact: find lowest part considering geometry
             self._adjust_ground_contact()
             self._validate_positions()
@@ -78,7 +86,24 @@ class AssemblyContext:
             solver = AssemblySolver(self.assembly)
             # Explicit {} → solver does NOT fall back to default_angles,
             # so every revolute joint sits at 0°.
-            self.home_positions = solver.solve(joint_angles={})
+            #
+            # P0-4: the all-zero solve can hit _clamp_child_offset ValueError
+            # when LLM-generated offsets are fine in a bent default pose but
+            # extreme when the arm is straight (e.g. wrist→gripper offset
+            # projects to 433mm vertically).  Previously this crashed the
+            # entire export — now we fall back to the default-pose positions
+            # with a warning so the engineering package is still produced.
+            try:
+                self.home_positions = solver.solve(joint_angles={})
+            except (ValueError, RuntimeError) as e:
+                logger.warning(
+                    "Home-pose (all-zero) solve failed (%s) — falling "
+                    "back to default-pose positions for URDF export. "
+                    "Joint origin RPY may bake in default_angles; this "
+                    "is a data-quality issue, not a pipeline crash.",
+                    e,
+                )
+                self.home_positions = self.ensure_positions()
             self.home_solved = True
         return self.home_positions
 

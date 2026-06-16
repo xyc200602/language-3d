@@ -331,8 +331,10 @@ def _build_fea_script(
     """Build a FreeCAD FEM Python script for structural analysis.
 
     Compatible with FreeCAD 1.1 API.
-    Face selection uses normal-vector matching:
-      bottom=-Z, top=+Z, front=+Y, back=-Y, left=-X, right=+X
+    Face selection uses normal-vector matching.  Convention MUST match
+    assembly_solver.ANCHOR_DIRECTIONS so a part positioned on its "front"
+    face (-Y) receives force on that same face:
+      bottom=-Z, top=+Z, front=-Y, back=+Y, left=-X, right=+X
     """
     mesh_info = MESH_SIZES.get(mesh_size, MESH_SIZES["medium"])
     max_size_factor = mesh_info["max_element_size_factor"]
@@ -386,8 +388,8 @@ def _find_face_name_by_normal(shape, target_dir, tolerance=0.9):
 FACE_MAP = {{
     "bottom": (0, 0, -1),
     "top": (0, 0, 1),
-    "front": (0, 1, 0),
-    "back": (0, -1, 0),
+    "front": (0, -1, 0),
+    "back": (0, 1, 0),
     "left": (-1, 0, 0),
     "right": (1, 0, 0),
 }}

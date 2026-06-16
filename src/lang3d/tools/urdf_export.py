@@ -566,8 +566,18 @@ class AssemblyToURDF:
 
         # Relative rotation: R_child * R_parent^(-1) → RPY
         # This gives the orientation of the child frame relative to the parent frame.
-        child_rot = self.positions.get(joint.child, {}).get("rotation", [0, 0, 1, 0])
-        parent_rot = self.positions.get(joint.parent, {}).get("rotation", [0, 0, 1, 0])
+        #
+        # P0-2: use ``kinematic_rotation`` (pure joint-chain rotation) instead
+        # of ``rotation`` (which includes the visual cylinder_orient offset).
+        # The visual offset contaminates joint origin RPY and breaks IK/FK
+        # round-trips for cylindrical parts (servos, bearings).  Fall back to
+        # ``rotation`` for older solver outputs that don't have the split yet.
+        def _kin_rot(name: str) -> list[float]:
+            p = self.positions.get(name, {})
+            return p.get("kinematic_rotation") or p.get("rotation", [0, 0, 1, 0])
+
+        child_rot = _kin_rot(joint.child)
+        parent_rot = _kin_rot(joint.parent)
         rpy = _relative_axis_angle_to_rpy(parent_rot, child_rot)
 
         return rel_xyz, rpy

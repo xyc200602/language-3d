@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from typing import Any
@@ -688,16 +689,17 @@ def generate_assembly_from_nl(
     # Parse the JSON response
     assembly = _parse_assembly_json(raw_text)
 
-    # Sanitize: strip hallucinated wheel parts from fixed-base arm assemblies
-    if is_arm and not is_wheeled:
-        assembly = _strip_wheel_parts(assembly)
-    # Normalize gripper finger joints for visible separation
+    # Apply normalizing sanitizers (non-raising).  Raising validators
+    # (_raise_on_wheel_in_arm, _validate_proportions) are applied in the
+    # VLM retry loop (generate_assembly_with_vlm_loop) so their errors
+    # enter problems_history and the LLM can regenerate.  They are
+    # intentionally NOT called here: a standalone call to this function
+    # returns a parsed, normalised assembly without needing a surrounding
+    # try/except, and the loop consolidates all validation errors in one
+    # place (Step A.5).
     assembly = _normalize_gripper_fingers(assembly)
-    # Inject non-zero default_angles for arm postures if the LLM omitted them
     if is_arm:
         assembly = _ensure_arm_default_angles(assembly)
-        # Clamp disproportionate part dimensions for visual realism
-        assembly = _validate_proportions(assembly)
 
     return assembly
 
@@ -1172,8 +1174,40 @@ def _ensure_connected(assembly: Assembly, part_names: set[str]) -> None:
         logger.info("  Auto-connected '%s' -> '%s'", part_name, parent)
 
 
+def _raise_on_wheel_in_arm(assembly: Assembly) -> None:
+    """P1-1: detect hallucinated wheel parts in arm assemblies and raise.
+
+    Per CLAUDE.md: "LLM 给出离谱尺寸/位置时，应该报错让 LLM 重试，
+    而不是悄悄修正".  Previously ``_strip_wheel_parts`` silently deleted
+    wheel/motor_mount parts, hiding the error from the VLM feedback loop
+    so the LLM never learned to stop generating them.
+
+    This function raises ``RuntimeError`` so the error enters
+    ``problems_history`` via ``_validate_assembly``'s pattern, giving the
+    LLM a chance to regenerate without wheels.
+    """
+    wheel_keywords = ("wheel", "motor_mount", "电机座", "轮")
+    found = [
+        p.name for p in assembly.parts
+        if any(kw in p.name.lower() for kw in wheel_keywords)
+    ]
+    if found:
+        raise RuntimeError(
+            f"Arm assembly contains wheel/motor_mount parts that should "
+            f"not exist in a fixed-base arm: {found}. Remove these parts "
+            f"and their joints — a fixed-base arm has only base_plate, "
+            f"joints (housings), links, and end_effector."
+        )
+
+
 def _strip_wheel_parts(assembly: Assembly) -> Assembly:
     """Remove wheel and wheel-motor parts from the assembly in-place.
+
+    .. deprecated:: P1-1
+       Silent deletion of LLM-hallucinated parts violates the CLAUDE.md
+       principle "不要在代码里加 hack 让 LLM/外部输入看起来对".  Use
+       :func:`_raise_on_wheel_in_arm` instead — it feeds the error back
+       into the VLM retry loop so the LLM can correct itself.
 
     The LLM sometimes hallucinates wheel/motor_mount parts for fixed-base arms,
     which causes VLM verification failures (overlapping parts, wrong wheel
@@ -1410,17 +1444,26 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
 
 
 def _validate_proportions(assembly: Assembly) -> Assembly:
-    """Validate and auto-correct part proportions for visual realism.
+    """Validate part proportions and raise on physically bad ratios.
 
-    The LLM often generates disproportionate parts (e.g. a gripper_base
-    wider than the arm links it attaches to, or consecutive links with
-    wildly different lengths).  This sanitizer clamps extreme ratios so
-    the rendered assembly looks mechanically coherent.
+    P1-1: previously this sanitizer SILENTLY CLAMPED disproportionate
+    dimensions (gripper width, link length, link cross-section) so the
+    rendered assembly "looked right".  Per CLAUDE.md ("不要在代码里加
+    hack 让 LLM/外部输入看起来对"), clamp-and-pretend masks the real
+    data-quality issue from the VLM retry loop so the LLM never learns
+    to produce coherent dimensions.
+
+    Now the function COLLECTS every proportion violation and raises a
+    single RuntimeError describing all of them, so the error enters
+    ``problems_history`` and the LLM gets a chance to regenerate with
+    corrected dimensions.  Returns ``assembly`` unchanged when valid.
 
     Checks:
     1. gripper_base width ≤ 1.8 × parent link width
-    2. Consecutive link length ratio < 3.0 (clamp to 2.5)
+    2. Consecutive link length ratio < 3.0
+    3. link cross-section ≥ 0.55 × joint diameter (width) / 0.50× (height)
     """
+    problems: list[str] = []
     parts_by_name = {p.name: p for p in assembly.parts}
 
     for joint in assembly.joints:
@@ -1442,12 +1485,12 @@ def _validate_proportions(assembly: Assembly) -> Assembly:
                 and parent_w > 0 and child_w > 0):
             max_w = parent_w * 1.8
             if child_w > max_w:
-                logger.info(
-                    "Proportion fix: gripper_base '%s' width %.0fmm > 1.8× "
-                    "parent '%s' width %.0fmm — clamped to %.0fmm",
-                    child.name, child_w, parent.name, parent_w, max_w,
+                problems.append(
+                    f"gripper_base '{child.name}' width {child_w:.0f}mm > "
+                    f"1.8x parent '{parent.name}' width {parent_w:.0f}mm "
+                    f"(limit {max_w:.0f}mm); reduce the gripper width or "
+                    f"widen the parent link"
                 )
-                child.dimensions["width"] = max_w
 
         # Check 2: consecutive link length ratio
         parent_nl = parent.name.lower()
@@ -1455,26 +1498,12 @@ def _validate_proportions(assembly: Assembly) -> Assembly:
                 and "link" in parent_nl and "link" in child_nl):
             ratio = max(parent_l, child_l) / min(parent_l, child_l)
             if ratio > 3.0:
-                if parent_l < child_l:
-                    # Child is too long — clamp down to parent_l * 2.5
-                    target = parent_l * 2.5
-                    logger.info(
-                        "Proportion fix: link '%s' length %.0fmm is %.1f× "
-                        "parent '%s' (%.0fmm) — clamped to %.0fmm",
-                        child.name, child_l, ratio,
-                        parent.name, parent_l, target,
-                    )
-                    child.dimensions["length"] = target
-                else:
-                    # Parent is longer — increase child to parent_l / 2.5
-                    target = parent_l / 2.5
-                    logger.info(
-                        "Proportion fix: link '%s' length %.0fmm vs parent "
-                        "'%s' (%.0fmm) ratio %.1f — increased to %.0fmm",
-                        child.name, child_l, parent.name, parent_l,
-                        ratio, target,
-                    )
-                    child.dimensions["length"] = target
+                problems.append(
+                    f"consecutive links '{parent.name}' ({parent_l:.0f}mm) "
+                    f"and '{child.name}' ({child_l:.0f}mm) have length "
+                    f"ratio {ratio:.1f} > 3.0; make adjacent link lengths "
+                    f"comparable (ratio < 3.0)"
+                )
 
         # Check 3: joint-link cross-section consistency.
         # Joint cylinders (with "diameter") are often much fatter than the
@@ -1489,38 +1518,42 @@ def _validate_proportions(assembly: Assembly) -> Assembly:
         child_d = child.dimensions.get("diameter", 0)
         link_part = None
         joint_d = 0
+        joint_name = ""
         if parent_d > 0 and "joint" in parent_nl and child.category in (
                 "structural", "link"):
             link_part = child
             joint_d = parent_d
+            joint_name = parent.name
         elif child_d > 0 and "joint" in child_nl and parent.category in (
                 "structural", "link"):
             # parent is the link, child is the joint
             link_part = parent
             joint_d = child_d
+            joint_name = child.name
         if link_part is not None and joint_d > 0:
             min_w = joint_d * 0.55
             min_h = joint_d * 0.50
             link_w = link_part.dimensions.get("width", 0)
             link_h = link_part.dimensions.get("height", 0)
             if link_w > 0 and link_w < min_w:
-                logger.info(
-                    "Proportion fix: link '%s' width %.0fmm < 0.55× joint "
-                    "'%s' diameter %.0fmm — increased to %.0fmm",
-                    link_part.name, link_w,
-                    parent.name if parent is not link_part else child.name,
-                    joint_d, min_w,
+                problems.append(
+                    f"link '{link_part.name}' width {link_w:.0f}mm < "
+                    f"0.55x joint '{joint_name}' diameter {joint_d:.0f}mm "
+                    f"(need >= {min_w:.0f}mm); the joint visually swallows "
+                    f"the link — widen the link"
                 )
-                link_part.dimensions["width"] = min_w
             if link_h > 0 and link_h < min_h:
-                logger.info(
-                    "Proportion fix: link '%s' height %.0fmm < 0.50× joint "
-                    "'%s' diameter %.0fmm — increased to %.0fmm",
-                    link_part.name, link_h,
-                    parent.name if parent is not link_part else child.name,
-                    joint_d, min_h,
+                problems.append(
+                    f"link '{link_part.name}' height {link_h:.0f}mm < "
+                    f"0.50x joint '{joint_name}' diameter {joint_d:.0f}mm "
+                    f"(need >= {min_h:.0f}mm); the joint visually swallows "
+                    f"the link — increase the link height"
                 )
-                link_part.dimensions["height"] = min_h
+
+    if problems:
+        raise RuntimeError(
+            "Proportion validation failed: " + "; ".join(problems)
+        )
 
     return assembly
 
@@ -1818,6 +1851,37 @@ def _validate_assembly(assembly: Assembly) -> None:
         logger.warning(
             "Assembly has %d revolute DOF — verify design intent", revolute_count,
         )
+
+    # P0-4: check joint offsets against the 3.0× max-dimension bound the
+    # solver uses in _clamp_child_offset.  Without this, extreme offsets
+    # pass validation, pass the VLM loop (because default_angles bend the
+    # arm and keep the offset within bounds), then crash the all-zero
+    # home-pose solve at export time — killing the entire engineering
+    # package output.  Raising here feeds the error back to the LLM via
+    # the VLM retry loop so it can regenerate with corrected offsets.
+    for i, joint in enumerate(assembly.joints):
+        if not joint.offset:
+            continue
+        parent_part = _parts_by_name.get(joint.parent)
+        child_part = _parts_by_name.get(joint.child)
+        if not parent_part or not child_part:
+            continue
+        parent_max = max(parent_part.dimensions.values()) if parent_part.dimensions else 0
+        child_max = max(child_part.dimensions.values()) if child_part.dimensions else 0
+        if parent_max < 1 and child_max < 1:
+            continue
+        offset_mag = math.sqrt(sum(c ** 2 for c in joint.offset))
+        max_allowed = 3.0 * (parent_max + child_max)
+        if max_allowed < 1.0:
+            max_allowed = 500.0
+        if offset_mag > max_allowed:
+            raise RuntimeError(
+                f"Joint #{i} ('{joint.description}'): offset "
+                f"{joint.offset} (magnitude {offset_mag:.1f}mm) exceeds "
+                f"3.0× (parent+child) = {max_allowed:.1f}mm. "
+                f"The offset is physically inconsistent with the part "
+                f"dimensions; reduce the offset or increase part sizes."
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -2449,6 +2513,14 @@ def generate_assembly_with_vlm_loop(
     text_backend = GLMBackend(api_key=api_key, base_url=base_url,
                                 model=text_model)
 
+    # Classify the description once so every round and the validation
+    # try-block (Step A.5) share the same is_arm / is_wheeled decision.
+    desc_lower = description.lower()
+    is_arm = any(kw in desc_lower for kw in [
+        "臂", "arm", "机械手", "机械臂", "抓手", "gripper", "自由度"])
+    is_wheeled = any(kw in desc_lower for kw in [
+        "轮", "wheel", "差速", "移动", "底盘"])
+
     assembly = None
     positions = None
     problems_history: list[list[str]] = []
@@ -2488,26 +2560,27 @@ def generate_assembly_with_vlm_loop(
                 max_tokens=16384,
             )
             assembly = _parse_assembly_json(resp.content)
-            # Re-apply sanitizer to catch any re-hallucinated wheel parts
-            desc_check = description.lower()
-            is_arm_check = any(kw in desc_check for kw in ["臂", "arm", "机械手", "机械臂", "抓手", "gripper", "自由度"])
-            is_wheeled_check = any(kw in desc_check for kw in ["轮", "wheel", "差速", "移动", "底盘"])
-            if is_arm_check and not is_wheeled_check:
-                assembly = _strip_wheel_parts(assembly)
+            # Re-apply normalizing sanitizers (non-raising).  Raising
+            # validators are consolidated in Step A.5 below so their
+            # errors enter problems_history instead of escaping the loop.
             assembly = _normalize_gripper_fingers(assembly)
-            if is_arm_check:
+            if is_arm:
                 assembly = _ensure_arm_default_angles(assembly)
-                assembly = _validate_proportions(assembly)
 
         # --- Step A.5: Validate assembly (errors enter LLM retry loop) ---
-        # _validate_assembly raises RuntimeError for data-integrity issues
-        # (joint references unknown part, invalid joint.type, range_deg
-        # malformed, non-positive dimensions). Previously such errors
-        # escaped the loop and killed the whole pipeline (root cause of
-        # 4wheel_dual_arm dying on 'Joint #16: child not in parts list').
-        # Now they enter problems_history so the LLM gets a chance to
-        # regenerate with the error message as feedback.
+        # All raising validators run inside this single try so their
+        # RuntimeErrors enter problems_history and the LLM gets a chance
+        # to regenerate with the error messages as feedback.  Previously
+        # only _validate_assembly was guarded; the raising sanitizers
+        # (_raise_on_wheel_in_arm, _validate_proportions) sat OUTSIDE the
+        # try, so a wheel hallucination or a proportion violation killed
+        # the whole pipeline — the exact failure mode that originally
+        # crashed 4wheel_dual_arm.
         try:
+            if is_arm and not is_wheeled:
+                _raise_on_wheel_in_arm(assembly)
+            if is_arm:
+                _validate_proportions(assembly)
             _validate_assembly(assembly)
         except RuntimeError as e:
             logger.warning(

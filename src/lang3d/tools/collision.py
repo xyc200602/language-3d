@@ -1,11 +1,18 @@
-"""Collision detection for robotic arms using capsule models and GJK algorithm.
+"""Collision detection for robotic arms using capsule models.
 
 Provides:
   - Capsule: simple geometric body (line segment + radius)
   - build_capsule_model: convert arm links to capsule list
-  - gjk_distance: Gilbert-Johnson-Keerthi distance algorithm
+  - capsule_distance: segment-segment distance minus radii
   - check_self_collision: detect inter-arm and intra-arm collisions
   - CollisionCheckTool: Agent tool for collision queries
+
+P1-3: the module docstring previously claimed "GJK algorithm" but the
+actual implementation uses iterative segment-segment closest-point
+computation, not the Gilbert-Johnson-Keerthi algorithm.  The function
+``gjk_distance`` was a misleading alias for ``capsule_distance`` and has
+been removed.  The dead ``_support_point`` helper (written for GJK but
+never called) has also been deleted.
 """
 
 from __future__ import annotations
@@ -73,43 +80,8 @@ def build_capsule_model(
 
 
 # ---------------------------------------------------------------------------
-# GJK distance algorithm (simplified for capsule-capsule)
+# Vector helpers for capsule distance
 # ---------------------------------------------------------------------------
-
-def _support_point(
-    capsule: Capsule, direction: tuple[float, float, float]
-) -> tuple[float, float, float]:
-    """Find the farthest point on a capsule in the given direction."""
-    d_len = math.sqrt(
-        (capsule.end[0] - capsule.start[0]) ** 2 +
-        (capsule.end[1] - capsule.start[1]) ** 2 +
-        (capsule.end[2] - capsule.start[2]) ** 2
-    )
-    if d_len < 1e-10:
-        # Degenerate capsule (point)
-        base = capsule.start
-    else:
-        # Project direction onto segment axis
-        dx = capsule.end[0] - capsule.start[0]
-        dy = capsule.end[1] - capsule.start[1]
-        dz = capsule.end[2] - capsule.start[2]
-        t = (direction[0] * dx + direction[1] * dy + direction[2] * dz) / (d_len * d_len)
-        t = max(0.0, min(1.0, t))
-        base = (
-            capsule.start[0] + t * dx,
-            capsule.start[1] + t * dy,
-            capsule.start[2] + t * dz,
-        )
-    # Add radius in direction
-    dir_len = math.sqrt(direction[0] ** 2 + direction[1] ** 2 + direction[2] ** 2)
-    if dir_len < 1e-10:
-        return base
-    return (
-        base[0] + direction[0] / dir_len * capsule.radius,
-        base[1] + direction[1] / dir_len * capsule.radius,
-        base[2] + direction[2] / dir_len * capsule.radius,
-    )
-
 
 def _vec_sub(a: tuple[float, ...], b: tuple[float, ...]) -> tuple[float, float, float]:
     return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
@@ -141,7 +113,14 @@ def _closest_point_on_segment(
 def capsule_distance(a: Capsule, b: Capsule) -> float:
     """Compute the minimum distance between two capsules.
 
-    Returns negative value if capsules overlap.
+    Uses iterative segment-segment closest-point computation (10
+    iterations of alternating projection).  Returns negative value if
+    capsules overlap.
+
+    P1-3: previously a ``gjk_distance`` function claimed to implement
+    the Gilbert-Johnson-Keerthi algorithm but simply delegated to this
+    function.  The misleading alias has been removed — callers should
+    use ``capsule_distance`` directly.
     """
     # Find closest points between the two line segments
     # Use iterative approach: alternate closest point computation
@@ -157,15 +136,6 @@ def capsule_distance(a: Capsule, b: Capsule) -> float:
         (pa[0] - pb[0]) ** 2 + (pa[1] - pb[1]) ** 2 + (pa[2] - pb[2]) ** 2
     )
     return dist - a.radius - b.radius
-
-
-def gjk_distance(capsule_a: Capsule, capsule_b: Capsule) -> float:
-    """GJK-inspired distance between two capsules.
-
-    Uses the capsule_distance function which computes segment-segment
-    distance minus radii. Returns negative if overlapping.
-    """
-    return capsule_distance(capsule_a, capsule_b)
 
 
 def check_self_collision(

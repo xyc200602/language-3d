@@ -17,6 +17,8 @@ Covers the four layers of the systematic fix:
 
 from __future__ import annotations
 
+import pytest
+
 from lang3d.knowledge.mechanics import Assembly, Joint, Part
 from lang3d.tools.assembly_generator import (
     _ensure_arm_default_angles,
@@ -729,8 +731,13 @@ def test_center_center_bearing_unchanged():
     )
 
 
-def test_proportion_validation_clamps_gripper_width():
-    """Gripper_base wider than 1.8× parent link should be clamped."""
+def test_proportion_validation_rejects_oversize_gripper_width():
+    """gripper_base wider than 1.8x parent link should raise, not clamp.
+
+    P1-1: per CLAUDE.md ("不要在代码里加 hack 让 LLM/外部输入看起来对"),
+    disproportionate dimensions must be fed back to the LLM via a
+    RuntimeError so it can regenerate, not silently clamped.
+    """
     wrist = _box("wrist_link", length=60, width=20, height=12)
     gripper = _box("gripper_base", length=28, width=80, height=32)
     asm = Assembly(
@@ -741,16 +748,15 @@ def test_proportion_validation_clamps_gripper_width():
                   parent_anchor="front", child_anchor="back"),
         ],
     )
-    result = _validate_proportions(asm)
-    gb = [p for p in result.parts if p.name == "gripper_base"][0]
-    assert gb.dimensions["width"] <= 36.0, (
-        f"Gripper width {gb.dimensions['width']} should be <= 36 "
-        f"(1.8 × wrist width 20)"
-    )
+    with pytest.raises(RuntimeError, match="gripper_base"):
+        _validate_proportions(asm)
+    # Dimensions must be left UNCHANGED so the error message reports the
+    # original LLM values (no silent clamp-and-pretend).
+    assert gripper.dimensions["width"] == 80
 
 
-def test_proportion_validation_link_length_ratio():
-    """Consecutive links with length ratio > 3.0 should be clamped."""
+def test_proportion_validation_rejects_extreme_link_ratio():
+    """Consecutive links with length ratio > 3.0 should raise."""
     link1 = _box("upper_link", length=150, width=25, height=15)
     link2 = _box("lower_link", length=30, width=25, height=15)
     asm = Assembly(
@@ -761,24 +767,19 @@ def test_proportion_validation_link_length_ratio():
                   parent_anchor="front", child_anchor="back"),
         ],
     )
-    result = _validate_proportions(asm)
-    ll = [p for p in result.parts if p.name == "lower_link"][0]
-    # Ratio was 5.0, should be clamped so ratio <= 2.5
-    # upper_link=150, so lower_link should be at least 150/2.5 = 60
-    assert ll.dimensions["length"] >= 60.0, (
-        f"Lower link length {ll.dimensions['length']} should be >= 60 "
-        f"(upper_link 150 / 2.5 max ratio)"
-    )
+    with pytest.raises(RuntimeError, match="ratio"):
+        _validate_proportions(asm)
+    assert link2.dimensions["length"] == 30  # unchanged
 
 
-def test_proportion_validation_joint_link_section():
-    """Link cross-section should grow when dwarfed by a joint cylinder.
+def test_proportion_validation_rejects_thin_link_vs_joint():
+    """Link dwarfed by a joint cylinder should raise, not be widened.
 
     Regression for the joint-link intersection seen in the 4dof_arm render:
-    shoulder_joint (diameter=40) connecting to shoulder_link (25×15) left
+    shoulder_joint (diameter=40) connecting to shoulder_link (25x15) left
     the 20 mm joint radius extending well past the 15 mm link height, so the
-    joint visually "swallowed" the link.  The validator should enlarge the
-    link cross-section so it is at least 0.55× the joint diameter.
+    joint visually "swallowed" the link.  The validator now reports this
+    instead of silently enlarging the link cross-section.
     """
     joint = _cyl("shoulder_joint", diameter=40, height=35)
     link = _box("shoulder_link", length=120, width=25, height=15)
@@ -790,17 +791,10 @@ def test_proportion_validation_joint_link_section():
                   parent_anchor="front", child_anchor="back"),
         ],
     )
-    result = _validate_proportions(asm)
-    out_link = [p for p in result.parts if p.name == "shoulder_link"][0]
-    # 0.55 × 40 = 22 mm width, 0.50 × 40 = 20 mm height
-    assert out_link.dimensions["width"] >= 22.0, (
-        f"Link width {out_link.dimensions['width']} should be >= 22 "
-        f"(0.55 × joint diameter 40)"
-    )
-    assert out_link.dimensions["height"] >= 20.0, (
-        f"Link height {out_link.dimensions['height']} should be >= 20 "
-        f"(0.50 × joint diameter 40)"
-    )
+    with pytest.raises(RuntimeError, match="shoulder_link"):
+        _validate_proportions(asm)
+    # Width 25 < 22? no, 25 > 22 ok. Height 15 < 20 -> violation.
+    assert link.dimensions["height"] == 15  # unchanged
 
 
 def test_proportion_validation_link_to_joint_reverse():
@@ -815,14 +809,33 @@ def test_proportion_validation_link_to_joint_reverse():
                   parent_anchor="front", child_anchor="back"),
         ],
     )
-    result = _validate_proportions(asm)
-    out_link = [p for p in result.parts if p.name == "wrist_link"][0]
-    # 0.55 × 28 = 15.4 mm, link width 20 is already > 15.4, so unchanged.
-    # 0.50 × 28 = 14 mm, link height 12 < 14, so should be increased.
-    assert out_link.dimensions["height"] >= 14.0, (
-        f"Link height {out_link.dimensions['height']} should be >= 14 "
-        f"(0.50 × joint diameter 28)"
+    # 0.55x28 = 15.4 mm: link width 20 > 15.4 ok.
+    # 0.50x28 = 14 mm: link height 12 < 14 -> violation -> raise.
+    with pytest.raises(RuntimeError, match="wrist_link"):
+        _validate_proportions(asm)
+    assert link.dimensions["height"] == 12  # unchanged
+
+
+def test_proportion_validation_accepts_coherent_proportions():
+    """A well-proportioned assembly must NOT raise (positive control).
+
+    Guards against the validator becoming overly strict and rejecting
+    valid designs after the P1-1 clamp->raise conversion.
+    """
+    joint = _cyl("shoulder_joint", diameter=30, height=30)
+    link = _box("shoulder_link", length=120, width=22, height=18)
+    asm = Assembly(
+        name="test",
+        parts=[joint, link],
+        joints=[
+            Joint("revolute", "shoulder_joint", "shoulder_link",
+                  parent_anchor="front", child_anchor="back"),
+        ],
     )
+    # 0.55x30 = 16.5 mm: width 22 > 16.5 ok, height 18 > 15 ok.
+    # No gripper_base, no consecutive links -> only Check 3 applies.
+    result = _validate_proportions(asm)
+    assert result is asm  # returned unchanged
 
 # ---------------------------------------------------------------------------
 # Regression: validation errors must enter the LLM retry loop

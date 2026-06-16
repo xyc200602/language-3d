@@ -37,6 +37,19 @@ from lang3d.tools.ik_solver import (
     register_ik_tools,
     solve_ik,
 )
+
+# ---------------------------------------------------------------------------
+# Dynamically compute the home EE position from the solver so IK tests use the
+# AUTHORITATIVE home pose instead of a stale hardcoded Z value.  Previous
+# tests hardcoded (0, 0, 166.5) but the solver's home pose evolved (clearance
+# offsets, anchor fixes) to 180.9mm — the 14.4mm mismatch caused spurious IK
+# "failures" that were actually test-data staleness, not solver bugs.
+# ---------------------------------------------------------------------------
+_home_solver = AssemblySolver(ROBOTIC_ARM_ASSEMBLY)
+_home_placements = _home_solver.solve()
+HOME_EE_POS: tuple[float, float, float] = tuple(
+    _home_placements["end_effector_mount"]["position"]
+)
 from lang3d.tools.base import ToolRegistry
 
 
@@ -161,7 +174,7 @@ class TestCCDSolver:
         """CCD should find zero-error solution for home position."""
         result = solve_ik(
             ROBOTIC_ARM_ASSEMBLY,
-            target=(0, 0, 166.5),
+            target=HOME_EE_POS,
             approach="ccd",
             tolerance_mm=1.0,
             max_iterations=100,
@@ -210,7 +223,7 @@ class TestCCDSolver:
 
     def test_ccd_returns_ik_result(self):
         result = _ccd_solve(
-            target=(0, 0, 166.5),
+            target=HOME_EE_POS,
             assembly=ROBOTIC_ARM_ASSEMBLY,
             links=_extract_chain(ROBOTIC_ARM_ASSEMBLY)[0],
             max_iterations=50,
@@ -240,7 +253,7 @@ class TestSolveIK:
     def test_home_position_auto(self):
         result = solve_ik(
             ROBOTIC_ARM_ASSEMBLY,
-            target=(0, 0, 166.5),
+            target=HOME_EE_POS,
             approach="auto",
             tolerance_mm=1.0,
         )
@@ -249,7 +262,7 @@ class TestSolveIK:
     def test_multiple_targets(self):
         """Test several targets across the workspace."""
         targets = [
-            (0, 0, 166.5),      # Home (straight up)
+            HOME_EE_POS,          # Home (straight up)
             (50, 50, 100),       # Diagonal reachable
             (100, 0, 80),        # Forward reach
             (0, 80, 80),         # Side reach
@@ -274,7 +287,7 @@ class TestSolveIK:
                    "elbow_joint": 0, "wrist_joint": 0}
         result = solve_ik(
             ROBOTIC_ARM_ASSEMBLY,
-            target=(0, 0, 166.5),
+            target=HOME_EE_POS,
             approach="ccd",
             initial_angles=initial,
             tolerance_mm=1.0,
@@ -356,7 +369,7 @@ class TestIKSolveTool:
 
     def test_tool_execute_basic(self):
         tool = IKSolveTool()
-        result = tool.execute(target=[0, 0, 166.5])
+        result = tool.execute(target=list(HOME_EE_POS))
         assert "IK Solver" in result
         assert "Joint Angles" in result
 
@@ -378,7 +391,7 @@ class TestIKSolveTool:
 
     def test_tool_output_has_json(self):
         tool = IKSolveTool()
-        result = tool.execute(target=[0, 0, 166.5])
+        result = tool.execute(target=list(HOME_EE_POS))
         assert "--- JSON ---" in result
         assert "joint_angles" in result
 

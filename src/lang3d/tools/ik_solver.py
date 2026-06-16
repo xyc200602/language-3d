@@ -20,7 +20,7 @@ from typing import Any
 
 from ..knowledge.mechanics import Assembly, Joint, Part
 from ..models.base import ToolDefinition
-from .assembly_solver import AssemblySolver
+from .assembly_solver import AssemblySolver, _axis_angle_deg_to_rot_mat, _mat_vec
 from .base import Tool
 
 
@@ -351,7 +351,9 @@ def _ccd_solve(
             ee_vec = (ee_xyz[0] - joint_xyz[0], ee_xyz[1] - joint_xyz[1], ee_xyz[2] - joint_xyz[2])
             target_vec = (target[0] - joint_xyz[0], target[1] - joint_xyz[1], target[2] - joint_xyz[2])
 
-            rot_axis = _get_rot_axis(link)
+            # P0-3: world-frame axis depends on the cumulative rotation of
+            # preceding joints, not a fixed local axis.
+            rot_axis = _world_rotation_axis(link, placements, assembly)
 
             ee_proj = _project_to_plane(ee_vec, rot_axis)
             target_proj = _project_to_plane(target_vec, rot_axis)
@@ -437,6 +439,49 @@ def _vec_cross(a: tuple[float, float, float], b: tuple[float, float, float]) -> 
 
 def _vec_length(v: tuple[float, float, float]) -> float:
     return math.sqrt(v[0] ** 2 + v[1] ** 2 + v[2] ** 2)
+
+
+def _world_rotation_axis(
+    link: LinkSegment,
+    placements: dict[str, dict],
+    assembly: Assembly,
+) -> tuple[float, float, float]:
+    """Compute the world-frame rotation axis for a link's joint.
+
+    P0-3: previously CCD and Jacobian used the LOCAL axis as if it were a
+    fixed world-frame direction.  For multi-DOF chains this is wrong:
+    rotating the base yaw joint rotates the shoulder pitch axis out of
+    its default alignment, so the shoulder axis in world frame changes
+    with every base rotation.
+
+    Fix: look up the parent part's cumulative kinematic rotation from the
+    solver output and transform the local axis into the world frame via
+    R_parent @ axis_local.  Falls back to the local axis when the parent
+    or its rotation data is unavailable.
+    """
+    local_axis = _get_rot_axis(link)
+
+    parent_name: str | None = None
+    for j in assembly.joints:
+        if j.child == link.name and j.type == "revolute":
+            parent_name = j.parent
+            break
+    if parent_name is None:
+        return local_axis
+
+    parent_aa = placements.get(parent_name, {}).get("kinematic_rotation")
+    if not parent_aa:
+        parent_aa = placements.get(parent_name, {}).get("rotation")
+    if not parent_aa:
+        return local_axis
+
+    parent_rot = _axis_angle_deg_to_rot_mat(parent_aa)
+    world_axis = _mat_vec(parent_rot, local_axis)
+
+    n = _vec_length(world_axis)
+    if n < 1e-10:
+        return local_axis
+    return (world_axis[0] / n, world_axis[1] / n, world_axis[2] / n)
 
 
 # ---------------------------------------------------------------------------
@@ -666,19 +711,23 @@ def _compute_jacobian(
     joint_angles_rad: list[float],
     joint_positions: list[list[float]],
     ee_pos: list[float],
+    world_axes: list[tuple[float, float, float]] | None = None,
 ) -> list[list[float]]:
     """Compute the 3×N geometric Jacobian for revolute joints.
 
     Each column j = z_j × (ee - p_j), where z_j is the rotation axis
-    of joint j and p_j is its position.
+    of joint j in the **world frame** and p_j is its position.
+
+    P0-3: ``world_axes`` provides the correct per-joint world-frame rotation
+    axis (transformed by the parent's cumulative rotation).  When omitted,
+    falls back to the local axis — which is only correct for 1-DOF arms
+    or arms whose first joint has not rotated.
     """
     n = len(links)
     jacobian: list[list[float]] = [[] for _ in range(3)]
 
     for j in range(n):
-        axis = _get_rot_axis(links[j])
-        # z_j (rotation axis in world frame — assume fixed for simplicity)
-        z_j = axis
+        z_j = world_axes[j] if world_axes is not None else _get_rot_axis(links[j])
         # ee - p_j
         dx = ee_pos[0] - joint_positions[j][0]
         dy = ee_pos[1] - joint_positions[j][1]
@@ -792,15 +841,15 @@ class JacobianIKSolver:
 
     def _get_joint_positions(
         self, angles: dict[str, float]
-    ) -> tuple[list[list[float]], list[float]]:
-        """Compute joint positions and EE position from current angles."""
+    ) -> tuple[list[list[float]], list[float], dict[str, dict]]:
+        """Compute joint positions, EE position, and raw placements dict."""
         placements = self.solver.solve(joint_angles=angles)
         positions: list[list[float]] = []
         for link in self.links:
             pos = placements.get(link.name, {}).get("position", [0, 0, 0])
             positions.append(pos)
         ee_pos = placements.get(self.ee_name, {}).get("position", [0, 0, 0])
-        return positions, ee_pos
+        return positions, ee_pos, placements
 
     def solve(
         self,
@@ -822,7 +871,7 @@ class JacobianIKSolver:
         best_angles = dict(angles)
 
         for iteration in range(self.max_iterations):
-            joint_pos, ee_pos = self._get_joint_positions(angles)
+            joint_pos, ee_pos, placements = self._get_joint_positions(angles)
 
             error_vec = [
                 target[0] - ee_pos[0],
@@ -845,9 +894,13 @@ class JacobianIKSolver:
                     iterations=iteration + 1,
                 )
 
-            # Compute Jacobian
+            # Compute Jacobian with world-frame rotation axes (P0-3)
             angles_rad = [math.radians(angles.get(link.name, 0.0)) for link in self.links]
-            jac = _compute_jacobian(self.links, angles_rad, joint_pos, ee_pos)
+            world_axes = [
+                _world_rotation_axis(link, placements, self.assembly)
+                for link in self.links
+            ]
+            jac = _compute_jacobian(self.links, angles_rad, joint_pos, ee_pos, world_axes)
 
             # Damped pseudoinverse step
             jp = _damped_pseudoinverse(jac, damping=self.damping)
@@ -867,7 +920,7 @@ class JacobianIKSolver:
                 angles[link.name] = max(lim[0], min(lim[1], new_angle))
 
         # Return best found
-        _, ee_pos = self._get_joint_positions(best_angles)
+        _, ee_pos, _ = self._get_joint_positions(best_angles)
         final_error = math.sqrt(
             (target[0] - ee_pos[0]) ** 2 +
             (target[1] - ee_pos[1]) ** 2 +
