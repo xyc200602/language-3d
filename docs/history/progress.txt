@@ -4,6 +4,29 @@
 
 ---
 
+## 2026-06-18 - task.json 诚实化：重置 4 个虚标 task
+
+### What was done
+
+对照用户 CLAUDE.md 第 1 条"不要绕过验证/测试来让结果通过"，审计 task.json 发现 4 个 task 标了 `passes:true` 但其 steps/description 自带 `[缺失]` 或 `[审计：...]` 注解，承认未真正端到端验证。
+
+**重置清单**（passes: true → false）：
+
+| Task ID | Title | 重置原因 |
+|---|---|---|
+| 9 | Agent 多轮规划优化 | steps 末尾 `[缺失] 需要重写 test_auto_fix.py：先创建已知错误模型→验证cad_verify返回MATCH:False→验证修复后MATCH:True，断言修复闭环真正生效` |
+| 26 | 端到端可靠性验证 — 8 梯度案例 + VLM 准确率实测 | description `[审计：...verify_result=UNKNOWN也视为成功，sys.exit(0)即使全失败也不报错]`；steps `[缺失] verify_result必须区分MATCH/MISMATCH/UNKNOWN` |
+| 63 | MatingConstraint 求解器 | steps `[缺失] 需要E2E碰撞检测验证：实际加载41个STL+应用求解位置→FCL检测→验证无严重碰撞` |
+| 65 | AssemblyVLMSolveTool 装配视觉验证 | steps `[缺失] 编写 tests/test_assembly_vlm_e2e.py — 真实 VLM 测试（标记 @pytest.mark.e2e）...此文件从未创建。` |
+
+### Notes
+
+- 这 4 个 task 的代码实现保留，但状态必须靠真实 e2e 测试跑通才能再次置 true
+- 已是 `passes:false` 的 task（10/16/19/30/35/56）不动，它们的 `[缺失]` 注解与状态已经一致
+- 接下来 Phase 4 的定向修复架构跑通后，task 9 / 26 / 65 应当能重新置 true
+
+---
+
 ## 2026-06-14 - 审计 P0 修复：ConnectionMethod 集成 + _pick_structural_part 词边界匹配 + 紧固件嵌入回归修复
 
 ### What was done:

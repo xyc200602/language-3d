@@ -61,7 +61,12 @@ true_e2e.py
 test_4dof_arm_e2e.py
 test_planned_cyl*
 
-# E2E and run logs
+# Runtime logs — all logs MUST live under logs/, never in the repo root.
+# (Rule: see AGENTS.md §产物与日志归置)
+logs/*
+!logs/.gitkeep
+*.log
+MUJOCO_LOG.TXT
 e2e_*.log
 data/e2e_*.log
 data/*_run*.log
@@ -85,5 +90,5 @@ data/projects/render_assembly*.py
 data/projects/dual_arm_robot_export/
 data/*.png
 
-# Legacy development logs (migrated to progress.txt)
+# Legacy development logs (migrated to docs/history/progress.txt)
 development_log/
