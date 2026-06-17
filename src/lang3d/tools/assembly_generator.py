@@ -2301,6 +2301,15 @@ def _geometric_prevalidation(
 
     _pos_list = list(positions.items())
     _aabb_cache: dict[str, tuple | None] = {}
+    # Collect AABB-candidate intersections first; FCL confirms them below.
+    # AABB (axis-aligned bbox of the rotated box) is a conservative
+    # over-approximation: a 45°-rotated slender bar has an AABB ~41%
+    # larger than its actual swept volume, so AABB flags many pairs that
+    # do not truly intersect.  Feeding those false positives to the LLM
+    # as "physically intersect" feedback caused the VLM loop to chase
+    # phantom collisions.  FCL (oriented bounding-box + exact contact)
+    # is the ground truth; we use it to filter the AABB candidates.
+    _aabb_candidates: list[tuple[str, str, float, float, float]] = []
     for i in range(len(_pos_list)):
         na = _pos_list[i][0]
         box_a = _aabb_cache.get(na)
@@ -2323,16 +2332,95 @@ def _geometric_prevalidation(
             oy = min(box_a[4], box_b[4]) - max(box_a[1], box_b[1])
             oz = min(box_a[5], box_b[5]) - max(box_a[2], box_b[2])
             if ox > 1.0 and oy > 1.0 and oz > 1.0:
-                # Report overlap volume so the LLM feedback conveys severity.
-                problems.append(
-                    f"Parts '{na}' and '{nb}' overlap by "
-                    f"{ox:.0f}x{oy:.0f}x{oz:.0f}mm in their rotated "
-                    f"world bounding boxes — they physically intersect. "
-                    f"Increase the offset between them or reduce their "
-                    f"dimensions so they do not collide."
-                )
+                _aabb_candidates.append((na, nb, ox, oy, oz))
+
+    # FCL confirmation: only report a collision if the oriented bounding
+    # boxes truly overlap (penetration > 1mm).  Falls back to reporting
+    # all AABB candidates if FCL/trimesh is unavailable, preserving the
+    # original conservative behaviour for dependency-free environments.
+    if _aabb_candidates:
+        confirmed = _fcl_confirm_intersections(
+            _aabb_candidates, parts, positions,
+        )
+        # confirmed is None when FCL is unavailable -> keep all candidates.
+        if confirmed is not None:
+            report_pairs = confirmed
+        else:
+            report_pairs = _aabb_candidates
+        for na, nb, ox, oy, oz in report_pairs:
+            problems.append(
+                f"Parts '{na}' and '{nb}' overlap by "
+                f"{ox:.0f}x{oy:.0f}x{oz:.0f}mm in their rotated "
+                f"world bounding boxes — they physically intersect. "
+                f"Increase the offset between them or reduce their "
+                f"dimensions so they do not collide."
+            )
 
     return problems
+
+
+def _fcl_confirm_intersections(
+    candidates: list[tuple[str, str, float, float, float]],
+    parts: list[dict],
+    positions: dict[str, dict],
+) -> list[tuple[str, str, float, float, float]] | None:
+    """Filter AABB candidate pairs through exact FCL collision tests.
+
+    Returns the subset of candidates whose oriented bounding boxes truly
+    intersect (penetration > 1mm), or ``None`` if FCL/trimesh is not
+    installed (caller falls back to the full AABB candidate list).
+    """
+    try:
+        from .mesh_collision import MeshCollisionChecker
+        from ..knowledge.mechanics import Assembly, Joint, Part
+    except ImportError:
+        return None
+
+    # MeshCollisionChecker needs an Assembly + placements.  Reconstruct
+    # lightweight Part objects from the dict list; the checker only reads
+    # name + dimensions, so category/material defaults are fine.
+    part_objs: list[Part] = []
+    name_to_dict: dict[str, dict] = {}
+    for p in parts:
+        name = p.get("name", "")
+        dims = p.get("dimensions", {})
+        if not name or not dims:
+            continue
+        part_objs.append(Part(
+            name=name, category="mechanical", description="",
+            dimensions=dict(dims),
+        ))
+        name_to_dict[name] = p
+    if len(part_objs) < 2:
+        return [c for c in candidates]  # nothing to check
+
+    # Joints are needed only for adjacency filtering, which the caller
+    # has already applied via _adjacent_pairs, so pass an empty list.
+    asm = Assembly(name="prevalidation", parts=part_objs, joints=[])
+
+    try:
+        checker = MeshCollisionChecker()
+    except Exception:
+        return None
+
+    result = checker.check_assembly_collisions(
+        asm, positions, skip_adjacent=False, min_penetration_mm=1.0,
+    )
+    colliding_names: set[tuple[str, str]] = set()
+    for pair in result.pairs:
+        if pair.is_collision:
+            a, b = pair.part_a, pair.part_b
+            colliding_names.add((a, b))
+            colliding_names.add((b, a))
+
+    # Keep only candidates FCL confirms; preserve AABB overlap dims for
+    # the message severity.
+    confirmed = [
+        (na, nb, ox, oy, oz)
+        for (na, nb, ox, oy, oz) in candidates
+        if (na, nb) in colliding_names
+    ]
+    return confirmed
 
 
 # ---------------------------------------------------------------------------
