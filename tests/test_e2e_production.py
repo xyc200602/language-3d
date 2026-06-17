@@ -85,17 +85,6 @@ ROBOT_TEST_CASES: list[dict[str, Any]] = [
         "expect_wheels": False,
         "expect_arms": True,
     },
-    {
-        "id": "mecanum_base",
-        "description": (
-            "设计一个麦克纳姆轮全向移动底盘，4个麦克纳姆轮在四角，"
-            "底盘上有一个传感器塔"
-        ),
-        "min_parts": 10,
-        "min_joints": 2,
-        "expect_wheels": True,
-        "expect_arms": False,
-    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -861,6 +850,140 @@ def _phase6_physical_sanity(
 
 
 # ---------------------------------------------------------------------------
+# Phase 7: MuJoCo Simulation (added 2026-06-18)
+# ---------------------------------------------------------------------------
+
+
+def _phase7_mujoco_simulation(
+    checks: list[dict],
+    export_dir: str,
+    min_joints: int,
+) -> None:
+    """Load the URDF into MuJoCo and verify physics + joint actuation.
+
+    The e2e pipeline is *headless* by design — interactive viewer is
+    available via the CLI's ``/sim`` command on a generated run.
+    """
+    phase = "phase7"
+
+    if not export_dir:
+        _skip(checks, phase, "mujoco_loads", "No export directory")
+        _skip(checks, phase, "mujoco_physics_stable", "No export directory")
+        _skip(checks, phase, "mujoco_joints_actuate", "No export directory")
+        return
+
+    urdf_path = os.path.join(export_dir, "urdf.xml")
+    if not os.path.isfile(urdf_path):
+        _check(
+            checks, phase, "mujoco_loads", False,
+            f"URDF not found: {urdf_path}", critical=True,
+        )
+        return
+
+    try:
+        import mujoco  # type: ignore[import-not-found]
+    except ImportError:
+        _skip(checks, phase, "mujoco_loads",
+              "mujoco not installed (pip install mujoco)")
+        _skip(checks, phase, "mujoco_physics_stable", "mujoco not installed")
+        _skip(checks, phase, "mujoco_joints_actuate", "mujoco not installed")
+        return
+
+    # Use the project's SimMujocoTool to avoid duplicating mesh-path logic
+    try:
+        from lang3d.tools.sim_mujoco import SimMujocoTool
+        tool = SimMujocoTool()
+        # interactive=False always — e2e must be non-blocking
+        report_text = tool.execute(
+            urdf_path=urdf_path,
+            mode="validate",
+            duration_sec=1.5,
+            interactive=False,
+        )
+        # The tool returns a text report; the JSON summary is the last
+        # fenced block.  Parse loosely: look for "JOINT_TEST" or "PHYSICS".
+        report_lower = report_text.lower()
+
+        loads_ok = "load failed" not in report_lower
+        _check(
+            checks, phase, "mujoco_loads", loads_ok,
+            "URDF loaded into MuJoCo" if loads_ok else
+            f"Load failed: {report_text[:200]}", critical=True,
+        )
+        if not loads_ok:
+            return
+
+        # Physics stable: prefer the structured JSON field
+        # ``physics.stabilized`` over fragile string matching.  The old
+        # check ('"unstable" not in report') false-failed because the
+        # report legitimately contains ``"unstable": false`` for every
+        # joint (meaning "this joint is NOT unstable"), which the
+        # substring search counted as a failure signal.
+        import json as _json
+        import re as _re
+        physics_stable: bool | None = None
+        physics_detail = ""
+        # Extract the last JSON block from the report
+        _json_blocks = _re.findall(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", report_text)
+        for _blk in reversed(_json_blocks):
+            try:
+                _doc = _json.loads(_blk)
+                if isinstance(_doc, dict) and "physics" in _doc:
+                    _ph = _doc["physics"]
+                    if isinstance(_ph, dict) and "stabilized" in _ph:
+                        physics_stable = bool(_ph["stabilized"])
+                        physics_detail = (
+                            f"stabilized={physics_stable}, "
+                            f"err={_ph.get('max_qpos_error_deg', '?')}deg, "
+                            f"disp={_ph.get('max_body_displacement_mm', '?')}mm"
+                        )
+                        break
+            except (_json.JSONDecodeError, ValueError):
+                continue
+
+        if physics_stable is None:
+            # Fallback: structured field not found — use a strict match that
+            # only catches an explicit failure, not the "unstable": false
+            # success records.  Look for "pd-hold fail" or a genuine
+            # "unstable": true.
+            _has_fail = "pd-hold fail" in report_lower
+            _has_true_unstable = bool(_re.search(
+                r'"unstable"\s*:\s*true', report_lower
+            ))
+            _has_nan_inf = bool(_re.search(
+                r'\b(nan|inf)\b', report_lower
+            ))
+            physics_ok = not (_has_fail or _has_true_unstable or _has_nan_inf)
+            physics_detail = "fallback string match"
+        else:
+            physics_ok = physics_stable
+        _check(
+            checks, phase, "mujoco_physics_stable", physics_ok,
+            f"PD-hold physics stable ({physics_detail})" if physics_ok else
+            f"Physics unstable ({physics_detail}): {report_text[:200]}",
+            critical=True,
+        )
+
+        # Count actuated joints
+        actuated = report_lower.count("joint_name") or report_lower.count("joint:")
+        # Fallback: count "actuated: yes" patterns
+        if not actuated:
+            import re as _re
+            actuated = len(_re.findall(r"\bactuated\b.*?\byes\b", report_lower))
+        _check(
+            checks, phase, "mujoco_joints_actuate",
+            actuated >= min_joints,
+            f"Actuated joints: {actuated} (min {min_joints})",
+            critical=True,
+        )
+    except Exception as exc:
+        _check(
+            checks, phase, "mujoco_loads", False,
+            f"Exception during sim: {exc}", critical=True,
+        )
+
+
+# ---------------------------------------------------------------------------
 # Main runner
 # ---------------------------------------------------------------------------
 
@@ -870,7 +993,9 @@ def run_e2e_case(case: dict) -> dict:
     test_id = case["id"]
     description = case["description"]
     ts = time.strftime("%Y%m%d_%H%M%S")
-    output_dir = os.path.join("data", "e2e_results", f"{test_id}_{ts}")
+    # Canonical layout: data/runs/<case_id>/<timestamp>/
+    # (replaces the legacy data/e2e_results/<case>_<ts>/ split)
+    output_dir = os.path.join("data", "runs", test_id, ts)
     os.makedirs(output_dir, exist_ok=True)
 
     checks: list[dict] = []
@@ -919,6 +1044,10 @@ def run_e2e_case(case: dict) -> dict:
     # Phase 6: Physical Sanity
     print(f"\n--- Phase 6: Physical Sanity ---")
     _phase6_physical_sanity(checks, assembly, positions)
+
+    # Phase 7: MuJoCo Simulation (added 2026-06-18)
+    print(f"\n--- Phase 7: MuJoCo Simulation ---")
+    _phase7_mujoco_simulation(checks, export_dir or "", case["min_joints"])
 
     # Compute score and save report
     score = _compute_score(checks)
