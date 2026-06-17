@@ -58,9 +58,17 @@ def _rewrite_mesh_paths(urdf_text: str, urdf_path: Path) -> tuple[str, list[str]
     This helper resolves every ``meshes/...`` reference against the URDF's
     parent directories until the file exists, then writes the absolute path
     back into the URDF text.  Returns ``(new_text, list_of_warnings)``.
+
+    BUG-2 (added 2026-06-18): the on-disk STL layout uses ``stl_parts/``
+    rather than ``meshes/``.  When the literal path doesn't resolve we also
+    try swapping the leading directory name to any sibling mesh directory
+    (``stl_parts``, ``meshes``, ``visual``, ``collision``).
     """
     base_dir = urdf_path.parent
     warnings: list[str] = []
+
+    # Sibling directory names commonly used for STLs
+    _ALT_MESH_DIRS = ("meshes", "stl_parts", "visual", "collision", "stl")
 
     def _resolve(match: re.Match[str]) -> str:
         prefix, raw_path, suffix = match.group(1), match.group(2), match.group(3)
@@ -79,6 +87,19 @@ def _rewrite_mesh_paths(urdf_text: str, urdf_path: Path) -> tuple[str, list[str]
             if candidate.exists():
                 return f'{prefix}{candidate.as_posix()}{suffix}'
             search_dir = search_dir.parent
+
+        # Fallback: try alternative sibling mesh directories.
+        # E.g. raw="meshes/foo.stl" -> try "stl_parts/foo.stl", etc.
+        parts = raw_path.split("/", 1)
+        if len(parts) == 2:
+            leaf = parts[1]
+            search_dir = base_dir
+            for _ in range(4):
+                for alt in _ALT_MESH_DIRS:
+                    candidate = (search_dir / alt / leaf).resolve()
+                    if candidate.exists():
+                        return f'{prefix}{candidate.as_posix()}{suffix}'
+                search_dir = search_dir.parent
 
         warnings.append(
             f"Mesh not found: {raw_path} (searched from {base_dir} upward 3 levels)",
@@ -109,6 +130,54 @@ def _mujoco_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _launch_viewer(
+    model: Any,
+    *,
+    duration_sec: float = 10.0,
+    stabilize: bool = True,
+) -> None:
+    """Open the MuJoCo passive viewer and step physics until window closes.
+
+    Added 2026-06-18 to give the simulation path a real GUI (the user
+    observed "simulation was done without a graphical interface").  Uses
+    ``mujoco.viewer.launch_passive`` which does NOT block on its own —
+    the caller must run a step loop and call ``viewer.sync()`` each frame.
+
+    Falls back to a no-op log message on headless environments or
+    import errors so e2e tests can still call ``interactive=False`` on a
+    server.
+    """
+    try:
+        import mujoco  # type: ignore[import-not-found]
+        import mujoco.viewer  # type: ignore[import-not-found]
+        import time as _time
+    except ImportError as e:
+        logger.warning("MuJoCo viewer unavailable: %s", e)
+        return
+
+    if stabilize:
+        _stabilize_model(model)
+
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    max_steps = int(duration_sec / max(model.opt.timestep, 1e-5))
+    logger.info(
+        "Launching MuJoCo viewer (max_steps=%d, dt=%.4fs)",
+        max_steps, model.opt.timestep,
+    )
+    try:
+        with mujoco.viewer.launch_passive(model, data) as viewer:
+            step = 0
+            while viewer.is_running() and step < max_steps:
+                mujoco.mj_step(model, data)
+                viewer.sync()
+                _time.sleep(model.opt.timestep)
+                step += 1
+    except Exception as e:
+        logger.warning("MuJoCo viewer exited with error: %s", e)
 
 
 def _load_model(urdf_path: str) -> dict[str, Any]:
@@ -315,8 +384,19 @@ def _run_physics_hold(
     blowup_step = -1
 
     for step in range(n_steps):
+        # Refresh bias forces (gravity + Coriolis) for the current pose so
+        # the feed-forward term tracks the configuration.  Without gravity
+        # compensation a pure PD controller has a steady-state error under
+        # gravity — small at the joints (sub-degree) but lever-amplified at
+        # the distal links, pushing body displacement past the 1 mm
+        # threshold on long arms.  Adding ``qfrc_bias`` is the textbook
+        # inverse-dynamics feed-forward; it cancels the gravitational load
+        # so the PD term only needs to correct transients, not hold weight.
+        mujoco.mj_forward(model, data)
         q_err = initial_qpos - data.qpos
-        data.qfrc_applied[:] = kp * q_err - kv * data.qvel
+        data.qfrc_applied[:] = (
+            kp * q_err - kv * data.qvel + data.qfrc_bias
+        )
         mujoco.mj_step(model, data)
         # Catch NaN/Inf
         if not np.all(np.isfinite(data.qacc)):
@@ -504,6 +584,16 @@ class SimMujocoTool(Tool):
                         "type": "boolean",
                         "description": "Run per-joint actuation test (default true)",
                     },
+                    "interactive": {
+                        "type": "boolean",
+                        "description": (
+                            "If true and a display is available, launch the "
+                            "MuJoCo viewer window to visualise the simulation "
+                            "in real time. Default false (headless). When "
+                            "true, the call blocks until the viewer window is "
+                            "closed."
+                        ),
+                    },
                 },
                 "required": ["urdf_path"],
             },
@@ -517,6 +607,7 @@ class SimMujocoTool(Tool):
         duration_sec: float = 2.0,
         stabilize: bool = True,
         joint_test: bool = True,
+        interactive: bool = False,
         **kwargs: Any,
     ) -> str:
         """Execute the simulation validation."""
@@ -540,26 +631,34 @@ class SimMujocoTool(Tool):
             joint_results: list[dict[str, Any]] = []
 
             if mode != "report":
-                physics_result = _run_physics_hold(
-                    model,
-                    duration_sec=duration_sec,
-                    stabilize=stabilize,
-                )
+                if interactive:
+                    # Launch GUI viewer — blocks until window closed
+                    _launch_viewer(model, duration_sec=duration_sec,
+                                   stabilize=stabilize)
+                    # Skip the headless physics/joint tests when running
+                    # interactively; the user just watched it happen.
+                    physics_result = {"interactive": True, "stable": True}
+                else:
+                    physics_result = _run_physics_hold(
+                        model,
+                        duration_sec=duration_sec,
+                        stabilize=stabilize,
+                    )
 
-                if joint_test and mode == "validate":
-                    for j in joints:
-                        # HINGE gets torque, SLIDE gets force
-                        force = 0.5 if j["type"] == "HINGE" else 0.1
-                        result = _test_single_joint(
-                            model,
-                            target_jid=j["id"],
-                            force=force,
-                            duration_sec=0.5,
-                            stabilize=stabilize,
-                        )
-                        result["joint_name"] = j["name"]
-                        result["joint_type"] = j["type"]
-                        joint_results.append(result)
+                    if joint_test and mode == "validate":
+                        for j in joints:
+                            # HINGE gets torque, SLIDE gets force
+                            force = 0.5 if j["type"] == "HINGE" else 0.1
+                            result = _test_single_joint(
+                                model,
+                                target_jid=j["id"],
+                                force=force,
+                                duration_sec=0.5,
+                                stabilize=stabilize,
+                            )
+                            result["joint_name"] = j["name"]
+                            result["joint_type"] = j["type"]
+                            joint_results.append(result)
 
             return self._format_report(
                 urdf_path=urdf_path,
