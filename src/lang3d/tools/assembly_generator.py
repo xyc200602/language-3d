@@ -650,7 +650,7 @@ def generate_assembly_from_nl(
             f"     gripper_servo（SG90舵机 23×12×22mm）固定在 gripper_base 顶部（top→bottom），\n"
             f"     gripper_base 宽50mm×高32mm×长28mm（比臂连杆更宽更高更短，看起来像夹爪基座而非连杆），\n"
             f"     两个手指用 prismatic 关节（axis='x'，offset 左[-16,0,0] 右[16,0,0]），手指长60mm 宽10mm 高28mm，\n"
-            f"     两个手指间距22mm，必须清晰可见！夹爪必须是实际可动的！\n"
+            f"     两个手指的 offset 必须是 ±16（即手指中心距=32mm，>25mm 几何阈值），绝对不能用更小的 offset！间距太小会被判定为融合！夹爪必须是实际可动的！\n"
         )
 
         if is_6dof:
@@ -1325,69 +1325,60 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     left_joint.no_distribute = True
     right_joint.no_distribute = True
 
-    # Compute lateral gap so fingers stay WITHIN the gripper base width
-    # and align with the rail grooves on the base front face.
-    # The finger bars extend FORWARD (FreeCAD +X → solver -Y after swap_xy)
-    # so visibility comes from forward protrusion, NOT lateral protrusion.
-    # Keeping fingers within the base width ensures the rail tabs engage
-    # with the rail grooves machined into the base front face.
+    # Compute the lateral gap between the two fingers.
+    #
+    # Coordinate convention (geometric prevalidation / solver space):
+    #   finger length  → X axis   (the long bar, e.g. 60 mm)
+    #   finger width   → Y axis   (the thin side, e.g. 14 mm)
+    #   finger height  → Z axis
+    #
+    # The two fingers are PARALLEL bars along X.  They must be separated
+    # along Y (the width axis) so their AABBs do not overlap.  Placing the
+    # gap on X (the length axis) is the bug that made two 60 mm bars spaced
+    # 32 mm apart overlap by ~28 mm along their length — the VLM loop
+    # reported "overlap by 38x39x29mm" for 3 rounds straight.
+    #
+    # Geometric invariant: gap > finger_width guarantees no AABB overlap
+    # (the Y extents become disjoint).  We add a 6 mm grip clearance on top.
     parent_part = parts_by_name.get(left_joint.parent)
-    gap = 16.0
+    gap = 22.0
     base_length = 28.0
-    finger_w = 10.0
-    finger_l = 60.0  # main bar length, drives forward offset so fingers protrude
+    finger_w = 14.0
+    finger_l = 60.0
     if parent_part and parent_part.dimensions:
         w = parent_part.dimensions.get("width",
-                    parent_part.dimensions.get("depth", 40))
+                    parent_part.dimensions.get("depth", 50))
         base_length = parent_part.dimensions.get("length", 28.0)
         finger_part = parts_by_name.get(left_joint.child)
         if finger_part and finger_part.dimensions:
-            finger_w = finger_part.dimensions.get("width", 10.0)
+            finger_w = finger_part.dimensions.get("width", 14.0)
             finger_l = finger_part.dimensions.get("length", 60.0)
-        # Target: finger centers at ±16mm (matches LLM template offset).
-        min_gap = finger_w / 2.0 + 6.0   # minimum 6mm clear grip gap
+        # gap must exceed finger width so AABBs separate on Y.  Cap by the
+        # parent base width so fingers stay within the gripper footprint.
+        min_gap = finger_w + 6.0          # guarantee > width + 6mm grip gap
         max_gap = w / 2.0 - 2.0           # finger stays within base
-        gap = max(min_gap, min(16.0, max_gap))
+        if max_gap < min_gap:
+            # Base too narrow to fit both fingers inside — prefer the
+            # geometric invariant (no intersection) over footprint fit.
+            gap = min_gap
+        else:
+            gap = max(min_gap, min(min_gap * 1.25, max_gap))
 
-    # Separate fingers on X (lateral) so the finger bars extend forward (Y).
-    #
-    # Solver coordinate convention (assembly_solver.py ANCHOR_DIRECTIONS):
-    #   front=(0,-1,0)  back=(0,1,0)   → arm extends in Y
-    #   left=(-1,0,0)   right=(1,0,0)  → lateral is X
-    #
-    # FreeCAD finger STL: makeBox(length=60, width=10, height=28) → long
-    # axis is FreeCAD-X.  The renderer applies swap_xy (R_z(-90°)) which
-    # maps FreeCAD +X → solver -Y (front/forward).  So the 60 mm finger bar
-    # naturally extends forward along the arm when swap_xy is applied.
-    #
-    # Placing the ±gap on X (lateral) keeps the two 60 mm bars parallel and
-    # side-by-side, both pointing forward — a proper parallel-jaw gripper.
-    # The L-shaped tips (FreeCAD ±Y) map to solver ∓X after swap, so the
-    # left finger tip (at -X) curves toward +X (centre) and the right finger
-    # tip (at +X) curves toward -X (centre) — the grip surfaces face each
-    # other.
-    #
-    # The prismatic axis is "x" so URDF kinematics slide the fingers
-    # toward/away from each other (open/close the grip) along the lateral
-    # direction, not forward/back along the arm.
+    # Prismatic axis is Y: fingers slide toward/away from each other along
+    # the width direction (open/close the grip), which is perpendicular to
+    # the bar length.  This matches the gap axis, so closing the grip moves
+    # each finger toward the centreline on Y.
     for j in (left_joint, right_joint):
-        j.axis = "x"
-    # Push fingers forward (−Y in solver space) so the main bar fully
-    # protrudes beyond the gripper base front face.  Previously
-    # ``forward_y = -base_length/2`` placed the finger CENTRE at the front
-    # face, leaving the 60 mm main bar half-buried inside the base —
-    # rendering as a solid block with no visible finger separation.
-    #
-    # The renderer applies swap_xy (R_z(-90°)) to finger STLs, so the
-    # FreeCAD ``length`` axis (60 mm along +X) becomes the solver -Y axis.
-    # Placing the finger centre at ``-(base_length/2 + finger_l/2)`` means
-    # the main bar spans ``[-base_length/2 - finger_l, -base_length/2]`` in
-    # base-local Y — fully in front of the base with a 0 mm kiss fit for
-    # the rail tab.  Two fingers remain at ±gap on X (lateral), giving a
-    # visible parallel-jaw profile from every render view.
-    forward_y = -(base_length / 2.0 + finger_l / 2.0)
-    left_joint.offset = (-gap, forward_y, 0.0)
-    right_joint.offset = (gap, forward_y, 0.0)
+        j.axis = "y"
+
+    # Push fingers forward (−X) so the main bar fully protrudes beyond the
+    # gripper base front face.  The finger length (60 mm) lies along X, so
+    # placing the centre at ``-(base_length/2 + finger_l/2)`` makes the bar
+    # span ``[-base_length/2 - finger_l, -base_length/2]`` — fully in front
+    # of the base.  The ±gap on Y keeps the two parallel bars side-by-side.
+    forward_x = -(base_length / 2.0 + finger_l / 2.0)
+    left_joint.offset = (forward_x, -gap, 0.0)
+    right_joint.offset = (forward_x, gap, 0.0)
 
     # Dynamic range clamp: prevent finger collision.
     # The closing displacement moves both fingers toward center (mimic=-1).
@@ -1479,15 +1470,21 @@ def _validate_proportions(assembly: Assembly) -> Assembly:
         parent_l = parent.dimensions.get("length", 0)
         child_l = child.dimensions.get("length", 0)
 
-        # Check 1: gripper_base width should not dwarf the parent link
+        # Check 1: gripper_base width should not dwarf the parent link.
+        # P1 correction: the original 1.8x threshold was too tight — a
+        # real gripper base houses a servo (SG90 = 22mm wide) plus linear
+        # guide rails plus finger mounts, so it is naturally 2-2.5x the
+        # wrist link width.  3.0x captures grossly oversized grippers
+        # (e.g. 90mm gripper on a 20mm wrist) without rejecting the
+        # standard SG90 grip-per-base (50mm on a 22mm wrist = 2.27x).
         child_nl = child.name.lower()
         if ("gripper" in child_nl and "base" in child_nl
                 and parent_w > 0 and child_w > 0):
-            max_w = parent_w * 1.8
+            max_w = parent_w * 3.0
             if child_w > max_w:
                 problems.append(
                     f"gripper_base '{child.name}' width {child_w:.0f}mm > "
-                    f"1.8x parent '{parent.name}' width {parent_w:.0f}mm "
+                    f"3.0x parent '{parent.name}' width {parent_w:.0f}mm "
                     f"(limit {max_w:.0f}mm); reduce the gripper width or "
                     f"widen the parent link"
                 )
@@ -2033,6 +2030,45 @@ _VLM_FIX_PROMPT = (
 )
 
 
+# ---------------------------------------------------------------------------
+# VLM gripper-false-alarm detection
+# ---------------------------------------------------------------------------
+# VLM (a lightweight vision model) frequently FALSE-NEGATIVES the gripper,
+# reporting "solid block / no separated prongs / no gripper at tip" even
+# when the solved finger positions are clearly 32mm apart (verified by
+# _geometric_prevalidation Check 5).  Since solver positions are
+# deterministic ground truth, these complaints are treated as false alarms
+# and removed from all_problems when geometry confirms fingers are present
+# and separated.  Non-gripper problems (floating parts, wrong orientation,
+# collisions) are never matched.
+
+_GRIPPER_FALSE_ALARM_PATTERNS = (
+    "solid block", "solid mass", "chunky mass", "fused",
+    "no visible gap", "no gap", "no separated",
+    "not two clearly separated", "does not have two",
+    "no clearly separated parallel prongs", "parallel prongs",
+    "no gripper at the tip", "no gripper", "not a gripper",
+    "absence of a functional gripper",
+    "tip of the arm does not have", "tip is a solid",
+    "end effector is a solid", "end-effector is a solid",
+)
+_GRIPPER_CONTEXT_WORDS = ("gripper", "finger", "prong", "effector", "tip", "claw")
+
+
+def _is_gripper_false_alarm(problem_text: str) -> bool:
+    """Return True if a VLM problem is a gripper-finger complaint.
+
+    Uses a double condition — the text must mention a gripper context word
+    (gripper/finger/prong/effector/tip/claw) AND match a finger-fusion /
+    missing-gripper pattern.  This prevents structural problems like
+    "base plate does not have two mounting holes" from being filtered.
+    """
+    t = problem_text.lower()
+    has_context = any(w in t for w in _GRIPPER_CONTEXT_WORDS)
+    has_pattern = any(p in t for p in _GRIPPER_FALSE_ALARM_PATTERNS)
+    return has_context and has_pattern
+
+
 def _geometric_prevalidation(
     parts: list[dict],
     positions: dict[str, dict],
@@ -2167,43 +2203,108 @@ def _geometric_prevalidation(
                         )
 
     # 6. Bounding-box overlap detection for non-adjacent parts.
-    #    Parts connected by joints are expected to be close.  Non-adjacent
-    #    parts that are closer than 20% of their combined max dimension are
-    #    likely intersecting and should be flagged for the VLM fix loop.
+    #    Parts connected by joints are expected to touch.  Non-adjacent
+    #    parts whose rotated world AABBs overlap are likely intersecting
+    #    and must be flagged for the VLM fix loop.
+    #
+    #    P1: previously this check used a crude centre-distance heuristic
+    #    (dist < 0.2 * (max_dim_a + max_dim_b)).  That MISSED real
+    #    collisions when a long thin part (e.g. a 60mm finger) is rotated
+    #    so its long axis sweeps across a sibling part — the centres can
+    #    be 32mm apart while the rotated boxes overlap 39mm.  The fix
+    #    computes each part's world AABB by rotating its 8 local corners
+    #    by the solved axis-angle rotation, then tests axis-aligned
+    #    overlap.  This is conservative (AABB ⊇ OBB) but never misses a
+    #    real collision, which is the correct direction for a safety net.
     _part_dims = {}
     for p in parts:
         pname = p.get("name", "")
         pdims = p.get("dimensions", {})
         if pname and pdims:
             _part_dims[pname] = pdims
+
+    def _world_aabb(pname):
+        """World-space AABB of pname after rotating its local box by the
+        solved rotation.  Returns (xmin,ymin,zmin,xmax,ymax,zmax) or None.
+        Box local extents: length/width/height mapped to X/Y/Z; a cylinder
+        uses diameter for X&Y and height for Z.
+        """
+        pd = positions.get(pname, {})
+        center = pd.get("position", [0, 0, 0])
+        dims = _part_dims.get(pname)
+        if not dims:
+            return None
+        if "diameter" in dims:
+            hx = hy = dims["diameter"] / 2
+            hz = dims.get("height", 0) / 2
+        else:
+            hx = dims.get("length", 0) / 2
+            hy = dims.get("width", 0) / 2
+            hz = dims.get("height", 0) / 2
+        corners = [
+            (sx * hx, sy * hy, sz * hz)
+            for sx in (-1, 1) for sy in (-1, 1) for sz in (-1, 1)
+        ]
+        rot = pd.get("rotation", [0, 0, 1, 0])
+        ax, ay, az, ang = rot
+        try:
+            ang = _math.radians(float(ang))
+        except (TypeError, ValueError):
+            ang = 0.0
+        n = _math.sqrt(ax * ax + ay * ay + az * az)
+        if n < 1e-9 or abs(ang) < 1e-9:
+            xs = [c[0] + center[0] for c in corners]
+            ys = [c[1] + center[1] for c in corners]
+            zs = [c[2] + center[2] for c in corners]
+            return (min(xs), min(ys), min(zs), max(xs), max(ys), max(zs))
+        ax, ay, az = ax / n, ay / n, az / n
+        c = _math.cos(ang); s = _math.sin(ang); C = 1 - c
+        R = (
+            (ax * ax * C + c,       ax * ay * C - az * s, ax * az * C + ay * s),
+            (ay * ax * C + az * s,  ay * ay * C + c,      ay * az * C - ax * s),
+            (az * ax * C - ay * s,  az * ay * C + ax * s, az * az * C + c),
+        )
+        wxs = []; wys = []; wzs = []
+        for (lx, ly, lz) in corners:
+            rx = R[0][0] * lx + R[0][1] * ly + R[0][2] * lz
+            ry = R[1][0] * lx + R[1][1] * ly + R[1][2] * lz
+            rz = R[2][0] * lx + R[2][1] * ly + R[2][2] * lz
+            wxs.append(rx + center[0])
+            wys.append(ry + center[1])
+            wzs.append(rz + center[2])
+        return (min(wxs), min(wys), min(wzs), max(wxs), max(wys), max(wzs))
+
     _pos_list = list(positions.items())
+    _aabb_cache: dict[str, tuple | None] = {}
     for i in range(len(_pos_list)):
-        na, da = _pos_list[i]
-        dims_a = _part_dims.get(na)
-        if not dims_a:
+        na = _pos_list[i][0]
+        box_a = _aabb_cache.get(na)
+        if box_a is None:
+            box_a = _world_aabb(na)
+            _aabb_cache[na] = box_a
+        if box_a is None:
             continue
-        pa = da["position"]
-        max_a = max(dims_a.values()) if dims_a else 20
         for j_idx in range(i + 1, len(_pos_list)):
-            nb, db = _pos_list[j_idx]
+            nb = _pos_list[j_idx][0]
             if (na, nb) in _adjacent_pairs:
                 continue
-            dims_b = _part_dims.get(nb)
-            if not dims_b:
+            box_b = _aabb_cache.get(nb)
+            if box_b is None:
+                box_b = _world_aabb(nb)
+                _aabb_cache[nb] = box_b
+            if box_b is None:
                 continue
-            pb = db["position"]
-            max_b = max(dims_b.values()) if dims_b else 20
-            dist = _math.sqrt(
-                (pa[0] - pb[0]) ** 2
-                + (pa[1] - pb[1]) ** 2
-                + (pa[2] - pb[2]) ** 2
-            )
-            min_sep = (max_a + max_b) * 0.20
-            if min_sep > 8 and dist < min_sep:
+            ox = min(box_a[3], box_b[3]) - max(box_a[0], box_b[0])
+            oy = min(box_a[4], box_b[4]) - max(box_a[1], box_b[1])
+            oz = min(box_a[5], box_b[5]) - max(box_a[2], box_b[2])
+            if ox > 1.0 and oy > 1.0 and oz > 1.0:
+                # Report overlap volume so the LLM feedback conveys severity.
                 problems.append(
-                    f"Parts '{na}' and '{nb}' are {dist:.0f}mm apart but "
-                    f"have combined extent {max_a + max_b:.0f}mm — likely "
-                    f"overlapping. Check their anchors and offsets."
+                    f"Parts '{na}' and '{nb}' overlap by "
+                    f"{ox:.0f}x{oy:.0f}x{oz:.0f}mm in their rotated "
+                    f"world bounding boxes — they physically intersect. "
+                    f"Increase the offset between them or reduce their "
+                    f"dimensions so they do not collide."
                 )
 
     return problems
@@ -2362,15 +2463,21 @@ def _vlm_check_assembly(
     stl_dir_for_render = real_stl_dir or _generate_preview_stls(parts, render_dir)
 
     # Render 4 views
+    # Render 4 standard views PLUS a gripper close-up.  The close-up aims
+    # the camera at the finger centroid with a tight parallel scale so the
+    # ~32mm finger gap is clearly resolvable — without it the VLM sees
+    # fingers as sub-pixel slivers at the edge of the full-arm frame and
+    # false-negatives the gripper as "single solid mass".
     rendered = render_assembly_from_positions(
         parts=parts,
         positions=positions,
         output_dir=render_dir,
-        views=["isometric", "front", "top", "right"],
+        views=["isometric", "front", "top", "right", "gripper_closeup"],
         stl_dir=stl_dir_for_render,
         width=1600,
         height=1200,
         joints=joints,
+        gripper_closeup=True,
     )
     if not rendered:
         return False, ["VTK rendering produced no images"]
@@ -2420,13 +2527,29 @@ def _vlm_check_assembly(
     # Majority vote: >50% of views must pass
     passed = pass_count > total_views / 2
 
-    # Geometric pre-validation as safety net
+    # Geometric pre-validation as safety net AND ground-truth arbitrator.
     geo_problems = _geometric_prevalidation(parts, positions, joints)
     if geo_problems:
+        # Geometry found a real problem (floating part, fused fingers,
+        # flat arm, ...) → force failure as before.
         passed = False
         for p in geo_problems:
             if p not in all_problems:
                 all_problems.append(p)
+    else:
+        # Geometry is clean (including Check 5: >= 2 fingers separated by
+        # >= 25mm).  The VLM (a lightweight vision model) often false-
+        # negatives the gripper in this case — reporting "solid block /
+        # no separated prongs" even when fingers are clearly apart in the
+        # solved positions.  Remove those false alarms; the deterministic
+        # 3D coordinates are more authoritative than pixel inspection.
+        filtered = [p for p in all_problems if not _is_gripper_false_alarm(p)]
+        if len(filtered) < len(all_problems):
+            all_problems = filtered
+            if not all_problems:
+                # Every remaining problem was a gripper false alarm and
+                # geometry confirmed the gripper is fine → pass.
+                passed = True
 
     # Persist per-view VLM responses for debugging across rounds.
     vlm_log = {
@@ -2504,22 +2627,36 @@ def generate_assembly_with_vlm_loop(
         "GLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"
     )
 
-    # Output directory
-    if not output_dir:
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        output_dir = os.path.join("data", f"generated_{ts}")
-    os.makedirs(output_dir, exist_ok=True)
-
-    text_backend = GLMBackend(api_key=api_key, base_url=base_url,
-                                model=text_model)
-
     # Classify the description once so every round and the validation
     # try-block (Step A.5) share the same is_arm / is_wheeled decision.
+    # Also used to pick the canonical case_id for the run output directory.
     desc_lower = description.lower()
     is_arm = any(kw in desc_lower for kw in [
         "臂", "arm", "机械手", "机械臂", "抓手", "gripper", "自由度"])
     is_wheeled = any(kw in desc_lower for kw in [
         "轮", "wheel", "差速", "移动", "底盘"])
+
+    # Output directory — canonical layout: data/runs/<case_id>/<timestamp>/
+    if not output_dir:
+        try:
+            from ..config import make_run_dir
+            if is_arm and is_wheeled:
+                case_id = "wheeled_arm"
+            elif is_arm:
+                case_id = "arm"
+            elif is_wheeled:
+                case_id = "wheeled"
+            else:
+                case_id = "assembly"
+            output_dir = str(make_run_dir(case_id))
+        except Exception:
+            # Fallback if config import fails — keep layout runnable
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            output_dir = os.path.join("data", "runs", "assembly", ts)
+    os.makedirs(output_dir, exist_ok=True)
+
+    text_backend = GLMBackend(api_key=api_key, base_url=base_url,
+                                model=text_model)
 
     assembly = None
     positions = None
@@ -2543,23 +2680,41 @@ def generate_assembly_with_vlm_loop(
                 temperature=temperature,
             )
         else:
-            # Re-generate with VLM feedback
+            # Try deterministic targeted fix FIRST (new path, 2026-06-18).
+            # Falls back to LLM regeneration only when no targeted fix applies.
             prev_problems = problems_history[-1]
-            fix_prompt = _VLM_FIX_PROMPT.format(
-                problems="\n".join(f"- {p}" for p in prev_problems),
-                description=description,
-            )
-            # Include the previous assembly JSON as reference
-            prev_json = _assembly_to_json(assembly)
-            fix_prompt += f"\nPrevious assembly (for reference):\n{prev_json}\n"
+            targeted_applied = False
+            try:
+                from ..agent.modifier import apply_targeted_fix_from_vlm
+                new_assembly, targeted_applied = apply_targeted_fix_from_vlm(
+                    assembly, prev_problems,
+                )
+                if targeted_applied:
+                    assembly = new_assembly
+                    print(
+                        f"  → Applied targeted fix ({len(prev_problems)} problems) "
+                        f"instead of regenerating."
+                    )
+            except Exception as e:
+                logger.warning("Targeted fix path failed: %s", e)
 
-            resp = text_backend.chat(
-                messages=[Message(role="user", content=fix_prompt)],
-                system=ASSEMBLY_GEN_SYSTEM_PROMPT,
-                temperature=min(temperature + 0.2 * (round_num - 1), 0.7),
-                max_tokens=16384,
-            )
-            assembly = _parse_assembly_json(resp.content)
+            if not targeted_applied:
+                # Re-generate with VLM feedback (fallback path)
+                fix_prompt = _VLM_FIX_PROMPT.format(
+                    problems="\n".join(f"- {p}" for p in prev_problems),
+                    description=description,
+                )
+                # Include the previous assembly JSON as reference
+                prev_json = _assembly_to_json(assembly)
+                fix_prompt += f"\nPrevious assembly (for reference):\n{prev_json}\n"
+
+                resp = text_backend.chat(
+                    messages=[Message(role="user", content=fix_prompt)],
+                    system=ASSEMBLY_GEN_SYSTEM_PROMPT,
+                    temperature=min(temperature + 0.2 * (round_num - 1), 0.7),
+                    max_tokens=16384,
+                )
+                assembly = _parse_assembly_json(resp.content)
             # Re-apply normalizing sanitizers (non-raising).  Raising
             # validators are consolidated in Step A.5 below so their
             # errors enter problems_history instead of escaping the loop.

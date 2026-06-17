@@ -26,6 +26,14 @@ class ProblemType(str, Enum):
     FLOATING = "floating"
     WRONG_ORIENTATION = "wrong_orientation"
     UNREASONABLE_LAYOUT = "unreasonable_layout"
+    # New types added 2026-06-18 to capture the actual failure modes
+    # observed in e2e VLM feedback (was: everything got mapped to
+    # UNREASONABLE_LAYOUT or COLLISION, which made correction routing
+    # too coarse to actually fix anything).
+    GRIPPER_INVISIBLE = "gripper_invisible"      # "end effector is a solid block"
+    FINGER_OVERLAP = "finger_overlap"            # "fingers overlap by 38x41x23mm"
+    PLATE_OVERLAP = "plate_overlap"              # "base_plate and top_plate overlap 580mm"
+    MISSING_PART = "missing_part"                # "no base plate" / "critical parts missing"
 
 
 class Severity(str, Enum):
@@ -176,6 +184,128 @@ def _parse_layout_problems(vlm_response: str) -> list[LayoutProblem]:
     return problems
 
 
+# ---------------------------------------------------------------------------
+# Free-text problem classifier (added 2026-06-18)
+#
+# The main loop historically passed `list[str]` of VLM problems straight into
+# the LLM fix-prompt — which then regenerated the *whole* assembly.  This
+# classifier turns those strings into structured LayoutProblem objects so
+# `_generate_constraint_corrections` can route them to deterministic fixes
+# (offset bumps, anchor flips, finger scaling) instead of an LLM redo.
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+_FINGER_NAMES = ("gripper_finger_left", "gripper_finger_right",
+                 "finger_l", "finger_r", "finger_left", "finger_right")
+_GRIPPER_KEYWORDS = (
+    "gripper", "end effector", "end-effector", "夹爪", "抓手",
+    "prongs", "parallel prongs", "two finger", "two separate",
+)
+_SOLID_BLOCK_KEYWORDS = (
+    "solid block", "single chunky", "not a gripper",
+    "no functional gripper", "missing gripper",
+    "no two clearly separated", "no visible gap",
+    "no gripper at", "no parallel prongs",
+)
+_PLATE_KEYWORDS = ("plate", "底盘", "底板", "chassis", "base_plate", "top_plate")
+_OVERLAP_KEYWORDS = ("overlap", "intersect", "重叠", "交叉")
+
+
+def classify_problem_text(text: str, assembly: Assembly) -> LayoutProblem:
+    """Best-effort mapping of a free-text VLM problem to a structured LayoutProblem.
+
+    The classifier is intentionally keyword-driven (no LLM call) so that the
+    targeted-fix path is deterministic and cheap.  When no specific type
+    matches, the problem is returned as ``UNREASONABLE_LAYOUT`` so the
+    fallback LLM regeneration still kicks in.
+    """
+    t = (text or "").lower()
+    affected: list[str] = []
+
+    # --- Finger overlap (specific, high-value fix) ---
+    # Example from production: "Parts 'gripper_finger_left' and
+    # 'gripper_finger_right' overlap by 38x41x23mm in their rotated
+    # world bounding boxes".
+    if any(k in t for k in _OVERLAP_KEYWORDS):
+        # Pull quoted part names
+        quoted = _re.findall(r"['\"]([a-zA-Z_][\w]*)['\"]", text or "")
+        # Pull a trailing "XxYxZmm" or "Xmm" dimension if present
+        dim_match = _re.search(r"(\d+(?:\.\d+)?)\s*(?:x\s*\d+(?:\.\d+)?)*\s*mm", t)
+        finger_quoted = [q for q in quoted if "finger" in q.lower()]
+        plate_quoted = [q for q in quoted if "plate" in q.lower()]
+        if finger_quoted:
+            return LayoutProblem(
+                problem_type=ProblemType.FINGER_OVERLAP,
+                severity=Severity.HIGH,
+                description=text,
+                affected_parts=finger_quoted,
+                correction={
+                    "type": "finger_overlap",
+                    "penetration_mm": float(dim_match.group(1)) if dim_match else 0.0,
+                },
+            )
+        if plate_quoted:
+            return LayoutProblem(
+                problem_type=ProblemType.PLATE_OVERLAP,
+                severity=Severity.HIGH,
+                description=text,
+                affected_parts=plate_quoted,
+                correction={"type": "plate_overlap"},
+            )
+        # Generic overlap → collision
+        return LayoutProblem(
+            problem_type=ProblemType.COLLISION,
+            severity=Severity.HIGH,
+            description=text,
+            affected_parts=quoted,
+        )
+
+    # --- Missing part ---
+    if "no base plate" in t or "missing" in t or "absent" in t or "no base" in t:
+        for p in _PLATE_KEYWORDS:
+            if p in t:
+                affected = [p for p in assembly.parts if "plate" in p.name.lower()
+                            or "chassis" in p.name.lower()]
+                return LayoutProblem(
+                    problem_type=ProblemType.MISSING_PART,
+                    severity=Severity.HIGH,
+                    description=text,
+                    affected_parts=[p.name for p in affected] or ["base_plate"],
+                    correction={"type": "missing_part"},
+                )
+
+    # --- Gripper invisible / solid block ---
+    if any(k in t for k in _SOLID_BLOCK_KEYWORDS) or (
+        any(k in t for k in _GRIPPER_KEYWORDS) and
+        any(k in t for k in ("prong", "finger", "gap", "爪"))
+    ):
+        fingers = [p.name for p in assembly.parts
+                   if "finger" in p.name.lower()]
+        return LayoutProblem(
+            problem_type=ProblemType.GRIPPER_INVISIBLE,
+            severity=Severity.HIGH,
+            description=text,
+            affected_parts=fingers,
+            correction={"type": "gripper_invisible"},
+        )
+
+    # --- Generic fallback ---
+    return LayoutProblem(
+        problem_type=ProblemType.UNREASONABLE_LAYOUT,
+        severity=Severity.MEDIUM,
+        description=text,
+    )
+
+
+def classify_problems(
+    problem_texts: list[str],
+    assembly: Assembly,
+) -> list[LayoutProblem]:
+    """Convert a list of free-text problems to structured LayoutProblems."""
+    return [classify_problem_text(t, assembly) for t in problem_texts]
+
+
 def _generate_constraint_corrections(
     problems: list[LayoutProblem],
     assembly: Assembly,
@@ -268,7 +398,145 @@ def _generate_constraint_corrections(
                         })
                         break
 
+        # ------------------------------------------------------------------
+        # New structured problem types (2026-06-18)
+        # Each one routes to a *deterministic* correction that
+        # `apply_corrections` knows how to apply — no LLM round-trip.
+        # ------------------------------------------------------------------
+        elif problem.problem_type == ProblemType.FINGER_OVERLAP:
+            # Increase the joint offset of every finger part along its
+            # distribution axis so the two fingertips separate.  The
+            # exact direction (Y for left/right fingers) is handled by
+            # `apply_corrections` → ctype="finger_spread".
+            target_parts = problem.affected_parts or [
+                j.child for j in assembly.joints
+                if "finger" in j.child.lower()
+            ]
+            for part_name in target_parts:
+                for i, joint in enumerate(assembly.joints):
+                    if joint.child == part_name:
+                        corrections.append({
+                            "joint_index": i,
+                            "correction_type": "finger_spread",
+                            "penetration_mm": problem.correction.get(
+                                "penetration_mm", 0.0),
+                            "reason": f"Finger overlap: {problem.description}",
+                        })
+                        break
+
+        elif problem.problem_type == ProblemType.GRIPPER_INVISIBLE:
+            # Scale up finger dimensions — but ONLY when the finger is
+            # still smaller than 25% of the largest link.  Without this
+            # ceiling the correction stacks across rounds (1.6× → 2.56× →
+            # 4.1× ...) and the fingers end up bigger than the whole arm
+            # (production bug 2026-06-18: 393×92×184mm fingers on a 300mm
+            # reach arm produced an all-blank VTK render).
+            arm_parts = [p for p in assembly.parts
+                         if p.category in ("link", "structural")
+                         or any(k in p.name.lower()
+                                for k in ("link", "arm", "shoulder", "elbow"))]
+            arm_reach = max(
+                (sum(float(p.dimensions.get(k, 0) or 0)
+                     for k in ("length", "width") if isinstance(p.dimensions.get(k), (int, float)))
+                 for p in arm_parts),
+                default=300.0,
+            )
+            finger_ceiling = arm_reach * 0.30  # max finger length = 30% of arm reach
+            for part in assembly.parts:
+                if "finger" not in part.name.lower():
+                    continue
+                cur_length = float(part.dimensions.get("length", 0) or 0)
+                if cur_length >= finger_ceiling:
+                    # Already big enough — don't scale again.  This is
+                    # the idempotency guard that prevents runaway growth.
+                    logger.info(
+                        "Skipping gripper_invisible scale on %s "
+                        "(length %.0fmm >= ceiling %.0fmm)",
+                        part.name, cur_length, finger_ceiling,
+                    )
+                    continue
+                # Scale to exactly the ceiling, not by a multiplicative
+                # factor — that way the correction converges instead of
+                # stacking across rounds.
+                target = min(cur_length * 1.6, finger_ceiling)
+                factor = target / cur_length if cur_length > 0 else 1.6
+                corrections.append({
+                    "part_name": part.name,
+                    "correction_type": "scale_part",
+                    "factor": factor,
+                    "reason": f"Gripper invisible: {problem.description}",
+                })
+
+        elif problem.problem_type == ProblemType.PLATE_OVERLAP:
+            # Two stacked plates reported overlapping.  Push the child
+            # plate up by the parent plate's height + a small gap.
+            # `apply_corrections` looks up the parent's dim-height.
+            parts_in_play = problem.affected_parts or []
+            if len(parts_in_play) >= 2:
+                child_name = parts_in_play[-1]
+                for i, joint in enumerate(assembly.joints):
+                    if joint.child == child_name:
+                        corrections.append({
+                            "joint_index": i,
+                            "correction_type": "plate_z_separation",
+                            "reason": f"Plate overlap: {problem.description}",
+                        })
+                        break
+
+        elif problem.problem_type == ProblemType.MISSING_PART:
+            # A part name was reported missing.  If it actually exists in
+            # `assembly.parts` (the usual case — VLM mis-counts), no-op.
+            # If it really is absent, flag for the LLM fallback path.
+            wanted = problem.affected_parts or ["base_plate"]
+            for w in wanted:
+                already = any(p.name == w for p in assembly.parts)
+                if not already:
+                    corrections.append({
+                        "correction_type": "rebuild_needed",
+                        "reason": f"Truly missing part {w}: {problem.description}",
+                    })
+
     return corrections
+
+
+def _apply_finger_spread_to_joint(
+    joint: Any, parts: list[Any]
+) -> None:
+    """Push one gripper finger joint apart from its twin along Y.
+
+    Used by ``apply_corrections`` for the ``finger_spread`` correction type,
+    and exposed at module level so it can be unit-tested in isolation (the
+    VLM-loop bug was that this logic never actually ran — wrong offset
+    component + an always-false idempotency guard).
+
+    Convention (must match ``_normalize_gripper_fingers`` in
+    assembly_generator.py): the two fingers separate on **Y** (the width
+    axis), perpendicular to the bar length on X.
+
+    The target offset is derived from geometry, not from the VLM-reported
+    penetration (which caused runaway offsets on 2026-06-18): each finger
+    centre needs ``finger_width + clearance`` from the origin so the inner
+    faces clear each other.  Idempotent — a finger already past the target
+    is left alone.
+    """
+    finger_width = 14.0  # fallback
+    for p in parts:
+        if p.name == joint.child:
+            finger_width = float(p.dimensions.get("width", 14.0) or 14.0)
+            break
+    clearance = 6.0  # mm between inner faces when closed
+    target_offset = min(finger_width + clearance, 40.0)
+    sign = -1.0 if "left" in joint.child.lower() else 1.0
+    cur = joint.offset or (0, 0, 0)
+    # Idempotent: only push out if the current Y magnitude is still below
+    # the target.  Symmetric for left (-) and right (+) fingers.
+    if abs(cur[1]) < target_offset:
+        joint.offset = (
+            cur[0],
+            sign * target_offset,
+            cur[2],
+        )
+    joint.no_distribute = True
 
 
 def apply_corrections(
@@ -285,11 +553,11 @@ def apply_corrections(
     new_joints = [copy.deepcopy(j) for j in assembly.joints]
 
     for corr in corrections:
+        ctype = corr.get("correction_type", "")
         if "joint_index" in corr:
             idx = corr["joint_index"]
             if idx < len(new_joints):
                 joint = new_joints[idx]
-                ctype = corr["correction_type"]
                 if ctype == "offset":
                     # Prismatic joints (gripper fingers) have sanitizer-
                     # normalised offsets; VLM repositioning them inflates the
@@ -323,7 +591,29 @@ def apply_corrections(
                     # re-enable it so the new group takes effect.
                     if joint.no_distribute:
                         joint.no_distribute = False
-        elif corr.get("correction_type") == "add_joint":
+                elif ctype == "finger_spread":
+                    # Push the finger apart from its twin along Y.  Logic
+                    # lives in _apply_finger_spread_to_joint so it can be
+                    # unit-tested directly (the VLM-loop bug was precisely
+                    # that this correction silently never fired).
+                    _apply_finger_spread_to_joint(joint, new_parts)
+                elif ctype == "plate_z_separation":
+                    # Find the parent plate's height and push the child
+                    # plate up to sit cleanly above it (plus a 2mm gap).
+                    parent_name = joint.parent
+                    parent_height = 0.0
+                    for p in new_parts:
+                        if p.name == parent_name:
+                            parent_height = (
+                                p.dimensions.get("height", 0.0)
+                                or p.dimensions.get("thickness", 0.0)
+                                or 0.0
+                            )
+                            break
+                    needed = parent_height + 2.0
+                    cur = joint.offset or (0, 0, 0)
+                    joint.offset = (cur[0], cur[1], cur[2] + needed)
+        elif ctype == "add_joint":
             # Add a fixed joint for floating parts
             part_name = corr["part_name"]
             # Find the nearest structural part to attach to
@@ -339,11 +629,33 @@ def apply_corrections(
                 parent_anchor="top",
                 child_anchor="bottom",
             ))
+        elif ctype == "scale_part":
+            # Scale a single part's dimensions by a multiplicative factor.
+            # Used to make invisible gripper fingers visible to the VLM.
+            part_name = corr.get("part_name", "")
+            factor = float(corr.get("factor", 1.0))
+            for p in new_parts:
+                if p.name == part_name:
+                    new_dims = {}
+                    for k, v in p.dimensions.items():
+                        try:
+                            new_dims[k] = float(v) * factor
+                        except (TypeError, ValueError):
+                            new_dims[k] = v
+                    p.dimensions = new_dims
+                    break
+        # "rebuild_needed" is a no-op here — it's a signal to the caller
+        # that the LLM fallback path must be taken.
 
     return Assembly(
         name=assembly.name,
         parts=new_parts,
         joints=new_joints,
+        description=assembly.description,
+        default_angles=dict(assembly.default_angles),
+        total_mass=assembly.total_mass,
+        center_of_mass=assembly.center_of_mass,
+        inertia_tensor=assembly.inertia_tensor,
     )
 
 
