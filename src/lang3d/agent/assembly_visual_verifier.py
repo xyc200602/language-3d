@@ -828,61 +828,42 @@ def _render_vtk(
     positions: dict[str, dict],
     output_dir: str,
 ) -> list[str]:
-    """Render assembly using VTK offscreen rendering."""
+    """Render assembly using the shared VTK pipeline.
+
+    Delegates to ``vtk_renderer.render_assembly_from_positions`` so this
+    path gets every enhancement the main VLM-loop render gets: trimesh
+    preview STLs (L-shaped fingers, not flat boxes), gripper close-up
+    view, finger symmetrisation, fastener rendering, feature-edge
+    extraction, and the arm-link tint system.  The previous in-line
+    implementation built its own box/cylinder approximation and skipped
+    all of these, so the export_package VLM path (triggered when
+    verification_status != PASSED) always saw degraded geometry and the
+    vision model reliably mis-classified the gripper as a solid block.
+    """
     import os
-    from ..tools.vtk_renderer import (
-        VTKOffscreenRenderer, SUBSYSTEM_COLORS, _default_color,
-    )
+    from ..tools.vtk_renderer import render_assembly_from_positions
 
-    renderer = VTKOffscreenRenderer(width=1200, height=900)
-
-    # Subsystem detection
-    def _get_subsystem(name: str) -> str:
-        if name.startswith("arm_l_"): return "arm_left"
-        if name.startswith("arm_r_"): return "arm_right"
-        if "ipc" in name: return "ipc"
-        if name.startswith(("sensor_", "imu_", "lidar_", "camera_")): return "sensor_tower"
-        return "chassis"
-
-    for idx, p in enumerate(assembly.parts):
-        dims = p.dimensions
-        pos_data = positions.get(p.name, {})
-        pos = pos_data.get("position", [0, 0, 0])
-        rot = pos_data.get("rotation", None)
-        rot_tuple = tuple(rot) if rot and rot[3] != 0.0 else None
-        subsystem = _get_subsystem(p.name)
-        color = SUBSYSTEM_COLORS.get(subsystem, _default_color(idx))
-
-        # Try loading real STL if available
-        stl_loaded = False
-        for candidate_dir in (os.environ.get("LANG3D_WORKSPACE", ""), getattr(assembly, "_stl_dir", "")):
-            if not candidate_dir:
-                continue
-            stl_path = os.path.join(candidate_dir, f"{p.name}.stl")
-            if os.path.isfile(stl_path):
-                renderer.load_stl(stl_path, color=color, position=tuple(pos),
-                                  rotation=rot_tuple)
-                stl_loaded = True
-                break
-
-        # Fallback to dimension-based approximation
-        if not stl_loaded:
-            if "diameter" in dims or "outer_diameter" in dims:
-                r = dims.get("diameter", dims.get("outer_diameter", 10)) / 2
-                h = dims.get("height", dims.get("length", 10))
-                renderer.add_cylinder(radius=r, height=h, color=color,
-                                      position=tuple(pos), rotation=rot_tuple)
-            else:
-                l = dims.get("length", 10)
-                w = dims.get("width", 10)
-                h = dims.get("height", dims.get("thickness", 5))
-                renderer.add_box(length=l, width=w, height=h, color=color,
-                                 position=tuple(pos), rotation=rot_tuple)
-
-    renderer.add_axes(length=25)
-    renderer.add_floor_grid(size=400, spacing=50, z_position=0)
+    parts_dicts = [
+        {
+            "name": p.name,
+            "dimensions": dict(p.dimensions),
+            "category": getattr(p, "category", ""),
+        }
+        for p in assembly.parts
+    ]
+    stl_dir = getattr(assembly, "_stl_dir", "") or None
     os.makedirs(output_dir, exist_ok=True)
-    return renderer.render_all_views(output_dir, prefix="assembly")
+    return render_assembly_from_positions(
+        parts=parts_dicts,
+        positions=positions,
+        output_dir=output_dir,
+        stl_dir=stl_dir,
+        joints=list(assembly.joints),
+        views=["isometric", "front", "top", "right", "gripper_closeup"],
+        gripper_closeup=True,
+        width=1600,
+        height=1200,
+    )
 
 
 def _render_matplotlib(
