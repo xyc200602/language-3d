@@ -303,6 +303,80 @@ class TestUserProvidedInertia:
         assert ixx == pytest.approx(5e-7, rel=0.01)
 
 
+class TestInertialOrigin:
+    """The <inertial><origin xyz> must point at the geometric centre.
+
+    Regression for the MuJoCo physics-stability bug: the origin was always
+    ``0 0 0`` while the inertia tensor was centre-relative, so PD-hold
+    computed gravity torque against the wrong point and diverged.
+    See AGENTS.md §3.2 — the tensor and its reference point must agree.
+    """
+
+    def test_box_origin_inferred_from_geometry(self):
+        """A 200x150x20 box → origin = (0.1, 0.075, 0.01) m (geometric centre)."""
+        p = Part(
+            name="base_plate", category="structural", description="plate",
+            dimensions=dict(length=200, width=150, height=20),
+        )
+        asm = Assembly(name="test", parts=[p], joints=[])
+        converter = AssemblyToURDF(asm)
+        converter.convert()
+        link = converter.get_links()[0]
+        # com is stored in metres (mm→m via _mm_to_m)
+        assert link.com == pytest.approx((0.1, 0.075, 0.01), abs=1e-6)
+
+    def test_cylinder_origin_inferred_from_geometry(self):
+        """A Ø60×40 cylinder → origin = (0, 0, 0.02) m (half-height on Z)."""
+        p = Part(
+            name="pillar", category="structural", description="pillar",
+            dimensions=dict(diameter=60, height=40),
+        )
+        asm = Assembly(name="test", parts=[p], joints=[])
+        converter = AssemblyToURDF(asm)
+        converter.convert()
+        link = converter.get_links()[0]
+        assert link.com == pytest.approx((0.0, 0.0, 0.02), abs=1e-6)
+
+    def test_user_provided_com_respected(self):
+        """An explicitly set center_of_mass must override the geometric guess."""
+        p = Part(
+            name="offset_mass", category="structural", description="offset",
+            dimensions=dict(length=100, width=100, height=100),
+            center_of_mass=(50.0, 30.0, 10.0),
+        )
+        asm = Assembly(name="test", parts=[p], joints=[])
+        converter = AssemblyToURDF(asm)
+        converter.convert()
+        link = converter.get_links()[0]
+        # (50,30,10) mm → (0.05, 0.03, 0.01) m, NOT the geometric (0.05,0.05,0.05)
+        assert link.com == pytest.approx((0.05, 0.03, 0.01), abs=1e-6)
+
+    def test_origin_not_all_zero_for_realistic_part(self):
+        """End-to-end: the exported XML must not contain an all-zero origin
+        for a part whose centre is clearly not at the link origin."""
+        p = Part(
+            name="link_test", category="structural", description="t",
+            dimensions=dict(length=120, width=60, height=25),
+        )
+        asm = Assembly(name="test", parts=[p], joints=[])
+        xml = AssemblyToURDF(asm).convert()
+        # The inertial origin must be non-zero on at least one axis.
+        import xml.etree.ElementTree as ET
+        root = ET.fromstring(xml)
+        origins = root.findall(".//inertial/origin")
+        assert len(origins) >= 1
+        found_nonzero = False
+        for o in origins:
+            xyz = o.get("xyz", "0 0 0").split()
+            vals = [float(v) for v in xyz]
+            if any(abs(v) > 1e-6 for v in vals):
+                found_nonzero = True
+                break
+        assert found_nonzero, (
+            "all <inertial><origin xyz> are 0 0 0 — MuJoCo physics will diverge"
+        )
+
+
 # ============================================================================
 # ROS2PackageBuilder
 # ============================================================================

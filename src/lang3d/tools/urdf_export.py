@@ -173,6 +173,44 @@ def _infer_inertia(part: Part) -> dict[str, float]:
             "iyy": round(iyy, 8), "iyz": 0.0, "izz": round(izz, 8)}
 
 
+def _infer_local_com(part: Part) -> tuple[float, float, float]:
+    """Infer a part's centre of mass in its local (link) frame, in mm.
+
+    Returns the geometric centre of the part's bounding shape.  Used as the
+    URDF ``<inertial><origin xyz>`` when ``part.center_of_mass`` is unset
+    (the common case — the field defaults to ``(0,0,0)`` and the pipeline
+    never populates it).
+
+    This MUST be consistent with ``_infer_inertia``: the inertia tensor
+    produced there is the uniform-body tensor *about the geometric centre*,
+    so the inertial origin must point at that same centre.  An origin of
+    ``(0,0,0)`` while the tensor is centre-relative is what made MuJoCo
+    PD-hold diverge (gravity torque arm computed against the wrong point).
+
+    Coordinate convention follows the FreeCAD local frame used by the
+    exported STL mesh (``scale=0.001``):
+
+      * **box** (``makeBox``): corner-origin → centre is ``(l/2, w/2, h/2)``
+      * **cylinder** (``makeCylinder``): along +Z, centred in XY → ``(0, 0, h/2)``
+
+    For non-uniform parts (holes, fillets) this is an approximation, on par
+    with the ``_infer_inertia`` uniform-body approximation — using both
+    together keeps the tensor and origin self-consistent.
+    """
+    dims = part.dimensions
+
+    # Cylinder (mirrors _infer_inertia's branch order and key lookup)
+    if "diameter" in dims or "outer_diameter" in dims:
+        h = dims.get("height", dims.get("thickness", dims.get("length", 10.0)))
+        return (0.0, 0.0, h / 2.0)
+
+    # Box
+    lx = dims.get("length", dims.get("width", 10.0))
+    ly = dims.get("width", 10.0)
+    lz = dims.get("height", dims.get("thickness", 10.0))
+    return (lx / 2.0, ly / 2.0, lz / 2.0)
+
+
 def _pick_material_color(part: Part) -> str:
     """Pick a default material color based on part category."""
     cat = part.category.lower()
@@ -421,6 +459,14 @@ class AssemblyToURDF:
                 _mm_to_m(part.center_of_mass[1]),
                 _mm_to_m(part.center_of_mass[2]),
             )
+            # part.center_of_mass defaults to (0,0,0) and the pipeline never
+            # populates it; a zero origin paired with a centre-relative
+            # inertia tensor makes MuJoCo PD-hold diverge (wrong gravity
+            # torque arm).  Fall back to the geometric centre so the tensor
+            # and its reference point stay self-consistent.  See AGENTS.md §3.2.
+            if part.center_of_mass == (0.0, 0.0, 0.0):
+                com = _infer_local_com(part)
+                com_m = (_mm_to_m(com[0]), _mm_to_m(com[1]), _mm_to_m(com[2]))
 
             inertia = _infer_inertia(part)
 
