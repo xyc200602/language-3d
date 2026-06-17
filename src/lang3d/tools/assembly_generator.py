@@ -1371,12 +1371,37 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     for j in (left_joint, right_joint):
         j.axis = "y"
 
-    # Push fingers forward (−X) so the main bar fully protrudes beyond the
-    # gripper base front face.  The finger length (60 mm) lies along X, so
-    # placing the centre at ``-(base_length/2 + finger_l/2)`` makes the bar
-    # span ``[-base_length/2 - finger_l, -base_length/2]`` — fully in front
-    # of the base.  The ±gap on Y keeps the two parallel bars side-by-side.
-    forward_x = -(base_length / 2.0 + finger_l / 2.0)
+    # Push fingers forward along X so the main bar fully protrudes beyond
+    # the gripper base face — but WHICH direction is "forward" depends on
+    # where the parent chain attaches to the gripper base.  The fingers
+    # must point AWAY from the arm (the parent link), not back into it.
+    #
+    # The arm-side link (e.g. wrist_link) connects to gripper_base via a
+    # joint whose child_anchor names the face it mounts on.  If the parent
+    # attaches on the 'back' face, fingers go to 'front' (+X); if on
+    # 'front', fingers go to 'back' (-X).  This was previously hardcoded
+    # to -X, which drove the fingers back into the wrist_link whenever the
+    # arm attached on the back face (the 4dof_arm topology) — causing the
+    # wrist_link/gripper_finger intersection that the VLM loop could never
+    # resolve.
+    parent_face = None
+    for j in assembly.joints:
+        if j.child == left_joint.parent and j.child_anchor != "center":
+            parent_face = j.child_anchor
+            break
+    # ANCHOR_DIRECTIONS (assembly_solver): front=(0,-1,0), back=(0,1,0).
+    # The finger-length axis is X, so map front/back (±Y) to finger X sign:
+    # parent on back (+Y)  -> fingers toward front, i.e. +X
+    # parent on front (-Y) -> fingers toward back,  i.e. -X
+    if parent_face == "back":
+        forward_sign = +1.0
+    elif parent_face == "front":
+        forward_sign = -1.0
+    else:
+        # Unknown topology (root gripper, or center-attached): keep the
+        # historical -X default so existing assemblies are unaffected.
+        forward_sign = -1.0
+    forward_x = forward_sign * (base_length / 2.0 + finger_l / 2.0)
     left_joint.offset = (forward_x, -gap, 0.0)
     right_joint.offset = (forward_x, gap, 0.0)
 

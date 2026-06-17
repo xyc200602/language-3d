@@ -215,3 +215,93 @@ class TestFingerSpreadCorrection:
         assert y_after_first == y_after_second, (
             f"finger_spread is not idempotent: Y went {y_after_first} → {y_after_second}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Forward direction depends on parent-chain attachment (the wrist_link fix)
+# ---------------------------------------------------------------------------
+
+
+def _gripper_with_parent_json(parent_anchor: str, child_anchor: str) -> str:
+    """A gripper assembly that has a parent link (wrist_link) attached.
+
+    Mirrors the 4dof_arm topology: wrist_link -> gripper_base -> fingers.
+    The wrist_link attaches to gripper_base on ``child_anchor`` face; the
+    fingers must point the OTHER way so they don't stab back into the arm.
+    """
+    return json.dumps({
+        "name": "gripper_with_parent",
+        "parts": [
+            {"name": "wrist_link", "category": "link",
+             "description": "wrist", "material": "PLA",
+             "dimensions": {"length": 60, "width": 20, "height": 14}},
+            {"name": "gripper_base", "category": "mechanical",
+             "description": "gripper base", "material": "PLA",
+             "dimensions": {"length": 28, "width": 50, "height": 32}},
+            {"name": "gripper_finger_left", "category": "mechanical",
+             "description": "left finger", "material": "PLA",
+             "dimensions": {"length": 60, "width": 14, "height": 28}},
+            {"name": "gripper_finger_right", "category": "mechanical",
+             "description": "right finger", "material": "PLA",
+             "dimensions": {"length": 60, "width": 14, "height": 28}},
+        ],
+        "joints": [
+            {"type": "fixed", "parent": "wrist_link", "child": "gripper_base",
+             "parent_anchor": parent_anchor, "child_anchor": child_anchor},
+            {"type": "prismatic", "parent": "gripper_base",
+             "child": "gripper_finger_left", "axis": "x",
+             "parent_anchor": "center", "child_anchor": "center",
+             "range_deg": [0, 20]},
+            {"type": "prismatic", "parent": "gripper_base",
+             "child": "gripper_finger_right", "axis": "x",
+             "parent_anchor": "center", "child_anchor": "center",
+             "range_deg": [0, 20]},
+        ],
+    })
+
+
+class TestForwardDirection:
+    """The finger forward direction must follow the parent-chain attachment.
+
+    Regression for the wrist_link/finger intersection: when the arm attaches
+    on the gripper base's 'back' face, fingers must point to 'front' (+X),
+    not back into the arm (-X).  This was hardcoded to -X and drove the
+    fingers into the wrist_link in the 4dof_arm topology.
+    """
+
+    def test_fingers_point_away_when_parent_on_back(self):
+        """Parent (wrist) on 'back' face -> fingers point +X (front)."""
+        asm = _parse_assembly_json(_gripper_with_parent_json("front", "back"))
+        asm = _normalize_gripper_fingers(asm)
+        left = next(j for j in asm.joints if "finger_left" in j.child)
+        # forward_x must be positive (fingers away from the back-mounted arm)
+        assert left.offset[0] > 0, (
+            f"fingers must point +X when parent is on 'back' face; "
+            f"got offset[0]={left.offset[0]} (this drives fingers into the arm)"
+        )
+
+    def test_fingers_flip_when_parent_on_front(self):
+        """Parent (wrist) on 'front' face -> fingers point -X (back)."""
+        asm = _parse_assembly_json(_gripper_with_parent_json("back", "front"))
+        asm = _normalize_gripper_fingers(asm)
+        left = next(j for j in asm.joints if "finger_left" in j.child)
+        assert left.offset[0] < 0, (
+            f"fingers must point -X when parent is on 'front' face; "
+            f"got offset[0]={left.offset[0]}"
+        )
+
+    def test_no_intersection_with_wrist_link(self):
+        """End-to-end: the 4dof topology (wrist->base->fingers, back-mount)
+        must NOT produce a wrist_link/finger intersection after solving."""
+        asm = _parse_assembly_json(_gripper_with_parent_json("front", "back"))
+        asm = _normalize_gripper_fingers(asm)
+        problems = _solve_and_validate(asm)
+        wrist_finger = [
+            p for p in problems
+            if "wrist" in p.lower() and "finger" in p.lower()
+            and "overlap" in p.lower()
+        ]
+        assert wrist_finger == [], (
+            "wrist_link/finger still intersect after forward-direction fix:\n"
+            + "\n".join(wrist_finger)
+        )
