@@ -1666,6 +1666,57 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     injected: dict[str, float] = dict(cleaned)
     pitch_index = 0
     filled: list[tuple[str, float]] = []
+
+    # --- Over-fold detection: an arm whose pitch joints all bend the same
+    # direction curls up on itself, crushing the end-effector into the
+    # base and making the gripper impossible to resolve in renders (the
+    # VLM then reports "gripper missing").  The LLM frequently emits
+    # -35/-35/-35 (cumulative -105°), folding the arm into a tight coil.
+    # A natural arm pose alternates direction (zig-zag): -45/-30/+15.
+    # If the cumulative same-sign pitch exceeds 90°, override with a
+    # canonical zig-zag so the arm extends enough to expose the gripper.
+    # Only pitch joints (axis=x) are considered — yaw (axis=z) and roll
+    # are not "bend" joints and must be left alone.
+    pitch_joints_arm = [
+        j for j in revolute_joints if j.axis == "x" and j.child
+    ]
+    pitch_vals = [
+        float(injected.get(j.child, 0.0) or 0.0) for j in pitch_joints_arm
+    ]
+    nonzero_pitch = [v for v in pitch_vals if abs(v) > 1e-6]
+    _overrode_to_zigzag = False
+    if len(nonzero_pitch) >= 2:
+        all_same_sign = (
+            all(v < -1e-6 for v in nonzero_pitch)
+            or all(v > 1e-6 for v in nonzero_pitch)
+        )
+        cumulative = sum(nonzero_pitch)
+        # Threshold scales with joint count: 2 pitch joints folding
+        # -35°/-35° = -70° already curls the forearm back; 3 joints
+        # need more room.  ~30° per joint is the "natural bend" ceiling
+        # before the arm starts folding on itself.
+        fold_threshold = 30.0 * len(nonzero_pitch)
+        if all_same_sign and abs(cumulative) > fold_threshold:
+            logger.warning(
+                "Sanitizer: arm over-folded (all pitch joints same sign, "
+                "cumulative %.0f° > %.0f° threshold for %d joints). "
+                "Overriding with zig-zag so the gripper is visible: %s",
+                cumulative, fold_threshold, len(nonzero_pitch),
+                [j.child for j in pitch_joints_arm],
+            )
+            # Zig-zag template: alternate sign so the arm extends
+            # outward instead of curling in.  The exact magnitudes
+            # mirror the prompt's working examples.  For 2 pitch joints
+            # we use [-45, +30] (shoulder down, elbow up = reach);
+            # for 3+ we extend the pattern (-45/-30/+15/-10 ...).
+            n = len(pitch_joints_arm)
+            if n == 2:
+                _zigzag_seq = [-45.0, 30.0]
+            else:
+                _zigzag_seq = [-45.0, -30.0, 15.0, -10.0]
+            for idx, j in enumerate(pitch_joints_arm):
+                injected[j.child] = _zigzag_seq[idx % len(_zigzag_seq)]
+            _overrode_to_zigzag = True
     for j in revolute_joints:
         # Base yaw (axis=z, first revolute): clamp to ±10°.  A large base
         # yaw rotates the entire arm sideways so it points away from the
@@ -1725,6 +1776,11 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     #
     # Each pitch is clamped to a moderate magnitude so the arm doesn't
     # fold back on itself (too steep) or stay flat (too horizontal).
+    #
+    # SKIPPED when the over-fold detector already applied a zig-zag: the
+    # zig-zag alternates signs on purpose (to extend the arm and expose
+    # the gripper), so forcing all-same-sign here would undo it and fold
+    # the arm right back.  The two pose strategies are mutually exclusive.
     pitch_children = [
         j.child for j in revolute_joints
         if j.axis in ("x", "y") and j.child in injected
@@ -1741,6 +1797,19 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     pitch_idx = 0
     for child in pitch_children:
         val = float(injected[child])
+        if _overrode_to_zigzag:
+            # Zig-zag already chose the pose — only clamp magnitude into
+            # the joint's legal range, do NOT force sign or minimum.
+            rl = range_limit.get(child)
+            cap = 60.0
+            if rl is not None and rl > 0:
+                cap = min(cap, rl)
+            clamped = max(-cap, min(cap, val))
+            if abs(clamped - val) > 0.05:
+                adjusted.append((child, val, clamped))
+                injected[child] = round(clamped, 1)
+            pitch_idx += 1
+            continue
         # Moderate cap so the arm tilts up without folding back.
         if pitch_idx == 0:
             cap = 35.0      # Shoulder: sets the overall reach angle.
