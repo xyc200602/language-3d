@@ -1572,7 +1572,14 @@ bar = bar.fuse(rail_tab)
 
 # --- L-shaped tip at front end (hooks inward) ---
 tip_l = L * 0.25
-tip_w = max(5.0, W * 2.0)
+# Tip width: keep the finger slender.  The previous W*2.0 made the tip
+# as wide as 2× the bar, inflating the finger's total Y extent to
+# W + 2W = 3W (e.g. 14→42mm), turning a slender finger into a stubby
+# block that the VLM reads as a "solid circular component".  The tip
+# only needs to hook inward enough to grip — ~0.4×W keeps the total
+# finger aspect ratio > 3 (slender bar, not a block) while still
+# forming a visible L-hook.
+tip_w = max(4.0, W * 0.4)
 # Tip extends inward (toward center of gripper)
 if tip_dir > 0:
     tip_y = W  # extend toward +Y
