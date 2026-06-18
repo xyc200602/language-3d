@@ -2613,8 +2613,12 @@ def _build_finger_preview_mesh(name: str, dims: dict):
     bar.apply_translation([L / 2.0, W / 2.0, H / 2.0])
 
     # L-shaped tip at the front end, hooking inward.
+    # tip_w mirrors _gripper_finger_ops (part_feature_engine.py): keep the
+    # finger slender.  W*2.0 inflated the total Y extent to 3W (e.g.
+    # 14→42mm), making the rendered finger a stubby block that the VLM
+    # reads as a "solid sphere" instead of a gripper prong.
     tip_l = L * 0.25
-    tip_w = max(5.0, W * 2.0)
+    tip_w = max(4.0, W * 0.4)
     tip_y = W if tip_dir > 0 else -tip_w
     tip = trimesh.creation.box(extents=[tip_l, tip_w, H])
     tip.apply_translation([L - tip_l / 2.0, tip_y + tip_w / 2.0, H / 2.0])
