@@ -1541,13 +1541,26 @@ def _validate_proportions(assembly: Assembly) -> Assembly:
         link_part = None
         joint_d = 0
         joint_name = ""
-        if parent_d > 0 and "joint" in parent_nl and child.category in (
-                "structural", "link"):
+        # The cross-section rule targets ARM LINKS (the bars between joints),
+        # not chassis/base plates.  A base_plate is "structural" but is a
+        # thin slab by design (prompt allows 3-8mm) — applying the arm-link
+        # 0.50×joint-diameter rule to it rejects every legitimate base
+        # plate (8mm < 0.5×40mm = 20mm).  Restrict to parts whose name
+        # actually reads as an arm link.
+        def _is_arm_link(pt) -> bool:
+            nl = pt.name.lower()
+            return (
+                pt.category in ("structural", "link")
+                and ("link" in nl or "arm" in nl)
+                and not any(b in nl for b in (
+                    "base", "plate", "chassis", "foot", "mount",
+                ))
+            )
+        if parent_d > 0 and "joint" in parent_nl and _is_arm_link(child):
             link_part = child
             joint_d = parent_d
             joint_name = parent.name
-        elif child_d > 0 and "joint" in child_nl and parent.category in (
-                "structural", "link"):
+        elif child_d > 0 and "joint" in child_nl and _is_arm_link(parent):
             # parent is the link, child is the joint
             link_part = parent
             joint_d = child_d
