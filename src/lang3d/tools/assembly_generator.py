@@ -1639,12 +1639,40 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
             removed,
         )
 
+    # Zero out roll/yaw default angles that are NOT the base yaw joint.
+    # Only pitch joints (axis=x, the up/down bend) and the base yaw
+    # (first axis=z joint, turning the whole arm left/right) should
+    # carry a non-zero default — they define the arm's reach pose.
+    # Other roll (axis=y, spinning the end effector) and yaw joints
+    # rotate the END of the arm, which breaks gripper symmetry in the
+    # default pose (a 35° wrist roll tilts the whole gripper sideways,
+    # making the two fingers project asymmetrically in world space).
+    # The LLM frequently emits non-zero wrist roll; zero it here.
+    revolute_joints_tmp = [
+        j for j in assembly.joints if j.type == "revolute"
+    ]
+    base_yaw_child: str | None = None
+    for j in revolute_joints_tmp:
+        if j.axis == "z":
+            base_yaw_child = j.child  # first z-axis joint = base yaw
+            break
+    zeroed_roll = []
+    for j in revolute_joints_tmp:
+        if j.axis in ("y", "z") and j.child != base_yaw_child:
+            cur = cleaned.get(j.child)
+            if cur is not None and abs(float(cur)) > 1e-6:
+                zeroed_roll.append((j.child, cur))
+                cleaned[j.child] = 0.0
+    if zeroed_roll:
+        logger.info(
+            "Sanitizer: zeroed non-base roll/yaw default_angles "
+            "(they tilt the gripper in the default pose): %s",
+            zeroed_roll,
+        )
+
     # Detect an arm-like assembly: at least 2 revolute joints and at least 1
     # link-like structural part.
-    revolute_joints = [
-        j for j in assembly.joints
-        if j.type == "revolute"
-    ]
+    revolute_joints = revolute_joints_tmp
     has_link = any(
         _is_link_like(p.name) or _is_end_effector(p.name)
         for p in assembly.parts
@@ -1662,7 +1690,7 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # visible in logs without rejecting the assembly.
     mismatched = [
         j.child for j in revolute_joints
-        if j.axis in ("x", "y")
+        if j.axis == "x"
         and {j.parent_anchor, j.child_anchor} != {"front", "back"}
         and j.parent_anchor in ("top", "bottom")
     ]
@@ -1737,10 +1765,26 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
         # wrong way and the gripper ends up beside (not in front of) the
         # base.
         if j.axis == "z" and pitch_index == 0:
-            yaw_val = float(injected.get(j.child, 0.0) or 0.0)
-            clamped_yaw = max(-10.0, min(10.0, yaw_val))
-            injected[j.child] = round(clamped_yaw, 1)
+            # Base yaw: the default (home) pose should point the arm
+            # straight forward (yaw = 0).  Any non-zero yaw rotates the
+            # whole arm, which carries through to the gripper and makes
+            # the two fingers project asymmetrically in world space
+            # (a 10° yaw offsets the ±20mm gap into a 39mm world-Y
+            # difference).  The VLM verifies the home pose from a world
+            # view, so symmetry matters here.  Yaw for reaching different
+            # directions is exercised by the workspace/motion-sweep
+            # checks, not baked into the default pose.
+            injected[j.child] = 0.0
             pitch_index += 1
+            continue
+
+        # Roll joints (axis=y, spinning the end effector) must stay at 0°
+        # in the default pose — a non-zero roll tilts the gripper and
+        # breaks finger symmetry.  They were zeroed in the Clean phase
+        # above; skip the fill so we don't reinject a value.
+        if j.axis == "y":
+            if injected.get(j.child) is None:
+                injected[j.child] = 0.0
             continue
 
         current = injected.get(j.child)
@@ -1796,11 +1840,11 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # the arm right back.  The two pose strategies are mutually exclusive.
     pitch_children = [
         j.child for j in revolute_joints
-        if j.axis in ("x", "y") and j.child in injected
+        if j.axis == "x" and j.child in injected
     ]
     range_limit: dict[str, float] = {}
     for j in revolute_joints:
-        if j.axis in ("x", "y") and j.range_deg:
+        if j.axis == "x" and j.range_deg:
             try:
                 lo_r, hi_r = float(j.range_deg[0]), float(j.range_deg[1])
                 range_limit[j.child] = min(abs(lo_r), abs(hi_r)) - 1.0
