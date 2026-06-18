@@ -1854,19 +1854,6 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     pitch_idx = 0
     for child in pitch_children:
         val = float(injected[child])
-        if _overrode_to_zigzag:
-            # Zig-zag already chose the pose — only clamp magnitude into
-            # the joint's legal range, do NOT force sign or minimum.
-            rl = range_limit.get(child)
-            cap = 60.0
-            if rl is not None and rl > 0:
-                cap = min(cap, rl)
-            clamped = max(-cap, min(cap, val))
-            if abs(clamped - val) > 0.05:
-                adjusted.append((child, val, clamped))
-                injected[child] = round(clamped, 1)
-            pitch_idx += 1
-            continue
         # Moderate cap so the arm tilts up without folding back.
         if pitch_idx == 0:
             cap = 35.0      # Shoulder: sets the overall reach angle.
@@ -1887,26 +1874,19 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
             if abs(clamped) < min_mag:
                 clamped = -min(min_mag, cap)
         else:
-            # Subsequent pitch joints (elbow, wrist): PRESERVE the sign
-            # the LLM gave.  Forcing all joints negative folds the arm
-            # into a coil (shoulder -35 + elbow -35 + wrist -35 = the
-            # gripper crushed into the base, invisible to the VLM).  A
-            # natural reach pose has the shoulder tilt up and the elbow
-            # fold back (opposite sign), extending the arm outward.
-            #
-            # If the LLM gave a small same-sign angle (e.g. elbow -20
-            # matching shoulder -30), nudge it to the OPPOSITE sign so
-            # the arm extends rather than curls — but only when the
-            # LLM value is small enough that it looks like "didn't
-            # think about it" rather than a deliberate fold.  A large
-            # explicit same-sign angle is left for the over-fold
-            # detector to handle.
-            if abs(clamped) < min_mag:
-                # Small value: pick the sign that extends the arm
-                # (opposite of shoulder).  Shoulder is pitch_idx==0,
-                # already forced negative, so extending = positive.
+            # Subsequent pitch joints (elbow, wrist): force POSITIVE
+            # (opposite of shoulder).  The home pose must show an
+            # EXTENDED arm, not a folded one.  The LLM systematically
+            # emits same-sign angles (e.g. shoulder -30 + elbow -35),
+            # which fold the arm into a coil and crush the gripper into
+            # the base.  Forcing elbow/wrist positive guarantees the arm
+            # extends outward regardless of what the LLM emitted.
+            # Previous "preserve sign for large values" logic still
+            # produced folds when the LLM gave -35 (>= min_mag), so the
+            # pose ended up coiled in every E2E run.
+            clamped = abs(clamped)  # force positive
+            if clamped < min_mag:
                 clamped = min_mag
-            # else: LLM gave a sizable angle — keep its sign and magnitude.
         if abs(clamped - val) > 0.05:
             adjusted.append((child, val, clamped))
             injected[child] = round(clamped, 1)
