@@ -425,47 +425,27 @@ def _generate_constraint_corrections(
                         break
 
         elif problem.problem_type == ProblemType.GRIPPER_INVISIBLE:
-            # Scale up finger dimensions — but ONLY when the finger is
-            # still smaller than 25% of the largest link.  Without this
-            # ceiling the correction stacks across rounds (1.6× → 2.56× →
-            # 4.1× ...) and the fingers end up bigger than the whole arm
-            # (production bug 2026-06-18: 393×92×184mm fingers on a 300mm
-            # reach arm produced an all-blank VTK render).
-            arm_parts = [p for p in assembly.parts
-                         if p.category in ("link", "structural")
-                         or any(k in p.name.lower()
-                                for k in ("link", "arm", "shoulder", "elbow"))]
-            arm_reach = max(
-                (sum(float(p.dimensions.get(k, 0) or 0)
-                     for k in ("length", "width") if isinstance(p.dimensions.get(k), (int, float)))
-                 for p in arm_parts),
-                default=300.0,
+            # "VLM can't see the gripper" is a RENDERING problem, not a
+            # geometry problem.  The VLM loop already renders a dedicated
+            # gripper_closeup view (render_assembly_from_positions with
+            # gripper_closeup=True) that zooms in on the finger centroid.
+            # If the close-up still can't resolve the fingers, scaling the
+            # dimensions up will NOT help — it creates a runaway feedback
+            # loop (60→96→153.6mm in two rounds, factor 1.6²) that makes
+            # the fingers larger than the arm links, causing proportion
+            # failures and wrist_link/finger intersections.
+            #
+            # Instead of mutating geometry, just record the problem so the
+            # LLM-regeneration fallback path (which rewrites the assembly
+            # JSON from scratch) can address the root cause — typically a
+            # folded arm pose or genuinely fused fingers, neither of which
+            # is fixed by scaling.
+            logger.info(
+                "GRIPPER_INVISIBLE reported but NOT scaling finger "
+                "dimensions (would cause runaway growth). Close-up view "
+                "and LLM regeneration will handle visibility: %s",
+                problem.description[:120],
             )
-            finger_ceiling = arm_reach * 0.30  # max finger length = 30% of arm reach
-            for part in assembly.parts:
-                if "finger" not in part.name.lower():
-                    continue
-                cur_length = float(part.dimensions.get("length", 0) or 0)
-                if cur_length >= finger_ceiling:
-                    # Already big enough — don't scale again.  This is
-                    # the idempotency guard that prevents runaway growth.
-                    logger.info(
-                        "Skipping gripper_invisible scale on %s "
-                        "(length %.0fmm >= ceiling %.0fmm)",
-                        part.name, cur_length, finger_ceiling,
-                    )
-                    continue
-                # Scale to exactly the ceiling, not by a multiplicative
-                # factor — that way the correction converges instead of
-                # stacking across rounds.
-                target = min(cur_length * 1.6, finger_ceiling)
-                factor = target / cur_length if cur_length > 0 else 1.6
-                corrections.append({
-                    "part_name": part.name,
-                    "correction_type": "scale_part",
-                    "factor": factor,
-                    "reason": f"Gripper invisible: {problem.description}",
-                })
 
         elif problem.problem_type == ProblemType.PLATE_OVERLAP:
             # Two stacked plates reported overlapping.  Push the child
