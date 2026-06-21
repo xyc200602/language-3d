@@ -209,6 +209,20 @@ def _build_script(operations: list[dict]) -> str:
             h = float(op.get("height", 0))
             name = _safe_name(op.get("name", "Cylinder"))
             lines.append(f'cyl = Part.makeCylinder({r}, {h})')
+            # Optional rotation (added 2026-06-21, Plan B): when present,
+            # rotate the cylinder so its Z axis aligns with the desired
+            # hole direction.  Used by connection_features bolt holes on
+            # side anchors (front/back/left/right) where the bolt enters
+            # along Y/X, not Z.  Without this the cylinder axis is wrong
+            # and the boolean cut fragments the part geometry.
+            # Format: op["rotation"] = [ax, ay, az, angle_deg]
+            rot = op.get("rotation")
+            if rot and len(rot) == 4 and float(rot[3]) != 0.0:
+                ax, ay, az, ang = (float(v) for v in rot)
+                lines.append(
+                    f'cyl.rotate(FreeCAD.Vector(0,0,0), '
+                    f'FreeCAD.Vector({ax},{ay},{az}), {ang})'
+                )
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
             lines.append("obj.Shape = cyl")
             lines.append("doc.recompute()")
@@ -982,6 +996,16 @@ def _build_batch_script(all_ops: list[list[dict]]) -> str:
                 r, h = float(op["radius"]), float(op["height"])
                 name = _safe_name(op.get("name", "Cylinder"))
                 part_lines.append(f'cyl = Part.makeCylinder({r}, {h})')
+                # Optional rotation — see the make_cylinder handler in
+                # build_assembly_script for why this exists (Plan B:
+                # orient bolt-hole cylinders per anchor).
+                rot = op.get("rotation")
+                if rot and len(rot) == 4 and float(rot[3]) != 0.0:
+                    ax, ay, az, ang = (float(v) for v in rot)
+                    part_lines.append(
+                        f'cyl.rotate(FreeCAD.Vector(0,0,0), '
+                        f'FreeCAD.Vector({ax},{ay},{az}), {ang})'
+                    )
                 part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
                 part_lines.append("obj.Shape = cyl")
                 part_lines.append("doc.recompute()")

@@ -2148,6 +2148,7 @@ _VLM_VERIFY_PROMPT = (
     '"description": "brief assessment"}\n'
 )
 
+
 _VLM_FIX_PROMPT = (
     "You previously generated a robot assembly JSON, but the visual "
     "verification found problems.\n\n"
@@ -2623,6 +2624,16 @@ def _build_finger_preview_mesh(name: str, dims: dict):
     tip = trimesh.creation.box(extents=[tip_l, tip_w, H])
     tip.apply_translation([L - tip_l / 2.0, tip_y + tip_w / 2.0, H / 2.0])
 
+    # NOTE: bar and tip touch on a coincident face (Y=W for left, Y=0
+    # for right).  ``trimesh.util.concatenate`` does NOT boolean-merge,
+    # so this leaves a non-manifold edge (euler=4, two separate bodies).
+    # A real boolean union would fix it but requires the optional
+    # ``manifold3d``/``blender`` backend, which is not a project
+    # dependency.  This preview path is only a FALLBACK when FreeCAD is
+    # unavailable — the production path uses FreeCAD-generated STLs
+    # (where ``Part.fuse`` produces a clean watertight union), so the
+    # non-manifold preview is acceptable.  See C1 (part_feature_engine
+    # _gripper_finger_ops) for the real water-tightness fix.
     return trimesh.util.concatenate([bar, tip])
 
 
@@ -2678,13 +2689,29 @@ def _generate_preview_stls(parts: list[dict], output_dir: str) -> str:
     return preview_dir
 
 
+# Default vision model for the closed-loop assembly verifier.
+#
+# MUST be GLM-4.6V (the MAXIMUM-tier model), not GLM-4.6V-Flash or
+# GLM-4V-Plus.  Empirically verified 2026-06-21: on the 4dof_arm
+# gripper close-up render (two 14mm fingers separated by 46mm), only
+# GLM-4.6V reliably identifies the two parallel finger prongs and the
+# visible gap.  GLM-4.6V-Flash (free tier) and GLM-4V-Plus both
+# false-negative the gripper as a "solid block / no separated prongs",
+# which causes the VLM loop to fail all 3 rounds on a geometrically
+# correct assembly (verification_status=FAILED_MAX_ROUNDS, e2e
+# 89.5% blocked at the single critical check).  Using an underpowered
+# model as the sole arbiter of fine geometric features defeats the
+# purpose of the vision channel — see AGENTS.md §5.2.
+_DEFAULT_VERIFIER_VISION_MODEL = "GLM-4.6V"
+
+
 def _vlm_check_assembly(
     positions: dict[str, dict],
     parts: list[dict],
     render_dir: str,
     api_key: str,
     base_url: str,
-    vision_model: str = "GLM-4.6V-Flash",
+    vision_model: str = _DEFAULT_VERIFIER_VISION_MODEL,
     round_num: int = 0,
     real_stl_dir: str | None = None,
     joints: list | None = None,
@@ -2823,7 +2850,7 @@ def generate_assembly_with_vlm_loop(
     api_key: str | None = None,
     base_url: str | None = None,
     text_model: str = "GLM-4-Flash",
-    vision_model: str = "GLM-4.6V-Flash",
+    vision_model: str = _DEFAULT_VERIFIER_VISION_MODEL,
     temperature: float = 0.3,
 ) -> dict:
     """Full closed-loop: NL → generate → solve → render → VLM verify → fix → loop.

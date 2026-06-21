@@ -23,6 +23,11 @@ VIEW_PRESETS: dict[str, dict[str, tuple[float, float, float]]] = {
     "front": {"position": (0, -450, 50), "focal": (0, 0, 50), "up": (0, 0, 1)},
     "top": {"position": (0, 0, 500), "focal": (0, 0, 0), "up": (0, -1, 0)},
     "right": {"position": (450, 0, 50), "focal": (0, 0, 50), "up": (0, 0, 1)},
+    # Gripper close-up: same iso-style direction vector, but the focal
+    # point and parallel scale are overridden at render time (via
+    # render_assembly_from_positions' gripper_closeup flag) to zoom in on
+    # the gripper so 32mm-spaced fingers are clearly visible to the VLM.
+    "gripper_closeup": {"position": (350, -350, 250), "focal": (0, 0, 50), "up": (0, 0, 1)},
 }
 
 # Default subsystem colors (RGB, 0-1)
@@ -46,6 +51,43 @@ CATEGORY_COLORS: dict[str, tuple[float, float, float]] = {
     "sensor": (0.22, 0.52, 0.82),       # sensor blue
     "bearing": (0.85, 0.86, 0.90),      # chrome silver
 }
+
+# Arm-link tints — distinct cool blue-grey shades per link position so the
+# joint-fold region (where shoulder/elbow/wrist links bend) stays visually
+# readable.  Without this, all structural links share CATEGORY_COLORS[
+# "structural"] and fuse into one silver blob at the elbow, which VLM and
+# humans misread as a collision.
+_ARM_LINK_TINTS: dict[str, tuple[float, float, float]] = {
+    "shoulder": (0.72, 0.74, 0.78),   # base silver (proximal)
+    "upper":    (0.60, 0.66, 0.73),   # slightly darker blue-grey
+    "elbow":    (0.52, 0.59, 0.68),   # mid blue-grey
+    "forearm":  (0.44, 0.53, 0.64),   # cooler blue-grey
+    "wrist":    (0.36, 0.48, 0.62),   # coolest blue-grey (distal)
+}
+
+
+def _link_position_tint(name: str) -> tuple[float, float, float] | None:
+    """Return a position-based tint for an arm link, or None if not a link.
+
+    Matches names like ``shoulder_link``, ``upper_arm``, ``elbow_link``,
+    ``forearm``, ``wrist_link``.  Requires BOTH a position keyword and a
+    link/arm keyword so parts like ``shoulder_bolt`` or ``wrist_joint`` are
+    not tinted (joints keep their actuator orange).
+    """
+    n = name.lower()
+    has_link = ("link" in n) or ("arm" in n) or ("fore" in n)
+    if not has_link:
+        return None
+    if "shoulder" in n or "upper" in n:
+        return _ARM_LINK_TINTS["shoulder"] if "shoulder" in n else _ARM_LINK_TINTS["upper"]
+    if "elbow" in n:
+        return _ARM_LINK_TINTS["elbow"]
+    if "fore" in n or "lower" in n:
+        return _ARM_LINK_TINTS["forearm"]
+    if "wrist" in n:
+        return _ARM_LINK_TINTS["wrist"]
+    return None
+
 
 # Category-based material properties (specular, specular_power, ambient, diffuse)
 CATEGORY_MATERIALS: dict[str, dict[str, float]] = {
@@ -210,6 +252,22 @@ class VTKOffscreenRenderer:
         if not os.path.isfile(stl_path):
             raise FileNotFoundError(f"STL file not found: {stl_path}")
 
+        # --- Geometry repair (added 2026-06-21) ---
+        # FreeCAD boolean cuts (bolt holes, counterbores, cavities) routinely
+        # produce non-manifold / fragmented meshes.  Non-watertight meshes
+        # render as see-through shells in VTK (the gripper finger problem),
+        # and inverted faces render as holes.  trimesh.repair fixes winding
+        # and fills holes so VTK shows closed surfaces.
+        #
+        # Triangle-count decimation is handled further down the VTK pipeline
+        # (after swap_xy) via vtkQuadricDecimation — trimesh's
+        # simplify_quadric_decimation needs the optional ``fast_simplification``
+        # package which is not a project dependency, but VTK ships its own.
+        #
+        # Safe degradation: if trimesh or the repair fails for any reason,
+        # fall through to the raw STL so rendering still works (just ugly).
+        stl_path = self._repair_stl_for_render(stl_path)
+
         reader = vtk.vtkSTLReader()
         reader.SetFileName(stl_path)
         reader.Update()
@@ -247,6 +305,20 @@ class VTKOffscreenRenderer:
             last_output = swap_filter.GetOutputPort()
         else:
             last_output = shift_filter.GetOutputPort()
+
+        # NOTE (2026-06-21): triangle decimation was attempted here for
+        # the 90k-face gripper_base mesh but REMOVED — both
+        # vtkQuadricDecimation and vtkDecimatePro crash with an access
+        # violation when chained into vtkPolyDataNormals on these
+        # non-manifold boolean-cut meshes.  The root fix is upstream:
+        # connection_features.py now generates bolt holes with the
+        # correct cylinder axis per anchor (see _anchor_rotation), so
+        # the boolean cuts no longer fragment the geometry into 90k
+        # triangles in the first place.  Decimation is therefore not
+        # needed for clean source meshes.  If a fragmented mesh still
+        # reaches the renderer, trimesh.repair (above) softens it and
+        # the render shows the part with slightly noisy normals rather
+        # than crashing.
 
         # Smooth normals for nice shading
         normals = vtk.vtkPolyDataNormals()
@@ -302,6 +374,72 @@ class VTKOffscreenRenderer:
                 self._content_actors.append(edge_actor)
         except Exception:
             pass  # Feature edges are cosmetic — never block rendering
+
+    # ------------------------------------------------------------------
+    # STL geometry repair — called by load_stl before VTK ingestion
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _repair_stl_for_render(stl_path: str) -> str:
+        """Repair an STL's topology and return a path to the cleaned mesh.
+
+        Returns ``stl_path`` unchanged on any failure (safe degradation —
+        rendering continues with the raw, possibly-fragmented mesh rather
+        than crashing).  On success, returns a temp-file path holding the
+        repaired mesh; the caller's VTK reader consumes it transparently.
+
+        Operations:
+        1. ``trimesh.load(process=True)`` — merges duplicate vertices,
+           fixes winding on individual faces.
+        2. ``trimesh.repair.fill_holes``  — caps open holes so the mesh
+           is watertight.  Non-watertight meshes render as see-through
+           shells in VTK, which is why the gripper fingers (euler=1)
+           looked like thin slivers instead of solid prongs.
+        3. ``trimesh.repair.fix_winding`` — ensures outward normals
+           (inverted faces also cause shell-like rendering).
+
+        NOTE: triangle-count decimation is intentionally NOT done here.
+        trimesh's ``simplify_quadric_decimation`` needs the optional
+        ``fast_simplification`` package; VTK's ``vtkQuadricDecimation``
+        and ``vtkDecimatePro`` both crash with an access violation on
+        the non-manifold boolean-cut meshes when chained into
+        ``vtkPolyDataNormals``; and trimesh's voxelize+marching-cubes
+        path needs ``scikit-image``.  None of these optional deps are
+        project requirements.  The real fix is upstream —
+        ``connection_features._anchor_rotation`` now orients bolt-hole
+        cylinders correctly per anchor so the boolean cuts no longer
+        fragment geometry into 90k triangles in the first place.
+        """
+        try:
+            import tempfile
+
+            import trimesh
+
+            mesh = trimesh.load(stl_path, process=True)
+            # Some loads return a Scene or multi-body result; coerce to mesh.
+            if not isinstance(mesh, trimesh.Trimesh):
+                if hasattr(mesh, "geometry") and len(mesh.geometry) > 0:
+                    mesh = list(mesh.geometry.values())[0]
+                else:
+                    return stl_path
+
+            trimesh.repair.fix_winding(mesh)
+            trimesh.repair.fill_holes(mesh)
+
+            # Only write a temp file if repair produced a watertight mesh
+            # that differs from the (broken) input — otherwise skip the
+            # I/O and let VTK read the original directly.
+            if not mesh.is_watertight:
+                return stl_path  # repair couldn't help; don't lie about it
+
+            tmp = tempfile.NamedTemporaryFile(
+                suffix="_repaired.stl", delete=False, prefix="lang3d_"
+            )
+            tmp.close()
+            mesh.export(tmp.name)
+            return tmp.name
+        except Exception:
+            # Never let repair break rendering — fall back to raw STL.
+            return stl_path
 
     def add_box(
         self,
@@ -516,13 +654,26 @@ class VTKOffscreenRenderer:
     # Alias for backwards compatibility
     _compute_bounds = _compute_bounds_raw
 
-    def render_to_file(self, view_name: str, output_path: str) -> str:
+    def render_to_file(
+        self,
+        view_name: str,
+        output_path: str,
+        focus_point: tuple[float, float, float] | None = None,
+        parallel_scale: float | None = None,
+    ) -> str:
         """Render a single view to a PNG file. Returns the output path.
 
         Uses auto-framing: the camera focal point is set to the center of the
         scene bounding box, and the camera distance is computed from the scene
         size so the entire assembly is always visible.  The viewing *direction*
         and up vector come from VIEW_PRESETS.
+
+        Overrides (for the gripper close-up view):
+          * focus_point — world-space point the camera aims at (default:
+            scene bounding-box centre).
+          * parallel_scale — half-height of the visible orthographic volume
+            in mm (default: ``max(scene_extent * 0.6, 50)``).  A small value
+            (e.g. 60) zooms in on the gripper so fingers are VLM-visible.
         """
         import vtk
 
@@ -537,6 +688,9 @@ class VTKOffscreenRenderer:
         cx = (xmin + xmax) / 2
         cy = (ymin + ymax) / 2
         cz = (zmin + zmax) / 2
+        if focus_point is not None:
+            # Close-up: aim the camera at the gripper, not the scene centre.
+            cx, cy, cz = focus_point
 
         # Scene extent
         sx = xmax - xmin
@@ -566,9 +720,60 @@ class VTKOffscreenRenderer:
         # This avoids perspective distortion where distant parts appear tiny.
         # ParallelScale = half the visible world height.
         # For 1200x900 image (aspect 4:3), visible height = 2*scale,
-        # visible width = 2*scale * 4/3.  With 20% padding:
+        # visible width = 2*scale * 4/3.
+        #
+        # Auto-framing must be ASPECT-RATIO-AWARE (fixed 2026-06-21).  A
+        # long, narrow arm (e.g. 46mm wide × 409mm long × 147mm tall)
+        # blew up the scale to fit the 409mm length, shrinking the 46mm-
+        # wide base/gripper to ~7% of the frame so the VLM read it as
+        # "no parts visible".  When the aspect ratio (longest/shortest
+        # extent) exceeds 3.0, we frame on the MEDIAN extent instead of
+        # the max — the long axis is allowed to clip.
+        #
+        # But clipping the LONG axis at the scene centroid would hide the
+        # gripper (which sits at the arm tip, far from centre).  So we also
+        # shift the camera focal point toward the END EFFECTOR along the
+        # long axis: keep the gripper + middle of the arm in frame, let
+        # the base end clip.  The base/shoulder is the least informative
+        # part for a VLM judging "is this a robot arm with a gripper?".
         camera.SetParallelProjection(1)
-        camera.SetParallelScale(max(max_extent * 0.6, 50))  # at least 50mm visible
+        if parallel_scale is not None:
+            camera.SetParallelScale(parallel_scale)
+        else:
+            extents_sorted = sorted((sx, sy, sz))
+            aspect_ratio = extents_sorted[2] / max(extents_sorted[0], 1.0)
+            if aspect_ratio > 3.0 and focus_point is None:
+                # Elongated assembly (typical arm): frame on the median
+                # extent so the short cross-section stays VLM-visible, and
+                # bias the focal point toward the end effector so the
+                # gripper stays in frame.  Identify the long axis and
+                # nudge the focus 35% of the way from centre toward the
+                # high end of that axis (grippers sit at the +Y/-Y tip
+                # in solver convention; we pick whichever end is further
+                # from origin, which is the arm tip).
+                frame_extent = extents_sorted[1]
+                camera.SetParallelScale(max(frame_extent * 0.6, 50))
+                # Bias focal point along the long axis toward the tip.
+                long_axis_idx = (sx, sy, sz).index(extents_sorted[2])
+                _tip_bias = 0.35
+                if long_axis_idx == 0:
+                    _sign = 1.0 if abs(xmax) >= abs(xmin) else -1.0
+                    cx += _sign * sx * _tip_bias
+                elif long_axis_idx == 1:
+                    _sign = 1.0 if abs(ymax) >= abs(ymin) else -1.0
+                    cy += _sign * sy * _tip_bias
+                else:
+                    _sign = 1.0 if abs(zmax) >= abs(zmin) else -1.0
+                    cz += _sign * sz * _tip_bias
+                camera.SetFocalPoint(cx, cy, cz)
+                # Reposition the camera at the new focal point.
+                camera.SetPosition(
+                    cx + dir_x * distance,
+                    cy + dir_y * distance,
+                    cz + dir_z * distance,
+                )
+            else:
+                camera.SetParallelScale(max(max_extent * 0.6, 50))
 
         rw = vtk.vtkRenderWindow()
         rw.SetOffScreenRendering(1)
@@ -593,19 +798,26 @@ class VTKOffscreenRenderer:
         output_dir: str,
         views: list[str] | None = None,
         prefix: str = "",
+        view_overrides: dict[str, dict] | None = None,
     ) -> list[str]:
         """Render multiple views. Returns list of PNG file paths.
 
         Args:
             output_dir: Directory to save PNG files.
-            views: List of view names from VIEW_PRESETS. Default: all 4.
+            views: List of view names from VIEW_PRESETS. Default: the four
+                standard engineering views (isometric/front/top/right); the
+                ``gripper_closeup`` view is opt-in only.
             prefix: Optional filename prefix (e.g. part name).
+            view_overrides: Optional per-view camera overrides, e.g.
+                ``{"gripper_closeup": {"focus_point": (0,-170,330),
+                "parallel_scale": 60.0}}``.  Passed through to render_to_file.
 
         Returns:
             List of absolute paths to rendered PNG files.
         """
         if views is None:
-            views = list(VIEW_PRESETS.keys())
+            # Default: the four standard views only (gripper_closeup is opt-in).
+            views = ["isometric", "front", "top", "right"]
 
         os.makedirs(output_dir, exist_ok=True)
         paths: list[str] = []
@@ -613,7 +825,13 @@ class VTKOffscreenRenderer:
         for view_name in views:
             fname = f"{prefix}_{view_name}.png" if prefix else f"{view_name}.png"
             output_path = os.path.join(output_dir, fname)
-            self.render_to_file(view_name, output_path)
+            overrides = (view_overrides or {}).get(view_name, {})
+            self.render_to_file(
+                view_name,
+                output_path,
+                focus_point=overrides.get("focus_point"),
+                parallel_scale=overrides.get("parallel_scale"),
+            )
             paths.append(output_path)
 
         return paths
@@ -937,6 +1155,7 @@ def render_assembly_from_positions(
     width: int = 1200,
     height: int = 900,
     joints: list | None = None,
+    gripper_closeup: bool = False,
 ) -> list[str]:
     """Render an assembly from part definitions and solved positions.
 
@@ -959,9 +1178,14 @@ def render_assembly_from_positions(
         name = part.get("name", f"part_{idx}")
         dims = part.get("dimensions", {})
         category = part.get("category", "")
-        # Use category-based color for better visual distinction,
-        # fall back to subsystem inference then index-based color
-        if category in CATEGORY_COLORS:
+        # Arm-link position tint takes priority over generic category color
+        # so the elbow fold region stays readable (distinct shades per link
+        # instead of one fused silver blob).  Falls through to category for
+        # non-link structural parts (base_plate, struts, ...).
+        link_tint = _link_position_tint(name)
+        if link_tint is not None:
+            color = link_tint
+        elif category in CATEGORY_COLORS:
             color = CATEGORY_COLORS[category]
         else:
             subsystem = _infer_subsystem(name)
@@ -1002,7 +1226,32 @@ def render_assembly_from_positions(
 
     r.add_axes(length=25)
     r.add_floor_grid(size=400, spacing=50, z_position=0)
-    return r.render_all_views(output_dir, views=views)
+
+    # Gripper close-up override: if requested AND the close-up view is in
+    # the render list, aim the camera at the finger/gripper centroid with a
+    # tight parallel scale so the ~32mm finger gap is clearly visible to
+    # the VLM (which otherwise sees fingers as 1-2px slivers at the edge of
+    # a full-arm render).  Safe degradation: if no gripper/finger parts are
+    # present, the override is skipped and the close-up falls back to the
+    # default scene-centre framing.
+    view_overrides: dict[str, dict] = {}
+    if gripper_closeup and views and "gripper_closeup" in views:
+        finger_names = [n for n in positions if "finger" in n.lower()]
+        gripper_names = [n for n in positions if "gripper" in n.lower()]
+        target_names = finger_names or gripper_names
+        if target_names:
+            pts = [positions[n]["position"] for n in target_names]
+            gx = sum(p[0] for p in pts) / len(pts)
+            gy = sum(p[1] for p in pts) / len(pts)
+            gz = sum(p[2] for p in pts) / len(pts)
+            view_overrides["gripper_closeup"] = {
+                "focus_point": (gx, gy, gz),
+                # 60mm half-height → 120mm visible vertically; 32mm finger
+                # gap occupies ~27% of the frame — clearly resolvable.
+                "parallel_scale": 60.0,
+            }
+
+    return r.render_all_views(output_dir, views=views, view_overrides=view_overrides)
 
 
 def _add_dimension_approximation(

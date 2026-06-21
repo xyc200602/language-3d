@@ -85,11 +85,17 @@ class AssemblyVLMSolveTool(Tool):
             base_url = os.environ.get(
                 "GLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"
             )
-            # Use GLM-4V-Plus for assembly verification (best accuracy, 2048 tokens)
-            # or GLM-4.6V-Flash for detailed analysis (16384 tokens)
-            vision_model = os.environ.get("VISION_MODEL", "GLM-4V-Plus")
+            # Pick the vision model by detail level.  The defaults reflect
+            # an empirical accuracy ranking verified 2026-06-21 on the
+            # 4dof_arm gripper close-up: only GLM-4.6V reliably resolves
+            # two 14mm fingers 46mm apart; GLM-4.6V-Flash and GLM-4V-Plus
+            # both false-negative the gripper as a solid block.  So the
+            # detailed/maximum tiers (CAD geometry verification) MUST use
+            # GLM-4.6V, never the cheaper tiers.
             if detail_level in ("detailed", "maximum"):
-                vision_model = "GLM-4.6V-Flash"
+                vision_model = os.environ.get("VISION_MODEL", "GLM-4.6V")
+            else:
+                vision_model = os.environ.get("VISION_MODEL", "GLM-4V-Plus")
 
             if api_key:
                 model_backend = GLMBackend(

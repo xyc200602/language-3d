@@ -344,14 +344,12 @@ class ConnectionFeatureEngine:
         # Generate clearance holes (through holes)
         for i, (pos, dia) in enumerate(positions):
             r = dia / 2
-            # Through hole cylinder
+            # Through hole cylinder — oriented + height-clamped for the
+            # anchor so side/back/front faces don't fragment the geometry.
             hole_name = f"{part.name}_bolt_hole_{i}"
-            ops.append({
-                "type": "make_cylinder",
-                "radius": r,
-                "height": thickness + 4,
-                "name": hole_name,
-            })
+            ops.append(self._make_hole_cylinder_op(
+                hole_name, r, thickness, anchor, d,
+            ))
             # Position on the anchor face
             x, y, z = self._position_on_face(pos, anchor, d, thickness)
             ops.append({
@@ -454,12 +452,9 @@ class ConnectionFeatureEngine:
 
         # Deep bore (through)
         bore_name = f"{part.name}_pf_bore"
-        ops.append({
-            "type": "make_cylinder",
-            "radius": actual_bore / 2,
-            "height": thickness + 4,
-            "name": bore_name,
-        })
+        ops.append(self._make_hole_cylinder_op(
+            bore_name, actual_bore / 2, thickness, anchor, d,
+        ))
         bx, by, bz = self._anchor_center(anchor, d, thickness)
         ops.append({
             "type": "move",
@@ -738,12 +733,9 @@ class ConnectionFeatureEngine:
         for i, (px, py, pz) in enumerate(pin_positions):
             # H7 slip-fit hole
             hole_name = f"{part.name}_dowel_hole_{i}"
-            ops.append({
-                "type": "make_cylinder",
-                "radius": hole_r,
-                "height": thickness + 4,
-                "name": hole_name,
-            })
+            ops.append(self._make_hole_cylinder_op(
+                hole_name, hole_r, thickness, anchor, d,
+            ))
             ops.append({
                 "type": "move",
                 "object": hole_name,
@@ -855,14 +847,13 @@ class ConnectionFeatureEngine:
         for i, (pos, dia) in enumerate(positions):
             r = tap_d / 2
             hole_name = f"{part.name}_tap_hole_{i}"
-            ops.append({
-                "type": "make_cylinder",
-                "radius": r,
-                "height": thickness + 4,
-                "name": hole_name,
-                "hole_type": "threaded",
-                "thread_size": bolt_size,
-            })
+            _tap_op = self._make_hole_cylinder_op(
+                hole_name, r, thickness, anchor, d,
+            )
+            # Preserve threaded-hole metadata used by downstream tooling.
+            _tap_op["hole_type"] = "threaded"
+            _tap_op["thread_size"] = bolt_size
+            ops.append(_tap_op)
             x, y, z = self._position_on_face(pos, anchor, d, thickness)
             ops.append({
                 "type": "move",
@@ -926,12 +917,9 @@ class ConnectionFeatureEngine:
         for i, (pos, dia) in enumerate(positions):
             # Through hole
             hole_name = f"{part.name}_bolt_hole_{i}"
-            ops.append({
-                "type": "make_cylinder",
-                "radius": hole_r,
-                "height": thickness + 4,
-                "name": hole_name,
-            })
+            ops.append(self._make_hole_cylinder_op(
+                hole_name, hole_r, thickness, anchor, d,
+            ))
             x, y, z = self._position_on_face(pos, anchor, d, thickness)
             ops.append({
                 "type": "move",
@@ -1217,6 +1205,97 @@ class ConnectionFeatureEngine:
             "left": d.get("length", h), "right": d.get("length", h),
         }
         return anchor_map.get(anchor, h)
+
+    # ------------------------------------------------------------------
+    # Bolt-hole cylinder orientation (added 2026-06-21, Plan B)
+    # ------------------------------------------------------------------
+    # ``Part.makeCylinder(r, h)`` always builds a cylinder along the Z axis.
+    # For top/bottom anchors this is correct (the bolt enters along Z).
+    # But for front/back (bolt enters along Y) and left/right (bolt enters
+    # along X) the cylinder axis is wrong by 90°, which means the
+    # through-hole cylinder is taller than the part is deep and the boolean
+    # cut fragments the part geometry into tens of thousands of triangles
+    # (gripper_base went from a clean 28×50×32 box to 90,224 triangles with
+    # euler_number=-8).  Every hole-type generator below now routes its
+    # cylinder through ``_make_hole_cylinder_op`` which applies the right
+    # rotation for the anchor so the cylinder axis aligns with the bolt
+    # direction, AND clamps the height so it never exceeds the part depth
+    # along that axis plus a small through-penetration margin.
+    _ANCHOR_AXIS_ROTATION: dict[str, tuple] = {
+        # anchor -> (axis_vector, angle_deg) for rotating the Z-aligned
+        # makeCylinder so its axis points along the anchor normal.
+        "top":    ((0.0, 0.0, 1.0), 0.0),     # Z axis, no rotation
+        "bottom": ((0.0, 0.0, 1.0), 0.0),     # Z axis, no rotation
+        "front":  ((1.0, 0.0, 0.0), 90.0),    # rotate Z→Y (around X)
+        "back":   ((1.0, 0.0, 0.0), 90.0),    # rotate Z→Y (around X)
+        "left":   ((0.0, 1.0, 0.0), 90.0),    # rotate Z→X (around Y)
+        "right":  ((0.0, 1.0, 0.0), 90.0),    # rotate Z→X (around Y)
+    }
+
+    @staticmethod
+    def _axis_depth(d: dict, anchor: str) -> float:
+        """Return the part's full extent along the anchor's normal axis.
+
+        Used to clamp hole-cylinder heights so a through-hole protrudes
+        only a few mm past the face, not 20+ mm (which fragments the
+        boolean result).  Contrast with ``_infer_thickness`` which returns
+        the *same* value for through-holes — kept separate so callers
+        are explicit about which dimension they mean.
+        """
+        l = float(d.get("length", 0) or 0)
+        w = float(d.get("width", 0) or 0)
+        h = float(d.get("height", d.get("thickness", 0)) or 0)
+        if anchor in ("top", "bottom"):
+            return h
+        if anchor in ("front", "back"):
+            return w
+        if anchor in ("left", "right"):
+            return l
+        return max(l, w, h)
+
+    @classmethod
+    def _make_hole_cylinder_op(
+        cls,
+        name: str,
+        radius: float,
+        thickness: float,
+        anchor: str,
+        d: dict,
+        *,
+        margin: float = 4.0,
+    ) -> dict:
+        """Build a through-hole cylinder op oriented for ``anchor``.
+
+        Returns a ``make_cylinder`` op dict with:
+        - ``height``: clamped to ``min(thickness + margin, axis_depth + margin)``
+          so the cylinder only protrudes ``margin`` past the far face
+          (preventing the geometry fragmentation caused by the old
+          unbounded ``thickness + 4`` on side anchors).
+        - ``rotation``: ``(axis_vector, angle_deg)`` so the cylinder's Z
+          axis aligns with the bolt direction for the anchor.  ``None``
+          for top/bottom (no rotation needed).
+
+        The rotation is consumed by ``freecad.py``'s ``make_cylinder`` op
+        handler, which applies it as ``Placement`` on the FreeCAD cylinder.
+        """
+        depth = cls._axis_depth(d, anchor)
+        # Clamp: never let the cylinder exceed the part depth by more
+        # than ``margin`` mm on either side (so it cuts clean through
+        # without poking 20mm into empty space and fragmenting the cut).
+        height = min(thickness + margin, depth + margin)
+        axis, angle = cls._ANCHOR_AXIS_ROTATION.get(anchor, ((0, 0, 1), 0.0))
+        op: dict = {
+            "type": "make_cylinder",
+            "radius": radius,
+            "height": height,
+            "name": name,
+        }
+        if angle != 0.0:
+            # Rotation applied by freecad.py after makeCylinder.  Passed
+            # as a list (JSON-serialisable) so it survives the op dict
+            # round-trip into the FreeCAD script generator.
+            op["rotation"] = [axis[0], axis[1], axis[2], angle]
+        return op
 
     @staticmethod
     def _face_length(anchor: str, d: dict) -> float:
@@ -1568,12 +1647,9 @@ def generate_assembly_connection_features(
             bore_d = 10.0  # fits MR105ZZ bearing (OD=10mm, ID=5mm)
             bore_name = f"{structural.name}_bearing_bore"
             bx, by, bz = engine._anchor_center(anchor, d, thickness)
-            new_result.ops.append({
-                "type": "make_cylinder",
-                "radius": bore_d / 2,
-                "height": thickness + 4,
-                "name": bore_name,
-            })
+            new_result.ops.append(ConnectionFeatureEngine._make_hole_cylinder_op(
+                bore_name, bore_d / 2, thickness, anchor, d,
+            ))
             new_result.ops.append({
                 "type": "move",
                 "object": bore_name,

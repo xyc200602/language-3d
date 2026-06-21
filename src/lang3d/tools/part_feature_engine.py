@@ -1589,16 +1589,33 @@ tip = Part.makeBox(tip_l, tip_w, H)
 tip.translate(FreeCAD.Vector(L - tip_l, tip_y, 0))
 bar = bar.fuse(tip)
 
-# --- Grip pad ribs (on inner face of tip) ---
+# --- Grip pad ribs (grooves on inner face of tip) ---
+# These are shallow horizontal grooves for grip texture.  Previously
+# the rib makeBox started at Z=-0.5 (poking through the finger's
+# bottom face at Z=0), which created an open hole → non-watertight
+# STL (euler=1, is_watertight=False) that VTK rendered as a thin
+# shell instead of a solid prong.  Now the grooves sit fully INSIDE
+# the tip volume: they start at Z=1.0 with height 1.5, leaving a
+# 1mm floor so the boolean cut never breaks the outer surface.
 rib_count = 3
 rib_spacing = tip_w / (rib_count + 1)
 for i in range(rib_count):
     rib_y = tip_y + rib_spacing * (i + 1) if tip_dir > 0 else tip_y + tip_w - rib_spacing * (i + 1)
-    rib = Part.makeBox(tip_l * 0.8, 1.0, 1.0)
-    rib.translate(FreeCAD.Vector(L - tip_l * 0.9, rib_y - 0.5, -0.5))
+    rib = Part.makeBox(tip_l * 0.8, 1.0, 1.5)
+    rib.translate(FreeCAD.Vector(L - tip_l * 0.9, rib_y - 0.5, 1.0))
     bar = bar.cut(rib)
 
 # --- Chamfer front edge of main bar ---
+# makeChamfer on a fused multi-box shape can fail (non-manifold edges
+# at the fuse seams).  The failure is cosmetic-only — chamfering is
+# purely decorative, a missing chamfer never breaks the geometry or
+# water-tightness.  We deliberately swallow the exception here rather
+# than logging it: (1) the chamfer op runs headlessly inside the CAD
+# backend where stderr isn't easily surfaced, and (2) an earlier
+# attempt to print a warning crashed STL export because f-string
+# variable scoping broke inside the CAD script sandbox.  The
+# downstream part_validator already reports non-watertight STLs, so
+# geometry defects are still caught — just not chamfer-specific ones.
 try:
     bar = bar.makeChamfer(0.5, [_e for _e in bar.Edges
                                  if _e.Length < W * 1.5][:20])
