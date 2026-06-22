@@ -797,7 +797,68 @@ class VTKOffscreenRenderer:
         png.SetInputConnection(w2i.GetOutputPort())
         png.Write()
 
+        # Post-render crop: trim empty margins so elongated assemblies
+        # (e.g. a 150×546mm arm) fill the frame instead of leaving 30-60%
+        # empty space on the short axis.  The VTK orthographic camera
+        # must fit the long axis, which inflates the scale and wastes the
+        # short axis.  Cropping the rendered PNG to the content bbox
+        # (with 5% padding) recovers that space for every view without
+        # changing the camera math.  This makes the arm visually larger
+        # for the VLM without any clipping of actual parts.
+        self._crop_to_content(output_path)
+
         return output_path
+
+    def _crop_to_content(self, image_path: str) -> None:
+        """Crop a rendered PNG to its content bounding box + 5% padding.
+
+        Uses PIL to find non-background pixels (the assembly) and trims
+        the uniform-background margins.  The result is resized back to
+        the original dimensions so downstream consumers see a consistent
+        image size.  No-op if the image is >90% content (already tight)
+        or PIL is unavailable.
+        """
+        try:
+            from PIL import Image
+            import numpy as np
+
+            img = Image.open(image_path)
+            arr = np.array(img)
+            # Background detection: the renderer uses a light gradient
+            # background (>180 on all RGB channels).  Content is darker.
+            if len(arr.shape) == 3:
+                gray = arr.mean(axis=2)
+            else:
+                gray = arr
+            content_mask = gray < 180
+            if content_mask.sum() < 10:
+                return  # effectively empty — leave as-is
+            rows = np.any(content_mask, axis=1)
+            cols = np.any(content_mask, axis=0)
+            rmin, rmax = np.where(rows)[0][[0, -1]]
+            cmin, cmax = np.where(cols)[0][[0, -1]]
+            h, w = gray.shape
+            # If content already fills >90% of the frame, skip crop.
+            content_h_pct = (rmax - rmin) / h
+            content_w_pct = (cmax - cmin) / w
+            if content_h_pct > 0.9 and content_w_pct > 0.9:
+                return
+            # Add 5% padding on each side (relative to content size, not
+            # full image, so small content gets visible breathing room).
+            pad_h = max(20, int((rmax - rmin) * 0.05))
+            pad_w = max(20, int((cmax - cmin) * 0.05))
+            rmin = max(0, rmin - pad_h)
+            rmax = min(h, rmax + pad_h)
+            cmin = max(0, cmin - pad_w)
+            cmax = min(w, cmax + pad_w)
+            cropped = img.crop((cmin, rmin, cmax, rmax))
+            # Resize back to original dimensions so consumers see no size
+            # change (VLM image inputs, file-size checks, etc.).
+            cropped = cropped.resize((w, h), Image.LANCZOS)
+            cropped.save(image_path)
+        except Exception:
+            # Cropping is a visual enhancement only — never block render.
+            pass
 
     def render_all_views(
         self,
