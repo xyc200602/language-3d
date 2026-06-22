@@ -213,8 +213,9 @@ class AssemblyPipeline:
         """Generate or repair the assembly JSON from the description.
 
         Round 1: generate from NL via LLM.
-        Round 2+: the Fixer may have modified the assembly; just
-        re-validate it here.
+        Round 2+: if the previous round failed validation, use the error
+        messages as LLM feedback to regenerate.  If the Fixer applied a
+        targeted fix, just re-validate the fixed assembly.
 
         Returns True if the assembly is valid, False if it needs
         another round.
@@ -231,6 +232,7 @@ class AssemblyPipeline:
         ctx = self.ctx
         try:
             if ctx.round_num == 1 or ctx.assembly is None:
+                # Fresh generation from NL.
                 ctx.assembly = generate_assembly_from_nl(
                     description=ctx.description,
                     api_key=ctx.api_key,
@@ -239,10 +241,26 @@ class AssemblyPipeline:
                     temperature=ctx.temperature,
                 )
             else:
-                # Assembly was modified by the Fixer — just re-sanitize.
-                ctx.assembly = normalize_gripper_fingers(ctx.assembly)
-                if ctx.is_arm:
-                    ctx.assembly = ensure_arm_default_angles(ctx.assembly)
+                # Check if the previous round FAILED validation (meaning
+                # the assembly is still bad and we need LLM regeneration
+                # with the error as feedback).  The problems_history's
+                # last entry tells us what went wrong.
+                prev_errors = ctx.problems_history[-1] if ctx.problems_history else []
+                needs_llm_regen = any(
+                    "validation error" in e.lower() or "solver error" in e.lower()
+                    for e in prev_errors
+                )
+
+                if needs_llm_regen:
+                    # LLM regeneration with feedback (mirrors legacy loop).
+                    ctx.assembly = self._regenerate_with_feedback(
+                        ctx.assembly, prev_errors,
+                    )
+                else:
+                    # Fixer modified the assembly — just re-sanitize.
+                    ctx.assembly = normalize_gripper_fingers(ctx.assembly)
+                    if ctx.is_arm:
+                        ctx.assembly = ensure_arm_default_angles(ctx.assembly)
 
             # Validate (raising validators → catch and report)
             if ctx.is_arm and not ctx.is_wheeled:
@@ -262,6 +280,63 @@ class AssemblyPipeline:
             ctx.problems_history.append([f"Assembly validation error: {e}"])
             logger.warning("Architect stage failed: %s", e)
             return False
+
+    def _regenerate_with_feedback(
+        self, old_assembly: Assembly, errors: list[str],
+    ) -> Assembly:
+        """Use LLM to regenerate the assembly with validation errors as feedback.
+
+        Mirrors the legacy loop's round 2+ path: format the errors into a
+        fix prompt, send to LLM with the old assembly JSON as reference,
+        parse the response.
+        """
+        from ..models.base import Message
+        from ..models.glm import GLMBackend
+        from .assembly_generator_helpers import (
+            normalize_gripper_fingers,
+            ensure_arm_default_angles,
+        )
+        # Import the fix prompt template and parser from assembly_generator
+        from ..tools.assembly_generator import (
+            _VLM_FIX_PROMPT,
+            _parse_assembly_json,
+            _assembly_to_json,
+            ASSEMBLY_GEN_SYSTEM_PROMPT,
+        )
+
+        ctx = self.ctx
+        backend = GLMBackend(
+            api_key=ctx.api_key, base_url=ctx.base_url,
+            model=ctx.text_model,
+        )
+
+        problems_text = "\n".join(f"- {p}" for p in errors)
+        fix_prompt = _VLM_FIX_PROMPT.format(
+            problems=problems_text,
+            description=ctx.description,
+        )
+        prev_json = _assembly_to_json(old_assembly)
+        fix_prompt += f"\nPrevious assembly (for reference):\n{prev_json}\n"
+
+        temp = min(ctx.temperature + 0.2 * (ctx.round_num - 1), 0.7)
+        resp = backend.chat(
+            messages=[Message(role="user", content=fix_prompt)],
+            system=ASSEMBLY_GEN_SYSTEM_PROMPT,
+            temperature=temp,
+            max_tokens=16384,
+        )
+        assembly = _parse_assembly_json(resp.content)
+
+        # Re-apply normalizing sanitizers.
+        assembly = normalize_gripper_fingers(assembly)
+        if ctx.is_arm:
+            assembly = ensure_arm_default_angles(assembly)
+
+        logger.info(
+            "Architect: LLM regenerated assembly '%s' (%d parts)",
+            assembly.name, len(assembly.parts),
+        )
+        return assembly
 
     # ------------------------------------------------------------------
     # Stage 2: Solver — Assembly → Positions
@@ -423,7 +498,8 @@ class AssemblyPipeline:
     def run_export(self) -> bool:
         """Export the full engineering package (STL/URDF/BOM/firmware).
 
-        Returns True if export succeeded.
+        Returns True if export succeeded.  Skips if assembly or positions
+        are None (all rounds failed validation/solving).
         """
         from .assembly_generator_helpers import (
             export_engineering_package,
@@ -431,6 +507,16 @@ class AssemblyPipeline:
         )
 
         ctx = self.ctx
+
+        # Guard: if the Architect never produced a valid assembly, or the
+        # Solver never ran, there's nothing to export.  This prevents the
+        # "UNVERIFIED: 无位置数据" error in downstream COM/MuJoCo checks.
+        if ctx.assembly is None:
+            logger.warning("Export skipped: no assembly (all Architect rounds failed)")
+            return False
+        if ctx.positions is None:
+            logger.warning("Export skipped: no positions (Solver never ran)")
+            return False
         export_dir = os.path.join(ctx.output_dir, "engineering_package")
         verification_status = "PASSED" if ctx.passed else "FAILED_MAX_ROUNDS"
         last_warnings = ctx.problems_history[-1] if ctx.problems_history else []
