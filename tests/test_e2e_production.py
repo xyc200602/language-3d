@@ -95,6 +95,9 @@ FAIL = "FAIL"
 SKIP = "SKIP"
 WARN = "WARN"
 
+# Set by _main() when --pipeline flag is used (Step 2 architecture test).
+args_pipeline_mode = False
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -272,6 +275,84 @@ def _phase1_nl_to_assembly(
             _has_category_parts(assembly, ["wheel", "轮"]),
             "Wheel-like parts present",
         )
+
+    if case.get("expect_arms"):
+        _check(
+            checks, phase, "has_arms",
+            _has_category_parts(assembly, ["arm", "臂", "gripper", "夹爪", "shoulder", "elbow", "wrist", "effector"]),
+            "Arm-like parts present",
+        )
+
+    return result
+
+
+def _phase1_nl_to_assembly_pipeline(
+    checks: list[dict],
+    case: dict,
+    output_dir: str,
+) -> dict | None:
+    """NL -> Assembly via the multi-agent AssemblyPipeline (Step 2).
+
+    This is the pipeline-based alternative to ``_phase1_nl_to_assembly``.
+    It uses ``AssemblyPipeline.run()`` instead of the monolithic
+    ``generate_assembly_with_vlm_loop``.  The return dict has the same
+    keys so downstream phases (2-7) work unchanged.
+    """
+    phase = "phase1"
+    description = case["description"]
+
+    from lang3d.agent.pipeline import AssemblyPipeline, PipelineContext
+
+    t0 = time.time()
+    try:
+        ctx = PipelineContext(
+            description=description,
+            output_dir=output_dir,
+            max_rounds=3,
+        )
+        pipeline = AssemblyPipeline(ctx)
+        result = pipeline.run()
+    except Exception as exc:
+        _check(
+            checks, phase, "vlm_loop_completed", False,
+            f"Pipeline exception: {exc}", critical=True,
+        )
+        return None
+    dt = time.time() - t0
+
+    assembly = result.get("assembly")
+    passed = result.get("passed", False)
+    rounds = result.get("rounds", 0)
+
+    _check(
+        checks, phase, "vlm_loop_completed", assembly is not None,
+        f"Pipeline done ({dt:.1f}s), {rounds} rounds, passed={passed}",
+        critical=True,
+    )
+
+    if assembly is None:
+        return None
+
+    _check(
+        checks, phase, "part_count",
+        len(assembly.parts) >= case["min_parts"],
+        f"Parts: {len(assembly.parts)} (min {case['min_parts']})",
+        critical=True,
+    )
+
+    _check(
+        checks, phase, "joint_count",
+        len(assembly.joints) >= case["min_joints"],
+        f"Joints: {len(assembly.joints)} (min {case['min_joints']})",
+        critical=True,
+    )
+
+    _check(
+        checks, phase, "connected_tree",
+        _joints_form_tree(assembly),
+        "Joints form connected tree",
+        critical=True,
+    )
 
     if case.get("expect_arms"):
         _check(
@@ -1008,7 +1089,10 @@ def run_e2e_case(case: dict) -> dict:
 
     # Phase 1: NL -> Assembly
     print(f"\n--- Phase 1: NL → Assembly (CRITICAL) ---")
-    result = _phase1_nl_to_assembly(checks, case, output_dir)
+    if args_pipeline_mode:
+        result = _phase1_nl_to_assembly_pipeline(checks, case, output_dir)
+    else:
+        result = _phase1_nl_to_assembly(checks, case, output_dir)
 
     if result is None:
         score = _compute_score(checks)
@@ -1121,7 +1205,15 @@ def _main() -> None:
     parser = argparse.ArgumentParser(description="Language-3D E2E Production Test")
     parser.add_argument("--case", type=str, default=None, help="Run a single test case by ID")
     parser.add_argument("--list", action="store_true", help="List available test cases")
+    parser.add_argument(
+        "--pipeline", action="store_true",
+        help="Use the multi-agent AssemblyPipeline instead of the legacy "
+             "generate_assembly_with_vlm_loop (Step 2 architecture).",
+    )
     args = parser.parse_args()
+
+    global args_pipeline_mode
+    args_pipeline_mode = args.pipeline
 
     if args.list:
         print("Available E2E test cases:")
