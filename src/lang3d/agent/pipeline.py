@@ -66,7 +66,7 @@ class PipelineContext:
     output_dir: str = ""
     api_key: str = ""
     base_url: str = ""
-    text_model: str = "GLM-4-Flash"
+    text_model: str = "GLM-4.6"
     vision_model: str = "GLM-4.6V"
     temperature: float = 0.3
     max_rounds: int = 3

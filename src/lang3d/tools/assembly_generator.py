@@ -579,7 +579,7 @@ def generate_assembly_from_nl(
     description: str,
     api_key: str | None = None,
     base_url: str | None = None,
-    model: str = "GLM-4-Flash",
+    model: str = "GLM-4.6",
     temperature: float = 0.3,
 ) -> Assembly:
     """Generate an Assembly from natural language description using LLM.
@@ -2169,8 +2169,10 @@ class AssemblyGenerateTool(Tool):
 
 _VLM_VERIFY_PROMPT = (
     "You are a STRICT robot assembly quality inspector. Examine the 3D render.\n\n"
-    "The assembly passes ONLY if BOTH independent categories below pass.\n\n"
-    "=== CATEGORY 1: STRUCTURAL INTEGRITY ===\n"
+    "This is a WHOLE-ASSEMBLY view. Judge ONLY structural integrity — do NOT "
+    "attempt to evaluate the gripper fingers from this view (they are too small "
+    "to resolve here; a dedicated close-up view covers the gripper).\n\n"
+    "=== STRUCTURAL INTEGRITY ===\n"
     "Check for:\n"
     "1. Parts floating in mid-air with no support\n"
     "2. Parts intersecting / overlapping each other\n"
@@ -2178,28 +2180,38 @@ _VLM_VERIFY_PROMPT = (
     "4. Critical parts missing (no base plate, no main body)\n"
     "5. Overall structural coherence\n"
     "6. Parts with WRONG ORIENTATION (e.g. cylinders oriented along wrong axis)\n\n"
-    "=== CATEGORY 2: FUNCTIONAL GRIPPER (CRITICAL — NOT OPTIONAL) ===\n"
-    "For any robot arm, manipulator, or mechanical hand, the VERY END (tip) of "
-    "the arm MUST terminate in a gripper.\n\n"
-    "A gripper is: TWO clearly separated, parallel finger prongs that face "
-    "each other with a VISIBLE OPEN GAP between them (like a claw, chopsticks, "
-    "or pliers). The two prongs must be visibly distinct — not fused into one "
-    "solid mass.\n\n"
-    "AUTOMATIC FAIL (set passed=false) if ANY of these are true:\n"
-    "- The tip of the arm is a solid block, box, cylinder, sphere, or housing\n"
-    "- The tip of the arm is just another arm link or segment\n"
-    "- There are NOT two clearly separated parallel prongs at the very tip\n"
-    "- The end-effector is a single chunky mass with no visible gap/split\n\n"
-    "Do NOT rationalize. Do NOT say 'not a traditional gripper but still "
-    "passes'. If you cannot clearly see TWO separate finger prongs with a gap "
-    "between them at the tip of the arm, the assembly FAILS — no exceptions, "
-    "no excuses about 'physical plausibility'.\n\n"
     "NOTE: Wheeled robots SHOULD have wheels near the ground. Fixed-base arms "
     "should NOT have wheels. Do NOT report missing wheels for arms.\n\n"
     "Reply with JSON only:\n"
     '{"passed": true/false, '
-    '"problems": ["list of specific issues found"], '
+    '"problems": ["list of specific structural issues found"], '
     '"description": "brief assessment"}\n'
+)
+
+# Dedicated gripper-evaluation prompt — used ONLY for the gripper_closeup
+# view.  Whole-assembly views cannot resolve ~46mm finger gaps at the edge
+# of a 490mm-tall frame, so they false-negative the gripper as a "solid
+# block".  The close-up zooms to a 120mm window around the finger centroid
+# so the two prongs and the gap between them are clearly visible.  Only
+# this view is authoritative for the gripper question.
+_VLM_GRIPPER_CLOSEUP_PROMPT = (
+    "You are inspecting the GRIPPER at the tip of a robotic arm. This is a "
+    "CLOSE-UP view zoomed in on the gripper — the rest of the arm is out of "
+    "frame, which is intentional.\n\n"
+    "Judge ONLY the gripper. The gripper passes if you can see TWO clearly "
+    "separated, parallel finger prongs that face each other with a VISIBLE "
+    "OPEN GAP between them (like a claw, chopsticks, or pliers).\n\n"
+    "AUTOMATIC FAIL (passed=false) if ANY of these are true:\n"
+    "- The tip is a single solid block, box, cylinder, sphere, or housing\n"
+    "- The tip is just another arm link or segment\n"
+    "- There are NOT two clearly separated parallel prongs\n"
+    "- The end-effector is a single chunky mass with no visible gap/split\n\n"
+    "Do NOT rationalize. If you cannot clearly see TWO separate finger prongs "
+    "with a gap between them, the gripper FAILS.\n\n"
+    "Reply with JSON only:\n"
+    '{"passed": true/false, '
+    '"problems": ["gripper-specific issues only"], '
+    '"description": "brief gripper assessment"}\n'
 )
 
 
@@ -2904,18 +2916,29 @@ def _vlm_check_assembly(
     if not rendered:
         return False, ["VTK rendering produced no images"]
 
-    # Check each view with VLM — aggregate problems
+    # Check each view with VLM — split by responsibility (2026-06-23).
+    # Whole-assembly views (iso/front/top/right) judge STRUCTURAL integrity
+    # only — they cannot resolve a ~46mm finger gap at the edge of a
+    # 490mm-tall frame, so asking them about the gripper produced false
+    # "solid block" negatives.  The gripper_closeup view is the SOLE
+    # authority on the gripper question: it zooms to a 120mm window.
     backend = GLMBackend(api_key=api_key, base_url=base_url,
                           vision_model=vision_model)
     all_problems: list[str] = []
-    pass_count = 0
+    # Track whole-assembly and gripper verdicts separately.
+    structural_views: list[str] = []
+    structural_pass_count = 0
+    gripper_view_passed: bool | None = None  # None = no closeup rendered
     total_views = len(rendered)
     view_logs: list[dict] = []
 
     for view_path in rendered:
         view_name = os.path.splitext(os.path.basename(view_path))[0]
+        is_closeup = view_name == "gripper_closeup"
+        prompt = _VLM_GRIPPER_CLOSEUP_PROMPT if is_closeup else _VLM_VERIFY_PROMPT
         entry: dict = {
             "view": view_name,
+            "prompt_role": "gripper" if is_closeup else "structural",
             "raw_response": None,
             "parsed": None,
             "passed": False,
@@ -2923,13 +2946,12 @@ def _vlm_check_assembly(
         try:
             resp = backend.vision(
                 image_path=view_path,
-                prompt=_VLM_VERIFY_PROMPT,
+                prompt=prompt,
             )
             entry["raw_response"] = str(resp)
             text = str(resp).lower()
-            if '"passed": true' in text or '"passed":true' in text:
-                pass_count += 1
-                entry["passed"] = True
+            view_passed = ('"passed": true' in text) or ('"passed":true' in text)
+            entry["passed"] = view_passed
             # Always extract problems (even from "passed" views)
             try:
                 start = str(resp).find("{")
@@ -2941,13 +2963,27 @@ def _vlm_check_assembly(
                         all_problems.append(p)
             except (json.JSONDecodeError, ValueError):
                 pass
+            # Route the verdict by responsibility.
+            if is_closeup:
+                gripper_view_passed = view_passed
+            else:
+                structural_views.append(view_name)
+                if view_passed:
+                    structural_pass_count += 1
         except Exception as e:
             logger.warning("VLM check failed for %s: %s", view_path, e)
             entry["raw_response"] = f"ERROR: {e}"
         view_logs.append(entry)
 
-    # Majority vote: >50% of views must pass
-    passed = pass_count > total_views / 2
+    # Pass requires BOTH responsibilities to pass:
+    #  - STRUCTURAL: majority of whole-assembly views pass
+    #  - GRIPPER: the close-up view passes (sole authority)
+    # When no close-up was rendered, fall back to majority vote.
+    if gripper_view_passed is not None and structural_views:
+        structural_majority = structural_pass_count > len(structural_views) / 2
+        passed = structural_majority and bool(gripper_view_passed)
+    else:
+        passed = (structural_pass_count + (1 if gripper_view_passed else 0)) > total_views / 2
 
     # Geometric pre-validation as safety net AND ground-truth arbitrator.
     geo_problems = _geometric_prevalidation(parts, positions, joints)
@@ -3007,7 +3043,7 @@ def _vlm_check_assembly(
     vlm_log = {
         "round": round_num,
         "views": view_logs,
-        "pass_count": pass_count,
+        "pass_count": structural_pass_count + (1 if gripper_view_passed else 0),
         "total_views": total_views,
         "final_passed": passed,
         "all_problems": all_problems,
@@ -3031,7 +3067,7 @@ def generate_assembly_with_vlm_loop(
     max_rounds: int = 3,
     api_key: str | None = None,
     base_url: str | None = None,
-    text_model: str = "GLM-4-Flash",
+    text_model: str = "GLM-4.6",
     vision_model: str = _DEFAULT_VERIFIER_VISION_MODEL,
     temperature: float = 0.3,
 ) -> dict:
