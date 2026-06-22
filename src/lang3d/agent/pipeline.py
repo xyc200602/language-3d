@@ -498,25 +498,34 @@ class AssemblyPipeline:
     def run_export(self) -> bool:
         """Export the full engineering package (STL/URDF/BOM/firmware).
 
-        Returns True if export succeeded.  Skips if assembly or positions
-        are None (all rounds failed validation/solving).
+        Returns True if export succeeded.  Like the legacy loop, exports
+        even on verification failure (with FAILED_MAX_ROUNDS status) so
+        downstream phases can run and the output is debuggable.  Only
+        skips if there's truly no assembly at all (LLM never responded).
         """
         from .assembly_generator_helpers import (
             export_engineering_package,
             render_assembly_from_positions,
+            AssemblyContext,
         )
 
         ctx = self.ctx
 
-        # Guard: if the Architect never produced a valid assembly, or the
-        # Solver never ran, there's nothing to export.  This prevents the
-        # "UNVERIFIED: 无位置数据" error in downstream COM/MuJoCo checks.
+        # Hard guard: no assembly at all → nothing to export.
         if ctx.assembly is None:
-            logger.warning("Export skipped: no assembly (all Architect rounds failed)")
+            logger.warning("Export skipped: no assembly (LLM never produced one)")
             return False
+
+        # If Solver never ran (Architect kept failing), try to solve now
+        # so positions exist for export.  This mirrors the legacy loop
+        # which always has positions by the time it exports.
         if ctx.positions is None:
-            logger.warning("Export skipped: no positions (Solver never ran)")
-            return False
+            try:
+                solver_ctx = AssemblyContext(assembly=ctx.assembly)
+                ctx.positions = solver_ctx.ensure_positions()
+                logger.info("Export: solved positions (Solver was skipped in loop)")
+            except Exception as e:
+                logger.warning("Export: could not solve positions: %s", e)
         export_dir = os.path.join(ctx.output_dir, "engineering_package")
         verification_status = "PASSED" if ctx.passed else "FAILED_MAX_ROUNDS"
         last_warnings = ctx.problems_history[-1] if ctx.problems_history else []
