@@ -1327,19 +1327,32 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
 
     # Compute the lateral gap between the two fingers.
     #
-    # Coordinate convention (geometric prevalidation / solver space):
-    #   finger length  → X axis   (the long bar, e.g. 60 mm)
-    #   finger width   → Y axis   (the thin side, e.g. 14 mm)
-    #   finger height  → Z axis
+    # Coordinate convention — TWO frames (fixed 2026-06-22):
     #
-    # The two fingers are PARALLEL bars along X.  They must be separated
-    # along Y (the width axis) so their AABBs do not overlap.  Placing the
-    # gap on X (the length axis) is the bug that made two 60 mm bars spaced
-    # 32 mm apart overlap by ~28 mm along their length — the VLM loop
-    # reported "overlap by 38x39x29mm" for 3 rounds straight.
+    #   PART-LOCAL (FreeCAD makeBox, the STL mesh):
+    #     finger length → X,  finger width → Y,  height → Z
     #
-    # Geometric invariant: gap > finger_width guarantees no AABB overlap
-    # (the Y extents become disjoint).  We add a 6 mm grip clearance on top.
+    #   SOLVER/WORLD (where this offset lives; what the renderer sees after
+    #   swap_xy R_z(-90°) maps part-local X → world -Y, Y → world +X):
+    #     forward (front/back) → Y    (ANCHOR_DIRECTIONS: front=(0,-1,0))
+    #     lateral (left/right) → X    (ANCHOR_DIRECTIONS: left=(-1,0,0))
+    #     up/down             → Z
+    #
+    # The finger offset is in WORLD coords: gap on X (lateral, so fingers
+    # straddle the arm centreline) and forward on Y (so both fingers
+    # protrude ahead of the base).  After swap_xy the finger STL's length
+    # (part-local X) renders along world Y — aligned with the forward
+    # offset — and width (part-local Y) renders along world X — aligned
+    # with the gap.  So the two fingers appear as parallel bars extending
+    # forward, separated left/right.  This reads as a gripper.
+    #
+    # PREVIOUS BUG (pre-2026-06-22): offset was (forward_x, ±gap, 0) —
+    # forward on X, gap on Y.  After swap_xy both fingers landed on the
+    # same side of the arm (world -Y), separated along the arm-length
+    # axis — they read as two extra links, not a gripper.
+    #
+    # Geometric invariant: gap > finger_width guarantees the world-X AABBs
+    # (finger width on world X after swap) do not overlap.  6mm clearance.
     parent_part = parts_by_name.get(left_joint.parent)
     gap = 22.0
     base_length = 28.0
@@ -1364,14 +1377,14 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
         else:
             gap = max(min_gap, min(min_gap * 1.25, max_gap))
 
-    # Prismatic axis is Y: fingers slide toward/away from each other along
-    # the width direction (open/close the grip), which is perpendicular to
-    # the bar length.  This matches the gap axis, so closing the grip moves
-    # each finger toward the centreline on Y.
+    # Prismatic axis is X (lateral): fingers slide toward/away from each
+    # other along X (open/close the grip), perpendicular to the forward Y
+    # direction.  This matches the gap axis so closing the grip moves each
+    # finger toward the centreline on X.
     for j in (left_joint, right_joint):
-        j.axis = "y"
+        j.axis = "x"
 
-    # Push fingers forward along X so the main bar fully protrudes beyond
+    # Push fingers forward along Y so the main bar fully protrudes beyond
     # the gripper base face — but WHICH direction is "forward" depends on
     # where the parent chain attaches to the gripper base.  The fingers
     # must point AWAY from the arm (the parent link), not back into it.
@@ -1390,20 +1403,26 @@ def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
             parent_face = j.child_anchor
             break
     # ANCHOR_DIRECTIONS (assembly_solver): front=(0,-1,0), back=(0,1,0).
-    # The finger-length axis is X, so map front/back (±Y) to finger X sign:
-    # parent on back (+Y)  -> fingers toward front, i.e. +X
-    # parent on front (-Y) -> fingers toward back,  i.e. -X
+    # Fingers protrude ALONG Y (forward/back), gap is on X (lateral).
+    # Parent on back (+Y)  -> fingers toward front (-Y), away from arm.
+    # Parent on front (-Y) -> fingers toward back (+Y), away from arm.
+    # This convention matches the renderer's swap_xy (R_z(-90°)): the
+    # finger STL has length on FreeCAD-X, which swap_xy maps to world -Y,
+    # so the finger's long edge visually extends along world Y — the same
+    # axis as the forward offset.  Gap on X means the two fingers straddle
+    # the arm centreline left/right (world X), which reads as a gripper
+    # in the render.  (The old convention put forward on X and gap on Y,
+    # which after swap_xy placed both fingers on the same side of the arm
+    # — they read as two extra links lined up, not a gripper.)
     if parent_face == "back":
-        forward_sign = +1.0
+        forward_sign = -1.0    # arm at +Y → fingers to -Y (front)
     elif parent_face == "front":
-        forward_sign = -1.0
+        forward_sign = +1.0    # arm at -Y → fingers to +Y (back)
     else:
-        # Unknown topology (root gripper, or center-attached): keep the
-        # historical -X default so existing assemblies are unaffected.
-        forward_sign = -1.0
-    forward_x = forward_sign * (base_length / 2.0 + finger_l / 2.0)
-    left_joint.offset = (forward_x, -gap, 0.0)
-    right_joint.offset = (forward_x, gap, 0.0)
+        forward_sign = -1.0    # default: fingers forward (-Y)
+    forward_y = forward_sign * (base_length / 2.0 + finger_l / 2.0)
+    left_joint.offset = (-gap, forward_y, 0.0)
+    right_joint.offset = (gap, forward_y, 0.0)
 
     # Dynamic range clamp: prevent finger collision.
     # The closing displacement moves both fingers toward center (mimic=-1).
@@ -2463,8 +2482,12 @@ def _geometric_prevalidation(
     def _world_aabb(pname):
         """World-space AABB of pname after rotating its local box by the
         solved rotation.  Returns (xmin,ymin,zmin,xmax,ymax,zmax) or None.
-        Box local extents: length/width/height mapped to X/Y/Z; a cylinder
-        uses diameter for X&Y and height for Z.
+
+        Axis convention matches the renderer's swap_xy (R_z(-90°)): the
+        STL's part-local length (FreeCAD X) renders along world Y, and
+        width (FreeCAD Y) renders along world X.  So the world AABB maps
+        length→world Y extent and width→world X extent.  A cylinder uses
+        diameter for X&Y and height for Z.
         """
         pd = positions.get(pname, {})
         center = pd.get("position", [0, 0, 0])
@@ -2475,8 +2498,9 @@ def _geometric_prevalidation(
             hx = hy = dims["diameter"] / 2
             hz = dims.get("height", 0) / 2
         else:
-            hx = dims.get("length", 0) / 2
-            hy = dims.get("width", 0) / 2
+            # Match swap_xy: world X = part width, world Y = part length.
+            hx = dims.get("width", 0) / 2
+            hy = dims.get("length", 0) / 2
             hz = dims.get("height", 0) / 2
         corners = [
             (sx * hx, sy * hy, sz * hz)

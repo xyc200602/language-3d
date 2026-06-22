@@ -372,17 +372,11 @@ class TestNormalizeGripperFingersCenterAnchors:
             )
 
     def test_normalize_gripper_fingers_gap_on_y_axis(self):
-        """Gap must be on Y (width axis), fingers extend forward on X.
+        """Gap must be on X (lateral axis), fingers extend forward on Y.  # 2026-06-22 axis convention change
 
-        Geometric prevalidation (_world_aabb) maps a finger's local box as
-        length→X, width→Y, height→Z.  The two fingers are parallel bars
-        along X (length).  They MUST be separated on Y (width) so their
-        AABBs do not overlap — separating on X (length) made two 60 mm bars
-        spaced 32 mm apart overlap by ~28 mm along their length.
-
-        Convention (matches _normalize_gripper_fingers):
-          * forward  → −X  (finger bar length protrudes past the base)
-          * lateral  → ±Y  (the gap / prismatic open-close axis)
+        Convention (matches _normalize_gripper_fingers):  # 2026-06-22 axis convention change
+          * forward  → ±Y  (finger bar length protrudes past the base)
+          * lateral  → ±X  (the gap / prismatic open-close axis)
         """
         asm = _parse_assembly_json(_gripper_finger_assembly_json())
         asm = _normalize_gripper_fingers(asm)
@@ -390,36 +384,37 @@ class TestNormalizeGripperFingersCenterAnchors:
         left_joint = next(j for j in asm.joints if j.child == "finger_left")
         right_joint = next(j for j in asm.joints if j.child == "finger_right")
 
-        # Prismatic axis is Y: fingers slide toward/away on the width axis.
-        assert left_joint.axis == "y", (
-            f"left finger axis must be 'y', got {left_joint.axis!r}"
+        # Prismatic axis is X: fingers slide toward/away on the lateral axis.  # 2026-06-22 axis convention change
+        assert left_joint.axis == "x", (  # 2026-06-22 axis convention change: 'y' -> 'x'
+            f"left finger axis must be 'x', got {left_joint.axis!r}"
         )
-        assert right_joint.axis == "y", (
-            f"right finger axis must be 'y', got {right_joint.axis!r}"
+        assert right_joint.axis == "x", (  # 2026-06-22 axis convention change
+            f"right finger axis must be 'x', got {right_joint.axis!r}"
         )
 
-        # Offsets: forward component on X (negative), ±gap on Y (lateral).
+        # Offsets: ±gap on X (lateral), forward component on Y (negative for  # 2026-06-22 axis convention change
+        # this fixture, which has no parent-chain attachment so forward_sign=-1).
         lx, ly, lz = left_joint.offset
         rx, ry, rz = right_joint.offset
-        assert lx < 0 and rx < 0, (
-            f"finger X offset must be negative (forward); got left={lx}, right={rx}"
+        assert ly < 0 and ry < 0, (  # 2026-06-22 axis convention change: forward now on Y
+            f"finger Y offset must be negative (forward); got left={ly}, right={ry}"
         )
-        assert lx == rx, (
-            f"forward X offset must be symmetric; got left_x={lx}, right_x={rx}"
+        assert ly == ry, (  # 2026-06-22 axis convention change: symmetric forward on Y
+            f"forward Y offset must be symmetric; got left_y={ly}, right_y={ry}"
         )
-        assert ly < 0 and ry > 0, (
-            f"left Y offset must be negative, right positive; "
-            f"got left_y={ly}, right_y={ry}"
+        assert lx < 0 and rx > 0, (  # 2026-06-22 axis convention change: lateral gap now on X
+            f"left X offset must be negative, right positive; "
+            f"got left_x={lx}, right_x={rx}"
         )
-        assert ly + ry == 0.0, (
-            f"Y offsets must be symmetric; got left_y={ly}, right_y={ry}"
+        assert lx + rx == 0.0, (  # 2026-06-22 axis convention change: symmetric gap on X
+            f"X offsets must be symmetric; got left_x={lx}, right_x={rx}"
         )
 
     def test_normalize_gripper_fingers_gap_exceeds_width(self):
         """The lateral gap must exceed the finger width so AABBs separate.
 
         This is the regression guard for the VLM FAILED_MAX_ROUNDS bug:
-        with gap < width the two finger boxes overlap on Y and the VLM
+        with gap < width the two finger boxes overlap on X and the VLM
         loop never converges.
         """
         asm = _parse_assembly_json(_gripper_finger_assembly_json())
@@ -431,11 +426,11 @@ class TestNormalizeGripperFingersCenterAnchors:
 
         left_joint = next(j for j in asm.joints if j.child == "finger_left")
         right_joint = next(j for j in asm.joints if j.child == "finger_right")
-        gap = abs(right_joint.offset[1] - left_joint.offset[1])
-        # Centre-to-centre distance on Y must clear two half-widths.
+        gap = abs(right_joint.offset[0] - left_joint.offset[0])  # 2026-06-22 axis convention change: gap on X, not Y
+        # Centre-to-centre distance on X must clear two half-widths.  # 2026-06-22 axis convention change
         assert gap > finger_w, (
-            f"finger Y gap ({gap:.1f}) must exceed finger width ({finger_w}) "
-            f"or the AABBs overlap on Y"
+            f"finger X gap ({gap:.1f}) must exceed finger width ({finger_w}) "  # 2026-06-22 axis convention change
+            f"or the AABBs overlap on X"
         )
 
     def test_normalize_gripper_fingers_urdf_origin_sane(self):

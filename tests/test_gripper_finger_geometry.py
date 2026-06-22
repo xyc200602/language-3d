@@ -113,7 +113,7 @@ class TestProductionFingersDoNotIntersect:
         )
 
     def test_finger_gap_exceeds_width(self):
-        """Centre-to-centre Y distance must clear the finger width."""
+        """Centre-to-centre X distance must clear the finger width."""  # 2026-06-22 axis convention change: Y -> X
         asm = _parse_assembly_json(_production_gripper_json())
         asm = _normalize_gripper_fingers(asm)
 
@@ -122,27 +122,27 @@ class TestProductionFingersDoNotIntersect:
         finger = next(p for p in asm.parts if "finger_left" in p.name)
         width = float(finger.dimensions.get("width", 14.0))
 
-        gap = abs(right.offset[1] - left.offset[1])
+        gap = abs(right.offset[0] - left.offset[0])  # 2026-06-22 axis convention change: gap on X, not Y
         assert gap > width, (
-            f"Y gap ({gap:.1f}mm) must exceed finger width ({width}mm) "
-            f"or the AABBs overlap on the width axis"
+            f"X gap ({gap:.1f}mm) must exceed finger width ({width}mm) "
+            f"or the AABBs overlap on the lateral axis"
         )
 
     def test_fingers_separated_on_width_axis(self):
-        """The two fingers must differ on Y (width axis), not just on X."""
+        """The two fingers must differ on X (lateral axis), not just on Y."""  # 2026-06-22 axis convention change
         asm = _parse_assembly_json(_production_gripper_json())
         asm = _normalize_gripper_fingers(asm)
 
         left = next(j for j in asm.joints if "finger_left" in j.child)
         right = next(j for j in asm.joints if "finger_right" in j.child)
 
-        # They separate on Y...
-        assert left.offset[1] != right.offset[1], (
-            "fingers must have different Y offsets (the gap axis)"
+        # They separate on X...  # 2026-06-22 axis convention change: Y -> X
+        assert left.offset[0] != right.offset[0], (
+            "fingers must have different X offsets (the gap axis)"  # 2026-06-22 axis convention change
         )
-        # ...and the prismatic axis matches (Y), so closing actually grips.
-        assert left.axis == "y" and right.axis == "y", (
-            f"prismatic axis must be 'y', got left={left.axis}, right={right.axis}"
+        # ...and the prismatic axis matches (X), so closing actually grips.  # 2026-06-22 axis convention change
+        assert left.axis == "x" and right.axis == "x", (  # 2026-06-22 axis convention change: 'y' -> 'x'
+            f"prismatic axis must be 'x', got left={left.axis}, right={right.axis}"
         )
 
 
@@ -160,17 +160,17 @@ class TestFingerSpreadCorrection:
     """
 
     def test_correction_pushes_intersecting_fingers_apart(self):
-        """Start with fingers that DO intersect (tiny Y gap) and confirm
+        """Start with fingers that DO intersect (tiny X gap) and confirm  # 2026-06-22 axis convention change
         finger_spread widens them past the non-intersection threshold."""
         asm = _parse_assembly_json(_production_gripper_json())
         asm = _normalize_gripper_fingers(asm)
 
-        # Sabotage: force the fingers back together on Y (simulate the
+        # Sabotage: force the fingers back together on X (simulate the  # 2026-06-22 axis convention change: Y -> X
         # pre-fix state where gap landed on the wrong axis).
         left = next(j for j in asm.joints if "finger_left" in j.child)
         right = next(j for j in asm.joints if "finger_right" in j.child)
-        left.offset = (left.offset[0], -3.0, 0.0)   # 6mm gap < 14mm width
-        right.offset = (right.offset[0], 3.0, 0.0)
+        left.offset = (-3.0, left.offset[1], 0.0)   # 6mm gap < 14mm width  # 2026-06-22 axis convention change
+        right.offset = (3.0, right.offset[1], 0.0)  # 2026-06-22 axis convention change
 
         # Sanity check: they DO intersect before correction.
         pre_problems = _solve_and_validate(asm)
@@ -207,13 +207,13 @@ class TestFingerSpreadCorrection:
         _apply_finger_spread_to_joint(left, asm.parts)
         _apply_finger_spread_to_joint(right, asm.parts)
 
-        y_after_first = left.offset[1]
+        x_after_first = left.offset[0]  # 2026-06-22 axis convention change: spread pushes X, not Y
 
         _apply_finger_spread_to_joint(left, asm.parts)
-        y_after_second = left.offset[1]
+        x_after_second = left.offset[0]  # 2026-06-22 axis convention change
 
-        assert y_after_first == y_after_second, (
-            f"finger_spread is not idempotent: Y went {y_after_first} → {y_after_second}"
+        assert x_after_first == x_after_second, (
+            f"finger_spread is not idempotent: X went {x_after_first} → {x_after_second}"  # 2026-06-22 axis convention change
         )
 
 
@@ -264,30 +264,29 @@ class TestForwardDirection:
     """The finger forward direction must follow the parent-chain attachment.
 
     Regression for the wrist_link/finger intersection: when the arm attaches
-    on the gripper base's 'back' face, fingers must point to 'front' (+X),
-    not back into the arm (-X).  This was hardcoded to -X and drove the
-    fingers into the wrist_link in the 4dof_arm topology.
+    on the gripper base's 'back' face, fingers must point to 'front' (-Y),
+    not back into the arm (+Y).  Forward is along Y (solver front/back axis).
     """
 
     def test_fingers_point_away_when_parent_on_back(self):
-        """Parent (wrist) on 'back' face -> fingers point +X (front)."""
+        """Parent (wrist) on 'back' face -> fingers point -Y (front)."""  # 2026-06-22 axis convention change: +X -> -Y
         asm = _parse_assembly_json(_gripper_with_parent_json("front", "back"))
         asm = _normalize_gripper_fingers(asm)
         left = next(j for j in asm.joints if "finger_left" in j.child)
-        # forward_x must be positive (fingers away from the back-mounted arm)
-        assert left.offset[0] > 0, (
-            f"fingers must point +X when parent is on 'back' face; "
-            f"got offset[0]={left.offset[0]} (this drives fingers into the arm)"
+        # forward_y must be negative (fingers away from the back-mounted arm)  # 2026-06-22 axis convention change
+        assert left.offset[1] < 0, (  # 2026-06-22 axis convention change: offset[0] > 0 -> offset[1] < 0
+            f"fingers must point -Y when parent is on 'back' face; "
+            f"got offset[1]={left.offset[1]} (this drives fingers into the arm)"
         )
 
     def test_fingers_flip_when_parent_on_front(self):
-        """Parent (wrist) on 'front' face -> fingers point -X (back)."""
+        """Parent (wrist) on 'front' face -> fingers point +Y (back)."""  # 2026-06-22 axis convention change: -X -> +Y
         asm = _parse_assembly_json(_gripper_with_parent_json("back", "front"))
         asm = _normalize_gripper_fingers(asm)
         left = next(j for j in asm.joints if "finger_left" in j.child)
-        assert left.offset[0] < 0, (
-            f"fingers must point -X when parent is on 'front' face; "
-            f"got offset[0]={left.offset[0]}"
+        assert left.offset[1] > 0, (  # 2026-06-22 axis convention change: offset[0] < 0 -> offset[1] > 0
+            f"fingers must point +Y when parent is on 'front' face; "
+            f"got offset[1]={left.offset[1]}"
         )
 
     def test_no_intersection_with_wrist_link(self):

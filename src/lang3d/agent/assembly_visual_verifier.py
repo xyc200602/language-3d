@@ -515,7 +515,7 @@ def _generate_constraint_corrections(
 def _apply_finger_spread_to_joint(
     joint: Any, parts: list[Any]
 ) -> None:
-    """Push one gripper finger joint apart from its twin along Y.
+    """Push one gripper finger joint apart from its twin along X.
 
     Used by ``apply_corrections`` for the ``finger_spread`` correction type,
     and exposed at module level so it can be unit-tested in isolation (the
@@ -523,8 +523,9 @@ def _apply_finger_spread_to_joint(
     component + an always-false idempotency guard).
 
     Convention (must match ``_normalize_gripper_fingers`` in
-    assembly_generator.py): the two fingers separate on **Y** (the width
-    axis), perpendicular to the bar length on X.
+    assembly_generator.py, fixed 2026-06-22): the two fingers separate
+    on **X** (the lateral axis), so they straddle the arm centreline.
+    Forward protrusion is on Y.
 
     The target offset is derived from geometry, not from the VLM-reported
     penetration (which caused runaway offsets on 2026-06-18): each finger
@@ -541,12 +542,12 @@ def _apply_finger_spread_to_joint(
     target_offset = min(finger_width + clearance, 40.0)
     sign = -1.0 if "left" in joint.child.lower() else 1.0
     cur = joint.offset or (0, 0, 0)
-    # Idempotent: only push out if the current Y magnitude is still below
+    # Idempotent: only push out if the current X magnitude is still below
     # the target.  Symmetric for left (-) and right (+) fingers.
-    if abs(cur[1]) < target_offset:
+    if abs(cur[0]) < target_offset:
         joint.offset = (
-            cur[0],
             sign * target_offset,
+            cur[1],
             cur[2],
         )
     joint.no_distribute = True

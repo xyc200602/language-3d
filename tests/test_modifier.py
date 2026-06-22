@@ -207,9 +207,9 @@ class TestApplyTargetedFixFromVLM:
         left_after = next(j for j in new.joints if j.child == "gripper_finger_left")
         left_before = next(j for j in arm_assembly.joints
                            if j.child == "gripper_finger_left")
-        # Left finger offset should be more negative on Y (further from
-        # center) — the width/gap axis.
-        assert left_after.offset[1] < left_before.offset[1]
+        # Left finger offset should be more negative on X (further from  # 2026-06-22 axis convention change: Y -> X
+        # center) — the lateral/gap axis.
+        assert left_after.offset[0] < left_before.offset[0]  # 2026-06-22 axis convention change: [1] -> [0]
 
     def test_gripper_invisible_fix(self, arm_assembly):
         problems = [
