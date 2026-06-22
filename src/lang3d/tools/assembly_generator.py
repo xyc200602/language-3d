@@ -2951,14 +2951,33 @@ def _vlm_check_assembly(
 
     # Geometric pre-validation as safety net AND ground-truth arbitrator.
     geo_problems = _geometric_prevalidation(parts, positions, joints)
-    if geo_problems:
-        # Geometry found a real problem (floating part, fused fingers,
-        # flat arm, ...) → force failure as before.
+
+    # Separate HARD geometry failures (collision, disconnection, absurd
+    # positions) from SOFT pose warnings ("arm too flat/horizontal").
+    # Soft warnings describe the arm's posture, not a geometric defect —
+    # they should NOT block the gripper/floating false-alarm filtering
+    # below.  Hard failures force FAIL + skip filtering; soft warnings
+    # are appended to all_problems but still allow the filtering branch.
+    _SOFT_POSE_MARKERS = ("arm too flat", "arm too horizontal", "arm too vertical")
+    hard_geo = [p for p in geo_problems
+                if not any(m in p.lower() for m in _SOFT_POSE_MARKERS)]
+    soft_geo = [p for p in geo_problems
+                if any(m in p.lower() for m in _SOFT_POSE_MARKERS)]
+
+    if hard_geo:
+        # Hard geometry problem (collision, disconnection, fused fingers,
+        # outlier) → force failure.
         passed = False
-        for p in geo_problems:
+        for p in geo_problems:  # include soft warnings too
             if p not in all_problems:
                 all_problems.append(p)
     else:
+        # No hard geometry failures.  Append soft pose warnings but still
+        # run the false-alarm filtering (the arm posture is a suggestion,
+        # not a reason to block a geometrically-correct assembly).
+        for p in soft_geo:
+            if p not in all_problems:
+                all_problems.append(p)
         # Geometry is clean — including Check 7 (joint-graph connectivity:
         # every part reachable from the root).  Two classes of VLM false
         # alarm are filtered here, each backed by a geometric oracle:
@@ -2970,22 +2989,18 @@ def _vlm_check_assembly(
         #
         #  (b) "Floating / disconnected / no support": Check 7 confirmed
         #      the whole assembly is one connected component via the joint
-        #      graph, so the VLM report is a viewpoint artifact (small
-        #      connecting parts like the shoulder servo are invisible at
-        #      full-arm render scale).  Without this filter, these false
-        #      alarms drove a regenerative loop that corrupted correct
-        #      grippers (observed: 4dof_arm round 2 correct → round 3
-        #      broken after LLM "fixed" a non-existent floating problem).
+        #      graph, so the VLM report is a viewpoint artifact.
         filtered = [
             p for p in all_problems
             if not _is_gripper_false_alarm(p)
             and not _is_floating_false_alarm(p)
+            and not any(m in p.lower() for m in _SOFT_POSE_MARKERS)
         ]
         if len(filtered) < len(all_problems):
             all_problems = filtered
             if not all_problems:
                 # Every remaining problem was a geometrically-refuted
-                # false alarm → pass.
+                # false alarm or a soft pose warning → pass.
                 passed = True
 
     # Persist per-view VLM responses for debugging across rounds.

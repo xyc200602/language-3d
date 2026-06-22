@@ -1043,10 +1043,17 @@ class TestGeometricArbitration:
         assert not any("solid block" in p.lower() for p in problems)
 
     def test_geometric_problem_forces_fail(self, monkeypatch, tmp_path):
-        """Geometric problem → fail regardless of VLM."""
+        """HARD geometric problem (collision) → fail regardless of VLM.
+
+        Note (updated 2026-06-22): soft pose warnings ("Arm too flat") no
+        longer force FAIL — they are advisory.  This test now uses a hard
+        collision problem to verify that real geometry failures still block.
+        """
         vlm = '{"passed": true, "problems": []}'
         self._patch_pipeline(
-            monkeypatch, ["Arm too flat: Z span 10mm"], vlm, tmp_path)
+            monkeypatch,
+            ["Parts 'a' and 'b' overlap by 20x14x28mm — physically intersect"],
+            vlm, tmp_path)
 
         import lang3d.tools.assembly_generator as ag
         passed, problems = ag._vlm_check_assembly(
@@ -1055,7 +1062,7 @@ class TestGeometricArbitration:
             real_stl_dir=str(tmp_path),
         )
         assert passed is False
-        assert any("too flat" in p for p in problems)
+        assert any("intersect" in p.lower() for p in problems)
 
 
 class TestObbOverlapDetection:
