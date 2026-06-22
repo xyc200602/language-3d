@@ -138,11 +138,16 @@ class Executor:
         router: ModelRouter,
         tool_registry: ToolRegistry,
         max_turns_per_step: int = 25,
+        tool_filter_role: str | None = None,
     ) -> None:
         self.router = router
         self.tools = tool_registry
         self.max_turns = max_turns_per_step
         self._design_context: dict[str, Any] | None = None
+        # Expert role for tool whitelisting (2026-06-22).  When set,
+        # get_definitions_for_role is used instead of get_relevant_definitions
+        # so the agent only sees tools in its specialism.
+        self._tool_filter_role = tool_filter_role
 
     def set_design_context(self, context: dict[str, Any] | None) -> None:
         """Inject design context (subsystem info, interface constraints, etc.)."""
@@ -226,7 +231,10 @@ class Executor:
         step_type = self._infer_step_type(step)
 
         for turn in range(self.max_turns):
-            tools = self.tools.get_relevant_definitions(step_type, extra_tools=step.expected_tools)
+            if self._tool_filter_role:
+                tools = self.tools.get_definitions_for_role(self._tool_filter_role)
+            else:
+                tools = self.tools.get_relevant_definitions(step_type, extra_tools=step.expected_tools)
             response = self.router.chat(
                 messages=messages,
                 tools=tools,

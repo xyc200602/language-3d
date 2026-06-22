@@ -313,7 +313,14 @@ class TestInertialOrigin:
     """
 
     def test_box_origin_inferred_from_geometry(self):
-        """A 200x150x20 box → origin = (0.1, 0.075, 0.01) m (geometric centre)."""
+        """A 200x150x20 box → origin = (0.075, 0.1, 0.01) m.
+
+        FreeCAD makeBox(width=150, length=200, height=20) puts width on
+        STL X and length on STL Y (freecad.py solver-convention swap).
+        So the geometric centre in the STL/link frame is (W/2, L/2, H/2)
+        = (0.075, 0.1, 0.01) m.  (Updated 2026-06-22 after _infer_local_com
+        X/Y swap fix.)
+        """
         p = Part(
             name="base_plate", category="structural", description="plate",
             dimensions=dict(length=200, width=150, height=20),
@@ -323,7 +330,7 @@ class TestInertialOrigin:
         converter.convert()
         link = converter.get_links()[0]
         # com is stored in metres (mm→m via _mm_to_m)
-        assert link.com == pytest.approx((0.1, 0.075, 0.01), abs=1e-6)
+        assert link.com == pytest.approx((0.075, 0.1, 0.01), abs=1e-6)
 
     def test_cylinder_origin_inferred_from_geometry(self):
         """A Ø60×40 cylinder → origin = (0, 0, 0.02) m (half-height on Z)."""

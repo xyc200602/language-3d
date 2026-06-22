@@ -65,13 +65,39 @@ def cleanup_artifacts(artifacts: list[str], workspace: str) -> None:
 
 
 class SubAgentRole(str, Enum):
-    """Role specialization for sub-agents."""
+    """Role specialization for sub-agents.
 
+    Expert roles (architect/solver/cad/verifier/fixer) are the multi-agent
+    pipeline specialists added 2026-06-22.  Each has a dedicated system
+    prompt and a tool whitelist (tools/base.py ROLE_TOOL_CATEGORIES) so
+    the agent only sees tools relevant to its specialism.
+    """
+
+    # Legacy roles (pre-2026-06-22) — kept for backward compatibility
     MODELING = "modeling"
     VISION = "vision"
     GUI = "gui"
     VERIFICATION = "verification"
     GENERAL = "general"
+
+    # Expert pipeline roles (2026-06-22)
+    ARCHITECT = "architect"          # NL → assembly.json
+    SOLVER = "solver"                # assembly.json → positions
+    CAD_ENGINEER = "cad"             # positions → STLs
+    # VERIFIER reuses VERIFICATION but with an enhanced prompt below
+    FIXER = "fixer"                  # failure routing
+
+
+# Roles that use the role-scoped tool whitelist (tools/base.py
+# ROLE_TOOL_CATEGORIES).  Legacy roles (modeling/vision/gui/general)
+# use the existing step-type filtering instead.
+_EXPERT_ROLES = frozenset({
+    SubAgentRole.ARCHITECT,
+    SubAgentRole.SOLVER,
+    SubAgentRole.CAD_ENGINEER,
+    SubAgentRole.VERIFICATION,  # enhanced prompt, role-scoped tools
+    SubAgentRole.FIXER,
+})
 
 
 @dataclass
@@ -122,6 +148,66 @@ _ROLE_PROMPTS: dict[SubAgentRole, str] = {
     ),
     SubAgentRole.GENERAL: (
         "你是一个通用的任务执行子 Agent。按照指示完成指定的任务步骤。"
+    ),
+
+    # ── Expert pipeline roles (2026-06-22) ──────────────────────────
+
+    SubAgentRole.ARCHITECT: (
+        "你是一个机械设计架构师 Agent。你的任务是根据自然语言描述，"
+        "设计完整的机器人装配体 JSON。\n"
+        "核心职责：\n"
+        "- 选择合适的装配体模板（assembly_template_search）\n"
+        "- 匹配标准零件（part_recommend）\n"
+        "- 定义关节链（type/axis/range/anchor）确保所有零件连通\n"
+        "- 确保自由度合理、夹爪完整（两根手指 + gripper_base）\n"
+        "输出：合法的 assembly JSON，包含 parts 列表和 joints 列表。\n"
+        "约束：单位 mm；关节链必须从 base_plate 出发可达所有零件。"
+    ),
+
+    SubAgentRole.SOLVER: (
+        "你是一个运动学求解 Agent。你的任务是根据装配体 JSON 计算 3D 位置。\n"
+        "核心职责：\n"
+        "- 理解 anchor 约束（front/back/left/right/top/bottom）\n"
+        "- 确保 sanitizer 正确归一化（夹爪手指、默认角度、比例）\n"
+        "- 验证所有零件通过关节图连通（无悬浮零件）\n"
+        "- 验证质心（COM）在支撑多边形内（不倾倒）\n"
+        "输出：positions JSON，每个零件的世界坐标 + 旋转。\n"
+        "约束：如果几何检查发现问题，报告具体问题而非猜测修复。"
+    ),
+
+    SubAgentRole.CAD_ENGINEER: (
+        "你是一个 FreeCAD 建模工程师 Agent。你的任务是根据零件定义生成 STL。\n"
+        "核心职责：\n"
+        "- 使用 fc_batch / fc_script 生成参数化 CAD 模型\n"
+        "- 螺栓孔必须按 anchor 方向正确旋转（侧面 anchor 的孔轴向不能错）\n"
+        "- 确保 STL 水密（watertight），三角面数 < 5000\n"
+        "- 建模后用 cad_verify 验证几何质量\n"
+        "输出：每个零件一个 STL 文件。\n"
+        "约束：单位 mm；布尔运算后检查 euler 数；连接特征不破坏主体几何。"
+    ),
+
+    SubAgentRole.VERIFICATION: (
+        "你是一个双通道验证专家 Agent。你的任务是判断装配体是否合格。\n"
+        "核心职责：\n"
+        "- 代码侧：几何检查（连通性、碰撞、COM 稳定、夹爪间距）\n"
+        "- 视觉侧：VLM 多视角验证（整体结构、夹爪识别）\n"
+        "- 几何仲裁优先于 VLM（SAGE 模式）：几何确认正确时，"
+        "VLM 的误报（如\"悬浮\"、\"实心块\"）应被过滤\n"
+        "输出：{passed: bool, problems: [str], category: str}。\n"
+        "category 可选：structural / gripper / pose / cad_defect / design。\n"
+        "约束：floating/intersection 这类几何属性优先用代码判断，不依赖 VLM。"
+    ),
+
+    SubAgentRole.FIXER: (
+        "你是一个修复路由 Agent。你的任务是根据验证失败的问题类型，"
+        "决定回到哪个阶段修复。\n"
+        "路由规则：\n"
+        "- geometric（位置/连通性）→ 回 Solver 重新求解\n"
+        "- cad_defect（STL 水密/面数）→ 回 CAD Engineer 重新建模\n"
+        "- design（零件缺失/DOF 错误）→ 回 Architect 重新设计\n"
+        "- pose（臂太平/COM 越界）→ 回 Solver 调整默认角度\n"
+        "输出：fix_request JSON，包含 target_stage + problem_detail。\n"
+        "约束：精准路由，不要整体重生成。同一个问题修复 2 次仍失败则升级到 Architect。"
     ),
 }
 
@@ -203,10 +289,18 @@ class SubAgent:
             step.description = f"{original_desc}\n\n{context_text}"
 
         try:
+            # Expert roles use a role-scoped tool whitelist; legacy roles
+            # fall through to the Executor's step-type filtering.
+            filter_role = (
+                self.role.value
+                if self.role in _EXPERT_ROLES
+                else None
+            )
             executor = Executor(
                 self.router,
                 self.tools,
                 max_turns_per_step=self.max_turns,
+                tool_filter_role=filter_role,
             )
 
             # Execute with callbacks that include agent_id

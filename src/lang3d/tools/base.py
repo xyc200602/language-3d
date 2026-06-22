@@ -97,6 +97,43 @@ STEP_TOOL_CATEGORIES: dict[str, list[str]] = {
     "direct": ["file_ops", "shell", "vlm", "freecad", "gui", "screen"],
 }
 
+# Expert-role → tool-category whitelist (added 2026-06-22, multi-agent Step 1).
+# Each expert agent only sees tools in its whitelisted categories.  Legacy
+# roles (modeling/vision/gui/verification/general) fall through to the
+# existing step-type filtering.  A value of None means "all tools".
+#
+# In addition to categories, some tools are registered directly (not via
+# TOOL_CATEGORIES prefixes).  These are listed in ROLE_EXTRA_TOOLS.
+ROLE_TOOL_CATEGORIES: dict[str, list[str] | None] = {
+    "architect": ["assembly", "actuator", "file_ops"],
+    "solver": ["assembly", "file_ops"],
+    "cad": ["freecad", "vlm", "part_library", "file_ops"],
+    "verifier": ["vlm", "screen", "file_ops"],
+    "verification": ["vlm", "screen", "file_ops"],
+    "fixer": ["assembly", "file_ops"],
+    # Legacy roles — None = use step-type filtering (existing behaviour)
+    "modeling": None,
+    "vision": None,
+    "gui": None,
+    "general": None,
+}
+
+# Tools that are registered directly (not matching any TOOL_CATEGORIES
+# prefix) but must be visible to specific expert roles.  These are the
+# assembly-generation pipeline tools that the architect/solver/fixer need.
+ROLE_EXTRA_TOOLS: dict[str, list[str]] = {
+    "architect": [
+        "assembly_template_search", "assembly_template_instantiate",
+        "part_recommend", "assembly_generator",
+    ],
+    "solver": [
+        "assembly_solver", "assembly_generator",
+    ],
+    "fixer": [
+        "assembly_solver", "assembly_generator", "modify_assembly",
+    ],
+}
+
 # Keywords for inferring which extra categories to include in direct mode
 _DIRECT_KEYWORD_CATEGORIES: list[tuple[list[str], str]] = [
     # (keywords, category_name)
@@ -222,6 +259,47 @@ class ToolRegistry:
                             relevant_names.add(name)
 
         return [self._tools[n].get_definition() for n in relevant_names if n in self._tools]
+
+    def get_definitions_for_role(self, role: str) -> list[ToolDefinition]:
+        """Get tool definitions scoped to an expert agent role.
+
+        Expert roles (architect/solver/cad/verifier/fixer) have a tool-
+        category whitelist in ``ROLE_TOOL_CATEGORIES`` plus direct tool
+        names in ``ROLE_EXTRA_TOOLS``.  Legacy roles (modeling/vision/
+        gui/general) return all definitions (they rely on step-type
+        filtering in ``get_relevant_definitions`` instead).
+
+        Added 2026-06-22 for the multi-agent expert pipeline.
+        """
+        categories = ROLE_TOOL_CATEGORIES.get(role)
+        if categories is None:
+            # Legacy role or unknown — show all tools.
+            return self.get_all_definitions()
+
+        # Build the relevant tool-name set from the role's categories,
+        # reusing the same category→prefix matching logic as
+        # get_relevant_definitions.
+        relevant_names: set[str] = set()
+        for cat in categories:
+            for prefix in TOOL_CATEGORIES.get(cat, []):
+                stem = prefix.split("*")[0]
+                for name in self._tools:
+                    if name == prefix or name.startswith(stem):
+                        relevant_names.add(name)
+
+        # Add explicitly-listed tools (registered directly, not via
+        # TOOL_CATEGORIES prefixes — e.g. assembly_generator).
+        for tool_name in ROLE_EXTRA_TOOLS.get(role, []):
+            if tool_name in self._tools:
+                relevant_names.add(tool_name)
+            else:
+                # Try prefix match (covers variants like assembly_solver_xyz)
+                for name in self._tools:
+                    if name.startswith(tool_name):
+                        relevant_names.add(name)
+
+        return [self._tools[n].get_definition()
+                for n in relevant_names if n in self._tools]
 
     def get_direct_definitions(self, task: str) -> list[ToolDefinition]:
         """Get tool definitions for direct mode, filtered by task keywords.

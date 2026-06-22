@@ -263,12 +263,25 @@ class TaskDAG:
                 deps = _infer_deps_from_assembly(step, assembly, name_to_step_id, step_id_set)
 
             # Determine agent role from expected tools
+            # (extended 2026-06-22 for expert pipeline roles)
+            # Order matters: verifier before cad because "cad_verify"
+            # contains "cad" — the verifier check must win.
             role = "general"
             step_tools_lower = [t.lower() for t in step.expected_tools]
-            if any("fc_" in t or "cad" in t for t in step_tools_lower):
-                role = "modeling"
-            elif any("vlm" in t or "screen" in t or "verify" in t for t in step_tools_lower):
-                role = "vision"
+            if any("assembly_template" in t or "part_recommend" in t
+                   or "assembly_generator" in t for t in step_tools_lower):
+                role = "architect"
+            elif any("solver" in t or "solve" in t
+                     or "assembly_solver" in t for t in step_tools_lower):
+                role = "solver"
+            elif any("fix" in t or "modify" in t
+                     or "modifier" in t for t in step_tools_lower):
+                role = "fixer"
+            elif any("vlm" in t or "verify" in t or "screen" in t
+                     for t in step_tools_lower):
+                role = "verifier"
+            elif any("fc_" in t or "cad" in t for t in step_tools_lower):
+                role = "cad"
             elif any("gui" in t for t in step_tools_lower):
                 role = "gui"
 
