@@ -772,6 +772,15 @@ class VTKOffscreenRenderer:
             view_scale *= 1.15
             camera.SetParallelScale(view_scale)
 
+        # Explicitly set clipping range to span the full scene.  VTK's
+        # default auto-computed clipping range can clip thin parts (like
+        # the 8mm base_plate) when the camera is far away and the scene
+        # is elongated — the base_plate vanished from top-view renders
+        # because its Z=[-4,4] sat outside the tight default near/far
+        # planes.  Setting [1, distance*3] guarantees every part within
+        # the camera's view volume is rendered.
+        camera.SetClippingRange(1.0, distance * 3.0)
+
         rw = vtk.vtkRenderWindow()
         rw.SetOffScreenRendering(1)
         rw.SetSize(self.width, self.height)
