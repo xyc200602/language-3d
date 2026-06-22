@@ -722,27 +722,55 @@ class VTKOffscreenRenderer:
         # For 1200x900 image (aspect 4:3), visible height = 2*scale,
         # visible width = 2*scale * 4/3.
         #
-        # WHOLE-ASSEMBLY VIEWS (iso/front/top/right) ALWAYS fit the entire
-        # assembly using max_extent (the longest axis).  This is deliberate
-        # (2026-06-22): a long robotic arm must be fully visible so the
-        # VLM can judge overall structure, connectivity, and proportions.
-        # The small gripper at the tip is NOT supposed to be resolvable
-        # from these views — a dedicated gripper_closeup view (with its
-        # own focus_point + tight parallel_scale) covers the gripper.
+        # PER-VIEW framing (2026-06-22): each view's camera looks along a
+        # specific axis, so the two WORLD axes that project onto the screen
+        # are different per view.  Scaling on the global max_extent wastes
+        # frame space: a top view of a 150mm-wide × 520mm-long arm used
+        # scale=312 (from the 520mm Y span), shrinking the 150mm X width
+        # to 7% of the frame — the arm read as a thin vertical line in
+        # 93% empty space.  Instead, compute the scale from the TWO axes
+        # this view actually displays, so the assembly fills the frame in
+        # BOTH dimensions without clipping.
         #
-        # A previous attempt (2026-06-21) framed elongated assemblies on
-        # the MEDIAN extent to keep small parts visible, but that clipped
-        # the arm in panoramic views, making the VLM report "missing
-        # parts / no assembly visible".  The correct split is:
-        #   - panoramic views: show everything (max_extent)
-        #   - gripper_closeup: zoom on the gripper (separate render call)
-        # The per-view responsibility is enforced by the caller passing
-        # parallel_scale/focus_point ONLY for the close-up.
+        # Screen-axis mapping (derived from VIEW_PRESETS directions):
+        #   top   : width=world X, height=world Y  (looking down -Z)
+        #   front : width=world X, height=world Z  (looking +Y, up=+Z)
+        #   right : width=world Y, height=world Z  (looking -X, up=+Z)
+        #   iso   : width≈X+Y diagonal, height≈Z   (compound; use max of
+        #           the three to be safe)
         camera.SetParallelProjection(1)
         if parallel_scale is not None:
             camera.SetParallelScale(parallel_scale)
         else:
-            camera.SetParallelScale(max(max_extent * 0.6, 50))
+            # Compute the assembly's projected extent onto this view's
+            # screen axes (screen-right and screen-up) by projecting the
+            # world AABB corners through the camera basis.  This handles
+            # every view correctly — including iso, where the diagonal
+            # camera direction makes screen-right = (0.71, 0.71, 0),
+            # so a 150mm-wide × 520mm-long arm projects to 474mm of
+            # screen width (not the 150mm a naive X-axis fit would give).
+            cam_dir = (dir_x, dir_y, dir_z)
+            upv = preset["up"]
+            # screen-right = view_dir × up (normalised)
+            srx = cam_dir[1]*upv[2] - cam_dir[2]*upv[1]
+            sry = cam_dir[2]*upv[0] - cam_dir[0]*upv[2]
+            srz = cam_dir[0]*upv[1] - cam_dir[1]*upv[0]
+            srn = math.sqrt(srx*srx + sry*sry + srz*srz) or 1.0
+            screen_right = (srx/srn, sry/srn, srz/srn)
+            # AABB projected half-extents: sum |axis_component| × half-span
+            # (the projection of a box onto a unit vector is the sum of
+            # absolute component products — standard AABB projection).
+            hx, hy, hz = sx/2.0, sy/2.0, sz/2.0
+            proj_w = (abs(screen_right[0])*hx + abs(screen_right[1])*hy
+                      + abs(screen_right[2])*hz) * 2.0
+            proj_h = (abs(upv[0])*hx + abs(upv[1])*hy + abs(upv[2])*hz) * 2.0
+            aspect = self.width / self.height
+            scale_for_height = proj_h / 2.0
+            scale_for_width = proj_w / (2.0 * aspect)
+            view_scale = max(scale_for_height, scale_for_width, 50.0)
+            # 15% padding so parts don't touch the frame edge.
+            view_scale *= 1.15
+            camera.SetParallelScale(view_scale)
 
         rw = vtk.vtkRenderWindow()
         rw.SetOffScreenRendering(1)

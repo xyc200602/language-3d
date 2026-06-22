@@ -1900,6 +1900,41 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
         )
 
     assembly.default_angles = injected
+
+    # --- Base-plate sizing (COM stability, added 2026-06-22). ---
+    # A 4-DOF arm with ~400mm of link reach generates a center of mass that
+    # projects ~100mm forward of the base origin in the home pose.  When the
+    # LLM emits a small base plate (e.g. 200×150), the support polygon
+    # (±length/2 = ±100mm) lands exactly on the COM edge, so the
+    # com_stability check fails by 1-2mm on a geometrically-correct arm.
+    # Ensure the base plate's LENGTH (solver Y, the arm reach direction) is
+    # at least 60% of the total arm link reach so the support polygon has
+    # margin.  Width (solver X) is left alone — lateral COM offset is small.
+    base_part = next(
+        (p for p in assembly.parts
+         if "base" in p.name.lower() and "plate" in p.name.lower()),
+        None,
+    )
+    link_parts = [
+        p for p in assembly.parts
+        if _is_link_like(p.name) or "joint" in p.name.lower()
+    ]
+    if base_part and link_parts:
+        total_reach = sum(
+            float(p.dimensions.get("length", 0) or 0)
+            + float(p.dimensions.get("diameter", 0) or 0)
+            for p in link_parts
+        ) * 0.5  # zig-zag pose: effective reach ≈ half the link sum
+        min_base_length = max(250.0, total_reach * 0.7)
+        cur_length = float(base_part.dimensions.get("length", 0) or 0)
+        if 0 < cur_length < min_base_length:
+            base_part.dimensions["length"] = min_base_length
+            logger.info(
+                "Sanitizer: enlarged base_plate '%s' length %.0f → %.0fmm "
+                "so the support polygon covers the arm COM (reach≈%.0fmm)",
+                base_part.name, cur_length, min_base_length, total_reach,
+            )
+
     return assembly
 
 

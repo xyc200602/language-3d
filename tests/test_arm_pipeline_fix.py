@@ -898,3 +898,228 @@ def test_validate_assembly_error_enters_retry_loop(monkeypatch, tmp_path):
     assert any("ghost" in p for p in flat_problems), (
         f"Expected 'ghost' (the bad child name) in error message, got: {flat_problems}"
     )
+
+
+# ---------------------------------------------------------------------------
+# P1: VLM gripper false-alarm filter (geometric ground-truth arbitration)
+# ---------------------------------------------------------------------------
+
+
+class TestGripperFalseAlarmFilter:
+    """_is_gripper_false_alarm identifies VLM gripper misreads to override.
+
+    When _geometric_prevalidation confirms fingers are separated (>= 25mm),
+    VLM complaints like "solid block / no separated prongs" are false alarms
+    and must be removable so a geometrically-correct gripper is not rejected.
+    """
+
+    def test_matches_actual_round3_false_alarms(self):
+        from lang3d.tools.assembly_generator import _is_gripper_false_alarm
+        # Exact strings observed in vlm_responses.json round 3.
+        actual = [
+            "Tip of the arm does not have two clearly separated parallel prongs",
+            "End effector is a solid block",
+            "No gripper at the tip of the arm",
+            "End effector is a single chunky mass with no visible gap",
+        ]
+        for p in actual:
+            assert _is_gripper_false_alarm(p), f"should match: {p}"
+
+    def test_does_not_match_structural_problems(self):
+        from lang3d.tools.assembly_generator import _is_gripper_false_alarm
+        # Real structural problems must be preserved (not filtered).
+        for p in [
+            "Parts floating in mid-air with no support",
+            "Parts intersecting / overlapping each other",
+            "Shoulder joint overlapping with base plate",
+            "Arm pointing in impossible directions",
+        ]:
+            assert not _is_gripper_false_alarm(p), f"should NOT match: {p}"
+
+    def test_does_not_match_orientation_problems(self):
+        from lang3d.tools.assembly_generator import _is_gripper_false_alarm
+        # A gripper with wrong orientation is a REAL problem — the filter
+        # must not swallow it.  These phrases lack the fusion structure
+        # keywords, so they correctly do not match.
+        for p in [
+            "Cylinder oriented along wrong axis",
+            "Gripper fingers point backward",
+            "End effector is rotated 90 degrees",
+        ]:
+            assert not _is_gripper_false_alarm(p), f"should NOT match: {p}"
+
+    def test_double_condition_prevents_false_positives(self):
+        from lang3d.tools.assembly_generator import _is_gripper_false_alarm
+        # "tip" alone (context) without a fusion pattern is not a false alarm.
+        assert not _is_gripper_false_alarm("The tip is too far from the base")
+        # "solid block" alone (pattern) without gripper context is not either.
+        assert not _is_gripper_false_alarm("Base plate is a solid block of aluminum")
+
+
+class TestGeometricArbitration:
+    """When geometry confirms the gripper is fine, VLM false alarms are dropped.
+
+    Covers the assembly_generator.py arbitration logic: geo_problems
+    empty (fingers OK) → remove gripper false alarms → if nothing remains, pass.
+    """
+
+    @staticmethod
+    def _patch_pipeline(monkeypatch, geo_result, vlm_json, tmp_path):
+        """Monkeypatch the VLM pipeline's side-effectful calls.
+
+        _vlm_check_assembly does function-local imports of
+        render_assembly_from_positions and GLMBackend, so we must patch the
+        SOURCE modules (not the assembly_generator namespace copy).
+        """
+        import lang3d.tools.assembly_generator as ag
+        import lang3d.tools.vtk_renderer as vr
+        import lang3d.models.glm as glm
+
+        monkeypatch.setattr(ag, "_geometric_prevalidation", lambda *a, **k: geo_result)
+        monkeypatch.setattr(
+            vr, "render_assembly_from_positions",
+            lambda **kw: [str(tmp_path / "fake_view.png")],
+        )
+        (tmp_path / "fake_view.png").write_bytes(b"")
+
+        class _FakeBackend:
+            def __init__(self, *a, **k):
+                pass
+            def vision(self, *a, **k):
+                return vlm_json
+
+        monkeypatch.setattr(glm, "GLMBackend", _FakeBackend)
+
+    def test_geometry_clean_removes_finger_false_alarms(self, monkeypatch, tmp_path):
+        """VLM reports only finger false alarms + geometry clean → pass."""
+        vlm = ('{"passed": false, "problems": '
+               '["End effector is a solid block", '
+               '"Tip of the arm does not have two clearly separated parallel prongs"]}')
+        self._patch_pipeline(monkeypatch, [], vlm, tmp_path)
+
+        import lang3d.tools.assembly_generator as ag
+        passed, problems = ag._vlm_check_assembly(
+            positions={"gripper_finger_left": {"position": [0, 0, 0]},
+                       "gripper_finger_right": {"position": [40, 0, 0]}},
+            parts=[{"name": "gripper_finger_left", "dimensions": {}, "category": ""},
+                   {"name": "gripper_finger_right", "dimensions": {}, "category": ""}],
+            render_dir=str(tmp_path),
+            api_key="dummy",
+            base_url="dummy",
+            real_stl_dir=str(tmp_path),  # skip _generate_preview_stls
+        )
+        assert passed is True
+        assert problems == []
+
+    def test_real_problems_survive_arbitration(self, monkeypatch, tmp_path):
+        """Finger false alarm + a real problem → still fails, real problem kept.
+
+        Note (updated 2026-06-22, B+C arbitration): a "floating" VLM report
+        is now ALSO filtered when the joint graph is connected (Check 7).
+        So to test that real problems survive, we must either (a) give a
+        genuinely disconnected assembly (Check 7 flags it → not filtered),
+        or (b) use a non-floating real problem like "intersecting".  This
+        test uses (b) — a collision problem that no false-alarm filter
+        matches, so it survives arbitration.
+        """
+        vlm = ('{"passed": false, "problems": '
+               '["End effector is a solid block", '
+               '"Parts intersecting (brown cylinder overlapping red cube)"]}')
+        self._patch_pipeline(monkeypatch, [], vlm, tmp_path)
+
+        import lang3d.tools.assembly_generator as ag
+        passed, problems = ag._vlm_check_assembly(
+            positions={}, parts=[],
+            render_dir=str(tmp_path), api_key="dummy", base_url="dummy",
+            real_stl_dir=str(tmp_path),
+        )
+        assert passed is False
+        # The collision problem survives (no filter matches it).
+        assert any("intersecting" in p.lower() for p in problems)
+        # The gripper "solid block" false alarm was filtered by geometry
+        # (empty parts → Check 5 has < 2 fingers but is_arm is False since
+        # no arm keywords → no gripper problem; still, the false-alarm
+        # filter catches "solid block" with "effector" context word).
+        assert not any("solid block" in p.lower() for p in problems)
+
+    def test_geometric_problem_forces_fail(self, monkeypatch, tmp_path):
+        """Geometric problem → fail regardless of VLM."""
+        vlm = '{"passed": true, "problems": []}'
+        self._patch_pipeline(
+            monkeypatch, ["Arm too flat: Z span 10mm"], vlm, tmp_path)
+
+        import lang3d.tools.assembly_generator as ag
+        passed, problems = ag._vlm_check_assembly(
+            positions={}, parts=[],
+            render_dir=str(tmp_path), api_key="dummy", base_url="dummy",
+            real_stl_dir=str(tmp_path),
+        )
+        assert passed is False
+        assert any("too flat" in p for p in problems)
+
+
+class TestObbOverlapDetection:
+    """Check 6 must use rotated (OBB-aware) world AABBs, not crude centre
+    distance.  A long thin finger rotated across its sibling's volume has
+    centres 32mm apart but boxes overlapping ~40mm — the old centre-distance
+    heuristic missed this entirely."""
+
+    def test_rotated_finger_overlap_detected(self):
+        # Two 60mm-long fingers offset ±16 in X (centres 32mm apart) but
+        # rotated ~73° about a compound axis — exactly the e2e failure case.
+        # Centres are far apart yet the rotated boxes intersect.
+        parts = [
+            {"name": "gripper_finger_left",
+             "dimensions": {"length": 60, "width": 14, "height": 28},
+             "category": "mechanical"},
+            {"name": "gripper_finger_right",
+             "dimensions": {"length": 60, "width": 14, "height": 28},
+             "category": "mechanical"},
+        ]
+        positions = {
+            # Rotated 73° about axis (-0.86,-0.36,0.27) — same as real solver
+            # output that caused the missed collision.
+            "gripper_finger_left": {
+                "position": [-13, -193, 366],
+                "rotation": [-0.86, -0.36, 0.27, 73]},
+            "gripper_finger_right": {
+                "position": [13, -175, 370],
+                "rotation": [-0.86, -0.36, 0.27, 73]},
+        }
+        # No joints → the pair is non-adjacent → must be checked.
+        problems = _geometric_prevalidation(parts, positions, joints=[])
+        overlap = [p for p in problems if "overlap" in p.lower()]
+        assert overlap, (
+            f"Rotated finger overlap must be detected; got: {problems}"
+        )
+
+    def test_well_separated_fingers_not_flagged(self):
+        # Same fingers but offset ±40 (centres 80mm apart) — no overlap.
+        parts = [
+            {"name": "gripper_finger_left",
+             "dimensions": {"length": 60, "width": 14, "height": 28}},
+            {"name": "gripper_finger_right",
+             "dimensions": {"length": 60, "width": 14, "height": 28}},
+        ]
+        positions = {
+            "gripper_finger_left": {"position": [-40, 0, 0]},
+            "gripper_finger_right": {"position": [40, 0, 0]},
+        }
+        problems = _geometric_prevalidation(parts, positions, joints=[])
+        assert not any("overlap" in p.lower() for p in problems), (
+            f"Separated fingers should not be flagged; got: {problems}"
+        )
+
+    def test_adjacent_parts_not_flagged(self):
+        # Parent-child pair touching at a joint must be skipped.
+        parts = [
+            {"name": "base", "dimensions": {"length": 50, "width": 50, "height": 5}},
+            {"name": "pillar", "dimensions": {"length": 10, "width": 10, "height": 40}},
+        ]
+        positions = {
+            "base": {"position": [0, 0, 0]},
+            "pillar": {"position": [0, 0, 22]},  # sits on base
+        }
+        joints = [{"parent": "base", "child": "pillar"}]
+        problems = _geometric_prevalidation(parts, positions, joints=joints)
+        assert not any("overlap" in p.lower() for p in problems)
