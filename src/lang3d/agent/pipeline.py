@@ -192,12 +192,23 @@ class AssemblyPipeline:
 
     def _setup(self) -> None:
         """Classify the description and prepare output directories."""
+        import os as _os
+
         ctx = self.ctx
         desc_lower = ctx.description.lower()
         ctx.is_arm = any(kw in desc_lower for kw in [
             "臂", "arm", "机械手", "机械臂", "抓手", "gripper", "自由度"])
         ctx.is_wheeled = any(kw in desc_lower for kw in [
             "轮", "wheel", "差速", "移动", "底盘"])
+
+        # Fill in API config from environment if not provided (mirrors
+        # the legacy loop's base_url/api_key fallback at line 2867-2870).
+        if not ctx.api_key:
+            ctx.api_key = _os.environ.get("GLM_API_KEY", "")
+        if not ctx.base_url:
+            ctx.base_url = _os.environ.get(
+                "GLM_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"
+            )
 
         if not ctx.output_dir:
             ts = time.strftime("%Y%m%d_%H%M%S")
