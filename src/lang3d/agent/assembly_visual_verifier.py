@@ -210,6 +210,19 @@ _SOLID_BLOCK_KEYWORDS = (
 )
 _PLATE_KEYWORDS = ("plate", "底盘", "底板", "chassis", "base_plate", "top_plate")
 _OVERLAP_KEYWORDS = ("overlap", "intersect", "重叠", "交叉")
+# Floating / disconnected complaints (added 2026-06-22, Plan B+C).
+# These classify VLM "floating" reports into ProblemType.FLOATING so the
+# targeted-fix path can route them.  NOTE: when the joint-graph
+# connectivity check (assembly_generator._geometric_prevalidation Check 7)
+# confirms the assembly is fully connected, these reports are filtered as
+# false alarms BEFORE reaching classify_problems — so this route only
+# fires for GENUINE floating (disconnected joint graph), where add_joint
+# is the correct fix.
+_FLOATING_KEYWORDS = (
+    "floating", "mid-air", "mid air", "disconnected",
+    "not connected", "no support", "no visible support",
+    "no physical connection", "悬空", "悬浮", "未连接",
+)
 
 
 def classify_problem_text(text: str, assembly: Assembly) -> LayoutProblem:
@@ -259,6 +272,26 @@ def classify_problem_text(text: str, assembly: Assembly) -> LayoutProblem:
             severity=Severity.HIGH,
             description=text,
             affected_parts=quoted,
+        )
+
+    # --- Floating / disconnected (Plan B+C, 2026-06-22) ---
+    # NOTE: this route only fires for GENUINE floating — when the
+    # joint-graph connectivity check in _geometric_prevalidation (Check 7)
+    # confirms the assembly is connected, floating reports are filtered
+    # as false alarms in _vlm_check_assembly BEFORE reaching here.  So
+    # by the time classify_problems sees a floating text, the assembly
+    # really does have a disconnected component, and add_joint (the
+    # FLOATING correction in _generate_constraint_corrections) is the
+    # right fix.
+    if any(k in t for k in _FLOATING_KEYWORDS):
+        # Try to identify which part is floating by name-quotations.
+        quoted = _re.findall(r"['\"]([a-zA-Z_][\w]*)['\"]", text or "")
+        return LayoutProblem(
+            problem_type=ProblemType.FLOATING,
+            severity=Severity.HIGH,
+            description=text,
+            affected_parts=quoted,
+            correction={"type": "floating"},
         )
 
     # --- Missing part ---

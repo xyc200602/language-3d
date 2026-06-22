@@ -2195,16 +2195,29 @@ _VLM_FIX_PROMPT = (
 # collisions) are never matched.
 
 _GRIPPER_FALSE_ALARM_PATTERNS = (
-    "solid block", "solid mass", "chunky mass", "fused",
+    "solid block", "solid mass", "solid chunk", "chunky mass", "fused",
+    "single curved mass", "single chunky", "single solid",
     "no visible gap", "no gap", "no separated",
-    "not two clearly separated", "does not have two",
+    "not two clearly separated", "no two clearly separated",
+    "does not have two", "does not terminate in a gripper",
     "no clearly separated parallel prongs", "parallel prongs",
     "no gripper at the tip", "no gripper", "not a gripper",
-    "absence of a functional gripper",
+    "absence of a functional gripper", "no functional gripper",
     "tip of the arm does not have", "tip is a solid",
+    "tip of the arm terminates in a solid",
+    "tip of the arm does not terminate in a gripper",
     "end effector is a solid", "end-effector is a solid",
+    "fails functional gripper", "fails category 2",
+    "end-effector is a single", "end effector is a single",
 )
-_GRIPPER_CONTEXT_WORDS = ("gripper", "finger", "prong", "effector", "tip", "claw")
+# Context words: the text must ALSO mention one of these to be classified
+# as a gripper complaint (prevents "base plate does not have two mounting
+# holes" from being filtered).  The GLM-4.6V consistently uses "tip",
+# "gripper", "finger", "prong", or "end-effector" when complaining about
+# the gripper, so the double-condition is reliable.
+_GRIPPER_CONTEXT_WORDS = (
+    "gripper", "finger", "prong", "effector", "tip", "claw", "爪",
+)
 
 
 def _is_gripper_false_alarm(problem_text: str) -> bool:
@@ -2219,6 +2232,43 @@ def _is_gripper_false_alarm(problem_text: str) -> bool:
     has_context = any(w in t for w in _GRIPPER_CONTEXT_WORDS)
     has_pattern = any(p in t for p in _GRIPPER_FALSE_ALARM_PATTERNS)
     return has_context and has_pattern
+
+
+# Floating false-alarm patterns (added 2026-06-22, Plan B+C).
+#
+# VLMs catastrophically misjudge "floating / disconnected" when a part
+# occupies <1% of the frame (TDBench, arXiv 2504.03748).  In a long
+# robotic arm, the shoulder servo (Ø40mm) linking the base plate to the
+# arm chain is exactly such a small part — GLM-4.6V reliably reports
+# the arm as "floating with no support" even when the joint graph
+# confirms every part is connected to the base.  When the joint-graph
+# connectivity check (Check 7 in _geometric_prevalidation) returns
+# clean, these reports are viewpoint artifacts and must be filtered so
+# they do not trigger a corrupting regeneration round.
+#
+# Unlike the gripper filter, no context-word double condition is needed:
+# "floating" / "mid-air" / "disconnected" are unambiguously geometric
+# connectivity complaints, not structural details that could be real.
+_FLOATING_FALSE_ALARM_PATTERNS = (
+    "floating", "floats", "floated",
+    "mid-air", "mid air", "in mid air", "in mid-air",
+    "no support", "not supported", "unsupported",
+    "disconnected", "not connected", "no visible connection",
+    "no visible support", "no physical connection",
+    "悬空", "悬浮", "未连接", "无支撑",
+)
+
+
+def _is_floating_false_alarm(problem_text: str) -> bool:
+    """Return True if a VLM problem is a floating / disconnected complaint.
+
+    These are filtered ONLY when the joint-graph connectivity check
+    (Check 7) confirms every part is reachable from the root — i.e. the
+    assembly is genuinely connected and the VLM report is a viewpoint
+    artifact.  See ``_vlm_check_assembly`` for the gating logic.
+    """
+    t = problem_text.lower()
+    return any(p in t for p in _FLOATING_FALSE_ALARM_PATTERNS)
 
 
 def _geometric_prevalidation(
@@ -2482,6 +2532,49 @@ def _geometric_prevalidation(
                 f"Increase the offset between them or reduce their "
                 f"dimensions so they do not collide."
             )
+
+    # 7. Connectivity — every part must be reachable from an arbitrary
+    #    root via the joint graph (BFS).  This is the GROUND-TRUTH
+    #    arbiter for VLM "floating / disconnected" reports: if the joint
+    #    graph says the assembly is a single connected component, then
+    #    no part is genuinely floating, regardless of how the render
+    #    angle makes it look (TDBench, arXiv 2504.03748 shows VLMs
+    #    catastrophically misjudge "floating" when parts are <1% of the
+    #    frame — this check overrides those false negatives).
+    #
+    #    Without this check, `_vlm_check_assembly` has no geometric
+    #    signal to refute VLM "floating" false-alarms, so they enter the
+    #    LLM regeneration loop and corrupt an otherwise-correct assembly
+    #    (observed: 4dof_arm round 2 correct → VLM false "floating" →
+    #    round 3 regeneration broke the gripper).
+    if joints:
+        part_names = {p.get("name", "") for p in parts if p.get("name")}
+        adj: dict[str, set[str]] = {n: set() for n in part_names}
+        for j in joints:
+            if isinstance(j, dict):
+                jp, jc = j.get("parent", ""), j.get("child", "")
+            else:
+                jp, jc = getattr(j, "parent", ""), getattr(j, "child", "")
+            if jp in adj and jc in adj:
+                adj[jp].add(jc)
+                adj[jc].add(jp)
+        if part_names:
+            root = next(iter(part_names))
+            visited: set[str] = set()
+            queue = [root]
+            while queue:
+                node = queue.pop(0)
+                if node in visited:
+                    continue
+                visited.add(node)
+                queue.extend(adj.get(node, set()) - visited)
+            disconnected = part_names - visited
+            if disconnected:
+                problems.append(
+                    f"Parts {sorted(disconnected)} are not connected to "
+                    f"the root '{root}' via the joint graph — they are "
+                    f"genuinely floating (no joint path from the base)."
+                )
 
     return problems
 
@@ -2807,18 +2900,33 @@ def _vlm_check_assembly(
             if p not in all_problems:
                 all_problems.append(p)
     else:
-        # Geometry is clean (including Check 5: >= 2 fingers separated by
-        # >= 25mm).  The VLM (a lightweight vision model) often false-
-        # negatives the gripper in this case — reporting "solid block /
-        # no separated prongs" even when fingers are clearly apart in the
-        # solved positions.  Remove those false alarms; the deterministic
-        # 3D coordinates are more authoritative than pixel inspection.
-        filtered = [p for p in all_problems if not _is_gripper_false_alarm(p)]
+        # Geometry is clean — including Check 7 (joint-graph connectivity:
+        # every part reachable from the root).  Two classes of VLM false
+        # alarm are filtered here, each backed by a geometric oracle:
+        #
+        #  (a) Gripper "solid block / no separated prongs": Check 5
+        #      confirmed >= 2 fingers separated by >= 25mm, so the VLM
+        #      (which catastrophically misjudges sub-1%-of-frame features,
+        #      per TDBench arXiv 2504.03748) is overruled.
+        #
+        #  (b) "Floating / disconnected / no support": Check 7 confirmed
+        #      the whole assembly is one connected component via the joint
+        #      graph, so the VLM report is a viewpoint artifact (small
+        #      connecting parts like the shoulder servo are invisible at
+        #      full-arm render scale).  Without this filter, these false
+        #      alarms drove a regenerative loop that corrupted correct
+        #      grippers (observed: 4dof_arm round 2 correct → round 3
+        #      broken after LLM "fixed" a non-existent floating problem).
+        filtered = [
+            p for p in all_problems
+            if not _is_gripper_false_alarm(p)
+            and not _is_floating_false_alarm(p)
+        ]
         if len(filtered) < len(all_problems):
             all_problems = filtered
             if not all_problems:
-                # Every remaining problem was a gripper false alarm and
-                # geometry confirmed the gripper is fine → pass.
+                # Every remaining problem was a geometrically-refuted
+                # false alarm → pass.
                 passed = True
 
     # Persist per-view VLM responses for debugging across rounds.

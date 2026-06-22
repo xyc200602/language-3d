@@ -722,58 +722,27 @@ class VTKOffscreenRenderer:
         # For 1200x900 image (aspect 4:3), visible height = 2*scale,
         # visible width = 2*scale * 4/3.
         #
-        # Auto-framing must be ASPECT-RATIO-AWARE (fixed 2026-06-21).  A
-        # long, narrow arm (e.g. 46mm wide × 409mm long × 147mm tall)
-        # blew up the scale to fit the 409mm length, shrinking the 46mm-
-        # wide base/gripper to ~7% of the frame so the VLM read it as
-        # "no parts visible".  When the aspect ratio (longest/shortest
-        # extent) exceeds 3.0, we frame on the MEDIAN extent instead of
-        # the max — the long axis is allowed to clip.
+        # WHOLE-ASSEMBLY VIEWS (iso/front/top/right) ALWAYS fit the entire
+        # assembly using max_extent (the longest axis).  This is deliberate
+        # (2026-06-22): a long robotic arm must be fully visible so the
+        # VLM can judge overall structure, connectivity, and proportions.
+        # The small gripper at the tip is NOT supposed to be resolvable
+        # from these views — a dedicated gripper_closeup view (with its
+        # own focus_point + tight parallel_scale) covers the gripper.
         #
-        # But clipping the LONG axis at the scene centroid would hide the
-        # gripper (which sits at the arm tip, far from centre).  So we also
-        # shift the camera focal point toward the END EFFECTOR along the
-        # long axis: keep the gripper + middle of the arm in frame, let
-        # the base end clip.  The base/shoulder is the least informative
-        # part for a VLM judging "is this a robot arm with a gripper?".
+        # A previous attempt (2026-06-21) framed elongated assemblies on
+        # the MEDIAN extent to keep small parts visible, but that clipped
+        # the arm in panoramic views, making the VLM report "missing
+        # parts / no assembly visible".  The correct split is:
+        #   - panoramic views: show everything (max_extent)
+        #   - gripper_closeup: zoom on the gripper (separate render call)
+        # The per-view responsibility is enforced by the caller passing
+        # parallel_scale/focus_point ONLY for the close-up.
         camera.SetParallelProjection(1)
         if parallel_scale is not None:
             camera.SetParallelScale(parallel_scale)
         else:
-            extents_sorted = sorted((sx, sy, sz))
-            aspect_ratio = extents_sorted[2] / max(extents_sorted[0], 1.0)
-            if aspect_ratio > 3.0 and focus_point is None:
-                # Elongated assembly (typical arm): frame on the median
-                # extent so the short cross-section stays VLM-visible, and
-                # bias the focal point toward the end effector so the
-                # gripper stays in frame.  Identify the long axis and
-                # nudge the focus 35% of the way from centre toward the
-                # high end of that axis (grippers sit at the +Y/-Y tip
-                # in solver convention; we pick whichever end is further
-                # from origin, which is the arm tip).
-                frame_extent = extents_sorted[1]
-                camera.SetParallelScale(max(frame_extent * 0.6, 50))
-                # Bias focal point along the long axis toward the tip.
-                long_axis_idx = (sx, sy, sz).index(extents_sorted[2])
-                _tip_bias = 0.35
-                if long_axis_idx == 0:
-                    _sign = 1.0 if abs(xmax) >= abs(xmin) else -1.0
-                    cx += _sign * sx * _tip_bias
-                elif long_axis_idx == 1:
-                    _sign = 1.0 if abs(ymax) >= abs(ymin) else -1.0
-                    cy += _sign * sy * _tip_bias
-                else:
-                    _sign = 1.0 if abs(zmax) >= abs(zmin) else -1.0
-                    cz += _sign * sz * _tip_bias
-                camera.SetFocalPoint(cx, cy, cz)
-                # Reposition the camera at the new focal point.
-                camera.SetPosition(
-                    cx + dir_x * distance,
-                    cy + dir_y * distance,
-                    cz + dir_z * distance,
-                )
-            else:
-                camera.SetParallelScale(max(max_extent * 0.6, 50))
+            camera.SetParallelScale(max(max_extent * 0.6, 50))
 
         rw = vtk.vtkRenderWindow()
         rw.SetOffScreenRendering(1)
