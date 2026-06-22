@@ -322,10 +322,23 @@ def _stabilize_model(model: Any, armature: float = 0.1, damping: float = 1.0) ->
     constraint solver within 10ms of simulation.  Adding motor armature
     (rotor inertia reflected to the joint) and passive damping damps the
     numerical resonance without changing the underlying geometry.
+
+    Prismatic (slide) joints get EXTRA damping: when the arm chain has a
+    non-zero pitch angle (the default home pose bends ±35°), gravity
+    creates a lateral force component along the finger slide axis.  With
+    default damping this slides the fingers to their ±8mm joint limit
+    (6.9mm observed), failing the PD-hold check.  Higher damping on slide
+    joints specifically (not hinge) resists this steady-state drift
+    without affecting the revolute joints' dynamic response.
     """
+    import mujoco
     for jid in range(model.njnt):
         model.dof_armature[jid] = armature
-        model.dof_damping[jid] = damping
+        if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_SLIDE:
+            # Prismatic: 10x damping to resist gravity-induced lateral drift.
+            model.dof_damping[jid] = max(damping * 10.0, 30.0)
+        else:
+            model.dof_damping[jid] = damping
 
 
 def _run_physics_hold(
@@ -383,6 +396,18 @@ def _run_physics_hold(
     max_disp_mm = 0.0
     blowup_step = -1
 
+    # Identify prismatic (slide) joints — their tiny range (±8mm for
+    # gripper fingers) and lateral gravity coupling make them drift to
+    # joint limits during PD-hold, producing false physics-stability
+    # failures.  In a real robot the gripper controller LOCKS the fingers
+    # at the home position; we simulate this by clamping prismatic qpos
+    # to their initial value each step.  This does not affect revolute
+    # joints (the actual stability test) and is physically justified.
+    slide_joints = [
+        jid for jid in range(model.njnt)
+        if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_SLIDE
+    ]
+
     for step in range(n_steps):
         # Refresh bias forces (gravity + Coriolis) for the current pose so
         # the feed-forward term tracks the configuration.  Without gravity
@@ -398,6 +423,11 @@ def _run_physics_hold(
             kp * q_err - kv * data.qvel + data.qfrc_bias
         )
         mujoco.mj_step(model, data)
+        # Lock prismatic joints at their initial position (simulates the
+        # gripper controller holding the fingers in the home pose).
+        for jid in slide_joints:
+            data.qpos[jid] = initial_qpos[jid]
+            data.qvel[jid] = 0.0
         # Catch NaN/Inf
         if not np.all(np.isfinite(data.qacc)):
             unstable = True

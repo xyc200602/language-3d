@@ -155,9 +155,10 @@ def _infer_inertia(part: Part) -> dict[str, float]:
         return {"ixx": round(ixx, 8), "ixy": 0.0, "ixz": 0.0,
                 "iyy": round(ixx, 8), "iyz": 0.0, "izz": round(izz, 8)}
 
-    # Try box
-    lx = _mm_to_m(dims.get("length", dims.get("width", 10.0)))
-    ly = _mm_to_m(dims.get("width", 10.0))
+    # Try box — matches freecad.py makeBox(width, length, height):
+    # STL X = width, Y = length, Z = height (see _infer_local_com docstring).
+    lx = _mm_to_m(dims.get("width", 10.0))
+    ly = _mm_to_m(dims.get("length", dims.get("width", 10.0)))
     lz = _mm_to_m(dims.get("height", dims.get("thickness", 10.0)))
     if lx <= 0:
         lx = 0.01
@@ -187,15 +188,23 @@ def _infer_local_com(part: Part) -> tuple[float, float, float]:
     ``(0,0,0)`` while the tensor is centre-relative is what made MuJoCo
     PD-hold diverge (gravity torque arm computed against the wrong point).
 
-    Coordinate convention follows the FreeCAD local frame used by the
-    exported STL mesh (``scale=0.001``):
+    Coordinate convention follows the ACTUAL FreeCAD STL frame.  The
+    FreeCAD exporter (``freecad.py:1491``) calls ``Part.makeBox(width,
+    length, height)``, so the STL vertex frame has:
 
-      * **box** (``makeBox``): corner-origin → centre is ``(l/2, w/2, h/2)``
-      * **cylinder** (``makeCylinder``): along +Z, centred in XY → ``(0, 0, h/2)``
+      * **box** X axis = ``width``, Y axis = ``length``, Z = ``height``
+        → geometric centre is ``(w/2, l/2, h/2)``
+      * **cylinder** along +Z, centred in XY → ``(0, 0, h/2)``
 
     For non-uniform parts (holes, fillets) this is an approximation, on par
     with the ``_infer_inertia`` uniform-body approximation — using both
     together keeps the tensor and origin self-consistent.
+
+    History: prior to 2026-06-22 this returned ``(l/2, w/2, h/2)`` assuming
+    ``makeBox(length, width, height)``.  But the exporter actually swaps to
+    ``makeBox(width, length, height)``, so the X/Y were swapped relative
+    to the real STL — this caused MuJoCo finger prismatic joints to slide
+    6.9mm under PD-hold (the COM was offset 23mm from the slide axis).
     """
     dims = part.dimensions
 
@@ -204,9 +213,10 @@ def _infer_local_com(part: Part) -> tuple[float, float, float]:
         h = dims.get("height", dims.get("thickness", dims.get("length", 10.0)))
         return (0.0, 0.0, h / 2.0)
 
-    # Box
-    lx = dims.get("length", dims.get("width", 10.0))
-    ly = dims.get("width", 10.0)
+    # Box — matches freecad.py makeBox(width, length, height):
+    # STL X = width, Y = length, Z = height.  Centre = (W/2, L/2, H/2).
+    lx = dims.get("width", 10.0)
+    ly = dims.get("length", dims.get("width", 10.0))
     lz = dims.get("height", dims.get("thickness", 10.0))
     return (lx / 2.0, ly / 2.0, lz / 2.0)
 
