@@ -278,6 +278,10 @@ class AssemblyPipeline:
         self.cad_agent = StageAgent(SubAgentRole.CAD_ENGINEER, "cad")
         self.verifier_agent = StageAgent(SubAgentRole.VERIFICATION, "verifier")
         self.fixer_agent = StageAgent(SubAgentRole.FIXER, "fixer")
+        # Chassis specialist: activated for wheeled-base/dual-arm designs
+        # (Task-Driven Co-Design). The architect delegates chassis topology
+        # to this role so wheel conventions stay structural, not advisory.
+        self.chassis_agent = StageAgent(SubAgentRole.CHASSIS_ARCHITECT, "chassis")
         self._setup()
 
     def _setup(self) -> None:

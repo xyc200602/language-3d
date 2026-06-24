@@ -45,13 +45,17 @@ class TestSubAgentRoleEnum:
         assert SubAgentRole.VERIFICATION
 
     def test_expert_roles_set(self):
-        """_EXPERT_ROLES must list exactly the 5 expert roles."""
+        """_EXPERT_ROLES must list exactly the expert roles.
+
+        5 core pipeline roles + CHASSIS_ARCHITECT (added for Task-Driven
+        Co-Design wheeled-base support)."""
         expected = {
             SubAgentRole.ARCHITECT,
             SubAgentRole.SOLVER,
             SubAgentRole.CAD_ENGINEER,
             SubAgentRole.VERIFICATION,
             SubAgentRole.FIXER,
+            SubAgentRole.CHASSIS_ARCHITECT,
         }
         assert _EXPERT_ROLES == expected
 

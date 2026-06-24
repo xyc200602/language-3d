@@ -20,6 +20,7 @@ from typing import Any
 from ..knowledge.mechanics import Assembly, ConnectionMethod, Joint, Part
 from ..knowledge.fastener_catalog import get_torque
 from ..knowledge.arm_topology import build_arm_example, parse_dof, zigzag_angles
+from ..knowledge.mobile_base_gen import build_wheeled_base, parse_drive_type
 from .assembly_solver import ANCHOR_DIM_KEYS
 from .base import Tool, ToolDefinition
 
@@ -717,20 +718,42 @@ def generate_assembly_from_nl(
         )
         if real_machine_ref:
             user_prompt += real_machine_ref
-        # A wheeled dual-arm robot needs BOTH the arm example (above) and
-        # the wheeled-base example (below) — the arms mount on the chassis.
+        # For wheeled robots, use the parametric chassis generator instead of
+        # the hard-coded EXAMPLE_4W_ROBOT. The generator bakes in the
+        # axis=y/center/no_distribute wheel conventions that the LLM kept
+        # mutating (→ wheels vertical, flung 600mm out, Z misaligned) when
+        # given EXAMPLE_4W_ROBOT as advisory text. Generated sizes also adapt
+        # to payload (heavier → bigger wheels), which the hard-coded example
+        # never did.
         if is_wheeled:
-            user_prompt += (
-                f"\n参考示例（底盘+轮子结构，双臂安装在其 top_plate 上）：\n{EXAMPLE_4W_ROBOT}\n"
+            drive = parse_drive_type(description)
+            chassis_example = build_wheeled_base(
+                wheel_count=4, drive_type=drive, payload_kg=5.0,
             )
+            if is_arm:
+                # Dual-arm: compose the full chassis+arms deterministically.
+                # This gives the LLM ONE structurally-correct dual-arm JSON
+                # (arms symmetric, wheels flat, no part flung out) rather
+                # than asking it to merge three separate examples — which is
+                # where every dual-arm failure originated.
+                from ..agent.assembly_compose import compose_dual_arm_assembly
+                dual_example = compose_dual_arm_assembly(
+                    chassis_example, parametric_example, arm_dof=n_dof,
+                )
+                user_prompt += (
+                    f"\n参考示例（完整双臂轮式机器人，底盘+双{n_dof}自由度臂已确定性组装，"
+                    f"轮子齐平/双臂对称/拓扑正确，在此基础上调整尺寸）：\n{dual_example}\n"
+                )
+            else:
+                user_prompt += (
+                    f"\n参考示例（{drive}底盘+轮子结构，轮子轴=y/center/no_distribute，"
+                    f"在此基础上调整尺寸）：\n{chassis_example}\n"
+                )
     else:
+        # Non-arm, non-wheeled fallback (shouldn't normally hit).
         user_prompt += (
             f"\n参考示例（4轮差速底盘）：\n{EXAMPLE_4W_ROBOT}\n"
         )
-
-    # Add dual-arm hint for wheeled robots with arms
-    if is_wheeled and is_arm:
-        user_prompt += f"\n附加参考（双臂配置）：{EXAMPLE_DUAL_ARM}\n"
 
     response = backend.chat(
         messages=[Message(role="user", content=user_prompt)],

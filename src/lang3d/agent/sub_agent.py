@@ -86,6 +86,7 @@ class SubAgentRole(str, Enum):
     CAD_ENGINEER = "cad"             # positions → STLs
     # VERIFIER reuses VERIFICATION but with an enhanced prompt below
     FIXER = "fixer"                  # failure routing
+    CHASSIS_ARCHITECT = "chassis"   # wheeled base design (Task-Driven Co-Design)
 
 
 # Roles that use the role-scoped tool whitelist (tools/base.py
@@ -97,6 +98,7 @@ _EXPERT_ROLES = frozenset({
     SubAgentRole.CAD_ENGINEER,
     SubAgentRole.VERIFICATION,  # enhanced prompt, role-scoped tools
     SubAgentRole.FIXER,
+    SubAgentRole.CHASSIS_ARCHITECT,
 })
 
 
@@ -208,6 +210,21 @@ _ROLE_PROMPTS: dict[SubAgentRole, str] = {
         "- pose（臂太平/COM 越界）→ 回 Solver 调整默认角度\n"
         "输出：fix_request JSON，包含 target_stage + problem_detail。\n"
         "约束：精准路由，不要整体重生成。同一个问题修复 2 次仍失败则升级到 Architect。"
+    ),
+
+    SubAgentRole.CHASSIS_ARCHITECT: (
+        "你是一个轮式底盘设计专家 Agent（Task-Driven Co-Design）。\n"
+        "你的任务是根据载荷和运动需求，设计结构正确的移动底盘。\n"
+        "核心职责：\n"
+        "- 用 build_wheeled_base(wheel_count, drive_type, payload) 生成底盘\n"
+        "- 轮子关节必须 axis='y'（水平圆柱，能滚），child_anchor='center'，"
+        "no_distribute=True（否则分布算法会把轮子推飞）\n"
+        "- 底盘高度 × 机械臂 reach 是耦合系统：底盘越高臂可达范围越大，"
+        "但重心越高越不稳。用 WheelBaseCalculator 推导尺寸（payload→轮径/轮距）\n"
+        "- 双臂用确定性 SE(3) 镜像组装（compose_dual_arm_assembly），"
+        "左右对称，不让 LLM 猜安装位置\n"
+        "输出：底盘 assembly JSON + 臂安装法兰坐标。\n"
+        "约束：单位 mm；4 轮 Z 必须齐平（variation≈0）；电机选真实型号（DC_MOTOR_CATALOG）。"
     ),
 }
 

@@ -111,6 +111,7 @@ ROLE_TOOL_CATEGORIES: dict[str, list[str] | None] = {
     "verifier": ["vlm", "screen", "file_ops"],
     "verification": ["vlm", "screen", "file_ops"],
     "fixer": ["assembly", "file_ops"],
+    "chassis": ["assembly", "mobile_base", "actuator", "file_ops"],
     # Legacy roles — None = use step-type filtering (existing behaviour)
     "modeling": None,
     "vision": None,
