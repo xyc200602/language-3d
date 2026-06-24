@@ -31,10 +31,16 @@ class GLMBackend(ModelBackend):
         # Alternative endpoint for models not on Coding Plan
         alt_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
         retry_config: RetryConfig | None = None,
+        # Per-request timeout in seconds.  The OpenAI SDK default is 600s,
+        # which makes a hung upstream look like a permanently frozen e2e
+        # loop.  180s is enough for the longest legitimate responses
+        # (assembly JSON generation) while failing fast on a dead upstream.
+        request_timeout: float = 180.0,
     ) -> None:
         super().__init__(api_key=api_key, base_url=base_url, model=model, retry_config=retry_config)
         self.vision_model = vision_model
         self.alt_base_url = alt_base_url
+        self.request_timeout = request_timeout
         self._client: OpenAI | None = None
         self._alt_client: OpenAI | None = None
 
@@ -44,6 +50,7 @@ class GLMBackend(ModelBackend):
             self._client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.base_url,
+                timeout=self.request_timeout,
             )
         return self._client
 
@@ -54,6 +61,7 @@ class GLMBackend(ModelBackend):
             self._alt_client = OpenAI(
                 api_key=self.api_key,
                 base_url=self.alt_base_url,
+                timeout=self.request_timeout,
             )
         return self._alt_client
 
