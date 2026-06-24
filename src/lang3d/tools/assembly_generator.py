@@ -625,16 +625,19 @@ def generate_assembly_from_nl(
         f"4. 零件名称使用 snake_case\n"
     )
 
-    if is_arm and not is_wheeled:
-        # Arm-specific instructions for correct topology
-        # Choose the most relevant example based on DOF hints
+    if is_arm:
+        # Arm-specific instructions for correct topology.
+        # NOTE: these apply to ANY robot that has arms — a fixed-base
+        # standalone arm (is_wheeled=False) AND a wheeled dual-arm robot
+        # (is_wheeled=True).  The earlier guard `if is_arm and not
+        # is_wheeled` silently dropped these rules for dual-arm robots,
+        # which then failed to generate a plausible 15-part structure.
         desc_lower_for_arm = description.lower()
         is_6dof = any(kw in desc_lower_for_arm for kw in ["6", "六", "six", "同步带", "belt"])
         is_5dof = any(kw in desc_lower_for_arm for kw in ["5", "五", "five"])
 
         user_prompt += (
             f"\n5. **机械臂拓扑规则**（必须严格遵守）：\n"
-            f"   - **绝对不要生成轮子(wheel)零件或电机座(motor_mount)零件！** 固定底座机械臂只有 base_plate，没有轮子。\n"
             f"   - 零件必须按 joint→link→joint→link→... 交替排列\n"
             f"   - 不要出现 link→link 直接连接！\n"
             f"   - **base yaw 关节（底座旋转）**：唯一用 'top'/'bottom' 的关节，axis='z'（绕垂直轴旋转整个臂）\n"
@@ -652,6 +655,20 @@ def generate_assembly_from_nl(
             f"     两个手指用 prismatic 关节（axis='x'，offset 左[-16,0,0] 右[16,0,0]），手指长60mm 宽10mm 高28mm，\n"
             f"     两个手指的 offset 必须是 ±16（即手指中心距=32mm，>25mm 几何阈值），绝对不能用更小的 offset！间距太小会被判定为融合！夹爪必须是实际可动的！\n"
         )
+        if not is_wheeled:
+            # Fixed-base standalone arm: NO wheels.
+            user_prompt += (
+                f"   - **绝对不要生成轮子(wheel)零件或电机座(motor_mount)零件！** 固定底座机械臂只有 base_plate，没有轮子。\n"
+            )
+        else:
+            # Wheeled robot with arms (e.g. dual-arm): arms mount on the
+            # chassis top plate.  Wheel/chassis structure comes from the
+            # wheeled-base example below.
+            user_prompt += (
+                f"   - **带轮机械臂**：每条臂通过 arm_l_base/arm_r_base（fixed 关节）安装在底盘 top_plate 上，\n"
+                f"     左右臂用 distribution_group=\"arms\" 镜像（左臂 offset Y<0，右臂 Y>0，如 ±70mm）。\n"
+                f"     臂本身遵循上面的拓扑规则；底盘+轮子遵循下面的轮式底盘规则。\n"
+            )
 
         if is_6dof:
             user_prompt += (
@@ -666,6 +683,12 @@ def generate_assembly_from_nl(
         else:
             user_prompt += (
                 f"\n参考示例（4自由度机械臂）：\n{EXAMPLE_ARM_STANDALONE}\n"
+            )
+        # A wheeled dual-arm robot needs BOTH the arm example (above) and
+        # the wheeled-base example (below) — the arms mount on the chassis.
+        if is_wheeled:
+            user_prompt += (
+                f"\n参考示例（底盘+轮子结构，双臂安装在其 top_plate 上）：\n{EXAMPLE_4W_ROBOT}\n"
             )
     else:
         user_prompt += (
