@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Language-3D — Run Viewer</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px;
+         background: #1e1e1e; color: #ddd; }
+  h1 { font-size: 18px; margin: 0 0 12px 0; color: #4fc3f7; }
+  h2 { font-size: 14px; margin: 16px 0 8px 0; color: #81c784; }
+  select, button, input { background: #2d2d2d; color: #ddd; border: 1px solid #555;
+                          padding: 4px 8px; border-radius: 3px; font-size: 13px; }
+  button { cursor: pointer; }
+  button:hover { background: #388e3c; border-color: #4caf50; }
+  .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px;
+         flex-wrap: wrap; }
+  #viewport { width: 100%; height: 60vh; background: #0d0d0d; border: 1px solid #333;
+              border-radius: 4px; }
+  #diffPanel { background: #2a2a2a; padding: 8px; border-radius: 4px;
+               font-family: monospace; font-size: 12px; max-height: 200px;
+               overflow-y: auto; }
+  #statusMsg { font-size: 12px; color: #ffb74d; min-height: 18px; }
+  .added { color: #81c784; }
+  .removed { color: #e57373; }
+  .changed { color: #4fc3f7; }
+  input[type=range] { width: 60%; }
+  label { font-size: 12px; color: #aaa; }
+</style>
+</head>
+<body>
+
+<h1>Language-3D — Run Viewer</h1>
+<div id="statusMsg"></div>
+
+<div class="row">
+  <label>Run:</label>
+  <select id="runSelect"><option value="">-- loading --</option></select>
+  <button id="loadBtn">Load</button>
+  <button id="renderBtn">Re-render</button>
+  <button id="simBtn">Run Simulation</button>
+</div>
+
+<h2>Modify (Claude-Code-style)</h2>
+<div class="row">
+  <input id="modInput" type="text" placeholder="e.g. 把夹爪加长50%"
+         style="flex:1; min-width:300px;">
+  <button id="applyBtn">Apply</button>
+  <button id="undoBtn">Undo (reload)</button>
+</div>
+<div id="diffPanel">— no edits yet —</div>
+
+<h2>3D Viewport</h2>
+<div id="viewport"></div>
+
+<h2>Animation Timeline</h2>
+<div class="row">
+  <input id="timeSlider" type="range" min="0" max="100" value="0">
+  <span id="timeLabel">0.00s</span>
+  <span style="color:#888; font-size:11px;">(click "Run Simulation" to record, then scrub)</span>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+
+// ---------------- Three.js setup ----------------
+const viewport = document.getElementById('viewport');
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0d0d);
+
+const camera = new THREE.PerspectiveCamera(45,
+    viewport.clientWidth / viewport.clientHeight, 0.1, 10000);
+camera.position.set(400, 300, 400);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+viewport.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+
+scene.add(new THREE.AmbientLight(0x404040, 2));
+const dirLight = new THREE.DirectionalLight(0xffffff, 1.2);
+dirLight.position.set(500, 800, 300);
+scene.add(dirLight);
+
+// Grid
+const grid = new THREE.GridHelper(1000, 20, 0x444444, 0x222222);
+grid.rotation.x = Math.PI / 2;  // lay flat on XY plane (matches our Z-up convention?)
+scene.add(grid);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+window.addEventListener('resize', () => {
+  camera.aspect = viewport.clientWidth / viewport.clientHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(viewport.clientWidth, viewport.clientHeight);
+});
+
+// ---------------- State ----------------
+let currentRun = null;       // {case, timestamp, path}
+let stlMeshes = [];          // [{name, mesh}]
+
+const CATEGORY_COLORS = {
+  structural: 0x80deea, link: 0xffd54f, joint: 0x81c784,
+  effector: 0xf48fb1, wheel: 0xb0bec5, fastener: 0x9e9e9e,
+};
+const DEFAULT_COLOR = 0xb0bec5;
+
+function setStatus(msg, kind = 'info') {
+  const colors = {info: '#ffb74d', ok: '#81c784', err: '#e57373'};
+  document.getElementById('statusMsg').style.color = colors[kind] || colors.info;
+  document.getElementById('statusMsg').textContent = msg;
+}
+
+// ---------------- Load run list ----------------
+async function loadRunList() {
+  const r = await fetch('/api/runs');
+  const data = await r.json();
+  const sel = document.getElementById('runSelect');
+  sel.innerHTML = '';
+  for (const run of (data.runs || [])) {
+    const opt = document.createElement('option');
+    opt.value = `${run.case}/${run.timestamp}`;
+    const asmInfo = run.assembly
+      ? `${run.assembly.name} (${run.assembly.parts}p/${run.assembly.joints}j)`
+      : '(no assembly)';
+    opt.textContent = `${run.case}/${run.timestamp} — ${asmInfo}`;
+    sel.appendChild(opt);
+  }
+  if (!sel.options.length) {
+    sel.innerHTML = '<option value="">— no runs found —</option>';
+    setStatus('No runs under data/runs/. Run the e2e test first.', 'err');
+  }
+}
+loadRunList();
+
+// ---------------- Load a run ----------------
+async function loadRun() {
+  const sel = document.getElementById('runSelect');
+  const [caseId, ts] = (sel.value || '').split('/');
+  if (!caseId || !ts) return;
+  setStatus(`Loading ${caseId}/${ts} ...`);
+  stopAnimation();
+  motionFrames = null;
+  document.getElementById('timeLabel').textContent = '0.00s';
+  document.getElementById('timeSlider').value = 0;
+
+  // Clear previous meshes
+  for (const m of stlMeshes) scene.remove(m.mesh);
+  stlMeshes = [];
+
+  // Fetch assembly metadata + STL list
+  const [asmResp, stlResp] = await Promise.all([
+    fetch(`/api/runs/${caseId}/${ts}`),
+    fetch(`/api/runs/${caseId}/${ts}/stls`),
+  ]);
+  const asmData = await asmResp.json();
+  const stlData = await stlResp.json();
+  if (asmData.error) { setStatus(asmData.error, 'err'); return; }
+
+  currentRun = { case: caseId, timestamp: ts, path: asmData.path,
+                 assembly: asmData.assembly };
+  document.getElementById('diffPanel').textContent =
+      `Loaded ${asmData.assembly.name}: ${asmData.assembly.parts.length} parts, ` +
+      `${asmData.assembly.joints.length} joints.`;
+
+  // Load each STL
+  const loader = new STLLoader();
+  const stlDir = stlData.stl_dir.replace(/\\/g, '/');
+  // The STLs aren't directly served — we need to proxy through /api/file
+  // with their absolute path.  Build URLs accordingly.
+  for (const stl of (stlData.stls || [])) {
+    try {
+      const url = `/api/file?path=${encodeURIComponent(stlDir + '/' + stl.filename)}`;
+      const geom = await loader.loadAsync(url);
+      geom.computeVertexNormals();
+      // STL geometry is authored around its own origin; the mesh's .position
+      // carries the solved world placement (set below from /positions).
+      const category = guessCategory(stl.name, asmData.assembly);
+      const color = CATEGORY_COLORS[category] || DEFAULT_COLOR;
+      const mat = new THREE.MeshPhongMaterial({ color, flatShading: false });
+      const mesh = new THREE.Mesh(geom, mat);
+      scene.add(mesh);
+      stlMeshes.push({name: stl.name, mesh});
+    } catch (e) {
+      console.warn('Failed to load', stl.name, e);
+    }
+  }
+
+  // Place each part at its solved world position (mm) so the assembly is
+  // laid out correctly instead of stacked at the origin.
+  try {
+    const posResp = await fetch(`/api/runs/${caseId}/${ts}/positions`);
+    const posData = await posResp.json();
+    if (posData.positions) {
+      for (const m of stlMeshes) {
+        const p = posData.positions[m.name];
+        if (p && p.position) {
+          m.mesh.position.set(p.position[0], p.position[1], p.position[2]);
+        }
+      }
+      setStatus(`Loaded ${stlMeshes.length} parts at solved positions.`, 'ok');
+    } else {
+      setStatus(`Loaded ${stlMeshes.length} STL parts (positions unavailable).`, 'ok');
+    }
+  } catch (e) {
+    setStatus(`Loaded ${stlMeshes.length} STL parts.`, 'ok');
+  }
+
+  // Frame all
+  const box = new THREE.Box3();
+  for (const m of stlMeshes) box.expandByObject(m.mesh);
+  if (!box.isEmpty()) {
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    camera.position.set(center.x + maxDim, center.y + maxDim, center.z + maxDim);
+    camera.lookAt(center);
+    controls.target.copy(center);
+  }
+}
+
+function guessCategory(name, assembly) {
+  const n = (name || '').toLowerCase();
+  if (n.includes('finger') || n.includes('gripper')) return 'effector';
+  if (n.includes('wheel') || n.includes('tire')) return 'wheel';
+  if (n.includes('link')) return 'link';
+  if (n.includes('joint')) return 'joint';
+  if (n.includes('plate') || n.includes('chassis') || n.includes('base'))
+    return 'structural';
+  // Fall back to assembly part category lookup
+  for (const p of (assembly?.parts || [])) {
+    if (p.name && p.name.toLowerCase() === n) return p.category || 'structural';
+  }
+  return 'structural';
+}
+
+// ---------------- Apply modification ----------------
+async function applyModification() {
+  if (!currentRun) { setStatus('Load a run first', 'err'); return; }
+  const text = document.getElementById('modInput').value.trim();
+  if (!text) return;
+  setStatus('Applying modification ...');
+  const r = await fetch(
+      `/api/runs/${currentRun.case}/${currentRun.timestamp}/modify`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({request: text}),
+  });
+  const data = await r.json();
+  if (data.error) { setStatus(data.error, 'err'); return; }
+
+  // Render diff
+  const panel = document.getElementById('diffPanel');
+  const lines = [];
+  lines.push(`<span class="changed">[scope=${data.scope} intent=${data.intent}` +
+             ` target=${data.target || '-'}]</span>`);
+  for (const pc of (data.diff?.parts_changed || [])) {
+    lines.push(`<span class="changed">changed</span> ${pc.name}: ` +
+               `${fmtDims(pc.dims_before)} → ${fmtDims(pc.dims_after)}`);
+  }
+  for (const jc of (data.diff?.joints_changed || [])) {
+    lines.push(`<span class="changed">changed</span> joint ${jc.parent}->${jc.child}: ` +
+               `offset ${jc.offset_before} → ${jc.offset_after}`);
+  }
+  for (const n of (data.diff?.parts_added || []))
+    lines.push(`<span class="added">added</span>   ${n}`);
+  for (const n of (data.diff?.parts_removed || []))
+    lines.push(`<span class="removed">removed</removed> ${n}`);
+  if (lines.length === 1) lines.push('(no mechanical changes)');
+  panel.innerHTML = lines.join('<br>');
+
+  setStatus(`Applied (${data.scope}/${data.intent}). Reload to see new STLs.`, 'ok');
+  // Auto-reload to fetch updated STLs
+  setTimeout(loadRun, 300);
+}
+
+function fmtDims(d) {
+  if (!d) return '{}';
+  const items = Object.entries(d).map(([k, v]) =>
+      `${k}=${(+v).toFixed(1)}`).join(', ');
+  return `{${items}}`;
+}
+
+// ---------------- Animation playback ----------------
+// motionFrames: the per-body pose time-series returned by /animate (metres).
+// playback handles (so a new load/sim cancels any running loop).
+let motionFrames = null;       // {bodies:[...], fps, frames:[{t, poses:[[x,y,z,w,qx,qy,qz], ...]}]}
+let animHandle = null;         // requestAnimationFrame id
+let animFrameIdx = 0;
+
+function stopAnimation() {
+  if (animHandle !== null) {
+    cancelAnimationFrame(animHandle);
+    animHandle = null;
+  }
+}
+
+// Apply one frame's body poses to the matching STL meshes.
+// MuJoCo returns metres + quaternion (w,x,y,z); the renderer uses mm, so ×1000.
+function applyFrame(frame) {
+  if (!frame || !motionFrames) return;
+  const names = motionFrames.bodies;
+  const poses = frame.poses;
+  for (let i = 0; i < names.length; i++) {
+    const name = names[i];
+    const pose = poses[i];
+    if (!pose) continue;
+    // body name from URDF == sanitized part name == STL stem; match loosely.
+    const entry = stlMeshes.find(m => m.name === name) ||
+                  stlMeshes.find(m => m.name.includes(name) || name.includes(m.name));
+    if (!entry) continue;
+    entry.mesh.position.set(pose[0] * 1000, pose[1] * 1000, pose[2] * 1000);
+    // quaternion order is (w, x, y, z)
+    entry.mesh.quaternion.set(pose[4], pose[5], pose[6], pose[3]);
+  }
+}
+
+function playAnimation() {
+  stopAnimation();
+  if (!motionFrames || !motionFrames.frames.length) return;
+  const slider = document.getElementById('timeSlider');
+  const label = document.getElementById('timeLabel');
+  const total = motionFrames.frames.length;
+  slider.max = total - 1;
+  animFrameIdx = 0;
+  const stepMs = 1000 / (motionFrames.fps || 30);
+  let lastT = performance.now();
+
+  function loop(now) {
+    if (!motionFrames) return;  // cancelled
+    const elapsed = now - lastT;
+    if (elapsed >= stepMs) {
+      lastT = now - (elapsed % stepMs);
+      animFrameIdx = Math.min(animFrameIdx + 1, total - 1);
+      applyFrame(motionFrames.frames[animFrameIdx]);
+      slider.value = animFrameIdx;
+      label.textContent = `${motionFrames.frames[animFrameIdx].t.toFixed(2)}s`;
+      if (animFrameIdx >= total - 1) {
+        // Loop playback so the motion is continuously visible.
+        animFrameIdx = -1;
+      }
+    }
+    animHandle = requestAnimationFrame(loop);
+  }
+  animHandle = requestAnimationFrame(loop);
+}
+
+// ---------------- Run simulation (animate) ----------------
+async function runSimulation() {
+  if (!currentRun) { setStatus('Load a run first', 'err'); return; }
+  setStatus('Running MuJoCo physics rollout for animation ...');
+  stopAnimation();
+  motionFrames = null;
+  const r = await fetch(
+      `/api/runs/${currentRun.case}/${currentRun.timestamp}/animate`, {
+    method: 'POST',
+  });
+  const data = await r.json();
+  if (data.error) { setStatus(data.error, 'err'); return; }
+  motionFrames = data;
+  const panel = document.getElementById('diffPanel');
+  panel.innerHTML = `<span class="changed">Animated:</span> ` +
+      `${data.bodies.length} bodies, ${data.frames.length} frames @ ${data.fps}fps ` +
+      `(${data.duration_sec}s).<br>` +
+      `<span class="added">Bodies:</span> ${data.bodies.join(', ')}`;
+  setStatus('Playing animation (loop). Drag the slider to scrub.', 'ok');
+  playAnimation();
+}
+
+// ---------------- Bindings ----------------
+document.getElementById('loadBtn').onclick = loadRun;
+document.getElementById('applyBtn').onclick = applyModification;
+document.getElementById('undoBtn').onclick = loadRun;  // reload = discard unsaved
+document.getElementById('simBtn').onclick = runSimulation;
+document.getElementById('renderBtn').onclick = async () => {
+  if (!currentRun) return;
+  setStatus('Re-rendering ...');
+  const r = await fetch(
+      `/api/runs/${currentRun.case}/${currentRun.timestamp}/render`, {
+    method: 'POST',
+  });
+  const data = await r.json();
+  if (data.error) setStatus(data.error, 'err');
+  else setStatus(`Rendered to ${data.render_dir}`, 'ok');
+};
+document.getElementById('modInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') applyModification();
+});
+
+// Timeline slider — scrubs the recorded animation (or nothing before a run).
+document.getElementById('timeSlider').addEventListener('input', (e) => {
+  if (!motionFrames || !motionFrames.frames.length) {
+    document.getElementById('timeLabel').textContent = '0.00s';
+    return;
+  }
+  // Pause auto-playback while the user scrubs.
+  stopAnimation();
+  const idx = Math.max(0, Math.min(motionFrames.frames.length - 1,
+                                   parseInt(e.target.value, 10)));
+  applyFrame(motionFrames.frames[idx]);
+  document.getElementById('timeLabel').textContent =
+      `${motionFrames.frames[idx].t.toFixed(2)}s`;
+});
+</script>
+</body>
+</html>

@@ -30,17 +30,42 @@ def _mujoco_available() -> bool:
 # Path to the example engineering package produced by a previous run of
 # export_engineering_package.  These tests use it as a real-world fixture
 # rather than mocking the URDF.
-_EXAMPLE_URDF = (
-    Path(__file__).parent.parent
-    / "data"
-    / "e2e_results"
-    / "4dof_arm_20260615_021554"
-    / "engineering_package"
-    / "ros2_package"
-    / "4dof_robot_arm"
-    / "urdf"
-    / "4dof_robot_arm.urdf"
-)
+#
+# Path history:
+#   - Pre-2026-06-18: data/e2e_results/4dof_arm_20260615_021554/...
+#   - Post-2026-06-18 refactor: data/runs/<case>/<ts>/engineering_package/urdf.xml
+#     (the legacy directory was archived to data/archive_pre_refactor/)
+#
+# We search both layouts so the test still works against either an old run
+# (kept under archive_pre_refactor/) or a freshly produced one.
+_URDF_CANDIDATES = [
+    # New canonical layout (preferred)
+    Path(__file__).parent.parent / "data" / "runs",
+    # Legacy archive (still readable; populated by the 2026-06-18 refactor)
+    Path(__file__).parent.parent / "data" / "archive_pre_refactor" / "e2e_results",
+    # Legacy pre-archive location (for checkouts older than the refactor)
+    Path(__file__).parent.parent / "data" / "e2e_results",
+]
+
+
+def _find_example_urdf() -> Path | None:
+    """Locate a real 4dof_arm URDF under any of the candidate roots."""
+    import glob
+    for root in _URDF_CANDIDATES:
+        if not root.exists():
+            continue
+        # Prefer urdf.xml inside engineering_package (canonical new layout)
+        for p in root.rglob("urdf.xml"):
+            if "4dof_arm" in str(p) or "4dof" in p.parent.parent.name:
+                return p
+        # Fall back to the old ros2_package layout
+        for p in root.rglob("*.urdf"):
+            if "4dof" in p.name.lower():
+                return p
+    return None
+
+
+_EXAMPLE_URDF = _find_example_urdf()
 
 
 # ----------------------------------------------------------------------------
@@ -402,3 +427,39 @@ class TestGraspRealLoad:
             "phase_a_contacts_max", "note",
         ):
             assert required_key in summary, f"Missing key: {required_key}"
+
+
+# ---------------------------------------------------------------------------
+# record_motion — physics rollout for web animation
+# ---------------------------------------------------------------------------
+
+
+def test_record_motion_returns_frame_series() -> None:
+    """record_motion produces one frame per (duration * fps) timestep.
+
+    Each frame carries per-body world pose (m + quaternion).  Uses the
+    example 4dof arm so the joint/mesh structure is real.
+    """
+    from lang3d.tools.sim_mujoco import record_motion
+
+    result = record_motion(_EXAMPLE_URDF, duration_sec=1.0, fps=20)
+    assert result["ok"] is True
+    assert isinstance(result["bodies"], list) and len(result["bodies"]) > 0
+    # 1.0s @ 20fps -> ~20 frames (allow a couple of slack for sampling edges).
+    assert len(result["frames"]) >= 15
+    f0 = result["frames"][0]
+    assert "t" in f0 and "poses" in f0
+    # Each pose = [px, py, pz, qw, qx, qy, qz] (7 floats), parallel to bodies.
+    assert len(f0["poses"]) == len(result["bodies"])
+    assert len(f0["poses"][0]) == 7
+
+
+def test_record_motion_missing_urdf_reports_error(tmp_path) -> None:
+    """A non-existent URDF returns ok=False with an error message."""
+    from lang3d.tools.sim_mujoco import record_motion
+
+    result = record_motion(str(tmp_path / "nope.xml"), duration_sec=0.5)
+    assert result["ok"] is False
+    assert "error" in result
+    assert result["frames"] == []
+

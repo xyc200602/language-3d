@@ -378,6 +378,15 @@ async def index() -> HTMLResponse:
     return HTMLResponse("<h1>Language-3D Agent Monitor</h1><p>Static files not found</p>")
 
 
+@app.get("/simulate")
+async def simulate_page() -> HTMLResponse:
+    """Run viewer / interactive modification page (added 2026-06-18)."""
+    html_path = Path(__file__).parent / "static" / "simulate.html"
+    if html_path.exists():
+        return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>simulate.html not found</h1>", status_code=404)
+
+
 # ---------------------------------------------------------------------------
 # Routes: read-only inspection
 # ---------------------------------------------------------------------------
@@ -423,6 +432,226 @@ async def get_screenshot_gallery() -> JSONResponse:
 @app.get("/api/agents")
 async def get_agents() -> JSONResponse:
     return JSONResponse({"agents": _agent_state.get("sub_agents", [])})
+
+
+# ---------------------------------------------------------------------------
+# Routes: run inspection & interactive modification (added 2026-06-18)
+#
+# These endpoints expose the new ``data/runs/<case>/<ts>/`` layout and the
+# IterativeSession API to the web UI.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/runs")
+async def list_runs() -> JSONResponse:
+    """List all run directories under ``data/runs/``.
+
+    Returns ``{"runs": [{"case": "4dof_arm", "timestamp": "...",
+                         "path": "...", "assembly": {...} | null}, ...]}``
+    """
+    runs_root = DATA_ROOT / "runs"
+    out: list[dict[str, Any]] = []
+    if not runs_root.is_dir():
+        return JSONResponse({"runs": [], "runs_root": str(runs_root)})
+
+    for case_dir in sorted(runs_root.iterdir()):
+        if not case_dir.is_dir():
+            continue
+        for ts_dir in sorted(case_dir.iterdir()):
+            if not ts_dir.is_dir():
+                continue
+            asm_path = ts_dir / "assembly.json"
+            entry: dict[str, Any] = {
+                "case": case_dir.name,
+                "timestamp": ts_dir.name,
+                "path": str(ts_dir),
+                "has_assembly": asm_path.exists(),
+            }
+            if asm_path.exists():
+                try:
+                    asm = json.loads(asm_path.read_text(encoding="utf-8"))
+                    entry["assembly"] = {
+                        "name": asm.get("name", ""),
+                        "parts": len(asm.get("parts", [])),
+                        "joints": len(asm.get("joints", [])),
+                        "description": asm.get("description", ""),
+                    }
+                except (OSError, ValueError):
+                    pass
+            out.append(entry)
+    return JSONResponse({"runs": out, "runs_root": str(runs_root)})
+
+
+@app.get("/api/runs/{case}/{ts}")
+async def get_run(case: str, ts: str) -> JSONResponse:
+    """Return the assembly JSON for a specific run."""
+    run_dir = DATA_ROOT / "runs" / case / ts
+    asm_path = run_dir / "assembly.json"
+    if not asm_path.exists():
+        return JSONResponse({"error": f"Run not found: {case}/{ts}"},
+                            status_code=404)
+    try:
+        asm = json.loads(asm_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return JSONResponse({"error": f"Failed to read assembly: {e}"},
+                            status_code=500)
+    return JSONResponse({
+        "case": case, "timestamp": ts, "path": str(run_dir),
+        "assembly": asm,
+    })
+
+
+@app.get("/api/runs/{case}/{ts}/stls")
+async def list_stls(case: str, ts: str) -> JSONResponse:
+    """List STL files in a run's engineering_package/stl_parts/."""
+    run_dir = DATA_ROOT / "runs" / case / ts
+    stl_dir = run_dir / "engineering_package" / "stl_parts"
+    if not stl_dir.is_dir():
+        return JSONResponse({"stls": [], "stl_dir": str(stl_dir)})
+    stls = []
+    for f in sorted(stl_dir.iterdir()):
+        if f.suffix.lower() == ".stl":
+            stls.append({
+                "name": f.stem,
+                "filename": f.name,
+                "size_bytes": f.stat().st_size,
+            })
+    return JSONResponse({"stls": stls, "stl_dir": str(stl_dir)})
+
+
+@app.post("/api/runs/{case}/{ts}/modify")
+async def modify_run(case: str, ts: str, request: Request) -> JSONResponse:
+    """Apply a natural-language modification request to a run in-place.
+
+    Body: ``{"request": "把夹爪加长50%"}``
+    Returns: ``{"scope": ..., "intent": ..., "diff": {...}, "applied": bool}``
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    request_text = (body or {}).get("request", "").strip()
+    if not request_text:
+        return JSONResponse({"error": "Missing 'request' field"},
+                            status_code=400)
+
+    run_dir = DATA_ROOT / "runs" / case / ts
+    if not (run_dir / "assembly.json").exists():
+        return JSONResponse({"error": f"Run not found: {case}/{ts}"},
+                            status_code=404)
+
+    try:
+        from ..interactive import IterativeSession
+        session = IterativeSession(str(run_dir))
+        result = session.apply(request_text)
+        session.save()  # in-place
+        return JSONResponse(result)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/runs/{case}/{ts}/simulate")
+async def simulate_run(case: str, ts: str) -> JSONResponse:
+    """Run headless MuJoCo simulation on the run's URDF.
+
+    Returns a JSON report with load/physics/joint-test outcomes.  Use the
+    CLI's ``/iter <folder>`` + ``/sim`` for the interactive viewer.
+    """
+    run_dir = DATA_ROOT / "runs" / case / ts
+    urdf = run_dir / "engineering_package" / "urdf.xml"
+    if not urdf.exists():
+        return JSONResponse({"error": f"URDF not found: {urdf}"},
+                            status_code=404)
+    try:
+        from ..tools.sim_mujoco import SimMujocoTool
+        report_text = SimMujocoTool().execute(
+            urdf_path=str(urdf),
+            mode="validate",
+            duration_sec=1.0,
+            interactive=False,  # never block the web server
+        )
+        return JSONResponse({"report": report_text, "urdf": str(urdf)})
+    except ImportError as e:
+        return JSONResponse({"error": f"mujoco not installed: {e}"},
+                            status_code=503)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/runs/{case}/{ts}/positions")
+async def run_positions(case: str, ts: str) -> JSONResponse:
+    """Return per-part world positions (mm) for the home pose.
+
+    Loads ``assembly.json`` → ``Assembly`` → ``AssemblySolver.solve()`` so
+    the web 3D viewer can place each STL at its solved location instead of
+    stacking every part at the origin.  Output::
+
+        {"positions": {part_name: {"position": [x,y,z], "rotation": [...]}}}
+    """
+    run_dir = DATA_ROOT / "runs" / case / ts
+    asm_file = run_dir / "assembly.json"
+    if not asm_file.exists():
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+    try:
+        from ..tools.assembly_generator import _parse_assembly_json
+        from ..tools.assembly_solver import AssemblySolver
+
+        assembly = _parse_assembly_json(asm_file.read_text(encoding="utf-8"))
+        positions = AssemblySolver(assembly).solve()
+        # Trim to JSON-serialisable plain lists.
+        out: dict[str, Any] = {}
+        for name, pose in positions.items():
+            out[name] = {
+                "position": list(pose.get("position", (0.0, 0.0, 0.0))),
+                "rotation": list(pose.get("rotation", (0.0, 0.0, 0.0, 0.0))),
+            }
+        return JSONResponse({"positions": out})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/runs/{case}/{ts}/animate")
+async def animate_run(case: str, ts: str) -> JSONResponse:
+    """Record a short physics rollout for browser playback.
+
+    Runs ``record_motion`` (a PD-tracked sinusoidal sweep of each actuated
+    joint) and returns one frame per timestep with per-body world pose
+    (metres + quaternion).  The frontend applies these to the STL meshes
+    to animate the robot.  Non-streaming: the whole clip (a few seconds,
+    ~50KB JSON) is returned at once.
+    """
+    run_dir = DATA_ROOT / "runs" / case / ts
+    urdf = run_dir / "engineering_package" / "urdf.xml"
+    if not urdf.exists():
+        return JSONResponse({"error": f"URDF not found: {urdf}"},
+                            status_code=404)
+    try:
+        from ..tools.sim_mujoco import record_motion
+        result = record_motion(str(urdf), duration_sec=3.0, fps=30)
+        if not result.get("ok"):
+            return JSONResponse({"error": result.get("error", "animation failed")},
+                                status_code=500)
+        return JSONResponse(result)
+    except ImportError as e:
+        return JSONResponse({"error": f"mujoco not installed: {e}"},
+                            status_code=503)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+async def render_run(case: str, ts: str) -> JSONResponse:
+    """Trigger a fresh VTK render of the assembly."""
+    run_dir = DATA_ROOT / "runs" / case / ts
+    if not (run_dir / "assembly.json").exists():
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+    try:
+        from ..interactive import IterativeSession
+        session = IterativeSession(str(run_dir))
+        out = session.render()
+        if out is None:
+            return JSONResponse({"error": "Renderer unavailable"},
+                                status_code=503)
+        return JSONResponse({"render_dir": str(out)})
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.get("/api/dag")

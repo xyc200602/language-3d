@@ -341,6 +341,139 @@ def _stabilize_model(model: Any, armature: float = 0.1, damping: float = 1.0) ->
             model.dof_damping[jid] = damping
 
 
+def record_motion(
+    urdf_path: str,
+    duration_sec: float = 3.0,
+    fps: int = 30,
+    stabilize: bool = True,
+) -> dict[str, Any]:
+    """Run a short physics rollout and record per-body world poses per frame.
+
+    Used by the web 3D viewer (``simulate.html``) to play back an animation
+    of the robot moving.  Unlike the PD-*hold* test, the target pose here
+    is a slow sinusoid sweeping each actuated joint through part of its
+    range, so the assembly visibly articulates (shoulders/elbow/wrist bend,
+    gripper fingers open and close).
+
+    Each actuated joint i follows ``target_i(t) = A_i * sin(2*pi*f_i*t)``
+    where ``A_i`` is a fraction of the joint range and ``f_i`` is a small
+    distinct frequency so the motion looks coordinated, not mechanical.
+    A PD controller tracks these targets; gravity compensation is applied
+    so the arm does not collapse.
+
+    Args:
+        urdf_path: Path to the URDF to load (mesh paths rewritten by
+            ``_load_model``).
+        duration_sec: Length of the rollout in seconds.
+        fps: Sampling rate for the returned frames.
+        stabilize: Apply ``_stabilize_model`` (recommended for the tiny
+            gripper masses).
+
+    Returns:
+        Dict with::
+
+            {
+              "ok": bool,
+              "error": str,               # present when ok is False
+              "bodies": [name, ...],      # body name per body id (excl. world)
+              "fps": int,
+              "duration_sec": float,
+              "frames": [                 # one per sampled timestep
+                {
+                  "t": float,             # seconds
+                  "poses": [              # parallel to `bodies`; m + quat(w,x,y,z)
+                    [px, py, pz, qw, qx, qy, qz], ...
+                  ]
+                }, ...
+              ]
+            }
+
+        Positions are in metres (MuJoCo's internal unit); the web frontend
+        converts to mm (x1000) to match the renderer convention.
+    """
+    import mujoco  # type: ignore[import-not-found]
+    import numpy as np
+
+    load = _load_model(urdf_path)
+    if not load.get("ok"):
+        return {"ok": False, "error": load.get("error", "model load failed"),
+                "bodies": [], "frames": []}
+
+    model = load["model"]
+    if stabilize:
+        _stabilize_model(model, armature=0.2, damping=3.0)
+    if model.opt.timestep > 0.0005:
+        model.opt.timestep = 0.0005
+
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    # Actuated joints = HINGE or SLIDE (fixed joints are merged out by MuJoCo).
+    movable = [
+        jid for jid in range(model.njnt)
+        if model.jnt_type[jid] in (
+            mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE,
+        )
+    ]
+    # Per-joint sinusoid params.  Amplitude = 40% of the half-range (clamped
+    # to a sane absolute bound so a joint with a huge/zero range still moves
+    # visibly without slamming to its mechanical limit).  Frequency spans
+    # 0.2-0.5 Hz with a per-joint offset so the motion is non-uniform.
+    amp_freq: list[tuple[float, float]] = []
+    for jid in movable:
+        lo, hi = (float(x) for x in model.jnt_range[jid])
+        half_range = (hi - lo) / 2.0
+        amp = min(max(half_range * 0.4, 0.1), 0.6)
+        freq = 0.2 + 0.05 * (jid % 6)
+        amp_freq.append((amp, freq))
+
+    initial_qpos = data.qpos.copy()
+    kp, kv = 200.0, 20.0
+    n_steps = max(1, int(duration_sec / model.opt.timestep))
+    frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
+
+    # Body name list (exclude the world body at id 0).
+    body_names = []
+    for bid in range(1, model.nbody):
+        body_names.append(
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, bid) or f"body_{bid}"
+        )
+
+    frames: list[dict[str, Any]] = []
+    for step in range(n_steps):
+        t = step * model.opt.timestep
+        # PD-track the sinusoidal target with gravity-compensation feed-forward.
+        target = initial_qpos.copy()
+        for k, jid in enumerate(movable):
+            amp, freq = amp_freq[k]
+            target[jid] = initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
+        mujoco.mj_forward(model, data)
+        q_err = target - data.qpos
+        data.qfrc_applied[:] = kp * q_err - kv * data.qvel + data.qfrc_bias
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break  # diverged — stop early, keep what we have
+
+        if step % frame_every == 0:
+            poses = []
+            for bid in range(1, model.nbody):
+                poses.append([
+                    float(data.xpos[bid][0]), float(data.xpos[bid][1]),
+                    float(data.xpos[bid][2]),
+                    float(data.xquat[bid][0]), float(data.xquat[bid][1]),
+                    float(data.xquat[bid][2]), float(data.xquat[bid][3]),
+                ])
+            frames.append({"t": round(t, 4), "poses": poses})
+
+    return {
+        "ok": True,
+        "bodies": body_names,
+        "fps": fps,
+        "duration_sec": duration_sec,
+        "frames": frames,
+    }
+
+
 def _run_physics_hold(
     model: Any,
     duration_sec: float = 1.0,
