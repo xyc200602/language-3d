@@ -3183,13 +3183,25 @@ def generate_assembly_with_vlm_loop(
 
         # --- Step A: Generate (or re-generate with feedback) ---
         if round_num == 1:
-            assembly = generate_assembly_from_nl(
-                description=description,
-                api_key=api_key,
-                base_url=base_url,
-                model=text_model,
-                temperature=temperature,
-            )
+            try:
+                assembly = generate_assembly_from_nl(
+                    description=description,
+                    api_key=api_key,
+                    base_url=base_url,
+                    model=text_model,
+                    temperature=temperature,
+                )
+            except Exception as e:
+                # GLM occasionally returns an empty body for large structured
+                # prompts (observed: ~16k-char dual-arm prompt returns "" in
+                # ~80s).  Without this guard the RuntimeError from JSON parsing
+                # escapes the whole loop, so rounds 2/3 never run and the e2e
+                # fails with no retry.  Record the failure and let the loop
+                # retry generation next round (or via the fix path).
+                logger.warning("Round 1 generation failed: %s", e)
+                problems_history.append([f"Round 1 generation error: {e}"])
+                assembly = None
+                continue
         else:
             # Try deterministic targeted fix FIRST (new path, 2026-06-18).
             # Falls back to LLM regeneration only when no targeted fix applies.
@@ -3243,6 +3255,9 @@ def generate_assembly_with_vlm_loop(
         # the whole pipeline — the exact failure mode that originally
         # crashed 4wheel_dual_arm.
         try:
+            # _raise_on_wheel_in_arm rejects wheel parts — only correct for
+            # fixed-base arms.  A wheeled dual-arm robot legitimately has
+            # chassis wheels, so skip this check when is_wheeled.
             if is_arm and not is_wheeled:
                 _raise_on_wheel_in_arm(assembly)
             if is_arm:
