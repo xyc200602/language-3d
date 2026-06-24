@@ -85,6 +85,46 @@ ROBOT_TEST_CASES: list[dict[str, Any]] = [
         "expect_wheels": False,
         "expect_arms": True,
     },
+    {
+        "id": "2dof_arm",
+        "description": "设计一个2自由度机械臂，底座旋转加肩部俯仰，带夹爪",
+        "min_parts": 6,
+        "min_joints": 3,
+        "expect_wheels": False,
+        "expect_arms": True,
+    },
+    {
+        "id": "3dof_arm",
+        "description": "设计一个3自由度机械臂，底座旋转、肩部俯仰、肘部弯曲，带夹爪",
+        "min_parts": 7,
+        "min_joints": 4,
+        "expect_wheels": False,
+        "expect_arms": True,
+    },
+    {
+        "id": "5dof_arm",
+        "description": "设计一个5自由度机械臂，底座旋转、肩部俯仰、肘部弯曲、腕部俯仰、腕部滚转，带夹爪",
+        "min_parts": 9,
+        "min_joints": 6,
+        "expect_wheels": False,
+        "expect_arms": True,
+    },
+    {
+        "id": "6dof_arm",
+        "description": "设计一个6自由度机械臂，工业级球腕结构，带夹爪",
+        "min_parts": 11,
+        "min_joints": 7,
+        "expect_wheels": False,
+        "expect_arms": True,
+    },
+    {
+        "id": "7dof_arm",
+        "description": "设计一个7自由度冗余机械臂，带夹爪",
+        "min_parts": 13,
+        "min_joints": 8,
+        "expect_wheels": False,
+        "expect_arms": True,
+    },
 ]
 
 # ---------------------------------------------------------------------------

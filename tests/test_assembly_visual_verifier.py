@@ -14,10 +14,13 @@ from lang3d.agent.assembly_visual_verifier import (
     ProblemType,
     Severity,
     _build_assembly_prompt,
+    _dominant_overlap_axis,
     _generate_constraint_corrections,
     _heuristic_verification,
     _parse_layout_problems,
+    _parse_overlap_dims,
     apply_corrections,
+    classify_problem_text,
     verify_assembly_visual,
 )
 from lang3d.knowledge.mechanics import Assembly, Joint, Part
@@ -177,6 +180,122 @@ class TestApplyCorrections:
         new_assembly = apply_corrections(simple_assembly, [])
         assert len(new_assembly.parts) == len(simple_assembly.parts)
         assert len(new_assembly.joints) == len(simple_assembly.joints)
+
+
+class TestDepthDrivenCollisionFix:
+    """Depth-driven collision separation.
+
+    Regression coverage for the bug where ``_generate_constraint_corrections``
+    emitted a flat ``value=5.0`` regardless of the actual penetration depth.
+    A 65mm interpenetration got a 5mm fix, so three VLM rounds of the
+    dual-arm robot reproduced the identical 11 collisions each time
+    (see logs/e2e_dualarm). These tests pin the corrected behaviour:
+    the separation magnitude is derived from the parsed overlap depth, and
+    the push direction follows the dominant overlap axis rather than Z only.
+    """
+
+    def test_parse_overlap_dims_triplet(self):
+        dims = _parse_overlap_dims(
+            "parts 'a' and 'b' overlap by 65x26x5mm in their boxes"
+        )
+        assert dims == [65.0, 26.0, 5.0]
+
+    def test_parse_overlap_dims_single(self):
+        dims = _parse_overlap_dims("fingers overlap by 38mm")
+        assert dims == [38.0]
+
+    def test_parse_overlap_dims_none(self):
+        assert _parse_overlap_dims("parts just collide") == []
+
+    def test_dominant_axis_is_largest_extent(self):
+        # 65x26x5mm → X is dominant
+        assert _dominant_overlap_axis([65.0, 26.0, 5.0]) == "x"
+        assert _dominant_overlap_axis([5.0, 65.0, 26.0]) == "y"
+        assert _dominant_overlap_axis([5.0, 26.0, 65.0]) == "z"
+
+    def test_dominant_axis_defaults_to_z_when_unknown(self):
+        assert _dominant_overlap_axis([]) == "z"
+        assert _dominant_overlap_axis([12.0]) == "z"
+
+    def test_classify_carries_depth_for_generic_collision(self):
+        """A generic (non-finger, non-plate) overlap must carry the parsed
+        penetration depth and dominant axis into the correction dict."""
+        asm = Assembly(
+            name="t",
+            parts=[
+                Part("chassis", "structural", "", dimensions=dict(length=200, width=150, height=5)),
+                Part("battery_box", "structural", "", dimensions=dict(length=80, width=60, height=40)),
+            ],
+            joints=[Joint("fixed", "chassis", "battery_box", parent_anchor="top", child_anchor="bottom")],
+        )
+        problem = classify_problem_text(
+            "Parts 'battery_box' and 'motor_rl' overlap by 65x26x5mm", asm
+        )
+        assert problem.problem_type == ProblemType.COLLISION
+        assert problem.correction["penetration_mm"] == 65.0
+        assert problem.correction["sep_axis"] == "x"
+
+    def test_correction_value_scales_with_depth(self, simple_assembly):
+        """A 65mm penetration must yield a separation >= 65mm, not the
+        legacy flat 5.0mm. This is the core regression assertion."""
+        problem = LayoutProblem(
+            problem_type=ProblemType.COLLISION,
+            severity=Severity.HIGH,
+            description="overlap by 65x26x5mm",
+            affected_parts=["pillar"],
+            correction={
+                "type": "collision",
+                "penetration_mm": 65.0,
+                "overlap_dims": [65.0, 26.0, 5.0],
+                "sep_axis": "x",
+            },
+        )
+        corrections = _generate_constraint_corrections([problem], simple_assembly)
+        assert len(corrections) == 1
+        assert corrections[0]["correction_type"] == "offset"
+        # depth(65) + 5mm clearance
+        assert corrections[0]["value"] >= 65.0
+        assert corrections[0]["axis"] == "x"
+
+    def test_correction_floor_when_depth_unknown(self, simple_assembly):
+        """When no depth is parsed, still move by the 10mm floor (better
+        than the old 5mm, and never zero)."""
+        problem = LayoutProblem(
+            problem_type=ProblemType.COLLISION,
+            severity=Severity.HIGH,
+            description="parts collide",
+            affected_parts=["pillar"],
+            correction={"type": "collision", "penetration_mm": 0.0, "sep_axis": "z"},
+        )
+        corrections = _generate_constraint_corrections([problem], simple_assembly)
+        assert corrections[0]["value"] >= 10.0
+
+    def test_apply_pushes_along_dominant_axis(self, simple_assembly):
+        """The offset must move the child along X (the dominant axis), not Z.
+        Confirms apply_corrections honours the per-correction axis."""
+        corrections = [
+            {"joint_index": 0, "correction_type": "offset",
+             "value": 70.0, "axis": "x", "reason": "65mm depth"},
+        ]
+        before = simple_assembly.joints[0].offset or (0, 0, 0)
+        new_asm = apply_corrections(simple_assembly, corrections)
+        after = new_asm.joints[0].offset
+        # X moved by ~70, Y and Z unchanged
+        assert abs(after[0] - before[0]) == pytest.approx(70.0, abs=0.1)
+        assert after[1] == before[1]
+        assert after[2] == before[2]
+
+    def test_apply_z_axis_is_legacy_default(self, simple_assembly):
+        """No 'axis' field → still pushes along Z (backward compatible)."""
+        corrections = [
+            {"joint_index": 0, "correction_type": "offset", "value": 12.0, "reason": "stack"},
+        ]
+        before = simple_assembly.joints[0].offset or (0, 0, 0)
+        new_asm = apply_corrections(simple_assembly, corrections)
+        after = new_asm.joints[0].offset
+        assert abs(after[2] - before[2]) == pytest.approx(12.0, abs=0.1)
+        assert after[0] == before[0]
+        assert after[1] == before[1]
 
 
 class TestHeuristicVerification:

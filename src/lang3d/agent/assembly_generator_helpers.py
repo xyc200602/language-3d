@@ -21,6 +21,7 @@ from ..tools.assembly_generator import (
     _normalize_gripper_fingers as normalize_gripper_fingers,
     _ensure_arm_default_angles as ensure_arm_default_angles,
     _raise_on_wheel_in_arm as raise_on_wheel_in_arm,
+    _strip_wheel_parts as strip_wheel_parts,
     _validate_proportions as validate_proportions,
     _validate_assembly as validate_assembly,
 )

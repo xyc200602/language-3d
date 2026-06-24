@@ -956,6 +956,54 @@ class TestGripperFalseAlarmFilter:
         assert not _is_gripper_false_alarm("Base plate is a solid block of aluminum")
 
 
+class TestWheelFalseAlarmFilter:
+    """_is_wheel_false_alarm filters VLM "wheel orientation" hallucinations.
+
+    GLM-4.6V mistakes the cylindrical servo housings of a fixed-base arm
+    (base_yaw_servo Ø40) for wheels and reports them as "oriented vertically,
+    should be horizontal to roll on ground". On an arm with no wheel parts,
+    this is a pure hallucination and must be filtered — otherwise the Fixer
+    re-orients servos to "fix" non-existent wheels, corrupting the arm.
+    """
+
+    ARM_PARTS = [
+        {"name": "base_plate"}, {"name": "base_yaw_servo"},
+        {"name": "pitch_link_1"}, {"name": "gripper_finger_left"},
+    ]
+    WHEELED_PARTS = [
+        {"name": "base_plate"}, {"name": "wheel_fr"},
+        {"name": "wheel_rl"}, {"name": "arm_l_link"},
+    ]
+
+    def test_filters_wheel_orientation_on_arm(self):
+        from lang3d.tools.assembly_generator import _is_wheel_false_alarm
+        for p in [
+            "Orange cylindrical parts (likely wheels) oriented vertically",
+            "Wheels have incorrect orientation, axis not perpendicular to ground",
+            "Wheels should be horizontal to roll on the ground",
+        ]:
+            assert _is_wheel_false_alarm(p, self.ARM_PARTS), f"should filter: {p}"
+
+    def test_keeps_collision_report_mentioning_wheel(self):
+        """A real collision text that happens to contain "wheel" must NOT be
+        filtered — the bare word isn't an orientation complaint."""
+        from lang3d.tools.assembly_generator import _is_wheel_false_alarm
+        assert not _is_wheel_false_alarm(
+            "base_plate and wheel overlap by 65x26x5mm", self.ARM_PARTS)
+
+    def test_keeps_complaint_when_wheels_genuinely_exist(self):
+        """If the assembly really has wheel parts, orientation complaints
+        are legitimate and must be kept."""
+        from lang3d.tools.assembly_generator import _is_wheel_false_alarm
+        assert not _is_wheel_false_alarm(
+            "Wheels have incorrect orientation", self.WHEELED_PARTS)
+
+    def test_unrelated_problems_not_matched(self):
+        from lang3d.tools.assembly_generator import _is_wheel_false_alarm
+        assert not _is_wheel_false_alarm("Parts collide and intersect", self.ARM_PARTS)
+        assert not _is_wheel_false_alarm("COM outside support polygon", self.ARM_PARTS)
+
+
 class TestGeometricArbitration:
     """When geometry confirms the gripper is fine, VLM false alarms are dropped.
 

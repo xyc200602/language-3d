@@ -225,6 +225,44 @@ _FLOATING_KEYWORDS = (
 )
 
 
+def _parse_overlap_dims(text_lower: str) -> list[float]:
+    """Extract the XxYxZ overlap extents (mm) from a VLM collision message.
+
+    Messages produced by ``assembly_generator._vlm_check_assembly`` look like
+    ``"... overlap by 65x26x5mm ..."`` — three axis-aligned extents.  We parse
+    the full triplet because the *largest* extent is the minimum separation
+    needed, and its position (X/Y/Z) tells us which axis to push along.
+
+    Returns the parsed list (1–3 entries) or an empty list when no dimension
+    is present.  Order in the message is always (X, Y, Z) because that is how
+    the AABB overlap string is formatted at ``assembly_generator.py:2621``.
+    """
+    m = _re.search(
+        r"(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*x\s*(\d+(?:\.\d+)?)\s*mm",
+        text_lower,
+    )
+    if m:
+        return [float(g) for g in m.groups()]
+    # Fallback: a single "Nmm" penetration depth (e.g. finger messages).
+    m1 = _re.search(r"(\d+(?:\.\d+)?)\s*mm", text_lower)
+    return [float(m1.group(1))] if m1 else []
+
+
+def _dominant_overlap_axis(overlap_dims: list[float]) -> str:
+    """Return 'x'/'y'/'z' for the axis with the largest overlap extent.
+
+    The overlap triplet is (X, Y, Z). Pushing parts apart along the axis of
+    greatest interpenetration resolves the collision with the smallest move,
+    so this is the direction the offset correction should use.  When fewer
+    than three extents are known, fall back to 'z' (the legacy behaviour —
+    stacking direction — which is the safe default for plate-on-plate cases).
+    """
+    if len(overlap_dims) >= 3:
+        order = ["x", "y", "z"]
+        return order[int(max(range(3), key=lambda i: overlap_dims[i]))]
+    return "z"
+
+
 def classify_problem_text(text: str, assembly: Assembly) -> LayoutProblem:
     """Best-effort mapping of a free-text VLM problem to a structured LayoutProblem.
 
@@ -243,8 +281,17 @@ def classify_problem_text(text: str, assembly: Assembly) -> LayoutProblem:
     if any(k in t for k in _OVERLAP_KEYWORDS):
         # Pull quoted part names
         quoted = _re.findall(r"['\"]([a-zA-Z_][\w]*)['\"]", text or "")
-        # Pull a trailing "XxYxZmm" or "Xmm" dimension if present
-        dim_match = _re.search(r"(\d+(?:\.\d+)?)\s*(?:x\s*\d+(?:\.\d+)?)*\s*mm", t)
+        # Pull a trailing "XxYxZmm" dimension (all three components) so the
+        # collision fixer can size its separation to the real penetration.
+        # VLM messages look like "overlap by 65x26x5mm". We capture the full
+        # triplet; the per-scene consumer picks the relevant component.
+        overlap_dims = _parse_overlap_dims(t)
+        # Fingers separate along their prismatic axis (X), so the X component
+        # is the penetration that matters for a finger_spread correction.
+        finger_depth = overlap_dims[0] if overlap_dims else 0.0
+        # Generic collisions resolve along the dominant axis, so use the
+        # largest extent as a conservative separation magnitude.
+        collision_depth = max(overlap_dims) if overlap_dims else 0.0
         finger_quoted = [q for q in quoted if "finger" in q.lower()]
         plate_quoted = [q for q in quoted if "plate" in q.lower()]
         if finger_quoted:
@@ -255,7 +302,7 @@ def classify_problem_text(text: str, assembly: Assembly) -> LayoutProblem:
                 affected_parts=finger_quoted,
                 correction={
                     "type": "finger_overlap",
-                    "penetration_mm": float(dim_match.group(1)) if dim_match else 0.0,
+                    "penetration_mm": finger_depth,
                 },
             )
         if plate_quoted:
@@ -266,12 +313,22 @@ def classify_problem_text(text: str, assembly: Assembly) -> LayoutProblem:
                 affected_parts=plate_quoted,
                 correction={"type": "plate_overlap"},
             )
-        # Generic overlap → collision
+        # Generic overlap → collision. Carry the parsed penetration depth and
+        # the dominant overlap axis (X/Y/Z) so the fixer can push parts apart
+        # along the direction that actually resolves the interpenetration,
+        # rather than the legacy flat 5mm Z bump that never moved a 65mm
+        # overlap (see the dual-arm 3-round failure in logs/e2e_dualarm).
         return LayoutProblem(
             problem_type=ProblemType.COLLISION,
             severity=Severity.HIGH,
             description=text,
             affected_parts=quoted,
+            correction={
+                "type": "collision",
+                "penetration_mm": collision_depth,
+                "overlap_dims": overlap_dims,
+                "sep_axis": _dominant_overlap_axis(overlap_dims),
+            },
         )
 
     # --- Floating / disconnected (Plan B+C, 2026-06-22) ---
@@ -377,7 +434,18 @@ def _generate_constraint_corrections(
 
         # --- Heuristic fallback ---
         if problem.problem_type == ProblemType.COLLISION:
-            # Move parts apart by adjusting offset
+            # Move parts apart by adjusting offset. The separation magnitude is
+            # driven by the *actual* penetration depth parsed from the VLM
+            # message (e.g. "overlap by 65x26x5mm"), NOT a flat 5mm bump.
+            # The legacy 5.0mm constant could never resolve a 65mm
+            # interpenetration, which is why the dual-arm robot failed three
+            # VLM rounds in a row with the identical 11 collisions each time.
+            corr = problem.correction or {}
+            depth = float(corr.get("penetration_mm", 0.0) or 0.0)
+            sep_axis = str(corr.get("sep_axis", "z") or "z")
+            # Separation = penetration + clearance, floored so a small/unknown
+            # depth still moves the part by a useful amount.
+            sep_mm = max(depth + 5.0, 10.0)
             for part_name in problem.affected_parts:
                 for i, joint in enumerate(assembly.joints):
                     if joint.child == part_name or joint.parent == part_name:
@@ -398,8 +466,13 @@ def _generate_constraint_corrections(
                         corrections.append({
                             "joint_index": i,
                             "correction_type": "offset",
-                            "value": 5.0,  # mm offset to resolve collision
-                            "reason": f"Collision: {problem.description}",
+                            "value": sep_mm,
+                            "axis": sep_axis,
+                            "reason": (
+                                f"Collision (depth={depth:.0f}mm, sep="
+                                f"{sep_mm:.0f}mm along {sep_axis}): "
+                                f"{problem.description}"
+                            ),
                         })
                         break
 
@@ -579,13 +652,25 @@ def apply_corrections(
                     # finger offset grew to 330mm). Skip prismatic joints.
                     if joint.type == "prismatic":
                         continue
-                    # Adjust position by adding Z offset
+                    # Separate along the dominant overlap axis parsed from the
+                    # VLM message (default 'z' preserves the legacy stacking
+                    # behaviour for plate-on-plate overlaps). A 65x26x5mm
+                    # interpenetration is mostly along X, so pushing along X
+                    # actually resolves it — the old Z-only bump could not.
+                    sep_axis = str(corr.get("axis", "z") or "z").lower()
+                    value = float(corr.get("value", 0.0) or 0.0)
                     current_offset = joint.offset or (0, 0, 0)
-                    joint.offset = (
-                        current_offset[0],
-                        current_offset[1],
-                        current_offset[2] + corr["value"],
-                    )
+                    ox, oy, oz = current_offset
+                    if sep_axis == "x":
+                        # Push outward: positive if already on +X side,
+                        # negative if on -X side, else away from parent (+X).
+                        sign = 1.0 if ox >= 0 else -1.0
+                        joint.offset = (ox + sign * value, oy, oz)
+                    elif sep_axis == "y":
+                        sign = 1.0 if oy >= 0 else -1.0
+                        joint.offset = (ox, oy + sign * value, oz)
+                    else:  # 'z' — legacy stacking direction
+                        joint.offset = (ox, oy, oz + value)
                 elif ctype == "reposition":
                     # Same prismatic guard as offset corrections.
                     if joint.type == "prismatic":

@@ -19,6 +19,7 @@ from typing import Any
 
 from ..knowledge.mechanics import Assembly, ConnectionMethod, Joint, Part
 from ..knowledge.fastener_catalog import get_torque
+from ..knowledge.arm_topology import build_arm_example, parse_dof, zigzag_angles
 from .assembly_solver import ANCHOR_DIM_KEYS
 from .base import Tool, ToolDefinition
 
@@ -120,7 +121,7 @@ Parts fall into two classes with DIFFERENT dimension rules:
 3. **Motors**: match wheel size, ~40x40x30mm for standard TT motors
 4. **Standoffs**: M3/M4, 6-8mm diameter, 40-60mm tall
 5. **Arm links**: 25-40mm wide, 15-25mm high, 60-120mm long
-6. **Arm joints**: revolute with ±180° range; pitch uses axis="y" (perpendicular to vertical Z links), yaw uses axis="z"
+6. **Arm joints**: revolute with ±180° range. Axis convention (see "ARM ANCHORS & AXIS" rule 12 for details): pitch joints (shoulder/elbow/wrist up-down bend) use axis="x"; base yaw uses axis="z"; wrist roll uses axis="y". NEVER use axis="y" for a front/back pitch joint.
 7. **Sensors**: small mounts, 20-40mm range
 
 ## Joint Anchor Semantics
@@ -633,8 +634,29 @@ def generate_assembly_from_nl(
         # is_wheeled` silently dropped these rules for dual-arm robots,
         # which then failed to generate a plausible 15-part structure.
         desc_lower_for_arm = description.lower()
-        is_6dof = any(kw in desc_lower_for_arm for kw in ["6", "六", "six", "同步带", "belt"])
-        is_5dof = any(kw in desc_lower_for_arm for kw in ["5", "五", "five"])
+        # Determine the requested DOF numerically. This replaces the legacy
+        # keyword-substring detector (is_5dof/is_6dof/else→4dof) which (a)
+        # false-positived on "5V"/"6 wheels" and (b) collapsed every other
+        # request (2/3/4/7-DOF) onto the 4-DOF exemplar. parse_dof reads an
+        # explicit "N自由度"/"N-dof"/Chinese-numeral and returns None when
+        # unstated, defaulting to 4 (the most common, well-validated case).
+        n_dof = parse_dof(description) or 4
+        # Real-machine references (BCN3D MOVEO / PAROL6) are shown as
+        # *additional* engineering context when the DOF matches a known
+        # profile, but the primary topology example is always the
+        # parametrically-generated one so every DOF gets a correct scaffold.
+        real_machine_ref = ""
+        if n_dof == 5:
+            real_machine_ref = (
+                f"\n（工程参考：5自由度3D打印机械臂，参考BCN3D MOVEO）"
+                f"\n{EXAMPLE_5DOF_ARM_REALISTIC}\n"
+            )
+        elif n_dof == 6:
+            real_machine_ref = (
+                f"\n（工程参考：6自由度同步带驱动机械臂，参考PAROL6）"
+                f"\n{EXAMPLE_6DOF_BELT_DRIVE_ARM}\n"
+            )
+        parametric_example = build_arm_example(n_dof)
 
         user_prompt += (
             f"\n5. **机械臂拓扑规则**（必须严格遵守）：\n"
@@ -656,9 +678,25 @@ def generate_assembly_from_nl(
             f"     两个手指的 offset 必须是 ±16（即手指中心距=32mm，>25mm 几何阈值），绝对不能用更小的 offset！间距太小会被判定为融合！夹爪必须是实际可动的！\n"
         )
         if not is_wheeled:
-            # Fixed-base standalone arm: NO wheels.
+            # Fixed-base standalone arm: NO wheels. This is reinforced hard
+            # because GLM-5.2 has a persistent tendency to hallucinate
+            # wheel/motor_mount parts on arms (e2e observed 3 consecutive
+            # rounds generating wheels despite the rule). A positive
+            # allow-list + explicit negative example is stronger than a
+            # buried one-liner.
             user_prompt += (
-                f"   - **绝对不要生成轮子(wheel)零件或电机座(motor_mount)零件！** 固定底座机械臂只有 base_plate，没有轮子。\n"
+                f"\n   ╔══════════════════════════════════════════════════════════╗\n"
+                f"   ║  固定底座机械臂 —— 零件白名单（违反即错误）              ║\n"
+                f"   ║  固定臂【只能】包含以下零件类别：                        ║\n"
+                f"   ║    1. base_plate（底座板，唯一接地零件）                 ║\n"
+                f"   ║    2. *_servo / *_joint（旋转关节舵机，cylinder）       ║\n"
+                f"   ║    3. *_link（连杆，box，承力结构）                      ║\n"
+                f"   ║    4. gripper_*（夹爪 4 件套）                           ║\n"
+                f"   ║  【绝对禁止】的零件：wheel / tire / motor_mount / 履带 / ║\n"
+                f"   ║    track / 螺旋桨 / propeller / 任何移动底盘零件。       ║\n"
+                f"   ║  原因：固定臂靠 base_plate 螺栓固定在工作台，不需要移动。║\n"
+                f"   ║  违规会被几何检查拦截并强制重生成（浪费 API 调用）。    ║\n"
+                f"   ╚══════════════════════════════════════════════════════════╝\n"
             )
         else:
             # Wheeled robot with arms (e.g. dual-arm): arms mount on the
@@ -670,20 +708,15 @@ def generate_assembly_from_nl(
                 f"     臂本身遵循上面的拓扑规则；底盘+轮子遵循下面的轮式底盘规则。\n"
             )
 
-        if is_6dof:
-            user_prompt += (
-                f"\n参考示例（6自由度同步带驱动机械臂，参考PAROL6）：\n"
-                f"{EXAMPLE_6DOF_BELT_DRIVE_ARM}\n"
-            )
-        elif is_5dof:
-            user_prompt += (
-                f"\n参考示例（5自由度3D打印机械臂，参考BCN3D MOVEO）：\n"
-                f"{EXAMPLE_5DOF_ARM_REALISTIC}\n"
-            )
-        else:
-            user_prompt += (
-                f"\n参考示例（4自由度机械臂）：\n{EXAMPLE_ARM_STANDALONE}\n"
-            )
+        # Primary topology example: parametrically generated for the exact
+        # requested DOF (2-7). Every DOF now gets a structurally-correct
+        # scaffold instead of only 5/6 getting bespoke JSONs.
+        user_prompt += (
+            f"\n参考示例（{n_dof}自由度机械臂，关节拓扑已按规则生成，可在此基础上调整尺寸/名称）：\n"
+            f"{parametric_example}\n"
+        )
+        if real_machine_ref:
+            user_prompt += real_machine_ref
         # A wheeled dual-arm robot needs BOTH the arm example (above) and
         # the wheeled-base example (below) — the arms mount on the chassis.
         if is_wheeled:
@@ -1788,15 +1821,12 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
                 [j.child for j in pitch_joints_arm],
             )
             # Zig-zag template: alternate sign so the arm extends
-            # outward instead of curling in.  The exact magnitudes
-            # mirror the prompt's working examples.  For 2 pitch joints
-            # we use [-45, +30] (shoulder down, elbow up = reach);
-            # for 3+ we extend the pattern (-45/-30/+15/-10 ...).
+            # outward instead of curling in.  Generalised to any pitch-joint
+            # count via knowledge/arm_topology.zigzag_angles (the legacy
+            # hard-coded [-45,30] / [-45,-30,15,-10] wrapped arbitrarily for
+            # >4 pitch joints, producing a curled pose on 7-DOF arms).
             n = len(pitch_joints_arm)
-            if n == 2:
-                _zigzag_seq = [-45.0, 30.0]
-            else:
-                _zigzag_seq = [-45.0, -30.0, 15.0, -10.0]
+            _zigzag_seq = zigzag_angles(n)
             for idx, j in enumerate(pitch_joints_arm):
                 injected[j.child] = _zigzag_seq[idx % len(_zigzag_seq)]
             _overrode_to_zigzag = True
@@ -1962,19 +1992,39 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
         if _is_link_like(p.name) or "joint" in p.name.lower()
     ]
     if base_part and link_parts:
+        # Effective forward COM offset of a zig-zag arm. Real solves show the
+        # COM projects ~0.30× the raw link-sum forward of the base (measured:
+        # 400mm links → COM Y≈-110 to -132mm across LLM-generated poses).
+        # Using 0.32 with a margin covers the observed variance.
+        #
+        # AXIS MAPPING (verified against AssemblySolver + assembly_verifier):
+        #   - The arm reaches along solver -Y (front/back anchors).
+        #   - base LENGTH is the Y (forward) dimension; WIDTH is X (lateral).
+        #   - assembly_verifier.build_support_polygon uses (cy ± length/2)
+        #     for the forward extent, so LENGTH must cover the COM offset.
+        #   - An earlier revision enlarged WIDTH by mistake (treating width as
+        #     Y), which left the forward support edge too short → com_stability
+        #     failed at margin -10.6mm. Enlarge LENGTH here.
         total_reach = sum(
             float(p.dimensions.get("length", 0) or 0)
             + float(p.dimensions.get("diameter", 0) or 0)
             for p in link_parts
-        ) * 0.5  # zig-zag pose: effective reach ≈ half the link sum
-        min_base_length = max(250.0, total_reach * 0.7)
+        )
+        com_forward_mm = total_reach * 0.40
+        # Support polygon must extend past the COM by a 35mm stability margin
+        # (LLM pose variance can shift COM ~20mm run-to-run, and the verifier
+        # uses a slightly different mass model than this estimate), so base
+        # LENGTH (solver Y, the reach direction) >= 2*(COM + margin).
+        min_base_length = max(320.0, 2.0 * (com_forward_mm + 35.0))
         cur_length = float(base_part.dimensions.get("length", 0) or 0)
         if 0 < cur_length < min_base_length:
             base_part.dimensions["length"] = min_base_length
             logger.info(
                 "Sanitizer: enlarged base_plate '%s' length %.0f → %.0fmm "
-                "so the support polygon covers the arm COM (reach≈%.0fmm)",
-                base_part.name, cur_length, min_base_length, total_reach,
+                "so the support polygon covers the arm COM (forward≈%.0fmm "
+                "along Y, need length≥%.0fmm)",
+                base_part.name, cur_length, min_base_length,
+                com_forward_mm, min_base_length,
             )
 
     return assembly
@@ -2358,6 +2408,58 @@ def _is_floating_false_alarm(problem_text: str) -> bool:
     """
     t = problem_text.lower()
     return any(p in t for p in _FLOATING_FALSE_ALARM_PATTERNS)
+
+
+# Wheel false-alarm patterns (added 2026-06-24).
+#
+# GLM-4.6V reliably mistakes the cylindrical servo housings of a fixed-base
+# arm (base_yaw_servo Ø40, pitch_servo Ø36) for "wheels" and reports their
+# vertical orientation as "incorrect — wheels should be horizontal to roll
+# on the ground". On an arm assembly there are no wheels at all, so the
+# entire complaint is a hallucination. When the part list confirms there is
+# no wheel/tire part (and the assembly is not a wheeled robot), these
+# reports must be filtered instead of triggering a corrupting regeneration
+# that "fixes" non-existent wheels by mis-orienting the servos.
+#
+# IMPORTANT: patterns are deliberately *orientation/rolling specific*
+# ("wheels ... oriented", "should roll on ground"), NOT bare "wheel".
+# A bare "wheel" would match real collision reports like "base_plate and
+# wheel_fr overlap by 65mm", which must be kept even on a part list that
+# happens to lack wheels (the part name alone may differ).
+_WHEEL_FALSE_ALARM_PATTERNS = (
+    "wheel.*orient", "wheels.*orient",
+    "tire.*orient", "tires.*orient",
+    "rolling on ground", "roll on the ground",
+    "should be horizontal", "axis.*perpendicular to ground",
+    "轮.*方向", "轮.*朝向", "轮胎.*方向",
+)
+# Part-name stems that indicate a genuine wheel part. If ANY part matches,
+# the assembly really has wheels and wheel-orientation complaints are legit.
+_WHEEL_PART_STEMS = ("wheel", "tire", "轮")
+
+
+def _assembly_has_wheels(parts: list[dict]) -> bool:
+    """Return True if any part is a genuine wheel/tire."""
+    for p in parts:
+        name = (p.get("name", "") or "").lower()
+        if any(stem in name for stem in _WHEEL_PART_STEMS):
+            return True
+    return False
+
+
+def _is_wheel_false_alarm(problem_text: str, parts: list[dict]) -> bool:
+    """Return True if a VLM problem is a spurious wheel-orientation complaint.
+
+    Fires only when the text matches a wheel-orientation/rolling pattern
+    AND the assembly has no wheel parts — i.e. the VLM hallucinated wheels
+    onto cylindrical servos. When the assembly genuinely has wheels, the
+    complaint is real and must NOT be filtered.
+    """
+    import re
+    t = problem_text.lower()
+    if not any(re.search(p, t) for p in _WHEEL_FALSE_ALARM_PATTERNS):
+        return False
+    return not _assembly_has_wheels(parts)
 
 
 def _geometric_prevalidation(
@@ -3053,6 +3155,7 @@ def _vlm_check_assembly(
             p for p in all_problems
             if not _is_gripper_false_alarm(p)
             and not _is_floating_false_alarm(p)
+            and not _is_wheel_false_alarm(p, parts)
             and not any(m in p.lower() for m in _SOFT_POSE_MARKERS)
         ]
         if len(filtered) < len(all_problems):

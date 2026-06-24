@@ -212,19 +212,29 @@ class TestApplyTargetedFixFromVLM:
         assert left_after.offset[0] < left_before.offset[0]  # 2026-06-22 axis convention change: [1] -> [0]
 
     def test_gripper_invisible_fix(self, arm_assembly):
+        # "Gripper invisible" is a rendering problem, NOT a geometry one.
+        # Scaling the fingers up was deliberately removed because it caused a
+        # runaway growth loop (60→96→153.6mm, see assembly_visual_verifier
+        # GRIPPER_INVISIBLE handler). The correct behaviour is to NOT mutate
+        # geometry here and let the LLM-regeneration fallback rewrite the
+        # assembly. So this problem alone yields no deterministic fix.
         problems = [
             "End effector is a solid block, not a gripper with parallel prongs",
         ]
         new, applied = apply_targeted_fix_from_vlm(arm_assembly, problems)
-        assert applied
-        # Fingers should be scaled up
+        assert applied is False
+        # Fingers must NOT have been scaled (the old runaway-growth path).
         finger_after = next(p for p in new.parts if p.name == "gripper_finger_left")
         finger_before = next(p for p in arm_assembly.parts
                              if p.name == "gripper_finger_left")
-        assert finger_after.dimensions["length"] > finger_before.dimensions["length"]
+        assert finger_after.dimensions["length"] == finger_before.dimensions["length"]
 
     def test_multiple_problems_combined(self, arm_assembly):
-        """The real production case: gripper invisible AND fingers overlap."""
+        """The real production case: gripper invisible AND fingers overlap.
+
+        The finger overlap IS deterministically fixable (finger_spread), so
+        ``applied`` is True and the joints change. The gripper-invisible
+        half does not scale the fingers (see test_gripper_invisible_fix)."""
         problems = [
             "End effector is a solid block",
             "Parts 'gripper_finger_left' and 'gripper_finger_right' "
@@ -233,9 +243,12 @@ class TestApplyTargetedFixFromVLM:
         new, applied = apply_targeted_fix_from_vlm(arm_assembly, problems)
         assert applied
         diff = modifications_diff(arm_assembly, new)
-        # Both parts and joints should have changed
-        assert len(diff["parts_changed"]) >= 1
+        # The finger_spread correction moves the finger joints (offset change).
         assert len(diff["joints_changed"]) >= 1
+        # Fingers are NOT scaled (no parts_changed from gripper-invisible).
+        finger_names = {"gripper_finger_left", "gripper_finger_right"}
+        scaled = [c for c in diff["parts_changed"] if c["name"] in finger_names]
+        assert scaled == []
 
     def test_unknown_problem_no_action(self, arm_assembly):
         problems = ["the model is painted the wrong color"]

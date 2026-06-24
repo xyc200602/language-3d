@@ -955,13 +955,36 @@ def export_engineering_package(
         # only the centre point (the old behaviour) produces a degenerate
         # polygon for single-base robots, always reporting "unstable".
         parts_by_name = {p.name: p for p in assembly.parts}
-        z_vals = [p["position"][2] for p in positions.values()]
-        z_min, z_max = min(z_vals), max(z_vals)
-        z_range = z_max - z_min if z_max > z_min else 1.0
+        # Ground-contact detection: a part is "on the ground" when its BOTTOM
+        # face (centre Z minus half-height) is within 5mm of the BASE PLATE's
+        # bottom. The ground reference MUST be the base, not the global Z
+        # minimum — on a long 7-DOF arm the gripper fingers droop below the
+        # base (Z<0), and using them as z_min excludes the actual base from
+        # the "ground" set, leaving only the fingers' far-away footprint to
+        # define the support polygon (margin -577mm on a 558mm base that
+        # should pass). The earlier centre-Z + 10%-range test had the same
+        # flaw in the other direction (sweeping fingers IN). Both are wrong;
+        # the base plate is the ground truth for "what touches the floor".
+        base_part = next(
+            (p for p in assembly.parts
+             if "base" in p.name.lower() and "plate" in p.name.lower()),
+            None,
+        )
+        if base_part and base_part.name in positions:
+            base_h = base_part.dimensions.get(
+                "height", base_part.dimensions.get("thickness", 8))
+            z_min = positions[base_part.name]["position"][2] - base_h / 2.0
+        else:
+            z_min = min(p["position"][2] for p in positions.values())
         for pname, pdata in positions.items():
             z = pdata["position"][2]
-            if z > z_min + z_range * 0.1:
-                continue
+            part = parts_by_name.get(pname)
+            dims = part.dimensions if part and part.dimensions else {}
+            h = dims.get("height", dims.get("thickness",
+                    dims.get("length", dims.get("diameter", 10))))
+            bottom_z = z - h / 2.0
+            if bottom_z > z_min + 5.0:
+                continue  # not actually touching the ground
             pos = pdata["position"]
             part = parts_by_name.get(pname)
             dims = part.dimensions if part and part.dimensions else {}

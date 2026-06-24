@@ -253,3 +253,108 @@ class TestDAGRoleInference:
         plan = Plan(goal="test", steps=[step])
         dag = TaskDAG.from_plan(plan)
         assert dag._nodes["s1"].agent_role == "general"
+
+
+# ---------------------------------------------------------------------------
+# Pipeline StageAgent integration (the gap these tests close)
+# ---------------------------------------------------------------------------
+#
+# Before this change, AssemblyPipeline's stages (run_architect, run_solver,
+# ...) were plain methods with no role identity — the "expert agents" existed
+# in name only. StageAgent now gives each stage a SubAgentRole, an expert
+# system prompt, and a tool-whitelist. These tests pin that wiring so a
+# future refactor can't silently drop the role scoping again.
+
+
+class TestPipelineStageAgents:
+    """Verify each pipeline stage is backed by a real StageAgent."""
+
+    @pytest.fixture
+    def pipeline(self):
+        from lang3d.agent.pipeline import AssemblyPipeline, PipelineContext
+        ctx = PipelineContext(description="4自由度机械臂")
+        return AssemblyPipeline(ctx)
+
+    def test_all_five_stages_have_agents(self, pipeline):
+        """Every stage must carry a StageAgent with the correct role."""
+        from lang3d.agent.pipeline import StageAgent
+        agents = [
+            pipeline.architect_agent, pipeline.solver_agent,
+            pipeline.cad_agent, pipeline.verifier_agent, pipeline.fixer_agent,
+        ]
+        assert all(isinstance(a, StageAgent) for a in agents)
+        roles = [a.role for a in agents]
+        assert SubAgentRole.ARCHITECT in roles
+        assert SubAgentRole.SOLVER in roles
+        assert SubAgentRole.CAD_ENGINEER in roles
+        assert SubAgentRole.VERIFICATION in roles
+        assert SubAgentRole.FIXER in roles
+
+    @pytest.mark.parametrize("stage_attr,expected_role", [
+        ("architect_agent", SubAgentRole.ARCHITECT),
+        ("solver_agent", SubAgentRole.SOLVER),
+        ("cad_agent", SubAgentRole.CAD_ENGINEER),
+        ("verifier_agent", SubAgentRole.VERIFICATION),
+        ("fixer_agent", SubAgentRole.FIXER),
+    ])
+    def test_stage_role_identity(self, pipeline, stage_attr, expected_role):
+        agent = getattr(pipeline, stage_attr)
+        assert agent.role is expected_role
+
+    def test_each_stage_has_substantial_role_prompt(self, pipeline):
+        """The role prompt is what frames the LLM — it must be non-trivial."""
+        for agent in [pipeline.architect_agent, pipeline.solver_agent,
+                      pipeline.cad_agent, pipeline.verifier_agent,
+                      pipeline.fixer_agent]:
+            assert len(agent.role_prompt) > 50, (
+                f"{agent.stage_name} role prompt too short"
+            )
+
+    def test_system_prompt_combines_role_and_domain(self, pipeline):
+        """system_prompt(base) must include BOTH the role persona and the
+        domain rules — neither should be dropped."""
+        sp = pipeline.architect_agent.system_prompt("DOMAIN_RULES_XYZ")
+        assert "DOMAIN_RULES_XYZ" in sp  # domain base preserved
+        assert "架构师" in sp or "architect" in sp.lower()  # role persona prepended
+
+    def test_system_prompt_without_base_is_just_role(self, pipeline):
+        sp = pipeline.solver_agent.system_prompt()
+        assert "求解" in sp or "solver" in sp.lower()
+
+    def test_architect_whitelist_excludes_freecad(self, pipeline):
+        """Architect must not see FreeCAD modeling tools — that is CAD's job.
+        This is the core separation-of-concerns guarantee."""
+        wl = pipeline.architect_agent.allowed_tools
+        assert wl is not None
+        assert "assembly" in wl          # its own category
+        assert "actuator" in wl
+        # CAD/vision-specific categories must be absent
+        assert "freecad" not in wl
+        assert "vlm" not in wl
+        assert "screen" not in wl
+
+    def test_cad_whitelist_excludes_assembly_tools(self, pipeline):
+        """CAD Engineer must not see assembly-design tools — that is the
+        Architect's job. Prevents a CAD stage from rewriting topology."""
+        wl = pipeline.cad_agent.allowed_tools
+        assert wl is not None
+        assert "freecad" in wl
+        assert "vlm" in wl
+        # The architect's assembly_generator must NOT be in CAD's scope
+        assert "assembly_generator" not in wl
+
+    def test_verifier_whitelist_is_vision_only(self, pipeline):
+        """Verifier judges via VLM + screenshots, not by editing geometry."""
+        wl = pipeline.verifier_agent.allowed_tools
+        assert wl is not None
+        assert "vlm" in wl
+        assert "freecad" not in wl
+        assert "assembly" not in wl
+
+    def test_fixer_can_route_but_not_model(self, pipeline):
+        """Fixer decides routing + applies targeted assembly fixes, but
+        cannot do FreeCAD modeling."""
+        wl = pipeline.fixer_agent.allowed_tools
+        assert wl is not None
+        assert "assembly" in wl
+        assert "freecad" not in wl

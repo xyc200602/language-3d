@@ -99,6 +99,42 @@ def test_media_type_detection():
     assert backend._get_media_type("test.jpeg") == "image/jpeg"
 
 
+class TestSalvageAnswerFromReasoning:
+    """_salvage_answer_from_reasoning recovers a final answer when GLM-5.2
+    (a reasoning model) leaves ``content`` empty but wrote the answer at the
+    tail of ``reasoning_content``.
+
+    This is the fallback path after the max_tokens-doubling retry; it must
+    extract JSON without dragging in half-finished reasoning steps."""
+
+    def test_extracts_json_from_final_step(self):
+        from lang3d.models.glm import _salvage_answer_from_reasoning
+        reasoning = (
+            "1. 分析请求\n"
+            "2. 构造JSON\n"
+            "3. 最终输出: ```json\n{\"ok\":true}\n```"
+        )
+        out = _salvage_answer_from_reasoning(reasoning)
+        assert "\"ok\":true" in out
+
+    def test_extracts_bare_json_in_tail(self):
+        from lang3d.models.glm import _salvage_answer_from_reasoning
+        reasoning = "1. think\n2. answer\n{\"parts\":[],\"joints\":[]}"
+        out = _salvage_answer_from_reasoning(reasoning)
+        assert out.startswith("{")
+
+    def test_returns_empty_for_no_reasoning(self):
+        from lang3d.models.glm import _salvage_answer_from_reasoning
+        assert _salvage_answer_from_reasoning("") == ""
+
+    def test_ignores_overlong_truncated_tail(self):
+        """A very long tail is likely truncated mid-thought — don't return
+        a partial sentence as if it were an answer."""
+        from lang3d.models.glm import _salvage_answer_from_reasoning
+        long_tail = "1. start\n" + ("x" * 300)
+        assert _salvage_answer_from_reasoning(long_tail) == ""
+
+
 # --- Round 4: Runtime crash bug tests ---
 
 

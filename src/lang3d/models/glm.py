@@ -15,6 +15,42 @@ from .retry import RetryConfig, call_with_retry
 logger = logging.getLogger(__name__)
 
 
+def _salvage_answer_from_reasoning(reasoning: str) -> str:
+    """Best-effort: recover a final answer from GLM-5.2 reasoning_content.
+
+    GLM-5.2 is a reasoning model that writes its chain-of-thought to
+    ``reasoning_content`` and the final answer to ``content``. In rare cases
+    (or when truncated) ``content`` is empty but the model left a usable
+    answer at the tail of the reasoning — typically after the last numbered
+    step, often wrapped in backticks or quotes.
+
+    This salvages that tail. It is deliberately conservative: it only fires
+    when ``content`` is empty, and it strips leading reasoning markers so a
+    half-finished thought doesn't get treated as JSON. Returns "" when
+    nothing usable is found (caller then treats it as a genuine empty reply).
+    """
+    if not reasoning:
+        return ""
+    text = reasoning.strip()
+    # Reasoning steps look like "1. ... 2. ... 3. Final: <answer>".
+    # Take everything after the last step marker.
+    import re
+    steps = re.split(r"\n\d+\.\s", text)
+    tail = steps[-1].strip() if steps else text
+    # If the tail contains a JSON object/code block, extract the densest part.
+    m = re.search(r"```(?:json)?\s*(\{.*?\}|\[.*?\])\s*```", tail, re.S)
+    if m:
+        return m.group(1).strip()
+    m = re.search(r"(\{.*\}|\[.*\])", tail, re.S)
+    if m:
+        return m.group(1).strip()
+    # Otherwise return the tail only if it's short and answer-like (not a
+    # long unfinished sentence). Long tails are likely truncated mid-thought.
+    if 0 < len(tail) <= 200:
+        return tail
+    return ""
+
+
 class GLMBackend(ModelBackend):
     """GLM (Zhipu AI) backend via OpenAI-compatible Coding Plan API.
 
@@ -113,6 +149,55 @@ class GLMBackend(ModelBackend):
 
         choice = response.choices[0]
         content = choice.message.content or ""
+
+        # GLM-5.2 is a reasoning model: it emits its chain-of-thought in
+        # ``reasoning_content`` and only writes the final answer to
+        # ``content`` once reasoning completes. When max_tokens is too small,
+        # the whole budget is spent reasoning and ``content`` comes back
+        # empty with ``finish_reason == "length"``. This manifested as the
+        # recurring "GLM returns empty body" failures (commit b2959c8 retried
+        # blindly; this fix addresses the cause: give reasoning room).
+        finish_reason = choice.finish_reason or ""
+        # Guard against non-string reasoning_content (e.g. MagicMock in unit
+        # tests auto-creates the attribute). Only real reasoning text counts.
+        _raw_reasoning = getattr(choice.message, "reasoning_content", "")
+        reasoning = _raw_reasoning if isinstance(_raw_reasoning, str) else ""
+        if not content and finish_reason == "length" and reasoning:
+            # Reasoning was truncated before the answer. Retry with a doubled
+            # token budget so the model can finish thinking AND emit content.
+            bigger = min(int(max_tokens) * 2, 65536)
+            logger.info(
+                "GLM-5.2 reasoning truncated (finish=length, %d reasoning "
+                "tokens) — retrying with max_tokens %d → %d",
+                len(reasoning.split()), max_tokens, bigger,
+            )
+            retry_kwargs = dict(kwargs)
+            retry_kwargs["max_tokens"] = bigger
+            response = call_with_retry(
+                self.client.chat.completions.create,
+                **retry_kwargs,
+                retry_config=self.retry_config,
+            )
+            if response.choices:
+                choice = response.choices[0]
+                content = choice.message.content or ""
+                finish_reason = choice.finish_reason or ""
+                _rr = getattr(choice.message, "reasoning_content", "")
+                reasoning = _rr if isinstance(_rr, str) else ""
+
+        # Last-resort fallback: if content is STILL empty but the model left
+        # a final answer at the tail of reasoning_content (some prompts elicit
+        # this), salvage it. Reasoning steps are numbered ("1. ... 2. ..."),
+        # so take the text after the last step marker as the likely answer.
+        if not content and reasoning:
+            _salvaged = _salvage_answer_from_reasoning(reasoning)
+            if _salvaged:
+                logger.info(
+                    "GLM-5.2 content empty — salvaged %d chars from "
+                    "reasoning_content tail", len(_salvaged),
+                )
+                content = _salvaged
+
         tool_calls: list[ToolCall] = []
 
         if choice.message.tool_calls:
