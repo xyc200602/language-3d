@@ -533,8 +533,12 @@ class AssemblyPipeline:
             check = AssemblyVerifier().check_center_of_mass_stability(
                 ctx.assembly, placements=ctx.positions,
             )
-        except Exception:
-            return  # COM check itself failed — don't block solving
+        except Exception as e:
+            # COM check failed (e.g. positions missing) — log and skip the
+            # closed-loop enlargement rather than silently swallowing, per
+            # AGENTS.md §1.1 (never bare except: pass). Solving proceeds.
+            logger.warning("Solver COM pre-check skipped: %s", e)
+            return
         if check.inside_support_polygon:
             return  # already stable
         # COM is forward of the support edge. Enlarge base LENGTH (solver Y,
