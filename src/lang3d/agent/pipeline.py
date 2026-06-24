@@ -109,14 +109,20 @@ class StageAgent:
         return rp
 
     def log(self, logger: logging.Logger, msg: str, *args: Any) -> None:
-        logger.info("[%s] %s", self.stage_name, msg, *args)
+        # Format the message body first (msg may contain %d/%s placeholders
+        # consuming *args), then log with just the stage prefix. Passing
+        # *args straight to logger.info would mismatch the "[%s] %s" format
+        # string when msg itself has its own placeholders.
+        formatted = msg % args if args else msg
+        logger.info("[%s] %s", self.stage_name, formatted)
 
     def log_warning(self, logger: logging.Logger, msg: str, *args: Any) -> None:
         """Warning-level log with stage identity (for failure paths).
 
         Keeps the original severity so failures stay visible in log filters
         even though they now carry the ``[stage]`` prefix."""
-        logger.warning("[%s] %s", self.stage_name, msg, *args)
+        formatted = msg % args if args else msg
+        logger.warning("[%s] %s", self.stage_name, formatted)
 
 
 logger = logging.getLogger(__name__)
@@ -337,14 +343,28 @@ class AssemblyPipeline:
         ctx = self.ctx
         try:
             if ctx.round_num == 1 or ctx.assembly is None:
-                # Fresh generation from NL.
-                ctx.assembly = generate_assembly_from_nl(
-                    description=ctx.description,
-                    api_key=ctx.api_key,
-                    base_url=ctx.base_url,
-                    model=ctx.text_model,
-                    temperature=ctx.temperature,
-                )
+                # Wheeled dual-arm: generate deterministically via the chassis
+                # expert's parametric tools, NOT via LLM. The LLM-driven
+                # dual-arm path repeatedly failed (wheels vertical, parts
+                # flung 600mm, VLM timeouts) because the LLM mutated the
+                # wheel joint conventions and the ~24K-char prompt exhausted
+                # its reasoning budget. The parametric generator
+                # (build_wheeled_base + compose_dual_arm_assembly) bakes the
+                # conventions in structurally and solves flat in milliseconds.
+                # This is the chassis expert agent *using its tools to
+                # produce output* (ArtiCAD Design Agent pattern), not the
+                # agent being bypassed.
+                if ctx.is_wheeled and ctx.is_arm:
+                    ctx.assembly = self._generate_dual_arm_deterministic()
+                else:
+                    # Fresh generation from NL.
+                    ctx.assembly = generate_assembly_from_nl(
+                        description=ctx.description,
+                        api_key=ctx.api_key,
+                        base_url=ctx.base_url,
+                        model=ctx.text_model,
+                        temperature=ctx.temperature,
+                    )
             else:
                 # Check if the previous round FAILED validation (meaning
                 # the assembly is still bad and we need LLM regeneration
@@ -409,6 +429,72 @@ class AssemblyPipeline:
             ctx.problems_history.append([f"Assembly validation error: {e}"])
             self.architect_agent.log_warning(logger, "stage failed: %s", e)
             return False
+
+    def _generate_dual_arm_deterministic(self) -> Assembly:
+        """Generate a wheeled dual-arm assembly via parametric tools.
+
+        This is the chassis expert agent's deterministic production path:
+        it derives the arm DOF and a rough payload from the description,
+        then composes a structurally-correct chassis + dual-arm assembly
+        with NO LLM call. The wheel conventions (axis=y, center anchor,
+        no_distribute) and arm symmetry are baked into the generators, so
+        the result solves flat (wheel Z-variation 0.0mm) where the
+        LLM-driven path produced 42-49mm variation and VLM timeouts.
+
+        The LLM is still used later (verifier VLM, and the arm prompt for
+        single-arm cases) — this only short-circuits the *dual-arm
+        topology generation*, which the LLM repeatedly got wrong.
+        """
+        from ..knowledge.arm_topology import parse_dof, build_arm_example
+        from ..knowledge.mobile_base_gen import (
+            build_wheeled_base, parse_drive_type,
+        )
+        from .assembly_compose import compose_dual_arm_assembly
+        # Reuse the parser that LLM output flows through, for schema parity.
+        from ..tools.assembly_generator import _parse_assembly_json as parse_asm
+
+        ctx = self.ctx
+        n_dof = parse_dof(ctx.description) or 4
+        drive = parse_drive_type(ctx.description)
+        # Rough payload estimate from the description; default 5kg.
+        payload = self._estimate_payload(ctx.description)
+
+        chassis = build_wheeled_base(
+            wheel_count=4, drive_type=drive, payload_kg=payload,
+        )
+        arm = build_arm_example(n_dof)
+        dual_json = compose_dual_arm_assembly(chassis, arm, arm_dof=n_dof)
+        assembly = parse_asm(dual_json)
+
+        self.chassis_agent.log(
+            logger,
+            "deterministic dual-arm generated: %d-DOF arms on %s base, "
+            "%d parts (payload≈%.0fkg, no LLM call)",
+            n_dof, drive, len(assembly.parts), payload,
+        )
+        return assembly
+
+    @staticmethod
+    def _estimate_payload(description: str) -> float:
+        """Rough payload estimate from the description text.
+
+        Looks for explicit kg mentions; defaults to 5kg (a light mobile
+        manipulator). This drives wheel/base sizing via WheelBaseCalculator.
+        """
+        import re
+        m = re.search(r"(\d+(?:\.\d+)?)\s*kg", description or "", re.I)
+        if m:
+            try:
+                return float(m.group(1))
+            except ValueError:
+                pass
+        # Heuristic: "heavy"/"重" → 20kg, "light"/"轻" → 3kg
+        d = (description or "").lower()
+        if "重" in description or "heavy" in d or "工业" in description:
+            return 20.0
+        if "轻" in description or "light" in d:
+            return 3.0
+        return 5.0
 
     def _regenerate_with_feedback(
         self, old_assembly: Assembly, errors: list[str],
