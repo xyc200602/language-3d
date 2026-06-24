@@ -26,8 +26,8 @@ class GLMBackend(ModelBackend):
         self,
         api_key: str = "",
         base_url: str = "https://open.bigmodel.cn/api/coding/paas/v4",
-        model: str = "GLM-5.1",
-        vision_model: str = "GLM-4V-Flash",
+        model: str = "GLM-5.2",
+        vision_model: str = "GLM-4.6V",
         # Alternative endpoint for models not on Coding Plan
         alt_base_url: str = "https://open.bigmodel.cn/api/paas/v4",
         retry_config: RetryConfig | None = None,

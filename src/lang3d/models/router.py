@@ -76,8 +76,8 @@ class ModelRouter:
             self._backends["glm"] = GLMBackend(
                 api_key=cfg.glm.api_key,
                 base_url=cfg.glm.base_url or "https://open.bigmodel.cn/api/coding/paas/v4",
-                model=cfg.glm.model or "GLM-5.1",
-                vision_model=getattr(cfg.glm, "vision_model", "") or "GLM-4V-Flash",
+                model=cfg.glm.model or "GLM-5.2",
+                vision_model=getattr(cfg.glm, "vision_model", "") or "GLM-4.6V",
                 retry_config=retry_cfg,
             )
         if cfg.openai.api_key:

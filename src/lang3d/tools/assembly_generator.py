@@ -579,7 +579,7 @@ def generate_assembly_from_nl(
     description: str,
     api_key: str | None = None,
     base_url: str | None = None,
-    model: str = "GLM-4.6",
+    model: str = "GLM-5.2",
     temperature: float = 0.3,
 ) -> Assembly:
     """Generate an Assembly from natural language description using LLM.
@@ -3067,7 +3067,7 @@ def generate_assembly_with_vlm_loop(
     max_rounds: int = 3,
     api_key: str | None = None,
     base_url: str | None = None,
-    text_model: str = "GLM-4.6",
+    text_model: str = "GLM-5.2",
     vision_model: str = _DEFAULT_VERIFIER_VISION_MODEL,
     temperature: float = 0.3,
 ) -> dict:
