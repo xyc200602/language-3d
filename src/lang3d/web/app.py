@@ -589,6 +589,16 @@ async def run_positions(case: str, ts: str) -> JSONResponse:
         {"positions": {part_name: {"position": [x,y,z], "rotation": [...]}}}
     """
     run_dir = DATA_ROOT / "runs" / case / ts
+
+    # Fast path: pre-solved positions.json (written by pipeline.run_export)
+    pos_file = run_dir / "positions.json"
+    if pos_file.exists():
+        try:
+            return JSONResponse({"positions": json.loads(pos_file.read_text("utf-8"))})
+        except Exception:
+            pass  # fall through to assembly.json solve
+
+    # Fallback: assembly.json → solve
     asm_file = run_dir / "assembly.json"
     if not asm_file.exists():
         return JSONResponse({"error": "Run not found"}, status_code=404)

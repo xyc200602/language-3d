@@ -993,6 +993,45 @@ class AssemblyPipeline:
             )
             ctx.export_dir = export_dir if result else None
 
+            # Save assembly.json + positions.json to the run root so the
+            # web 3D viewer (/api/runs/{case}/{ts}/positions) can load
+            # the solved assembly without depending on FreeCAD internals.
+            # Without these files the web positions API returns 404 and
+            # the /simulate page stacks every STL at the origin.
+            import json as _json
+            try:
+                _asm_dict = {
+                    "name": ctx.assembly.name,
+                    "parts": [
+                        {"name": p.name, "category": p.category,
+                         "description": p.description, "material": p.material,
+                         "dimensions": dict(p.dimensions)}
+                        for p in ctx.assembly.parts
+                    ],
+                    "joints": [
+                        {k: v for k, v in _j.__dict__.items()
+                         if k in ("type","parent","child","axis","parent_anchor",
+                                  "child_anchor","offset","range_deg","no_distribute",
+                                  "distribution_group","mimic_joint","mimic_multiplier",
+                                  "mimic_offset")}
+                        for _j in ctx.assembly.joints
+                    ],
+                    "default_angles": dict(ctx.assembly.default_angles),
+                }
+                with open(os.path.join(ctx.output_dir, "assembly.json"), "w", encoding="utf-8") as _f:
+                    _json.dump(_asm_dict, _f, ensure_ascii=False, indent=2)
+                if ctx.positions:
+                    _pos_dict = {
+                        n: {"position": list(p.get("position", (0,0,0))),
+                            "rotation": list(p.get("rotation", (0,0,1,0)))}
+                        for n, p in ctx.positions.items()
+                    }
+                    with open(os.path.join(ctx.output_dir, "positions.json"), "w", encoding="utf-8") as _f:
+                        _json.dump(_pos_dict, _f, ensure_ascii=False, indent=2)
+                logger.info("Saved assembly.json + positions.json for web viewer")
+            except Exception as e:
+                logger.warning("Failed to save assembly.json for web: %s", e)
+
             # Production renders
             if ctx.export_dir:
                 stl_dir = os.path.join(ctx.export_dir, "stl_parts")
