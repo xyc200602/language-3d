@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -649,7 +649,7 @@ async def animate_run(case: str, ts: str) -> JSONResponse:
 
 
 @app.post("/api/runs/{case}/{ts}/fk_positions")
-async def fk_positions(case: str, ts: str) -> JSONResponse:
+async def fk_positions(case: str, ts: str, request: Request) -> JSONResponse:
     """Forward-kinematics: given joint angles, return all part positions.
 
     The web animation calls this for each frame with the joint angles from
