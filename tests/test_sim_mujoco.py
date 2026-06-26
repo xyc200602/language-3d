@@ -415,11 +415,14 @@ class TestGraspRealLoad:
             cube_size_mm=20.0,
             duration_sec=1.0,
         )
-        # Extract JSON block
+        # Extract JSON block.  The report may contain trailing text after
+        # the JSON object (the multi-gripper aggregate verdict), so parse
+        # only up to the matching closing brace via the raw decoder.
         json_start = result.find("--- JSON ---")
         assert json_start >= 0
-        json_text = result[json_start + len("--- JSON ---"):].strip()
-        summary = _json.loads(json_text)
+        after_marker = result[json_start + len("--- JSON ---"):].lstrip()
+        _decoder = _json.JSONDecoder()
+        summary, _ = _decoder.raw_decode(after_marker)
 
         for required_key in (
             "urdf_path", "finger_separation_mm", "cube_size_mm",
@@ -462,4 +465,41 @@ def test_record_motion_missing_urdf_reports_error(tmp_path) -> None:
     assert result["ok"] is False
     assert "error" in result
     assert result["frames"] == []
+
+
+def test_wheeled_base_drives_in_record_motion() -> None:
+    """Regression guard for the "能动" expectation: a wheeled robot's base
+    must TRANSLATE during the rollout, not stay welded to the world.
+
+    Before the floating-base + wheel-drive fix, the chassis was bolted to
+    the ground (fixed base_footprint→base_plate joint) and only the arms
+    articulated — the robot could never drive.  This test loads a real
+    4-wheel dual-arm URDF and asserts the base_footprint body moves
+    measurably between the first and last frame."""
+    import glob
+    from lang3d.tools.sim_mujoco import record_motion
+
+    urdfs = sorted(glob.glob(
+        "data/runs/4wheel_dual_arm/*/engineering_package/ros2_package/"
+        "*/urdf/*.urdf",
+    ))
+    if not urdfs:
+        pytest.skip("no 4wheel_dual_arm run URDF available")
+    result = record_motion(urdfs[-1], duration_sec=2.0, fps=10)
+    assert result["ok"] is True
+    bodies = result["bodies"]
+    if "base_footprint" not in bodies:
+        pytest.skip("URDF has no base_footprint (arm-only?)")
+    bp_idx = bodies.index("base_footprint")
+    frames = result["frames"]
+    assert len(frames) >= 5
+    p0 = frames[0]["poses"][bp_idx][:3]
+    pN = frames[-1]["poses"][bp_idx][:3]
+    # Horizontal translation in metres (exclude z which the upright-stabilize
+    # keeps near 0).  Must move >5mm — the pre-fix robot moved 0.0mm.
+    horiz = ((pN[0] - p0[0]) ** 2 + (pN[1] - p0[1]) ** 2) ** 0.5
+    assert horiz > 0.005, (
+        f"base did not translate (horiz={horiz*1000:.1f}mm) — "
+        f"wheeled base is not driving"
+    )
 

@@ -412,6 +412,69 @@ class TestModificationsDiff:
         # At least one joint should be flagged
         assert len(diff["joints_changed"]) >= 1
 
+
+class TestFunctionalPartScalingGuard:
+    """AGENTS.md §1.2: real COTS functional parts (servos/motors) must never be
+    rescaled. The guard in _scale_part / _apply_reach / scale_part refuses to
+    resize them; structural parts (links, fingers) still resize."""
+
+    def test_servo_not_rescaled(self):
+        """A servo (category=actuator) passed to _scale_part must come back
+        UNCHANGED — its catalog dimensions are authoritative."""
+        from lang3d.agent.modifier import _scale_part, _is_functional_part
+        from lang3d.knowledge.mechanics import Part
+        servo = Part(
+            name="shoulder_servo", category="actuator",
+            description="肩舵机MG996R", material="Steel",
+            dimensions={"diameter": 41, "height": 43},
+        )
+        assert _is_functional_part(servo) is True
+        scaled = _scale_part(servo, factor=2.0)
+        assert scaled.dimensions == {"diameter": 41, "height": 43}, (
+            "servo was rescaled — real COTS parts must keep catalog dims"
+        )
+
+    def test_structural_link_is_rescaled(self):
+        """A structural link (category=link) must still resize."""
+        from lang3d.agent.modifier import _scale_part, _is_functional_part
+        from lang3d.knowledge.mechanics import Part
+        link = Part(
+            name="shoulder_link", category="link",
+            description="肩连杆", material="Aluminum",
+            dimensions={"length": 120, "width": 25, "height": 15},
+        )
+        assert _is_functional_part(link) is False
+        scaled = _scale_part(link, factor=2.0)
+        assert scaled.dimensions["length"] == 240
+
+    def test_gripper_finger_is_rescaled(self):
+        """Gripper fingers are designable structural parts (even though
+        arm_topology categorises them 'mechanical') — they must resize, since
+        the VLM-closeup fix enlarges invisible fingers."""
+        from lang3d.agent.modifier import _is_functional_part
+        from lang3d.knowledge.mechanics import Part
+        finger = Part(
+            name="gripper_finger_left", category="mechanical",
+            description="左手指", material="PLA",
+            dimensions={"length": 60, "width": 14, "height": 28},
+        )
+        assert _is_functional_part(finger) is False, (
+            "fingers are structural/designable, not COTS actuators"
+        )
+
+    def test_servo_detected_by_description_model(self):
+        """Even without category=actuator, a part whose description names a
+        real servo model is treated as functional (defense for parts where the
+        generator set an unusual category)."""
+        from lang3d.agent.modifier import _is_functional_part
+        from lang3d.knowledge.mechanics import Part
+        servo = Part(
+            name="wrist_motor", category="joint",
+            description="腕部DS3218舵机", material="Steel",
+            dimensions={"diameter": 40, "height": 39},
+        )
+        assert _is_functional_part(servo) is True
+
     def test_diff_no_changes(self, arm_assembly):
         # Apply a no-op modification (nonexistent part)
         req = ModificationRequest(

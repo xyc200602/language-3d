@@ -1099,11 +1099,23 @@ class AssemblyVerifier:
                 notes="UNVERIFIED: 无位置数据",
             )
 
+        # min_z over physical parts only (exclude the virtual base_footprint
+        # at Z=0, which would set min_z=0 and push real wheels above the
+        # 5mm ground-contact threshold). See exclusion note below.
         min_z = min(
-            p["position"][2] for p in placements.values()
+            p["position"][2] for name, p in placements.items()
+            if name != "base_footprint"
         )
         ground_parts = []
         for name, place in placements.items():
+            # Skip the virtual base_footprint — it's a 1×1mm invisible
+            # ground-reference root (Husky convention), NOT a physical
+            # contact point. Including its tiny footprint as a support-polygon
+            # vertex collapsed the polygon to 1×1mm and falsely failed COM
+            # stability for every wheeled robot. Real contact points are the
+            # wheels (and any leg/foot parts).
+            if name == "base_footprint":
+                continue
             z = place["position"][2]
             part = next((p for p in assembly.parts if p.name == name), None)
             if part is None:

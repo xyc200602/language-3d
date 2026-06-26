@@ -152,6 +152,49 @@ class MeshCollisionChecker:
         """Return a trimesh.Trimesh bounding box for a part."""
         return _part_to_box_mesh(part)
 
+    @staticmethod
+    def _build_adjacent_pairs(assembly: Assembly) -> set[tuple[str, str]]:
+        """Set of part-name pairs that are kinematically adjacent.
+
+        Three notions of adjacency, all of which represent expected contact
+        (not collisions) on a real robot:
+
+        1. DIRECT (parent↔child): parts joined by a joint.
+        2. TRANSITIVE 2-hop (grandparent↔grandchild): e.g. motor↔wheel through
+           a suspension_link (motor→suspension→wheel). The motor body and wheel
+           sit at the same axle and nominally overlap; flagging it as a
+           collision would make the fix-loop break the suspension chain.
+        3. SIBLINGS (same parent): e.g. motor_fl and standoff_fl both fixed to
+           base_plate — mounted in the same region, corner tangency is expected.
+
+        Without (2) and (3), the fix-loop "corrects" expected contact and
+        breaks correctly-placed geometry (see docs/references/
+        fix_loop_regression.md).
+        """
+        # Build the kinematic tree.
+        children_by_parent: dict[str, list[str]] = {}
+        for j in assembly.joints:
+            children_by_parent.setdefault(j.parent, []).append(j.child)
+
+        adjacent: set[tuple[str, str]] = set()
+        # 1. Direct edges (both directions).
+        for j in assembly.joints:
+            adjacent.add((j.parent, j.child))
+            adjacent.add((j.child, j.parent))
+        # 2. Transitive 2-hop: grandparent↔grandchild (A→B→C ⇒ A adjacent C).
+        for gp, mids in children_by_parent.items():
+            for mid in mids:
+                for gc in children_by_parent.get(mid, []):
+                    adjacent.add((gp, gc))
+                    adjacent.add((gc, gp))
+        # 3. Siblings (same parent).
+        for _parent, siblings in children_by_parent.items():
+            for i in range(len(siblings)):
+                for k in range(i + 1, len(siblings)):
+                    adjacent.add((siblings[i], siblings[k]))
+                    adjacent.add((siblings[k], siblings[i]))
+        return adjacent
+
     def check_assembly_collisions(
         self,
         assembly: Assembly,
@@ -175,20 +218,36 @@ class MeshCollisionChecker:
                 to keep the legacy behaviour (any FCL contact counts).
         """
         parts_by_name = {p.name: p for p in assembly.parts}
-        adjacent = set()
-        if skip_adjacent:
-            for j in assembly.joints:
-                adjacent.add((j.parent, j.child))
-                adjacent.add((j.child, j.parent))
+        adjacent = self._build_adjacent_pairs(assembly) if skip_adjacent else set()
 
         names = [p.name for p in assembly.parts]
         pairs: list[CollisionPair] = []
         collision_free = True
 
+        # Container / decorative parts: structural shells (chassis_body,
+        # base_footprint) that INTENTIONALLY enclose internal parts (motors,
+        # battery, wheels), PLUS suspension struts which are decorative
+        # mechanical indicators (a real suspension is a rocker/A-arm linkage,
+        # not a simple strut that can be collision-checked against the wheel
+        # it attaches to). Collisions involving these parts are expected and
+        # must not be reported — otherwise the fix-loop breaks the enclosure
+        # / linkage the design requires. A part is skipped if its name marks
+        # it as an enclosing body or a suspension element.
+        _containers = {
+            n for n in names
+            if any(kw in n.lower() for kw in (
+                "chassis_body", "body_shell", "housing", "suspension_",
+            ))
+        }
+
         for i in range(len(names)):
             for k in range(i + 1, len(names)):
                 a, b = names[i], names[k]
                 if skip_adjacent and (a, b) in adjacent:
+                    continue
+                # Skip container↔internal collisions (the shell encloses parts
+                # by design — e.g. wheel mounted on chassis body side).
+                if a in _containers or b in _containers:
                     continue
                 cp = self._check_pair(
                     a, b,
@@ -238,21 +297,27 @@ class MeshCollisionChecker:
         import numpy as np
 
         parts_by_name = {p.name: p for p in assembly.parts}
-        adjacent = set()
-        if skip_adjacent:
-            for j in assembly.joints:
-                adjacent.add((j.parent, j.child))
-                adjacent.add((j.child, j.parent))
+        adjacent = self._build_adjacent_pairs(assembly) if skip_adjacent else set()
 
         names = [p.name for p in assembly.parts]
         interference_pairs: list[InterferencePair] = []
         collision_free = True
         worst: InterferencePair | None = None
 
+        _containers = {
+            n for n in names
+            if any(kw in n.lower() for kw in (
+                "chassis_body", "body_shell", "housing", "suspension_",
+            ))
+        }
+
         for i in range(len(names)):
             for k in range(i + 1, len(names)):
                 a, b = names[i], names[k]
                 if skip_adjacent and (a, b) in adjacent:
+                    continue
+                # Skip container↔internal (the shell encloses parts by design).
+                if a in _containers or b in _containers:
                     continue
 
                 part_a = parts_by_name.get(a)

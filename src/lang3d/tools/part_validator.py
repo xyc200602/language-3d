@@ -288,6 +288,7 @@ def validate_part(
     vlm_router: Any = None,
     vlm_detail: str = "detailed",
     joints: list | None = None,
+    all_parts: list[Part] | None = None,
 ) -> PartValidationResult:
     """Validate a single part through FreeCAD execution.
 
@@ -318,7 +319,7 @@ def validate_part(
 
         # Generate ops and script
         try:
-            ops = generate_ops(part, config=cfg, joints=joints)
+            ops = generate_ops(part, config=cfg, joints=joints, all_parts=all_parts)
         except Exception as e:
             result.freecad_error = f"generate_ops failed at level {level}: {e}"
             result.simplification_level = level
@@ -476,6 +477,7 @@ def validate_all_parts(
     vlm_detail: str = "detailed",
     vlm_sample: int = 0,
     joints_by_part: dict[str, list] | None = None,
+    all_parts: list[Part] | None = None,
 ) -> BatchValidationReport:
     """Validate all parts through FreeCAD execution.
 
@@ -491,6 +493,9 @@ def validate_all_parts(
         joints_by_part: Optional mapping of part_name → list[Joint].
                        When provided, connection features are generated
                        for each part during validation.
+        all_parts: When provided, bolted-connection holes use a SHARED
+                   pattern per joint so mating holes ALIGN ("对接好").
+                   Pass the full assembly parts list.
 
     Returns:
         BatchValidationReport with per-part results and summary.
@@ -524,6 +529,7 @@ def validate_all_parts(
             vlm_router=use_vlm,
             vlm_detail=vlm_detail,
             joints=part_joints,
+            all_parts=all_parts,
         )
         report.results.append(result)
         if result.passed:

@@ -731,10 +731,20 @@ def apply_corrections(
         elif ctype == "scale_part":
             # Scale a single part's dimensions by a multiplicative factor.
             # Used to make invisible gripper fingers visible to the VLM.
+            # Functional parts (servos/motors) are NEVER scaled — their dims
+            # come from real COTS specs (AGENTS.md §1.2). Only structural parts
+            # (fingers, links) may be resized here.
             part_name = corr.get("part_name", "")
             factor = float(corr.get("factor", 1.0))
+            from .modifier import _is_functional_part
             for p in new_parts:
                 if p.name == part_name:
+                    if _is_functional_part(p):
+                        logger.warning(
+                            "scale_part correction refused for functional part "
+                            "'%s' (real COTS dims, not rescaled).", part_name,
+                        )
+                        break
                     new_dims = {}
                     for k, v in p.dimensions.items():
                         try:

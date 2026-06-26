@@ -1093,9 +1093,19 @@ class AssemblySolver:
                 _anchor_normal_global[2] * _clearance_mm,
             ))
 
-        # Add explicit offset (rotated by anchor rotation so it moves with the joint)
+        # Add explicit offset. IMPORTANT: the offset defines the joint's
+        # MOUNT POINT relative to the parent (e.g. a wheel mounts at
+        # track/2, wheelbase/2 from chassis center) — it is a fixed
+        # connection point and must NOT rotate with the joint's own motion.
+        # Previously this used ``anchor_rot`` (which includes ``joint_rot``
+        # for revolute joints), so spinning a wheel 90° rotated its
+        # [-100,90,-49] offset to [-49,90,100], catapulting the wheel from
+        # Z=47 to Z=196. We now rotate the offset only by the PARENT's
+        # orientation + the anchor alignment (parent_rot @ align_rot),
+        # which is the mounting frame WITHOUT the joint's own rotation.
         joint_offset = joint.offset or (0, 0, 0)
-        rotated_offset = _mat_vec(anchor_rot, joint_offset)
+        offset_frame = _mat_mul(parent_rot, align_rot)
+        rotated_offset = _mat_vec(offset_frame, joint_offset)
         child_center = _vec_add(
             child_center,
             rotated_offset,
@@ -1139,36 +1149,28 @@ class AssemblySolver:
     ) -> list[list[float]]:
         """Apply visual cylinder orientation to a part's kinematic rotation.
 
-        This is a POST-PROCESSING step that orients cylindrical parts (servo
-        motors, actuators) so their central axis aligns with the relevant
-        rotation axis for rendering.  It does NOT affect the kinematic chain
-        — the solver's internal ``rot_mats`` always stores pure kinematic
-        rotations, and this method is only called when building the output
-        placements dict.
+        HISTORICALLY this was a POST-PROCESSING step that re-oriented
+        cylindrical parts (servos, wheels) for rendering, because the STL
+        was always generated with the cylinder along Z (FreeCAD
+        makeCylinder default) regardless of the joint axis.  A wheel on
+        axis="y" got R_x(90°) here to point Z→Y, a servo on axis="z" got
+        identity.
 
-        For a cylindrical part connected via a revolute/gear/belt joint, the
-        cylinder is oriented along that joint's rotation axis.  For a
-        cylindrical part connected via a fixed joint that *drives* a rotary
-        joint as a parent (e.g. a wrist motor), the driving axis is used.
+        THAT COMPENSATION IS NOW REMOVED.  ``part_feature_engine`` sets
+        ``orient_axis`` on every cylinder op: wheels (axis="y") → STL
+        cylinder built along Y; servos (axis="z") → STL along Z.  The
+        correct orientation is baked into the STL geometry itself, so
+        applying a second orientation here would DOUBLE-ROTATE the wheel
+        (correct Y + R_x(90°) → back to Z = 磨盘).  Returning the pure
+        kinematic rotation trusts the STL's baked orientation.  This stays
+        a no-op for the kinematic chain (``rot_mats`` is unchanged); it
+        only affects the output placements used by the renderer.
+
+        Kept as a method (not deleted) so callers and tests that reference
+        ``_apply_cylinder_orientation`` still resolve; the body is now a
+        documented pass-through.
         """
-        part = self._parts_by_name.get(part_name)
-        if not part or not _is_cylindrical_part(part):
-            return kinematic_rot
-
-        # Find the joint connecting this part to its parent (first match).
-        cylinder_orient = _identity_matrix()
-        for j in self._joints:
-            if j.child != part_name:
-                continue
-            if j.type in ("revolute", "gear", "belt"):
-                cylinder_orient = _cylinder_base_orientation(_revolute_axis(j))
-            elif j.type == "fixed":
-                driving_axis = self._find_driving_axis(part_name)
-                if driving_axis:
-                    cylinder_orient = _cylinder_base_orientation(driving_axis)
-            break  # use the first parent joint
-
-        return _mat_mul(kinematic_rot, cylinder_orient)
+        return kinematic_rot
 
     def _apply_constraint_refinement(
         self,

@@ -8,7 +8,7 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://python.org)
 [![FreeCAD 1.1](https://img.shields.io/badge/FreeCAD-1.1-green.svg)](https://freecad.org)
 [![GLM-5.2](https://img.shields.io/badge/LLM-GLM--5.2-orange.svg)](https://open.bigmodel.cn)
-[![E2E Score](https://img.shields.io/badge/E2E-92.1%25-brightgreen.svg)](#test-results)
+[![E2E Score](https://img.shields.io/badge/E2E-92.9%25-brightgreen.svg)](#test-results)
 
 *LLM Reasoning + VLM Visual Perception + CAD Automation + Geometric Arbitration*
 *LLM 推理 + VLM 视觉感知 + CAD 自动化 + 几何仲裁*
@@ -23,13 +23,13 @@
 
 Language-3D Agent is an autonomous AI system that understands natural language descriptions of mechanical assemblies, generates production-level 3D models (STL/STEP), exports complete engineering packages (URDF, BOM, assembly guide, firmware), and verifies results through **dual-channel inspection** — code-side geometric checks and vision-side AI analysis, with **geometric arbitration** that overrules VLM false-negatives when the geometry is provably correct.
 
-The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. Failures are routed by the Fixer to the specific stage that needs re-running, not a full regeneration.
+The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer routes a failure back to the specific upstream stage that needs re-running (e.g. a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration), rather than always regenerating from scratch. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard — every assembly generated at runtime flows through it, with the legacy monolithic loop retained only as an automatic fallback if the pipeline raises.
 
 **中文**
 
 Language-3D Agent 是一个自主 AI 系统，能够理解自然语言描述的机械装配体，生成生产级 3D 模型（STL/STEP），导出完整工程包（URDF、BOM、装配指南、固件），并通过**双通道验证**（代码侧几何检查 + 视觉侧 AI 分析）确保质量。当几何验证确认正确时，**几何仲裁**会推翻 VLM 的误判。
 
-系统使用**多专家智能体流水线**（架构师 → 求解器 → CAD 工程师 → 验证器 → 修复器），每个阶段是独立的专家角色，有自己的系统提示和工具白名单。失败时修复器精准路由到出问题的阶段，而非整体重生成。
+系统使用**多专家智能体流水线**（架构师 → 求解器 → CAD 工程师 → 验证器 → 修复器），每个阶段是独立的专家角色，有自己的系统提示和工具白名单。修复器把失败精准路由到需要重跑的上游阶段（例如求解器判定的碰撞只重跑 求解器→CAD→验证器，跳过不必要的架构师重生成），而非每次都从头重生。该流水线是 CLI（`lang3d`）和网页面板的**生产路径**——运行时生成的每个装配体都流经它，旧的单体循环仅在流水线抛异常时作为自动回退保留。
 
 ```
 "设计一个 4 自由度机械臂，带夹爪"     ← Natural Language / 自然语言
@@ -77,14 +77,12 @@ cp .env.example .env
 ### Usage / 使用
 
 ```bash
-# Interactive CLI / 交互式命令行
+# Interactive CLI / 交互式命令行（生产路径，走 AssemblyPipeline）
 lang3d
 
-# E2E production pipeline (legacy loop) / 端到端生产流水线（传统循环）
-python tests/test_e2e_production.py --case 4dof_arm
-
-# E2E with multi-expert pipeline / 使用多专家流水线
-python tests/test_e2e_production.py --case 4dof_arm --pipeline
+# E2E test harness / 端到端测试
+python tests/test_e2e_production.py --case 4dof_arm           # 默认：传统循环
+python tests/test_e2e_production.py --case 4dof_arm --pipeline  # 多专家流水线
 
 # Local web dashboard + 3D viewer (auto-opens browser) / 本地网页面板 + 3D 查看器（自动开浏览器）
 lang3d web                       # http://127.0.0.1:8765/simulate
@@ -206,13 +204,17 @@ assembly = generate_assembly_from_nl("4自由度机械臂，带夹爪")
 
 | Module / 模块 | Content / 内容 |
 |---|---|
-| `mechanics.py` | Parts (66 types), Joints, Assemblies, ConnectionMethod |
+| `mechanics.py` | Parts (94 types), Joints, Assemblies, ConnectionMethod |
 | `assembly_patterns.py` | Robot profiles: BCN3D MOVEO, Thor, PAROL6, ANYmal, Solo12 |
 | `fastener_catalog.py` | ISO/DIN fasteners, bolt length, torque specs |
 | `actuators.py` | Servo/stepper database (NEMA17, Dynamixel, etc.) |
 | `assembly_templates.py` | Few-shot examples for LLM prompt |
 | `materials.py` | PLA, ABS, PETG, aluminum properties |
 | `tolerance.py` | ISO 286 IT grades, fits (H7/g6, H7/js6) |
+| `mobile_base_gen.py` | Parametric wheeled chassis (Husky-style Z-stack, ground-contact wheels) |
+| `arm_topology.py` | Parametric arm topology generator (2-7 DOF, zig-zag pose) |
+| `assembly_compose.py` | Deterministic dual-arm SE(3) composition (ArtiCAD Derive Mechanism) |
+| `docs/references/` | Real-robot proportion data (HSR, TIAGo++) + COTS specs for validation |
 
 ---
 
@@ -257,6 +259,7 @@ language-3d/
 │   ├── test_expert_roles.py       # Expert agent role + tool whitelist tests
 │   └── ...
 ├── data/runs/                     # E2E outputs (canonical layout)
+├── docs/references/               # Real-robot reference data (proportions, COTS specs)
 ├── examples/                      # Usage examples
 └── pyproject.toml
 ```
@@ -268,8 +271,8 @@ language-3d/
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
 | Unit + Integration / 单元 + 集成 | 3,608 | 3,605 PASS, 3 known failures (gripper/coordinate) |
-| E2E Production (legacy) / 端到端 | 1 | **92.1% score, 0 critical fails** |
-| E2E Production (pipeline) / 流水线 | 1 | **92.1% score, 0 critical fails** |
+| E2E Production (legacy) / 端到端 | 1 | **92.9% score, 0 critical fails** |
+| E2E Production (pipeline) / 流水线 | 1 | **92.9% score, 0 critical fails** |
 | Expert Roles / 专家角色 | 21 | 21 PASS |
 
 ```bash
@@ -310,9 +313,12 @@ python tests/test_e2e_production.py --case 4dof_arm --pipeline  # Multi-agent pi
 - [x] Engineering package (STL, URDF, BOM, assembly guide, firmware)
 
 ### Phase 3 — Multi-Agent Architecture / 多智能体架构 (Completed)
-- [x] Expert agent roles (Architect/Solver/CAD/Verifier/Fixer)
+- [x] Expert agent roles (Architect/Solver/CAD/Verifier/Fixer/Chassis)
 - [x] Tool whitelisting per role (ROLE_TOOL_CATEGORIES)
-- [x] AssemblyPipeline (5-stage flow with Fixer routing)
+- [x] AssemblyPipeline is the production path (CLI/web route through it, legacy loop as fallback)
+- [x] Architect persona injected on round 1 (not only on repair rounds)
+- [x] Selective Fixer routing (re-runs only the routed stage, skips unnecessary regeneration)
+- [x] Deterministic dual-arm generation (chassis expert tools, no LLM for topology)
 - [x] Geometric arbitration (Check 7 connectivity + false-alarm filtering)
 - [x] Split VLM verification (structural panoramic + gripper close-up)
 - [x] MuJoCo physics validation (prismatic joint clamping)
@@ -320,15 +326,21 @@ python tests/test_e2e_production.py --case 4dof_arm --pipeline  # Multi-agent pi
 ### Phase 4 — Simulation & Verification / 仿真与验证 (In Progress)
 - [x] URDF export (joint limits, mimic joints, inertial frame-correct)
 - [x] MuJoCo PD-hold physics stability test
+- [x] Husky-style chassis Z-stack (base_footprint ground reference, wheels rest on ground)
+- [x] Wheeled base drives in MuJoCo (floating-base + differential wheel torque in record_motion)
+- [x] Assembly STL with fastener bodies (trimesh fallback bypasses FreeCAD stack limit)
+- [x] Collision-aware bolt-hole alignment across mating parts (shared ConnectionInterface)
+- [ ] Wheeled dual-arm proportion coupling (arm scale matched to chassis — see docs/references/)
+- [x] Real COTS servos wired into arm generator (MG996R/DS3218/SG90 in _SERVO_SPECS)
 - [ ] URDF `<transmission>` + `ros2_control` for Gazebo actuation
 - [ ] Closed-chain kinematic solver
 - [ ] FEA structural analysis (CalculiX)
-- [ ] Grasp simulation (sim_grasp three-phase)
-- [ ] Dual-arm collision avoidance
+- [x] Grasp simulation (sim_grasp three-phase, dual-gripper support)
+- [x] Dual-arm collision avoidance (collision-aware pose configurator)
 
 ### Phase 5 — Production System / 生产系统
 - [ ] Web dashboard (real-time monitoring)
-- [ ] Part library expansion (66 → 200+ types)
+- [ ] Part library expansion (94 → 200+ types)
 - [ ] Manufacturing process planning (G-code)
 - [ ] Quality control (statistical verification)
 

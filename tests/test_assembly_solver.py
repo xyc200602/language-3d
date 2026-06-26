@@ -435,8 +435,21 @@ class TestRoboticArmChain:
         # Home: non-cylindrical parts should have zero rotation
         assert p_home["shoulder_link"]["rotation"][3] == pytest.approx(0, abs=0.1)
 
-    def test_offset_creates_lateral_movement_on_rotation(self):
-        """With a lateral offset, rotation around Z should move parts."""
+    def test_offset_is_fixed_mount_point_not_rotated_by_joint(self):
+        """A joint's offset defines its MOUNT POINT relative to the parent —
+        it is a fixed connection location that must NOT rotate when the joint
+        spins.
+
+        Previously the solver rotated the offset by the joint's own rotation,
+        which made a wheel at offset [-100,90,-49] catapult from Z=47 to Z=196
+        when spun 90° (the offset vector orbited the Y axis). The offset is
+        where the joint ATTACHES to the parent (e.g. a wheel mounts at the
+        chassis corner); spinning the joint spins the child's geometry about
+        the joint axis, not the mount point itself.
+
+        This test pins the fix: an arm offset 50mm laterally stays at X=50
+        regardless of the joint angle.
+        """
         parts = [
             Part(name="base", category="s", description="",
                  dimensions={"height": 20}),
@@ -449,7 +462,7 @@ class TestRoboticArmChain:
             joints=[
                 Joint("revolute", "base", "arm",
                       parent_anchor="top", child_anchor="bottom",
-                      offset=(50, 0, 0)),  # 50mm lateral offset
+                      offset=(50, 0, 0)),  # 50mm lateral offset (mount point)
             ],
         )
         solver = AssemblySolver(assembly)
@@ -457,15 +470,15 @@ class TestRoboticArmChain:
         p0 = solver.solve(joint_angles={"arm": 0})
         p90 = solver.solve(joint_angles={"arm": 90})
 
-        # With 50mm offset and 90deg rotation, the arm should move in XY plane
         pos_0 = p0["arm"]["position"]
         pos_90 = p90["arm"]["position"]
 
-        # At 0 degrees, arm should be offset in X by ~50mm
+        # The mount point is fixed at X=50 regardless of joint angle.
         assert pos_0[0] == pytest.approx(50, abs=1)
-
-        # At 90 degrees, that offset should move to Y
-        assert pos_90[1] != pytest.approx(0, abs=1)
+        assert pos_90[0] == pytest.approx(50, abs=1), (
+            f"mount X moved from 50 to {pos_90[0]:.1f} on rotation — "
+            "offset should be a fixed mount point, not a rotating arm"
+        )
 
     def test_get_joint_chain(self):
         solver = AssemblySolver(ROBOTIC_ARM_ASSEMBLY)

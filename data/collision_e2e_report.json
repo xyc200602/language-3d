@@ -1,59 +1,11 @@
 {
   "total_parts": 41,
-  "total_pairs": 780,
+  "total_pairs": 688,
   "collision_free": false,
-  "total_collisions": 16,
+  "total_collisions": 2,
   "severe_collisions": 0,
   "collision_details": [
     {
-      "part_a": "base_plate",
-      "part_b": "wheel_fl",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "base_plate",
-      "part_b": "wheel_fr",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "base_plate",
-      "part_b": "wheel_rl",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "base_plate",
-      "part_b": "wheel_rr",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "top_plate",
-      "part_b": "standoff_fl",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "top_plate",
-      "part_b": "standoff_fr",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "top_plate",
-      "part_b": "standoff_rl",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "top_plate",
-      "part_b": "standoff_rr",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
       "part_a": "top_plate",
       "part_b": "arm_l_upper_link",
       "penetration_mm": 0.0,
@@ -62,42 +14,6 @@
     {
       "part_a": "top_plate",
       "part_b": "arm_r_upper_link",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "motor_driver_board",
-      "part_b": "ipc_bracket",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "arm_l_base",
-      "part_b": "arm_l_upper_link",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "arm_l_upper_link",
-      "part_b": "arm_l_forearm",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "arm_r_base",
-      "part_b": "arm_r_upper_link",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "arm_r_upper_link",
-      "part_b": "arm_r_forearm",
-      "penetration_mm": 0.0,
-      "contact_points": 1
-    },
-    {
-      "part_a": "lidar_mount",
-      "part_b": "camera_bracket",
       "penetration_mm": 0.0,
       "contact_points": 1
     }

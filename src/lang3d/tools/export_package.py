@@ -252,15 +252,23 @@ def build_complex_robot() -> Assembly:
 # ============================================================================
 
 
-def _freecad_ops_for_part(part: Part, joints: list | None = None) -> list[dict]:
+def _freecad_ops_for_part(
+    part: Part,
+    joints: list | None = None,
+    all_parts: list | None = None,
+) -> list[dict]:
     """Generate FreeCAD operation list for a single part with engineering features.
 
     If *joints* is provided, connection features (bolt holes, bearing seats,
     snap-fits, etc.) are generated from ``Joint.connection`` metadata and
     merged into the ops list before the final export.
+
+    If *all_parts* is provided, bolted-connection holes are derived from a
+    SHARED pattern per joint so mating holes ALIGN ("对接好"); otherwise each
+    part lays out holes independently (the "连不上" defect).
     """
     from .part_feature_engine import generate_ops
-    return generate_ops(part, joints=joints)
+    return generate_ops(part, joints=joints, all_parts=all_parts)
 
 
 # ============================================================================
@@ -315,7 +323,11 @@ def generate_part_stls(
     all_part_ops: list[list[dict]] = []
     for part in assembly.parts:
         part_joints = joints_by_part.get(part.name, [])
-        ops = _freecad_ops_for_part(part, joints=part_joints)
+        # Pass the full parts list so bolted connections compute a SHARED
+        # hole pattern per joint → mating holes align ("对接好").
+        ops = _freecad_ops_for_part(
+            part, joints=part_joints, all_parts=assembly.parts,
+        )
         for op in ops:
             if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
                 op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
@@ -338,6 +350,7 @@ def generate_part_stls(
         validation_report = validate_all_parts(
             assembly.parts, str(stl_dir_p), timeout=timeout,
             joints_by_part=joints_by_part,
+            all_parts=assembly.parts,
         )
 
         # Rewrite standalone scripts for parts that were simplified so the
@@ -348,7 +361,7 @@ def generate_part_stls(
                 part_obj = next(p for p in assembly.parts if p.name == r.part_name)
                 cfg = infer_features(part_obj)
                 cfg_simple = _simplify_config(cfg, r.simplification_level)
-                simplified_ops = _gen(part_obj, config=cfg_simple)
+                simplified_ops = _gen(part_obj, config=cfg_simple, all_parts=assembly.parts)
                 for op in simplified_ops:
                     if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
                         op["path"] = op["path"].replace("{WORKSPACE}", str(fc_dir.parent))
@@ -615,7 +628,7 @@ def export_engineering_package(
                         from .part_feature_engine import infer_features, generate_ops as _gen
                         cfg = infer_features(part_obj)
                         cfg_simple = _simplify_config(cfg, r.simplification_level)
-                        simplified_ops = _gen(part_obj, config=cfg_simple)
+                        simplified_ops = _gen(part_obj, config=cfg_simple, all_parts=assembly.parts)
                         # Fix workspace placeholder
                         for op in simplified_ops:
                             if op.get("type") == "export_stl" and "{WORKSPACE}" in op.get("path", ""):
@@ -714,8 +727,31 @@ def export_engineering_package(
                 generated_files.append(str(render_path.with_suffix(".FCStd")))
             if render_path.with_suffix(".stl").exists():
                 generated_files.append(str(render_path.with_suffix(".stl")))
-    except Exception:
-        pass  # FreeCAD rendering is optional; skip if not available
+            else:
+                logger.warning(
+                    "assembly render script ran but produced no assembly.stl"
+                )
+    except Exception as e:
+        logger.warning("Assembly render failed (FreeCAD path): %s", e)
+    # Fallback: build the assembly STL via trimesh when FreeCAD failed (or the
+    # STL is missing).  FreeCAD overflows its stack on large assemblies (the
+    # 438-object dual-arm crashes); trimesh has no such limit and produces the
+    # same deliverable — positioned parts + fasteners at bolted joints.
+    if not render_path.with_suffix(".stl").exists():
+        try:
+            from .freecad import build_assembly_stl_trimesh
+            stl_out = build_assembly_stl_trimesh(
+                assembly_parts=assembly_parts_info,
+                positions=positions,
+                output_path=str(render_path),
+                joints=assembly.joints,
+            )
+            if render_path.with_suffix(".stl").exists():
+                generated_files.append(str(render_path.with_suffix(".stl")))
+                logger.info("assembly.stl built via trimesh fallback (%d bytes)",
+                            render_path.with_suffix(".stl").stat().st_size)
+        except Exception as e:
+            logger.warning("trimesh assembly fallback failed: %s", e)
 
     # Exploded view
     exploded_script = build_assembly_script(

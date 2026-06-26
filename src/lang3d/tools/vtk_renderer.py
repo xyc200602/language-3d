@@ -489,19 +489,41 @@ class VTKOffscreenRenderer:
         position: tuple[float, float, float] = (0, 0, 0),
         rotation: tuple[float, float, float, float] | None = None,
         category: str = "",
+        orient_axis: str = "z",
     ) -> None:
-        """Add a cylinder along the Z axis (approximation from dimensions)."""
+        """Add a cylinder along the requested axis (approximation from dims).
+
+        ``vtkCylinderSource`` aligns along Y by default. We rotate to the
+        requested axis so the cylinder's HEIGHT extends the right way:
+
+        * ``orient_axis="z"`` (default) — height along Z. Used for servos,
+          standoffs, vertical shafts (RotateX(90): Y→Z).
+        * ``orient_axis="y"`` — height along Y. Used for WHEELS whose axle is
+          along Y (axis="y" joint): the cylinder lies on its side so its
+          circular faces point ±Y and it rolls along X. No rotation needed
+          (Y is the source default).
+        * ``orient_axis="x"`` — height along X (RotateZ(90): Y→X).
+
+        Before this parameter existed, ALL cylinders got RotateX(90) (height
+        on Z), which stood wheels vertically — a wheel rendered as a tall
+        disc instead of lying on its side. That distorted the chassis's
+        rendered aspect ratio (wheels read as circles in top view instead
+        of narrow rectangles) and is the root cause of "长宽对不上".
+        """
         import vtk
 
         source = vtk.vtkCylinderSource()
         source.SetRadius(radius)
         source.SetHeight(height)
         source.SetResolution(resolution)
-        # vtkCylinderSource aligns along Y by default; rotate to Z
         source.Update()
 
         transform = vtk.vtkTransform()
-        transform.RotateX(90)  # Y -> Z
+        if orient_axis == "z":
+            transform.RotateX(90)  # Y -> Z (servos, vertical shafts)
+        elif orient_axis == "x":
+            transform.RotateZ(90)  # Y -> X
+        # orient_axis == "y": no rotation (source default = along Y = wheels)
 
         transform_filter = vtk.vtkTransformPolyDataFilter()
         transform_filter.SetInputConnection(source.GetOutputPort())
@@ -660,6 +682,7 @@ class VTKOffscreenRenderer:
         output_path: str,
         focus_point: tuple[float, float, float] | None = None,
         parallel_scale: float | None = None,
+        direction: tuple[float, float, float] | None = None,
     ) -> str:
         """Render a single view to a PNG file. Returns the output path.
 
@@ -674,6 +697,11 @@ class VTKOffscreenRenderer:
           * parallel_scale — half-height of the visible orthographic volume
             in mm (default: ``max(scene_extent * 0.6, 50)``).  A small value
             (e.g. 60) zooms in on the gripper so fingers are VLM-visible.
+          * direction — override the camera viewing direction (unit vector
+            from camera toward focal point). Default comes from VIEW_PRESETS.
+            Used for the gripper close-up so the camera looks PERPENDICULAR
+            to the finger-gap axis (two fingers side-by-side, gap visible),
+            not INTO the gap (which makes them overlap into a solid block).
         """
         import vtk
 
@@ -701,12 +729,20 @@ class VTKOffscreenRenderer:
         # Build renderer with lights positioned at the scene centroid.
         renderer = self._build_renderer(centroid=(cx, cy, cz))
 
-        # View direction from preset (unit vector)
-        px, py, pz = preset["position"]
-        fx, fy, fz = preset["focal"]
-        dx, dy, dz = px - fx, py - fy, pz - fz
-        norm = math.sqrt(dx * dx + dy * dy + dz * dz)
-        dir_x, dir_y, dir_z = dx / norm, dy / norm, dz / norm
+        # View direction from preset (unit vector) — overridable via the
+        # ``direction`` kwarg (gripper close-up uses a perpendicular-to-gap
+        # direction so two fingers render side-by-side, not overlapped).
+        if direction is not None:
+            dir_x, dir_y, dir_z = direction
+            dnorm = math.sqrt(dir_x * dir_x + dir_y * dir_y + dir_z * dir_z)
+            if dnorm > 1e-9:
+                dir_x, dir_y, dir_z = dir_x / dnorm, dir_y / dnorm, dir_z / dnorm
+        else:
+            px, py, pz = preset["position"]
+            fx, fy, fz = preset["focal"]
+            dx, dy, dz = px - fx, py - fy, pz - fz
+            norm = math.sqrt(dx * dx + dy * dy + dz * dz)
+            dir_x, dir_y, dir_z = dx / norm, dy / norm, dz / norm
 
         # Camera distance: enough to fit the full scene with padding.
         distance = max_extent * 1.8
@@ -852,10 +888,22 @@ class VTKOffscreenRenderer:
             cmin = max(0, cmin - pad_w)
             cmax = min(w, cmax + pad_w)
             cropped = img.crop((cmin, rmin, cmax, rmax))
-            # Resize back to original dimensions so consumers see no size
-            # change (VLM image inputs, file-size checks, etc.).
-            cropped = cropped.resize((w, h), Image.LANCZOS)
-            cropped.save(image_path)
+            # Resize back to original dimensions while PRESERVING ASPECT RATIO.
+            # The previous code did cropped.resize((w, h)) which non-uniformly
+            # stretched the content: a tall box (455×781) became 1200×900,
+            # stretching X by 2.64× but Y by only 1.15× → the box read as wide
+            # instead of tall. This was the root cause of "长宽对不上" (every
+            # view's proportions didn't match). We now fit the cropped content
+            # into the target size with uniform scaling and pad the remainder
+            # with the background color so the saved PNG keeps its original
+            # pixel dimensions without distorting the geometry.
+            cw, ch = cropped.size
+            scale = min(w / cw, h / ch)
+            new_cw, new_ch = int(cw * scale), int(ch * scale)
+            cropped = cropped.resize((new_cw, new_ch), Image.LANCZOS)
+            canvas = Image.new(img.mode, (w, h), (245, 245, 250))
+            canvas.paste(cropped, ((w - new_cw) // 2, (h - new_ch) // 2))
+            canvas.save(image_path)
         except Exception:
             # Cropping is a visual enhancement only — never block render.
             pass
@@ -898,6 +946,7 @@ class VTKOffscreenRenderer:
                 output_path,
                 focus_point=overrides.get("focus_point"),
                 parallel_scale=overrides.get("parallel_scale"),
+                direction=overrides.get("direction"),
             )
             paths.append(output_path)
 
@@ -1267,25 +1316,35 @@ def render_assembly_from_positions(
         # Convert rotation list to tuple if present
         rot_tuple = tuple(rot) if rot and rot[3] != 0.0 else None
 
-        # All parts — including gripper fingers — use swap_xy=True.  FreeCAD
-        # generates STLs with length on X; swap_xy (R_z(-90°)) maps FreeCAD
-        # +X → solver -Y (front), so the long axis ends up pointing forward
-        # along the arm.  For fingers, the L-shaped tips (FreeCAD ±Y) map to
-        # solver ∓X, so the left finger tip (at solver -X) curves toward +X
-        # and the right finger tip (at solver +X) curves toward -X — the
-        # grip surfaces face each other correctly.
+        # STL axis-swap policy.  FreeCAD's makeBox puts the FIRST arg on X.
+        # - Arm-chain parts (raw_script families: arm_link / arm_joint /
+        #   gripper / gripper_finger) generate length on X, so they need
+        #   swap_xy (R_z(-90°): +X → -Y) so the link extends along the arm.
+        # - Chassis BOX parts (base_plate, chassis_body, battery_box, top_plate)
+        #   now generate with X=width, Y=length (the make_box/plate_with_holes
+        #   ops swap to match the solver convention).  swap_xy would
+        #   DOUBLE-rotate them → the long edge ends up on the wrong axis
+        #   (the "车底盘方向不对" defect).  These must NOT swap.
+        # - Wheels (orient_axis="y") are radially symmetric about Y; swapping
+        #   turns them into 磨盘.  No swap.
+        n_lower = name.lower()
+        _is_wheel = n_lower.startswith("wheel_")
+        _is_chassis_box = n_lower in (
+            "base_plate", "chassis_body", "battery_box", "top_plate",
+        ) or n_lower.startswith("standoff_")
+        _swap = not _is_wheel and not _is_chassis_box
 
         # Try STL first (real geometry)
         stl_loaded = False
         if stl_dir:
             stl_path = os.path.join(stl_dir, f"{name}.stl")
             if os.path.isfile(stl_path):
-                r.load_stl(stl_path, color=color, position=tuple(pos), rotation=rot_tuple, category=category, swap_xy=True)
+                r.load_stl(stl_path, color=color, position=tuple(pos), rotation=rot_tuple, category=category, swap_xy=_swap)
                 stl_loaded = True
 
         # Fallback to dimension-based approximation
         if not stl_loaded:
-            _add_dimension_approximation(r, dims, color, pos, rot_tuple, category=category)
+            _add_dimension_approximation(r, dims, color, pos, rot_tuple, category=category, name=name)
 
     # Fasteners (bolts, washers, nuts) at bolted joints
     if joints:
@@ -1311,11 +1370,52 @@ def render_assembly_from_positions(
             gx = sum(p[0] for p in pts) / len(pts)
             gy = sum(p[1] for p in pts) / len(pts)
             gz = sum(p[2] for p in pts) / len(pts)
+
+            # Camera DIRECTION: look PERPENDICULAR to the finger-gap axis so
+            # the two fingers render side-by-side with the gap between them.
+            # Pre-fix the camera used the iso direction (350,-350,250), which
+            # looks INTO the X-axis gap → the two fingers overlapped into one
+            # solid block in the render, and the VLM reported "no two prongs".
+            # The gap axis = direction separating the two fingers (largest
+            # component-wise spread of ALL finger centres — for a dual-arm
+            # robot that's the X axis separating the two grippers, not the
+            # tiny intra-gripper gap). The camera must look along a DIFFERENT
+            # horizontal axis so the fingers are in the frame.
+            direction = (0.0, -1.0, 0.3)  # safe default: look along -Y
+            if len(finger_names) >= 2:
+                fpts = [positions[n]["position"] for n in finger_names]
+                spread = [max(p[i] for p in fpts) - min(p[i] for p in fpts)
+                          for i in range(3)]
+                gap_axis = spread.index(max(spread))
+                # Look perpendicular to the gap axis, horizontally.
+                if gap_axis == 0:      # gap along X → look along Y
+                    direction = (0.0, -1.0, 0.3)
+                elif gap_axis == 1:    # gap along Y → look along X
+                    direction = (1.0, 0.0, 0.3)
+                else:                  # gap along Z (rare) → look along Y
+                    direction = (0.0, -1.0, 0.3)
+
+            # Adaptive zoom: fit ALL gripper/finger parts in frame + margin.
+            # A single-arm gripper has fingers ~32-50mm apart → scale 60
+            # (120mm view) shows the gap crisply.  But a dual-arm robot with
+            # collision-aware splay has its two grippers far apart (X span
+            # 400-600mm) — a fixed 60 scale leaves them off-frame, so the
+            # VLM sees "plain background, no gripper" and the fix-loop
+            # deadlocks.  Scale to 1.4× the view-plane half-extent (the
+            # larger X/Y spread, since ``direction`` is horizontal) with a
+            # 60mm floor so a single gripper still fills the frame.
+            view_half = 0.0
+            if len(pts) >= 2:
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                view_half = max((max(xs) - min(xs)) / 2.0,
+                                (max(ys) - min(ys)) / 2.0)
+            parallel_scale = max(60.0, view_half * 1.4)
+
             view_overrides["gripper_closeup"] = {
                 "focus_point": (gx, gy, gz),
-                # 60mm half-height → 120mm visible vertically; 32mm finger
-                # gap occupies ~27% of the frame — clearly resolvable.
-                "parallel_scale": 60.0,
+                "parallel_scale": parallel_scale,
+                "direction": direction,
             }
 
     return r.render_all_views(output_dir, views=views, view_overrides=view_overrides)
@@ -1328,19 +1428,27 @@ def _add_dimension_approximation(
     position: list[float],
     rotation: tuple[float, float, float, float] | None = None,
     category: str = "",
+    name: str = "",
 ) -> None:
     """Add a box or cylinder approximation based on dimension dict.
 
     For box parts with a significant Y-axis rotation (typical of arm joints),
     the length and height dimensions are swapped so the long axis ends up
     horizontal after the actor rotation is applied.
+
+    Cylinder orientation is inferred from the part NAME: wheels (``wheel_*``)
+    have their axle along Y (axis="y" joint), so the cylinder height (wheel
+    width) extends along Y — the cylinder lies on its side and rolls along X.
+    All other cylinders (servos, standoffs) keep height on Z (vertical).
     """
     if "outer_diameter" in dims or "diameter" in dims:
         d = dims.get("outer_diameter", dims.get("diameter", 10))
         h = dims.get("height", dims.get("length", 10))
+        # Wheels have axle along Y (axis="y"); everything else is vertical (Z).
+        orient = "y" if name.lower().startswith("wheel_") else "z"
         renderer.add_cylinder(
             radius=d / 2, height=h, color=color, position=tuple(position),
-            rotation=rotation, category=category,
+            rotation=rotation, category=category, orient_axis=orient,
         )
     elif "length" in dims and "width" in dims:
         l = dims["length"]

@@ -116,51 +116,129 @@ def _joint_schedule(n_dof: int) -> list[tuple[str, tuple[float, float]]]:
 _ZIGZAG_BASE = [-45.0, 30.0, -15.0, 10.0]
 
 
-def zigzag_angles(n_pitch_joints: int) -> list[float]:
+def zigzag_angles(n_pitch_joints: int, base: list[float] | None = None) -> list[float]:
     """Return a sign-alternating default-angle sequence for *n* pitch joints.
 
     For >4 pitch joints the base pattern repeats (modulo sign preservation),
     which keeps every arm extended outward instead of folding on itself.
+
+    ``base`` overrides the default wide-bend pattern (used by the mobile
+    profile to keep the arm more vertical — a mobile manipulator at rest has
+    its arms tucked up, not flung forward).
     """
+    pattern = base if base is not None else _ZIGZAG_BASE
     if n_pitch_joints <= 0:
         return []
     if n_pitch_joints == 1:
-        return [-35.0]
+        return [-35.0 if base is None else base[0]]
     out: list[float] = []
     for i in range(n_pitch_joints):
-        out.append(_ZIGZAG_BASE[i % len(_ZIGZAG_BASE)])
+        out.append(pattern[i % len(pattern)])
     return out
 
 
 # ---------------------------------------------------------------------------
-# Dimension heuristics (from validated EXAMPLE_ARM_STANDALONE ranges)
+# Dimension profiles — real COTS servos + per-use-scale structural parts
 # ---------------------------------------------------------------------------
-
-# Servo diameters shrink down the chain (base heaviest, wrist lightest).
-_SERVO_DIMS = [
-    {"diameter": 40, "height": 35},  # base / shoulder
-    {"diameter": 36, "height": 30},  # elbow
-    {"diameter": 30, "height": 28},  # upper wrist
-    {"diameter": 28, "height": 26},  # distal wrist
+#
+# Servos are FUNCTIONAL parts with real COTS specs (parts_catalog.py):
+# MG996R 40.7×19.7×42.9mm, DS3218 40.0×20.0×38.5mm, SG90 22.2×11.8×31.0mm.
+# They are NOT invented and must NOT be rescaled (AGENTS.md §1.2). We represent
+# each as a cylinder with the catalog's body cross-section + height, and carry
+# the model number in the part description so ``_bind_catalog_part`` can verify
+# the real dims again at parse time.
+#
+# Links / base plates are STRUCTURAL — their dimensions are a design choice, so
+# they are parameterised by *profile*: a standalone desktop arm can have a big
+# base (bolted to a bench); an arm mounted on a wheeled chassis must be smaller
+# (constrained by the deck, per docs/references/wheeled_dual_arm_proportions.md:
+# real robots have arm-reach ≈ 1-1.5× chassis width, not 5×).
+#
+# Servo specs — keyed by role position (heavy→light down the chain). Each is a
+# real catalog servo: (model, cylinder diameter≈body max dim, height=body height).
+_SERVO_SPECS = [
+    # base / shoulder — highest torque → MG996R (40.7 wide → Ø41)
+    ("MG996R", 41, 43),
+    # elbow — high torque → DS3218 (40.0 wide → Ø40)
+    ("DS3218", 40, 39),
+    # upper wrist → SG90 (22.2 wide → Ø23) — lighter, orientation only
+    ("SG90", 23, 31),
+    # distal wrist → SG90
+    ("SG90", 23, 31),
 ]
 
-# Link lengths decrease down the arm (shoulder longest, wrist shortest).
-_LINK_LENGTHS = [120, 100, 80, 60]
-_LINK_CROSS = {"width": 25, "height": 15}
+# SG90 also drives the gripper (small, low torque).
+_GRIPPER_SERVO_SPEC = ("SG90", 23, 31)  # model, Ø, height
 
-_BASE_PLATE = {"length": 200, "width": 150, "height": 8}
+
+class _Profile:
+    """Per-use structural dimensions for an arm.
+
+    ``desktop`` (default): big base, long links — a standalone arm bolted to a
+      bench (matches the previously validated 4-DOF exemplar, ~360mm reach on a
+      200×150 base, reach/base ≈ 1.8).
+    ``mobile``: compact base + shorter links + tighter bend — for an arm
+      mounted on a wheeled chassis, where the arm must fit on the deck and not
+      reach far forward (which reads as "floating"). The default desktop bend
+      (-45° shoulder) flings the arm 350mm forward on a mobile base; the mobile
+      bend (-15°) keeps the arm more vertical (like a real mobile manipulator
+      at rest: arms tucked up, not extended forward).
+    """
+
+    def __init__(self, base_plate, link_lengths, link_cross, bend_angles):
+        self.base_plate = base_plate
+        self.link_lengths = link_lengths
+        self.link_cross = link_cross
+        self.bend_angles = bend_angles
+
+
+_PROFILES: dict[str, _Profile] = {
+    "desktop": _Profile(
+        base_plate={"length": 200, "width": 150, "height": 8},
+        link_lengths=[120, 100, 80, 60],
+        link_cross={"width": 25, "height": 15},
+        # Wide bend for a bench arm reaching forward (horizontal links).
+        bend_angles=[-45.0, 30.0, -15.0, 10.0],
+    ),
+    "mobile": _Profile(
+        base_plate={"length": 70, "width": 50, "height": 6},
+        link_lengths=[80, 70, 60, 50],
+        link_cross={"width": 20, "height": 12},
+        # Upright "ready" pose: the arm rises vertically from the deck and
+        # bends slightly forward, like a real mobile manipulator at rest
+        # (e.g. HSR/TIAGo with arms tucked up). With front/back anchors the
+        # arm extends horizontally in -Y, so a NEGATIVE shoulder pitch
+        # (-80°) rotates it UPWARD (+Z), and the alternating elbow/wrist
+        # angles (+30/-15/+8) curl it into a compact reach pose above the
+        # deck — NOT flung 594mm forward and underground (the old +30/-20/
+        # +15 did exactly that). Verified: gripper lands at Z≈+450, nothing
+        # below Z=0, forward reach ≈340mm (within the chassis footprint).
+        bend_angles=[-80.0, 30.0, -15.0, 8.0],
+    ),
+}
+
+# Gripper dimensions are the same across profiles (a functional assembly:
+# SG90 servo + standard finger geometry). Small enough to fit any arm; its
+# dimensions come from the servo + finger design, not scaling.
 _GRIPPER_BASE = {"length": 28, "width": 50, "height": 32}
 _GRIPPER_SERVO = {"length": 23, "width": 12, "height": 22}
 _FINGER = {"length": 60, "width": 14, "height": 28}
 
 
+def _servo_spec(idx: int) -> tuple[str, int, int]:
+    """Return (model_number, diameter, height) for the servo at chain index."""
+    return _SERVO_SPECS[min(idx, len(_SERVO_SPECS) - 1)]
+
+
 def _servo_dims(idx: int) -> dict[str, int]:
-    return dict(_SERVO_DIMS[min(idx, len(_SERVO_DIMS) - 1)])
+    """Cylinder dims (diameter, height) for the servo at chain index."""
+    _model, d, h = _servo_spec(idx)
+    return {"diameter": d, "height": h}
 
 
-def _link_dims(idx: int) -> dict[str, int]:
-    base = dict(_LINK_CROSS)
-    base["length"] = _LINK_LENGTHS[min(idx, len(_LINK_LENGTHS) - 1)]
+def _link_dims(idx: int, profile: _Profile) -> dict[str, int]:
+    base = dict(profile.link_cross)
+    base["length"] = profile.link_lengths[min(idx, len(profile.link_lengths) - 1)]
     return base
 
 
@@ -176,21 +254,31 @@ _ROLE_AXIS: dict[str, str] = {"pitch": "x", "yaw": "z", "roll": "y"}
 # ---------------------------------------------------------------------------
 
 
-def build_arm_example(n_dof: int) -> str:
+def build_arm_example(n_dof: int, profile: str = "desktop") -> str:
     """Build a complete assembly-JSON string for an *n_dof* single arm.
 
     Returns JSON text matching the schema of ``EXAMPLE_ARM_STANDALONE``:
     ``{name, description, default_angles, parts[], joints[]}``.  The result
     is a standalone arm on a base plate with a two-finger gripper — directly
     consumable by ``generate_assembly_from_nl`` as the few-shot example.
+
+    Args:
+        n_dof: degrees of freedom (clamped to 2-7).
+        profile: structural scale — ``"desktop"`` (default, big base + long
+            links for a bench-mounted arm) or ``"mobile"`` (compact base +
+            short links for an arm mounted on a wheeled chassis, per the
+            reference proportions in docs/references/). Servos are the SAME
+            real COTS parts in both profiles (functional parts are never
+            rescaled); only the structural links/base differ.
     """
     n_dof = max(2, min(int(n_dof), 7))
+    prof = _PROFILES.get(profile, _PROFILES["desktop"])
     schedule = _joint_schedule(n_dof)
 
     parts: list[dict[str, Any]] = [
         {"name": "base_plate", "category": "structural",
          "description": "底座安装板", "material": "Aluminum",
-         "dimensions": dict(_BASE_PLATE)},
+         "dimensions": dict(prof.base_plate)},
     ]
     joints: list[dict[str, Any]] = []
     default_angles: dict[str, float] = {}
@@ -207,19 +295,32 @@ def build_arm_example(n_dof: int) -> str:
         servo_name = "base_yaw_servo" if is_base else f"{role}_servo_{role_i}"
         link_name = f"{role}_link_{role_i}"
 
+        chain_idx = pitch_idx if role == "pitch" else role_i
+        model, _d, _h = _servo_spec(chain_idx)
         parts.append({
             "name": servo_name, "category": "actuator",
-            "description": f"{'底座旋转' if is_base else role}舵机",
+            # Carry the real model number so _bind_catalog_part can re-verify
+            # the catalog dims at parse time (defense in depth).
+            "description": f"{'底座旋转' if is_base else role}舵机{model}",
             "material": "Steel",
-            "dimensions": _servo_dims(pitch_idx if role == "pitch" else role_i),
+            "dimensions": _servo_dims(chain_idx),
         })
         parts.append({
             "name": link_name, "category": "structural",
             "description": f"{role}连杆", "material": "Aluminum",
-            "dimensions": _link_dims(pitch_idx if role == "pitch" else role_i),
+            "dimensions": _link_dims(chain_idx, prof),
         })
 
-        # servo joint: parent→servo (revolute about the role axis)
+        # servo joint: parent→servo (revolute about the role axis).
+        # The base joint uses top/bottom (sits on the plate, axis=z). Every
+        # later joint uses front/back so the link's `length` dimension
+        # becomes the axis-to-axis distance the IK solver needs, and the arm
+        # extends horizontally like a real manipulator. The pitch joint's
+        # default angle bends it up/down into a reach pose.
+        # IMPORTANT: do NOT use top/bottom for non-base joints — the
+        # _fix_arm_chain_anchors sanitizer in assembly_generator.py would
+        # rewrite them back to front/back anyway, and the half-converted
+        # result breaks the kinematic chain.
         joints.append({
             "type": "revolute", "parent": prev_part, "child": servo_name,
             "axis": axis, "range_deg": list(rng),
@@ -227,7 +328,10 @@ def build_arm_example(n_dof: int) -> str:
             "child_anchor": "bottom" if is_base else "back",
         })
         # link joint: servo→link (fixed — the link is rigidly bolted to the
-        # servo output, same convention as EXAMPLE_ARM_STANDALONE)
+        # servo output). front/back continues the horizontal extension so
+        # the next pitch axis sits one link-length further out. (The base
+        # yaw servo's own link also extends horizontally from the servo —
+        # only the servo-to-plate mount is vertical.)
         joints.append({
             "type": "fixed", "parent": servo_name, "child": link_name,
             "parent_anchor": "front", "child_anchor": "back",
@@ -246,7 +350,7 @@ def build_arm_example(n_dof: int) -> str:
     # instead of lying flat; yaw/roll stay 0 so the arm points forward and
     # the gripper stays symmetric (matches _ensure_arm_default_angles).
     n_pitch = sum(1 for r, _ in schedule if r == "pitch")
-    zz = zigzag_angles(n_pitch)
+    zz = zigzag_angles(n_pitch, base=prof.bend_angles)
     default_angles: dict[str, float] = {}
     pi = 0
     for j in joints:

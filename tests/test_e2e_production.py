@@ -734,8 +734,51 @@ def _phase5_content_validation(
                     watertight >= len(stl_files) * 0.6,
                     f"Watertight: {watertight}/{len(stl_files)}",
                 )
+                # Gripper fingers are functional parts — a non-watertight
+                # finger STL means a broken mesh (open holes in the L-hook
+                # tip) that renders as a thin shell and cannot physically
+                # clamp an object.  The 60% overall ratio hides this: a run
+                # with 4 broken fingers still passes at 89%.  Fingers must
+                # ALL be watertight — no exceptions, no ratio.  AGENTS.md §5.1
+                # (带夹爪的装配体必须 sim_grasp) presupposes intact geometry.
+                finger_files = [f for f in stl_files if "finger" in f.stem.lower()]
+                if finger_files:
+                    finger_wt = sum(
+                        1 for f in finger_files
+                        if hasattr((m := trimesh.load(str(f))), "is_watertight")
+                        and m.is_watertight
+                    )
+                    _check(
+                        checks, phase, "gripper_finger_watertight",
+                        finger_wt == len(finger_files),
+                        f"Gripper fingers watertight: {finger_wt}/{len(finger_files)} "
+                        "(ALL required — broken fingers cannot grasp)",
+                        critical=True,
+                    )
             except ImportError:
                 _skip(checks, phase, "mesh_quality", "trimesh not installed")
+
+    # STEP completeness: every exported STL must have a matching STEP.
+    # STEP is the "production-level" deliverable (project expectation:
+    # 生产级 3D 模型 STL/STEP).  A missing STEP means the FreeCAD script
+    # raised during export (chamfer/fillet BRep_API failure) — a real bug,
+    # not a cosmetic gap.  Previously Phase 4 only checked "step_parts/
+    # exists", so 5/13 missing STEP files scored as PASS.  Now: the STEP
+    # count must EQUAL the STL count.  No ratio, no floor — if a part's
+    # CAD op fails, fix the op, don't relax the check.
+    step_dir = Path(export_dir) / "step_parts"
+    stl_dir = Path(export_dir) / "stl_parts"
+    if stl_dir.is_dir() and step_dir.is_dir():
+        stl_stems = {f.stem for f in stl_dir.glob("*.stl")}
+        step_stems = {f.stem for f in step_dir.glob("*.step")}
+        missing = sorted(stl_stems - step_stems)
+        _check(
+            checks, phase, "step_completeness",
+            len(missing) == 0,
+            f"STEP files: {len(step_stems)}/{len(stl_stems)}"
+            + (f" (missing: {', '.join(missing[:5])})" if missing else ""),
+            critical=True,
+        )
 
     # VLM visual match check
     val_report_path = Path(export_dir) / "part_validation_report.json"
@@ -802,12 +845,15 @@ def _phase6_physical_sanity(
     # motion (a static check at home pose cannot see them).  Requires
     # python-fcl; degrades to _warn with an install hint otherwise.
     #
-    # Pass criterion: every revolute joint must retain at least one
-    # collision-free arc spanning >= 20% of its declared range.  Real
-    # compact arms routinely self-collide at workspace extremes; what
-    # matters for functionality is that a non-trivial usable region
-    # exists.  Requiring zero collisions everywhere is unrealistic for
-    # LLM-generated designs and would block otherwise-functional arms.
+    # Pass criterion: ZERO collisions across the joint motion sweep.
+    # A collision during articulation is an interpenetration defect
+    # (穿模) — two parts occupying the same space.  The previous criterion
+    # ("each joint retains >=35% collision-free arc") let 6 colliding
+    # joints score as CRITICAL PASS, hiding structural defects like arm
+    # servos piercing the chassis body.  If a real design legitimately
+    # self-collides at a workspace extreme, that is a design constraint to
+    # fix (limit the joint range), not a reason to relax the test.  No
+    # ratio, no usable-arc carve-out: collision_count == 0 or FAIL.
     try:
         from lang3d.tools.motion_collision import MotionCollisionChecker
 
@@ -819,27 +865,13 @@ def _phase6_physical_sanity(
             jr.joint_name for jr in motion_result.joint_results if jr.has_collision
         ]
 
-        min_usable_fraction = 0.35
-        joints_usable: list[bool] = []
-        for jr in motion_result.joint_results:
-            total = jr.angle_max_deg - jr.angle_min_deg
-            if total <= 0:
-                joints_usable.append(True)
-                continue
-            largest_free = max(
-                (e - s for s, e in jr.collision_free_segments),
-                default=0.0,
-            )
-            joints_usable.append(largest_free / total >= min_usable_fraction)
-        all_usable = all(joints_usable) if joints_usable else True
-
         _check(
             checks, phase, "motion_collision_sweep",
-            all_usable,
+            len(colliding) == 0,
             f"Motion sweep: {motion_result.joints_checked} joints, "
             f"{len(colliding)} with collisions"
-            + (f" ({', '.join(colliding[:3])})" if colliding else "")
-            + f"; all joints have >= {int(min_usable_fraction * 100)}% usable range",
+            + (f" ({', '.join(colliding)})" if colliding else "")
+            + (" — collision-free" if not colliding else " — 穿模 detected"),
             critical=True,
         )
     except (ImportError, RuntimeError) as exc:
@@ -979,6 +1011,7 @@ def _phase7_mujoco_simulation(
     checks: list[dict],
     export_dir: str,
     min_joints: int,
+    assembly: Any = None,
 ) -> None:
     """Load the URDF into MuJoCo and verify physics + joint actuation.
 
@@ -1097,6 +1130,57 @@ def _phase7_mujoco_simulation(
             f"Actuated joints: {actuated} (min {min_joints})",
             critical=True,
         )
+
+        # sim_grasp: if the assembly has a gripper (2 SLIDE finger joints),
+        # run the three-phase grasp test (zero-g close → gravity hold →
+        # lift) and require grasp_ok.  AGENTS.md §5.1: "带夹爪的装配体必须
+        # sim_grasp, 不做不许标完成".  Previously this requirement had ZERO
+        # e2e coverage — a robot with broken gripper STLs still scored
+        # 92% PASS because no check ever exercised the grasp.  Now the
+        # "能抓东西" project expectation is actually verified.
+        has_gripper = any(
+            getattr(j, "type", "") == "prismatic"
+            and any("finger" in c.lower() for c in (j.child, j.parent))
+            for j in assembly.joints
+        )
+        if not has_gripper:
+            _skip(
+                checks, phase, "sim_grasp",
+                "No gripper (no finger prismatic joints) — grasp test N/A",
+            )
+        else:
+            try:
+                from lang3d.tools.sim_mujoco import SimGraspTool
+                grasp_tool = SimGraspTool()
+                grasp_report = grasp_tool.execute(
+                    urdf_path=str(Path(urdf_path).resolve()),
+                )
+                # The tool emits an authoritative aggregate verdict:
+                # "总体结论: PASS (所有 N 个夹爪均能抓取)" iff EVERY gripper
+                # holds the cube; any failing gripper ⇒ "总体结论: FAIL".
+                # Match that line case-insensitively — NOT per-gripper
+                # "静态抓取: pass" (which would PASS if only one of several
+                # grippers succeeded).  Single-gripper robots also emit
+                # "总体结论: PASS", so this covers both cases.
+                report_lower = grasp_report.lower()
+                grasp_ok = "总体结论: pass" in report_lower
+                # Extract the verdict line for the detail message.
+                verdict_line = next(
+                    (ln for ln in grasp_report.splitlines()
+                     if "静态抓取" in ln or "总体结论" in ln),
+                    grasp_report[:120],
+                )
+                _check(
+                    checks, phase, "sim_grasp", grasp_ok,
+                    f"Grasp test: {'cube held against gravity' if grasp_ok else 'FAILED'}"
+                    f" — {verdict_line.strip()[:100]}",
+                    critical=True,
+                )
+            except Exception as exc:
+                _check(
+                    checks, phase, "sim_grasp", False,
+                    f"Grasp test error: {exc}", critical=True,
+                )
     except Exception as exc:
         _check(
             checks, phase, "mujoco_loads", False,
@@ -1171,7 +1255,7 @@ def run_e2e_case(case: dict) -> dict:
 
     # Phase 7: MuJoCo Simulation (added 2026-06-18)
     print(f"\n--- Phase 7: MuJoCo Simulation ---")
-    _phase7_mujoco_simulation(checks, export_dir or "", case["min_joints"])
+    _phase7_mujoco_simulation(checks, export_dir or "", case["min_joints"], assembly)
 
     # Compute score and save report
     score = _compute_score(checks)

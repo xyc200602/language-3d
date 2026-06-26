@@ -583,6 +583,7 @@ def generate_assembly_from_nl(
     base_url: str | None = None,
     model: str = "GLM-5.2",
     temperature: float = 0.3,
+    system_prompt: str | None = None,
 ) -> Assembly:
     """Generate an Assembly from natural language description using LLM.
 
@@ -592,6 +593,13 @@ def generate_assembly_from_nl(
         base_url: API base URL. Defaults to GLM_BASE_URL env var.
         model: Model name to use.
         temperature: Generation temperature (lower = more deterministic).
+        system_prompt: Optional system prompt override. When ``None`` (the
+            default) the built-in ``ASSEMBLY_GEN_SYSTEM_PROMPT`` is used,
+            preserving the behaviour every existing caller relies on. The
+            multi-expert ``AssemblyPipeline`` passes its Architect persona
+            (``StageAgent.system_prompt(ASSEMBLY_GEN_SYSTEM_PROMPT)``) so the
+            role identity reaches the model on the *first* generation round
+            too, not only on repair rounds (see ``_regenerate_with_feedback``).
 
     Returns:
         Assembly object with parts and joints.
@@ -757,7 +765,7 @@ def generate_assembly_from_nl(
 
     response = backend.chat(
         messages=[Message(role="user", content=user_prompt)],
-        system=ASSEMBLY_GEN_SYSTEM_PROMPT,
+        system=system_prompt if system_prompt is not None else ASSEMBLY_GEN_SYSTEM_PROMPT,
         temperature=temperature,
         max_tokens=16384,
     )
@@ -1192,8 +1200,25 @@ def _ensure_connected(assembly: Assembly, part_names: set[str]) -> None:
         children_map.setdefault(j.parent, set()).add(j.child)
         child_to_parent[j.child] = j.parent
 
-    # BFS from root
-    root = "base_plate" if "base_plate" in part_names else assembly.parts[0].name
+    # BFS from the true kinematic root.
+    # The root is the part that is NEVER a joint child (nothing parents onto
+    # it) — e.g. base_footprint in a Husky chassis, which is the parent of
+    # base_plate but never a child. Hard-coding "base_plate" as the BFS root
+    # was wrong: it left base_footprint unvisited, so this auto-fixer added a
+    # spurious base_plate→base_footprint joint, creating a cycle (no root in
+    # the URDF → MuJoCo "URDF body not found" parse failure). If multiple
+    # parts have no parent, prefer base_footprint/base_plate for stability.
+    children_of_joints = {j.child for j in assembly.joints}
+    candidate_roots = part_names - children_of_joints
+    if not candidate_roots:
+        # Cycle (every part is a child) — fall back to base_plate/first part.
+        root = "base_plate" if "base_plate" in part_names else assembly.parts[0].name
+    elif "base_footprint" in candidate_roots:
+        root = "base_footprint"
+    elif "base_plate" in candidate_roots:
+        root = "base_plate"
+    else:
+        root = next(iter(candidate_roots))
     visited = {root}
     queue = [root]
     while queue:
@@ -2233,13 +2258,43 @@ class AssemblyGenerateTool(Tool):
         output_dir = kwargs.get("output_dir", "")
         max_rounds = int(kwargs.get("max_rounds", 3))
 
+        # Production path: the multi-expert AssemblyPipeline (architect →
+        # solver → cad → verifier → fixer, with role personas, tool
+        # whitelists, SAGE geometric-vs-VLM arbitration, and selective
+        # re-run routing). It returns a dict with the same keys the legacy
+        # loop returned, so the summary builder below is unchanged.
+        # If the pipeline raises, fall back to the legacy monolithic loop
+        # (kept intentionally — see AGENTS.md: avoid silent failures, and
+        # give operators a working path while the pipeline issue is
+        # diagnosed).
+        result = None
         try:
-            result = generate_assembly_with_vlm_loop(
+            from ..agent.pipeline import AssemblyPipeline, PipelineContext
+
+            ctx = PipelineContext(
                 description=description,
                 output_dir=output_dir,
                 max_rounds=max_rounds,
             )
+            result = AssemblyPipeline(ctx).run()
+        except Exception as e:
+            logger.error(
+                "AssemblyPipeline failed (%s); falling back to legacy "
+                "generate_assembly_with_vlm_loop", e,
+            )
 
+        if result is None:
+            try:
+                result = generate_assembly_with_vlm_loop(
+                    description=description,
+                    output_dir=output_dir,
+                    max_rounds=max_rounds,
+                )
+            except Exception as e:
+                logger.error("Assembly generation with VLM loop failed: %s", e)
+                return f"Error: {e}"
+
+        try:
             summary = {
                 "passed": result["passed"],
                 "final_status": result["final_status"],
@@ -2253,9 +2308,8 @@ class AssemblyGenerateTool(Tool):
                 },
             }
             return json.dumps(summary, ensure_ascii=False, indent=2)
-
         except Exception as e:
-            logger.error("Assembly generation with VLM loop failed: %s", e)
+            logger.error("Assembly result summarisation failed: %s", e)
             return f"Error: {e}"
 
 
@@ -2495,8 +2549,14 @@ def _geometric_prevalidation(
     problems = []
 
     # Build adjacency set from joints (parent-child pairs are expected
-    # to be close — they are connected and should not trigger overlap warns)
+    # to be close — they are connected and should not trigger overlap warns).
+    # Adjacency here mirrors mesh_collision.MeshCollisionChecker._build_adjacent_pairs:
+    # direct parent↔child, transitive 2-hop (grandparent↔grandchild, e.g. motor↔wheel
+    # through a suspension link), and siblings (same parent, e.g. chassis_body↔motor
+    # both mounted on base_plate — a real chassis shell CONTAINS its motors, so their
+    # AABB overlap is the intended enclosure, not a collision).
     _adjacent_pairs: set[tuple[str, str]] = set()
+    _children_by_parent: dict[str, list[str]] = {}
     if joints:
         for j in joints:
             if isinstance(j, dict):
@@ -2508,14 +2568,33 @@ def _geometric_prevalidation(
             if p and c:
                 _adjacent_pairs.add((p, c))
                 _adjacent_pairs.add((c, p))
+                _children_by_parent.setdefault(p, []).append(c)
+        # Transitive 2-hop: grandparent↔grandchild.
+        for gp, mids in _children_by_parent.items():
+            for mid in mids:
+                for gc in _children_by_parent.get(mid, []):
+                    _adjacent_pairs.add((gp, gc))
+                    _adjacent_pairs.add((gc, gp))
+        # Siblings: same parent (e.g. chassis_body & motor_* on base_plate).
+        for _parent, siblings in _children_by_parent.items():
+            for i in range(len(siblings)):
+                for k in range(i + 1, len(siblings)):
+                    _adjacent_pairs.add((siblings[i], siblings[k]))
+                    _adjacent_pairs.add((siblings[k], siblings[i]))
 
-    # 1. Collision proxy: parts at same position
+    # 1. Collision proxy: parts at same position.
+    # Parts joined by a joint (parent↔child) legitimately share a position —
+    # e.g. a suspension_link co-located with its motor (a prismatic joint with
+    # zero travel sits at the motor), or two links meeting at a coincident
+    # anchor. Skip such pairs; only flag UNRELATED parts that overlap.
     seen: dict[str, str] = {}
     for name, pdata in positions.items():
         pos = pdata.get("position", [0, 0, 0])
         key = f"{pos[0]:.1f},{pos[1]:.1f},{pos[2]:.1f}"
         if key in seen:
-            problems.append(f"Parts '{name}' and '{seen[key]}' at same position")
+            other = seen[key]
+            if (name, other) not in _adjacent_pairs:
+                problems.append(f"Parts '{name}' and '{other}' at same position")
         else:
             seen[key] = name
 
@@ -2717,6 +2796,12 @@ def _geometric_prevalidation(
         for j_idx in range(i + 1, len(_pos_list)):
             nb = _pos_list[j_idx][0]
             if (na, nb) in _adjacent_pairs:
+                continue
+            # Skip container↔internal: a structural shell (chassis_body, etc.)
+            # intentionally encloses internal parts, so their AABB overlap is
+            # the designed enclosure, not a collision.
+            if any(kw in na.lower() for kw in ("chassis_body", "body_shell", "housing")) or \
+               any(kw in nb.lower() for kw in ("chassis_body", "body_shell", "housing")):
                 continue
             box_b = _aabb_cache.get(nb)
             if box_b is None:

@@ -220,7 +220,9 @@ class TestViewPresets:
 
     def test_four_standard_views(self):
         from lang3d.tools.vtk_renderer import VIEW_PRESETS
-        assert set(VIEW_PRESETS.keys()) == {"isometric", "front", "top", "right"}
+        # The four standard engineering views must always be present.
+        # Additional opt-in views (e.g. gripper_closeup) are allowed.
+        assert {"isometric", "front", "top", "right"}.issubset(VIEW_PRESETS.keys())
 
     def test_isometric_has_positive_z_up(self):
         from lang3d.tools.vtk_renderer import VIEW_PRESETS
@@ -291,3 +293,108 @@ class TestImageDimensions:
         assert os.path.isfile(path)
         # Larger resolution should produce bigger file
         assert os.path.getsize(path) > 5000
+
+
+# ---------------------------------------------------------------------------
+# P1 fixes: gripper close-up view + arm-link position tints
+# ---------------------------------------------------------------------------
+
+
+class TestArmLinkTints:
+    """_link_position_tint gives each arm segment a distinct cool shade so
+    the elbow-fold region stays readable (not one fused silver blob)."""
+
+    def test_shoulder_elbow_wrist_are_distinct(self):
+        from lang3d.tools.vtk_renderer import _link_position_tint
+        s = _link_position_tint("shoulder_link")
+        e = _link_position_tint("elbow_link")
+        w = _link_position_tint("wrist_link")
+        assert s is not None and e is not None and w is not None
+        assert s != e != w != s, "shoulder/elbow/wrist must all differ"
+
+    def test_proximal_to_distal_darkens(self):
+        from lang3d.tools.vtk_renderer import _link_position_tint
+        s = _link_position_tint("shoulder_link")
+        w = _link_position_tint("wrist_link")
+        assert sum(w) < sum(s), "wrist (distal) should be darker than shoulder"
+
+    def test_non_link_returns_none(self):
+        from lang3d.tools.vtk_renderer import _link_position_tint
+        for n in ["base_plate", "shoulder_joint", "elbow_servo",
+                  "wrist_joint", "gripper_base", "shoulder_bolt"]:
+            assert _link_position_tint(n) is None, f"{n} should not be tinted"
+
+    def test_link_variants_match(self):
+        from lang3d.tools.vtk_renderer import _link_position_tint
+        assert _link_position_tint("upper_arm") is not None
+        assert _link_position_tint("forearm") is not None
+        assert _link_position_tint("lower_link") is not None
+
+
+class TestGripperCloseup:
+    """The gripper close-up view focuses the camera on the fingers so the
+    VLM can resolve a 32mm gap that is sub-pixel in a full-arm render."""
+
+    def test_focus_point_and_scale_render(self, tmp_dir):
+        from lang3d.tools.vtk_renderer import VTKOffscreenRenderer
+        r = VTKOffscreenRenderer(width=800, height=600)
+        r.add_box(200, 180, 8, position=(0, 0, 0))
+        r.add_box(16, 16, 28, position=(-16, 0, 200))
+        r.add_box(16, 16, 28, position=(16, 0, 200))
+        path = r.render_to_file(
+            "gripper_closeup", os.path.join(tmp_dir, "closeup.png"),
+            focus_point=(0, 0, 200), parallel_scale=60.0,
+        )
+        assert os.path.isfile(path)
+        assert os.path.getsize(path) > 3000
+
+    def test_render_assembly_with_gripper_closeup(self, tmp_dir):
+        from lang3d.tools.vtk_renderer import render_assembly_from_positions
+        parts = [
+            {"name": "base", "dimensions": {"length": 100, "width": 100, "height": 8}, "category": "structural"},
+            {"name": "gripper_finger_left", "dimensions": {"length": 60, "width": 16, "height": 28}, "category": "mechanical"},
+            {"name": "gripper_finger_right", "dimensions": {"length": 60, "width": 16, "height": 28}, "category": "mechanical"},
+        ]
+        positions = {
+            "base": {"position": [0, 0, 0]},
+            "gripper_finger_left": {"position": [-16, -90, 100]},
+            "gripper_finger_right": {"position": [16, -90, 100]},
+        }
+        paths = render_assembly_from_positions(
+            parts, positions, tmp_dir,
+            views=["isometric", "gripper_closeup"],
+            gripper_closeup=True, width=800, height=600,
+        )
+        assert len(paths) == 2
+        assert any("gripper_closeup" in p for p in paths)
+
+    def test_closeup_makes_fingers_bigger_than_full_view(self, tmp_dir):
+        """Close-up must show fingers at higher pixel resolution than the
+        full isometric view — the whole point of the feature."""
+        from lang3d.tools.vtk_renderer import render_assembly_from_positions
+        from PIL import Image
+        import numpy as np
+        parts = [
+            {"name": "base", "dimensions": {"length": 200, "width": 180, "height": 8}, "category": "structural"},
+            {"name": "shoulder_link", "dimensions": {"length": 130, "width": 28, "height": 18}, "category": "structural"},
+            {"name": "gripper_finger_left", "dimensions": {"length": 60, "width": 16, "height": 28}, "category": "mechanical"},
+            {"name": "gripper_finger_right", "dimensions": {"length": 60, "width": 16, "height": 28}, "category": "mechanical"},
+        ]
+        positions = {
+            "base": {"position": [0, 0, 0]},
+            "shoulder_link": {"position": [0, -60, 70]},
+            "gripper_finger_left": {"position": [-16, -190, 360]},
+            "gripper_finger_right": {"position": [16, -175, 370]},
+        }
+        paths = render_assembly_from_positions(
+            parts, positions, tmp_dir,
+            views=["isometric", "gripper_closeup"],
+            gripper_closeup=True, width=800, height=600,
+        )
+        def yellow_px(path):
+            img = np.array(Image.open(path).convert("RGB")).astype(int)
+            r, g, b = img[:, :, 0], img[:, :, 1], img[:, :, 2]
+            return int(((r > 200) & (g > 180) & (b < 80)).sum())
+        iso = yellow_px(next(p for p in paths if "isometric" in p))
+        close = yellow_px(next(p for p in paths if "gripper_closeup" in p))
+        assert close >= iso * 3, f"closeup yellow {close} should be >= 3x iso {iso}"

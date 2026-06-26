@@ -574,6 +574,13 @@ def _generate_standard_body(
             "outer_radius": _cyl_radius(d),
             "inner_radius": config.bore["diameter_mm"] / 2,
             "height": d["height"],
+            # Wheels (revolute axis="y") must have their cylinder re-pointed
+            # along Y so the tyre + bore align with the axle — see the
+            # orient_axis handling in freecad.py.  Without this the wheel
+            # STL is a flat disc (磨盘) lying in the XY plane, not a wheel.
+            # Convention matches vtk_renderer._add_dimension_approximation
+            # (name.startswith("wheel_") → orient "y").
+            "orient_axis": "y" if name.lower().startswith("wheel_") else "z",
             "name": body,
         })
     elif _has_cylindrical_dims(d):
@@ -581,6 +588,7 @@ def _generate_standard_body(
             "type": "make_cylinder",
             "radius": _cyl_radius(d),
             "height": d.get("height", d.get("length", 10)),
+            "orient_axis": "y" if name.lower().startswith("wheel_") else "z",
             "name": body,
         })
     elif "length" in d and "width" in d:
@@ -707,6 +715,7 @@ def generate_ops(
     part: Part,
     config: FeatureConfig | None = None,
     joints: list[Joint] | None = None,
+    all_parts: list[Part] | None = None,
 ) -> list[dict]:
     """Return a list of FreeCAD operation dicts for *part*.
 
@@ -715,6 +724,11 @@ def generate_ops(
     If *joints* is provided, connection features (bolt holes, bearing seats,
     etc.) are generated from ``Joint.connection`` metadata and merged into
     the ops list before the final export.
+
+    If *all_parts* is provided, bolted-connection holes are derived from a
+    SHARED pattern computed once per joint (from BOTH mating parts' faces)
+    so the holes ALIGN across the interface — the fix for "连不上".
+    Without it each part lays out holes from its own dimensions.
 
     The function tracks the **current body name** through every operation
     that creates a new document object (``boolean``, ``shell``, ``pocket``).
@@ -765,6 +779,12 @@ def generate_ops(
         from ..knowledge.mechanics import Joint as JointType
 
         engine = ConnectionFeatureEngine()
+        # Index the sibling parts (if provided) by name so we can resolve
+        # the MATE of each joint's current part and compute ONE shared
+        # bolt-hole pattern for the interface.  Without this, each part
+        # ran _auto_layout_bolts from its own face → mismatched holes
+        # ("连不上").  See ConnectionFeatureEngine.compute_shared_bolt_pattern.
+        _by_name = {p.name: p for p in (all_parts or [])}
         for ji, joint in enumerate(joints):
             if joint.connection is None:
                 continue
@@ -772,10 +792,32 @@ def generate_ops(
             if joint.parent != name and joint.child != name:
                 continue
             anchor = joint.parent_anchor if joint.parent == name else joint.child_anchor
+
+            # Compute a shared bolt pattern for this joint ONCE, so BOTH
+            # mating parts drill holes at matching (u,v) fractions.  We
+            # recompute per part (cheap) but deterministically — the result
+            # depends only on (bolt_count, bolt_size, the two face sizes),
+            # so both parts get the identical list.
+            shared_pattern = None
+            if all_parts is not None and joint.connection.type == "bolted":
+                mate_name = joint.child if joint.parent == name else joint.parent
+                mate = _by_name.get(mate_name)
+                if mate is not None:
+                    mate_anchor = (
+                        joint.child_anchor if joint.parent == name
+                        else joint.parent_anchor
+                    )
+                    shared_pattern = ConnectionFeatureEngine.compute_shared_bolt_pattern(
+                        part_a=part, part_b=mate,
+                        anchor_a=anchor, anchor_b=mate_anchor,
+                        conn=joint.connection,
+                    )
+
             result = engine.generate_features(
                 structural_part=part,
                 connection=joint.connection,
                 anchor=anchor,
+                bolt_pattern=shared_pattern,
             )
 
             # For revolute joints with bolted connections, add a central
@@ -1605,22 +1647,18 @@ for i in range(rib_count):
     rib.translate(FreeCAD.Vector(L - tip_l * 0.9, rib_y - 0.5, 1.0))
     bar = bar.cut(rib)
 
-# --- Chamfer front edge of main bar ---
-# makeChamfer on a fused multi-box shape can fail (non-manifold edges
-# at the fuse seams).  The failure is cosmetic-only — chamfering is
-# purely decorative, a missing chamfer never breaks the geometry or
-# water-tightness.  We deliberately swallow the exception here rather
-# than logging it: (1) the chamfer op runs headlessly inside the CAD
-# backend where stderr isn't easily surfaced, and (2) an earlier
-# attempt to print a warning crashed STL export because f-string
-# variable scoping broke inside the CAD script sandbox.  The
-# downstream part_validator already reports non-watertight STLs, so
-# geometry defects are still caught — just not chamfer-specific ones.
-try:
-    bar = bar.makeChamfer(0.5, [_e for _e in bar.Edges
-                                 if _e.Length < W * 1.5][:20])
-except Exception:
-    pass
+# --- NO chamfer on the finger body ---
+# A previous version applied ``makeChamfer(0.5, ...)`` here, swallowed
+# inside ``try/except: pass`` (AGENTS.md §1.1 violation).  Verified by
+# experiment (scripts/verify_finger_watertight.py): the chamfer was NOT
+# cosmetic — it broke water-tightness.  The finger is a fused multi-box
+# shape (bar + rail_tab + tip); the fuse produces non-manifold edges
+# along the shared tip/bar seam.  OCC's makeChamfer partially applies to
+# those edges and leaves open triangles in the tip's top face → STL with
+# euler=7 and 3 boundary holes (trimesh), rendered by VTK as a thin
+# broken shell.  Removing the chamfer yields a watertight solid
+# (watertight=True, euler=8).  A finger is a functional grip element;
+# a decorative edge break is not worth a non-printable mesh.
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = bar

@@ -70,7 +70,12 @@ class TestFreeCADBasicModeling:
         result = freecad_tools["run"](script)
 
         assert "Volume: 30000.00" in result
-        assert "50.00x30.00x20.00" in result
+        # Solver convention: X=width(30), Y=length(50), Z=height(20).  The
+        # STL makeBox op swaps length/width so length lands on Y (front/back)
+        # and width on X (left/right) — matching assembly_solver's
+        # ANCHOR_DIM_KEYS.  Old code put length on X (50x30x20), which
+        # contradicted the solver; this test asserted that buggy mapping.
+        assert "30.00x50.00x20.00" in result
         assert "Edges: 12, Faces: 6, Vertices: 8" in result
 
     def test_create_cylinder(self, freecad_tools):
@@ -160,7 +165,10 @@ class TestFreeCADBooleanOps:
         result = freecad_tools["run"](script)
 
         assert "Volume:" in result
-        assert "200.00x150.00x10.00" in result
+        # Solver convention: X=width(150), Y=length(200).  The plate_with_holes
+        # op now swaps so length lands on Y.  Old (buggy) output was
+        # 200x150 (length on X), contradicting the solver.
+        assert "150.00x200.00x10.00" in result
 
 
 class TestFreeCADExport:

@@ -184,6 +184,26 @@ def _build_script(operations: list[dict]) -> str:
         "import json",
         "import sys",
         "",
+        "# Helper: identify edges that are UNSAFE to chamfer/fillet.",
+        "# Passing such edges to makeChamfer/makeFillet raises in OCC",
+        "# (BRep_API: command not done / Null input shape), which aborts",
+        "# the whole script and loses the STEP export.  Unsafe edges:",
+        "#  - degenerate (zero-length) edges",
+        "#  - seam edges on cylinders/cones/spheres (closed-surface seams)",
+        "#  - edges whose underlying curve is not a line (circles, arcs,",
+        "#    splines) — chamfering a curved edge is geometrically invalid",
+        "#    and is the most common cause of the servo/motor STEP crash.",
+        "def _geom_is_degenerate(_edge):",
+        "    try:",
+        "        if _edge.Length < 1e-6:",
+        "            return True",
+        "        _curve = _edge.Curve",
+        "        # Part.Line / Part.LineSegment → safe (straight edge).",
+        "        # Part.Circle/Arc/BSpline/etc → unsafe for chamfer.",
+        "        return not _curve.__class__.__name__.startswith('Line')",
+        "    except Exception:",
+        "        return True",
+        "",
     ]
 
     for op in operations:
@@ -199,7 +219,16 @@ def _build_script(operations: list[dict]) -> str:
             w = float(op.get("width", 0))
             h = float(op.get("height", 0))
             name = _safe_name(op.get("name", "Box"))
-            lines.append(f'box = Part.makeBox({l}, {w}, {h})')
+            # Solver convention: X=width (left/right), Y=length (front/back),
+            # Z=height (see assembly_solver.ANCHOR_DIM_KEYS: front/back map
+            # to 'length', left/right to 'width').  FreeCAD makeBox(X,Y,Z)
+            # takes (X-extent, Y-extent, Z-extent), so pass (width, length,
+            # height) to put length on Y and width on X.  Without this swap
+            # the STL has length on X and width on Y — the WRONG axis — and
+            # the renderer's swap_xy only masks it visually (the URDF/MuJoCo
+            # mesh stays wrong).  This is the same class of bug as the wheel
+            # 磨盘 defect: STL geometry axis vs solver axis mismatch.
+            lines.append(f'box = Part.makeBox({w}, {l}, {h})')
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
             lines.append("obj.Shape = box")
             lines.append("doc.recompute()")
@@ -209,12 +238,31 @@ def _build_script(operations: list[dict]) -> str:
             h = float(op.get("height", 0))
             name = _safe_name(op.get("name", "Cylinder"))
             lines.append(f'cyl = Part.makeCylinder({r}, {h})')
-            # Optional rotation (added 2026-06-21, Plan B): when present,
-            # rotate the cylinder so its Z axis aligns with the desired
-            # hole direction.  Used by connection_features bolt holes on
-            # side anchors (front/back/left/right) where the bolt enters
-            # along Y/X, not Z.  Without this the cylinder axis is wrong
-            # and the boolean cut fragments the part geometry.
+            # Orient the cylinder's axis.  makeCylinder builds along Z by
+            # default.  ``orient_axis`` re-points it so the cylinder's
+            # SYMMETRY axis matches the part's physical rotation axis:
+            #   "z" (default) → vertical (servos, standoffs)
+            #   "y"           → axle along Y (WHEELS — rolls along X)
+            #   "x"           → axle along X
+            # This is the fix for the "磨盘" wheel bug: a wheel is a
+            # revolute joint with axis="y", so its cylinder must also lie
+            # along Y, but makeCylinder always builds along Z.  Without
+            # this rotation the wheel STL is a disc lying flat (圆面朝上下),
+            # not a wheel (圆面朝左右).  An explicit ``rotation`` op field
+            # (below) takes precedence for connection-feature bolt holes.
+            orient_axis = str(op.get("orient_axis", "z")).lower()
+            if orient_axis in ("y", "x"):
+                _ax, _ang = ("1,0,0", "90.0") if orient_axis == "y" else ("0,1,0", "90.0")
+                lines.append(
+                    f'cyl.rotate(FreeCAD.Vector(0,0,0), '
+                    f'FreeCAD.Vector({_ax}), {_ang})'
+                )
+            # Optional explicit rotation (added 2026-06-21, Plan B): when
+            # present, rotate the cylinder so its Z axis aligns with the
+            # desired hole direction.  Used by connection_features bolt
+            # holes on side anchors (front/back/left/right) where the bolt
+            # enters along Y/X, not Z.  Without this the cylinder axis is
+            # wrong and the boolean cut fragments the part geometry.
             # Format: op["rotation"] = [ax, ay, az, angle_deg]
             rot = op.get("rotation")
             if rot and len(rot) == 4 and float(rot[3]) != 0.0:
@@ -278,24 +326,42 @@ def _build_script(operations: list[dict]) -> str:
             lines.append(f'_outer = Part.makeCylinder({orad}, {h})')
             lines.append(f'_inner = Part.makeCylinder({irad}, {h})')
             lines.append("_result = _outer.cut(_inner)")
+            # Orient the cylinder (see make_cylinder above for the full
+            # rationale).  A wheel = cylinder_with_hole (tyre + axle bore)
+            # with axis="y": both the tyre and the bore must rotate together
+            # so the axle hole ends up along Y (matching the revolute axis),
+            # not Z.  Without this the bore is perpendicular to the axle and
+            # the wheel can never mount on its shaft.
+            orient_axis = str(op.get("orient_axis", "z")).lower()
+            if orient_axis in ("y", "x"):
+                _ax, _ang = ("1,0,0", "90.0") if orient_axis == "y" else ("0,1,0", "90.0")
+                lines.append(
+                    f'_result.rotate(FreeCAD.Vector(0,0,0), '
+                    f'FreeCAD.Vector({_ax}), {_ang})'
+                )
             lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
             lines.append("obj.Shape = _result")
             lines.append("doc.recompute()")
 
         elif op_type == "plate_with_holes":
-            length = float(op["length"])
-            width = float(op["width"])
+            length = float(op["length"])   # solver: Y extent (front/back)
+            width = float(op["width"])     # solver: X extent (left/right)
             thickness = float(op["thickness"])
             hole_radius = float(op["hole_radius"])
-            nx = int(float(op.get("hole_count_x", 2)))
-            ny = int(float(op.get("hole_count_y", 2)))
+            nx = int(float(op.get("hole_count_x", 2)))   # holes along X (width)
+            ny = int(float(op.get("hole_count_y", 2)))   # holes along Y (length)
             margin = float(op.get("margin", 0))
             name = _safe_name(op.get("name", "PlateWithHoles"))
             if margin == 0:
                 margin = min(length, width) * 0.1
-            sx = (length - 2 * margin) / max(nx - 1, 1) if nx > 1 else 0
-            sy = (width - 2 * margin) / max(ny - 1, 1) if ny > 1 else 0
-            lines.append(f'_plate = Part.makeBox({length}, {width}, {thickness})')
+            # Solver convention: X=width, Y=length (see make_box above).
+            # makeBox(X, Y, Z) → (width, length, thickness).  Holes span the
+            # width (X) with nx holes and the length (Y) with ny holes, so
+            # the X spacing uses the width extent and the Y spacing uses the
+            # length extent.
+            sx = (width - 2 * margin) / max(nx - 1, 1) if nx > 1 else 0
+            sy = (length - 2 * margin) / max(ny - 1, 1) if ny > 1 else 0
+            lines.append(f'_plate = Part.makeBox({width}, {length}, {thickness})')
             lines.append(f'_hole = Part.makeCylinder({hole_radius}, {thickness})')
             lines.append(f"for ix in range({nx}):")
             lines.append(f"    for iy in range({ny}):")
@@ -312,17 +378,55 @@ def _build_script(operations: list[dict]) -> str:
             obj_name = _safe_name(op["object"])
             radius = float(op["radius"])
             lines.append(f'_obj = doc.getObject("{obj_name}")')
-            lines.append(f"_fillet = _obj.Shape.makeFillet({radius}, _obj.Shape.Edges)")
-            lines.append("_obj.Shape = _fillet")
-            lines.append("doc.recompute()")
+            # Robust edge selection: passing ALL edges to makeFillet can
+            # crash OCC ("BRep_API: command not done" / "Null input
+            # shape") on shapes whose edge set includes degenerate edges
+            # (zero-length), seam edges on cylinders/cones, or curved
+            # edges where a fillet is geometrically invalid.  Such a crash
+            # aborts the whole FreeCAD script, losing the STEP export for
+            # that part (the systematic servo/motor STEP-loss bug).
+            # Filter to straight (linear) edges of sensible length, and
+            # wrap in try/except that REPORTS the skip (not silently
+            # swallows — AGENTS.md §1.1): a missing fillet is cosmetic,
+            # a missing STEP is a production-blocker.
+            lines.append("_edges = [_e for _e in _obj.Shape.Edges")
+            lines.append("           if not _geom_is_degenerate(_e)]")
+            _safe_obj = obj_name.replace('"', '\\"')
+            _warn_fillet = (
+                '    print("WARN fillet skipped on \\"' + _safe_obj + '\\": " '
+                '+ str(type(_e).__name__) + ": " + str(_e) '
+                + '+ " (" + str(len(_edges)) + " edges)")'
+            )
+            lines.append("try:")
+            lines.append(f"    _fillet = _obj.Shape.makeFillet({radius}, _edges)")
+            lines.append("    _obj.Shape = _fillet")
+            lines.append("    doc.recompute()")
+            lines.append("except Exception as _e:")
+            lines.append(_warn_fillet)
+            lines.append('    print("WARN   shape has " + str(len(_obj.Shape.Edges)) + " total edges")')
 
         elif op_type == "chamfer":
             obj_name = _safe_name(op["object"])
             size = float(op["size"])
             lines.append(f'_obj = doc.getObject("{obj_name}")')
-            lines.append(f"_chamfer = _obj.Shape.makeChamfer({size}, _obj.Shape.Edges)")
-            lines.append("_obj.Shape = _chamfer")
-            lines.append("doc.recompute()")
+            # Same robust-edge rationale as fillet (see above).  Chamfering
+            # a cylinder end-face circle or a seam edge raises in OCC and
+            # kills the export; filter to chamfer-safe straight edges.
+            lines.append("_edges = [_e for _e in _obj.Shape.Edges")
+            lines.append("           if not _geom_is_degenerate(_e)]")
+            _safe_obj = obj_name.replace('"', '\\"')
+            _warn_chamfer = (
+                '    print("WARN chamfer skipped on \\"' + _safe_obj + '\\": " '
+                '+ str(type(_e).__name__) + ": " + str(_e) '
+                + '+ " (" + str(len(_edges)) + " edges)")'
+            )
+            lines.append("try:")
+            lines.append(f"    _chamfer = _obj.Shape.makeChamfer({size}, _edges)")
+            lines.append("    _obj.Shape = _chamfer")
+            lines.append("    doc.recompute()")
+            lines.append("except Exception as _e:")
+            lines.append(_warn_chamfer)
+            lines.append('    print("WARN   shape has " + str(len(_obj.Shape.Edges)) + " total edges")')
 
         elif op_type == "save":
             path = _safe_path(op["path"])
@@ -1355,8 +1459,11 @@ def _fastener_script_lines(
                     f'_o = doc.addObject("Part::Feature", "{name}_{fidx}")'
                 )
                 lines.append("_o.Shape = _f")
-                lines.append(f"_o.ViewObject.ShapeColor = {color}")
-                lines.append("doc.recompute()")
+                lines.append(f"if _o.ViewObject is not None: _o.ViewObject.ShapeColor = {color}")
+                # No per-fastener recompute — see the per-part note above.
+                # A dual-arm assembly emits ~400 fasteners (×4 cylinders each);
+                # a recompute after each would be O(n²) and overflowed FreeCAD's
+                # stack.  The single final recompute (before save) resolves all.
 
             # world_pos is ON the +normal face.  Bolt goes THROUGH the part:
             # head flush on +normal face, shank through body, washer + nut
@@ -1472,7 +1579,14 @@ def build_assembly_script(
             lines.append(f"_stl_path = {json.dumps(str(stl_path))}")
             lines.append("if _os.path.exists(_stl_path):")
             lines.append("    _mesh = Mesh.read(_stl_path)")
-            lines.append("    _shape = Part.Shape(_mesh.topology)")
+            # FreeCAD 1.1 exposes the topology via ``.Topology`` (capital);
+            # older builds used ``.topology``.  Try both so the assembly
+            # render works across versions — a NameError here silently
+            # killed the WHOLE assembly export (assembly.stl/FCStd never
+            # generated) because the caller wrapped it in except: pass.
+            lines.append("    _topo = getattr(_mesh, 'Topology', None)")
+            lines.append("    if _topo is None: _topo = getattr(_mesh, 'topology')")
+            lines.append("    _shape = Part.Shape(_topo)")
             lines.append("else:")
             _indent = "    "
         else:
@@ -1505,10 +1619,17 @@ def build_assembly_script(
         lines.append(f'_obj = doc.addObject("Part::Feature", "{name}")')
         lines.append("_obj.Shape = _shape")
 
-        # Apply subsystem color
+        # Apply subsystem color (guard ViewObject — None in headless FreeCADCmd)
         color = SUBSYSTEM_COLORS.get(subsystem, (0.7, 0.7, 0.7))
-        lines.append(f"_obj.ViewObject.ShapeColor = ({color[0]}, {color[1]}, {color[2]})")
-        lines.append("doc.recompute()")
+        lines.append(f"if _obj.ViewObject is not None: _obj.ViewObject.ShapeColor = ({color[0]}, {color[1]}, {color[2]})")
+        # NOTE: no per-object doc.recompute() here.  The old code called
+        # recompute after EVERY object, which is O(n²): recompute #438
+        # processes all 438 objects.  On a dual-arm assembly (38 parts + 400
+        # fasteners = 438 objects) this triggered a FreeCAD stack-buffer-
+        # overrun (exit 0xC0000409) — the assembly.stl was never produced.
+        # Object creation + Shape assignment does not need an immediate
+        # recompute; a single recompute before save/export resolves all
+        # objects at once (O(n), not O(n²)).
         lines.append("")
 
     # --- Fasteners (bolts, washers, nuts) at bolted connections ---
@@ -1521,7 +1642,10 @@ def build_assembly_script(
         )
         lines.extend(fastener_lines)
 
-    # Save and export
+    # Save and export.  A single recompute here resolves ALL objects at once
+    # (O(n)) — replacing the per-object recomputes that made the build O(n²)
+    # and overflowed FreeCAD's stack on the 438-object dual-arm assembly.
+    lines.append("doc.recompute()")
     if output_path:
         lines.append(f'doc.saveAs({json.dumps(str(output_path) + ".FCStd")})')
         lines.append(f'_all_objs = [o for o in doc.Objects if hasattr(o, "Shape")]')
@@ -1531,6 +1655,169 @@ def build_assembly_script(
     lines.append("print(f'Assembly: {len(doc.Objects)} objects created')")
 
     return "\n".join(lines)
+
+
+def build_assembly_stl_trimesh(
+    assembly_parts: list[dict],
+    positions: dict[str, dict],
+    output_path: str,
+    joints: list | None = None,
+) -> str:
+    """Export an assembly STL via trimesh (no FreeCAD subprocess).
+
+    FreeCAD's single-script assembly render overflows its stack on large
+    assemblies (the dual-arm robot = 38 parts + 400 fasteners = 438 objects
+    crashes with STATUS_STACK_BUFFER_OVERRUN).  This pure-Python path uses
+    trimesh to load each part's STL, apply the solver transform, add
+    simple cylindrical fasteners at every bolted connection, and merge —
+    producing the same ``assembly.stl`` deliverable without FreeCAD's
+    process-size limit.
+
+    The geometry is approximate: parts use their real per-part STL
+    (already exported by the pipeline) and fasteners are parametric
+    cylinders (bolt head + shank + washer + nut) sized from the real ISO
+    catalog, oriented along the joint face normal — the same data the
+    FreeCAD path uses, just rendered by trimesh instead.
+
+    Args:
+        assembly_parts: list of dicts with name, stl_path, dimensions.
+        positions: solver output {name: {"position":[x,y,z], "rotation":[...]}}.
+        output_path: where to write assembly.stl (the .stl suffix is added).
+        joints: optional Joint list — bolted connections get fasteners.
+
+    Returns:
+        The path to the written assembly.stl.
+    """
+    import trimesh
+    import numpy as np
+    from .connection_features import (
+        ConnectionFeatureEngine,
+        get_bolt_head_dims, get_nut_dims, get_washer_dims,
+    )
+
+    meshes: list[trimesh.Trimesh] = []
+    # --- Parts: load each STL, apply solver transform ---
+    for part in assembly_parts:
+        name = part["name"]
+        stl_path = part.get("stl_path")
+        if not stl_path or not Path(stl_path).exists():
+            continue
+        try:
+            m = trimesh.load(stl_path, process=False)
+        except Exception:
+            continue
+        if not isinstance(m, trimesh.Trimesh) or len(m.faces) == 0:
+            continue
+        pose = positions.get(name, {})
+        pos = pose.get("position", [0, 0, 0])
+        rot = pose.get("rotation")
+        # Centre the STL (FreeCAD writes corner-at-origin) then transform.
+        # The renderer's swap_xy convention: for arm-chain parts the STL has
+        # length on X and is swapped; for chassis boxes the STL already
+        # matches solver axes.  We mirror the renderer's _swap decision.
+        n_lower = name.lower()
+        _is_wheel = n_lower.startswith("wheel_")
+        _is_chassis_box = n_lower in (
+            "base_plate", "chassis_body", "battery_box", "top_plate",
+        ) or n_lower.startswith("standoff_")
+        if not _is_wheel and not _is_chassis_box:
+            # swap_xy: rotate 90° about Z (X↔Y) to match solver convention.
+            m.apply_transform(trimesh.transformations.rotation_matrix(
+                np.radians(-90), [0, 0, 1],
+            ))
+        # Apply solver rotation (axis-angle) then translation.
+        if rot and len(rot) == 4 and abs(rot[3]) > 1e-6:
+            ax, ay, az, ang = rot
+            m.apply_transform(trimesh.transformations.rotation_matrix(
+                np.radians(ang), [ax, ay, az],
+            ))
+        m.apply_translation([pos[0], pos[1], pos[2]])
+        meshes.append(m)
+
+    # --- Fasteners at bolted joints ---
+    if joints:
+        part_dims_lookup = {p["name"]: p.get("dimensions", {}) for p in assembly_parts}
+        for joint in joints:
+            conn = getattr(joint, "connection", None)
+            if conn is None or getattr(conn, "type", "") != "bolted":
+                continue
+            if getattr(joint, "type", "") == "prismatic":
+                continue
+            try:
+                holes = _compute_bolt_hole_world_positions(
+                    joint, positions, part_dims_lookup,
+                )
+            except Exception:
+                continue
+            bolt_size = getattr(conn, "bolt_size", "M3") or "M3"
+            head_d, head_h = get_bolt_head_dims(bolt_size)
+            try:
+                nut_w, nut_h = get_nut_dims(bolt_size)
+            except Exception:
+                nut_w, nut_h = head_d * 1.6, head_d * 0.5
+            try:
+                washer_od, washer_id, washer_h = get_washer_dims(bolt_size)
+            except Exception:
+                washer_od, washer_id, washer_h = head_d * 1.4, head_d * 0.4, 1.0
+            for (wx, wy, wz), normal, thickness in holes:
+                n = np.array(normal, dtype=float)
+                norm = np.linalg.norm(n)
+                if norm < 1e-9:
+                    continue
+                n = n / norm
+                # Bolt head (cylinder, axis along normal, on +normal face).
+                head_r = head_d / 2.0
+                head_cyl = trimesh.creation.cylinder(head_r, height=head_h)
+                head_cyl.apply_transform(_align_z_to(n))
+                head_cyl.apply_translation(
+                    [wx + n[0] * head_h / 2, wy + n[1] * head_h / 2,
+                     wz + n[2] * head_h / 2],
+                )
+                meshes.append(head_cyl)
+                # Shank (through the part).
+                shank_r = float(bolt_size[1:]) / 2.0 if bolt_size[1:].isdigit() else head_r * 0.4
+                shank_len = max(thickness + head_h, 5.0)
+                shank = trimesh.creation.cylinder(shank_r, height=shank_len)
+                shank.apply_transform(_align_z_to(n))
+                shank.apply_translation([wx, wy, wz])
+                meshes.append(shank)
+                # Nut (cylinder approx) on -normal face.
+                nut_r = nut_w / 2.0 * 0.9  # across-corners approx → radius
+                nut = trimesh.creation.cylinder(nut_r, height=nut_h)
+                nut.apply_transform(_align_z_to(n))
+                nut.apply_translation(
+                    [wx - n[0] * (thickness + nut_h / 2),
+                     wy - n[1] * (thickness + nut_h / 2),
+                     wz - n[2] * (thickness + nut_h / 2)],
+                )
+                meshes.append(nut)
+
+    if not meshes:
+        Path(output_path + ".stl").write_bytes(b"")
+        return output_path + ".stl"
+    combined = trimesh.util.concatenate(meshes)
+    out = output_path + ".stl"
+    combined.export(out)
+    return out
+
+
+def _align_z_to(direction) -> np.ndarray:
+    """4×4 transform rotating +Z onto ``direction`` (for cylinder orientation)."""
+    import numpy as np
+    d = np.array(direction, dtype=float)
+    d = d / (np.linalg.norm(d) + 1e-12)
+    z = np.array([0.0, 0.0, 1.0])
+    # Rotation axis = z × d, angle = arccos(z·d).
+    axis = np.cross(z, d)
+    dot = float(np.clip(np.dot(z, d), -1.0, 1.0))
+    import trimesh
+    if np.linalg.norm(axis) < 1e-9:
+        # Already aligned (or anti-aligned).
+        if dot < 0:
+            return trimesh.transformations.rotation_matrix(np.radians(180), [1, 0, 0])
+        return np.eye(4)
+    angle = np.arccos(dot)
+    return trimesh.transformations.rotation_matrix(angle, axis)
 
 
 def _shape_type_for_part(part: "Part") -> str:

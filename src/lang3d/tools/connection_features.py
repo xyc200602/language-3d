@@ -188,6 +188,7 @@ class ConnectionFeatureEngine:
         anchor: str = "top",
         part_thickness: float | None = None,
         functional_part_id: str | None = None,
+        bolt_pattern: list[tuple[tuple[float, float, float], float]] | None = None,
     ) -> ConnectionFeatureResult:
         """Generate connection features for a structural part.
 
@@ -199,7 +200,7 @@ class ConnectionFeatureEngine:
 
         Args:
             structural_part: The part that receives the connection features
-                            (holes, bores, slots, etc.)
+                            (holes, bores, slots, etc.).
             connection: The ConnectionMethod describing how parts are joined.
             anchor: Which face the connection is on
                     ("top"/"bottom"/"left"/"right"/"front"/"back").
@@ -207,7 +208,17 @@ class ConnectionFeatureEngine:
                             part dimensions.
             functional_part_id: Optional catalog ID of the functional part
                             being mounted (e.g. "nema17_stepper").
+            bolt_pattern: SHARED bolt-hole pattern for this joint (list of
+                        ((u, v, 0), diameter) in normalized face coords).
+                        When provided, BOTH mating parts use this exact
+                        pattern instead of independently auto-laying-out
+                        holes from their own dimensions — the fix for the
+                        "连不上" misalignment defect.  See
+                        ``compute_shared_bolt_pattern``.
         """
+        # Stash the shared pattern so the handler (e.g. _generate_bolted_features)
+        # uses it instead of calling _auto_layout_bolts fresh per part.
+        self._shared_bolt_pattern = bolt_pattern
         # --- Task 76: prefer MountingInterface for known parts ---
         if functional_part_id:
             result = self._generate_from_interface(
@@ -331,6 +342,12 @@ class ConnectionFeatureEngine:
         if conn.bolt_holes:
             # Explicit positions provided
             positions = [(bh.position, bh.diameter) for bh in conn.bolt_holes]
+        elif getattr(self, "_shared_bolt_pattern", None):
+            # SHARED pattern from the joint interface (both mating parts use
+            # the SAME (u,v) fractions → holes align in world space).  This
+            # is the fix for "连不上": without it each part ran
+            # _auto_layout_bolts from its OWN face size → mismatched margins.
+            positions = list(self._shared_bolt_pattern)
         elif conn.bolt_count > 0:
             # Auto-layout: distribute bolt_count holes on the face
             positions = self._auto_layout_bolts(
@@ -1422,6 +1439,90 @@ class ConnectionFeatureEngine:
                     v = margin_v + (1 - 2 * margin_v) * r / max(rows - 1, 1)
                     positions.append(((u, v, 0), hole_diameter))
             return positions
+
+    @staticmethod
+    def compute_shared_bolt_pattern(
+        part_a: Part,
+        part_b: Part,
+        anchor_a: str,
+        anchor_b: str,
+        conn: ConnectionMethod,
+    ) -> list[tuple[tuple[float, float, float], float]]:
+        """Compute ONE bolt-hole pattern shared by BOTH mating parts.
+
+        The "连不上" defect: each part ran ``_auto_layout_bolts`` on its OWN
+        face dimensions, so parent and child holes landed at different
+        world coordinates.  This method derives a single canonical pattern
+        from the SMALLER of the two mating faces (so holes fit in both),
+        and returns normalized (u, v) fractions that BOTH parts apply on
+        their own face — yielding matching hole positions in world space.
+
+        The two anchors are a mated face pair (parent top ↔ child bottom,
+        etc.): same physical plane, opposite normal.  Using the smaller
+        face for margin keeps the bolt circle inside both parts.
+
+        Args:
+            part_a/part_b: the two mating parts (parent and child).
+            anchor_a/anchor_b: the respective mated-face anchors.
+            conn: the ConnectionMethod (reads bolt_count, bolt_size,
+                bolt_holes).
+
+        Returns:
+            list of ((u, v, 0), diameter_mm) — the SAME list passed to
+            both parts' generate_features via ``bolt_pattern``.
+        """
+        # Explicit positions always win — both parts use them verbatim.
+        if conn.bolt_holes:
+            return [(bh.position, bh.diameter) for bh in conn.bolt_holes]
+        count = getattr(conn, "bolt_count", 0) or 0
+        if count <= 0:
+            return []
+        bolt_size = getattr(conn, "bolt_size", "M3") or "M3"
+        nominal, _min, _max = get_clearance_hole_with_tolerance(bolt_size)
+        hole_d = nominal
+
+        # The two faces share one physical plane.  Derive the pattern from
+        # the SMALLER face so the margin keeps holes inside both parts.
+        # _face_length/_face_width are static helpers; use the min per axis.
+        fa_l = ConnectionFeatureEngine._face_length(anchor_a, part_a.dimensions)
+        fa_w = ConnectionFeatureEngine._face_width(anchor_a, part_a.dimensions)
+        fb_l = ConnectionFeatureEngine._face_length(anchor_b, part_b.dimensions)
+        fb_w = ConnectionFeatureEngine._face_width(anchor_b, part_b.dimensions)
+        face_l = min(fa_l, fb_l)
+        face_w = min(fa_w, fb_w)
+        if face_l <= 0 or face_w <= 0:
+            face_l = max(face_l, fa_l, fb_l) or 1.0
+            face_w = max(face_w, fa_w, fb_w) or 1.0
+
+        margin = max(hole_d * 1.5, min(face_l, face_w) * 0.1)
+        margin_u = margin / face_l
+        margin_v = margin / face_w
+
+        if count == 1:
+            return [((0.5, 0.5, 0), hole_d)]
+        if count == 2:
+            return [
+                ((margin_u, 0.5, 0), hole_d),
+                ((1 - margin_u, 0.5, 0), hole_d),
+            ]
+        if count == 4:
+            return [
+                ((margin_u, margin_v, 0), hole_d),
+                ((1 - margin_u, margin_v, 0), hole_d),
+                ((margin_u, 1 - margin_v, 0), hole_d),
+                ((1 - margin_u, 1 - margin_v, 0), hole_d),
+            ]
+        cols = math.ceil(math.sqrt(count))
+        rows = math.ceil(count / cols)
+        positions: list[tuple[tuple[float, float, float], float]] = []
+        for r in range(rows):
+            for c in range(cols):
+                if len(positions) >= count:
+                    break
+                u = margin_u + (1 - 2 * margin_u) * c / max(cols - 1, 1)
+                v = margin_v + (1 - 2 * margin_v) * r / max(rows - 1, 1)
+                positions.append(((u, v, 0), hole_d))
+        return positions
 
     @staticmethod
     def _infer_bore_diameter(part: Part, conn: ConnectionMethod) -> float:

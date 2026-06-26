@@ -70,6 +70,19 @@ class RetrySettings(BaseModel):
     max_delay: float = 60.0
 
 
+class OutputSettings(BaseModel):
+    """Settings for run output directory layout.
+
+    All e2e / interactive runs write under ``runs_root`` in the form
+    ``<runs_root>/<case_id>/<timestamp>/``. This replaces the legacy split
+    between ``data/generated_<timestamp>/`` and ``data/e2e_results/<case>_<ts>/``.
+    """
+
+    runs_root: str = "data/runs"
+    archive_root: str = "data/archive"
+    default_case_id: str = "assembly"
+
+
 class AgentConfig(BaseModel):
     """Agent behavior configuration."""
 
@@ -80,6 +93,7 @@ class AgentConfig(BaseModel):
     simulation: SimulationSettings = Field(default_factory=SimulationSettings)
     slicing: SlicingSettings = Field(default_factory=SlicingSettings)
     retry: RetrySettings = Field(default_factory=RetrySettings)
+    output: OutputSettings = Field(default_factory=OutputSettings)
 
     # Execution tuning (unified from hardcoded values)
     max_turns_per_step: int = 25
@@ -101,6 +115,27 @@ class Config(BaseModel):
 
 CONFIG_DIR = Path.home() / ".lang3d"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+
+
+def make_run_dir(case_id: str, ts: str | None = None, *, root: str | None = None) -> Path:
+    """Build a canonical run directory ``<root>/<case_id>/<timestamp>/``.
+
+    ``root`` defaults to ``OutputSettings.runs_root`` from the loaded config.
+    ``ts`` defaults to current local time as ``YYYYMMDD_HHMMSS``.
+    The directory is *not* created here — callers do ``Path.mkdir(parents=True,
+    exist_ok=True)`` after they have decided to commit the run.
+    """
+    import time as _time
+
+    if ts is None:
+        ts = _time.strftime("%Y%m%d_%H%M%S")
+    if root is None:
+        try:
+            cfg = load_config()
+            root = cfg.agent.output.runs_root
+        except Exception:
+            root = "data/runs"
+    return Path(root) / case_id / ts
 
 
 def load_dotenv() -> None:

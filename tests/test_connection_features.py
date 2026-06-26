@@ -662,3 +662,96 @@ class TestDowelPinFeatures:
         desc = conn.describe()
         assert isinstance(desc, str)
         assert len(desc) > 0
+
+
+class TestSharedBoltAlignment:
+    """Regression guard for the "连不上" (screw mismatch) defect.
+
+    Before the fix, each mating part ran ``_auto_layout_bolts`` on its OWN
+    face dimensions, so parent and child holes landed at different world
+    coordinates — bolts couldn't thread through both.  The fix
+    (``compute_shared_bolt_pattern``) derives ONE canonical (u,v) pattern
+    from the SMALLER mating face and applies it to both parts, so the
+    holes share normalized fractions and align in world space."""
+
+    def test_shared_pattern_is_deterministic_and_symmetric(self):
+        """compute_shared_bolt_pattern returns a deterministic, symmetric
+        4-hole pattern regardless of which part is passed first."""
+        big = Part(name="chassis_body", category="box", description="",
+                   dimensions={"length": 306, "width": 164, "height": 45})
+        small = Part(name="arm_base_plate", category="plate", description="",
+                     dimensions={"length": 50, "width": 70, "thickness": 6})
+        conn = ConnectionMethod(type="bolted", bolt_size="M3",
+                                bolt_count=4, hole_type="through_hole")
+        pat_ab = ConnectionFeatureEngine.compute_shared_bolt_pattern(
+            big, small, "top", "bottom", conn)
+        pat_ba = ConnectionFeatureEngine.compute_shared_bolt_pattern(
+            small, big, "bottom", "top", conn)
+        assert pat_ab == pat_ba, "pattern must be order-independent"
+        assert len(pat_ab) == 4
+        # Symmetric: u fractions mirror around 0.5.
+        us = sorted(p[0][0] for p in pat_ab)
+        assert abs(us[0] + us[-1] - 1.0) < 1e-9
+
+    def test_both_parts_get_matching_hole_fractions(self):
+        """When both mating parts generate features with the shared pattern,
+        their holes occupy the SAME normalized (u,v) fractions — the
+        necessary condition for world-space alignment."""
+        big = Part(name="chassis_body", category="box", description="",
+                   dimensions={"length": 306, "width": 164, "height": 45})
+        small = Part(name="arm_base_plate", category="plate", description="",
+                     dimensions={"length": 50, "width": 70, "thickness": 6})
+        conn = ConnectionMethod(type="bolted", bolt_size="M3",
+                                bolt_count=4, hole_type="through_hole")
+        pat = ConnectionFeatureEngine.compute_shared_bolt_pattern(
+            big, small, "top", "bottom", conn)
+        # Generate features for BOTH parts with the shared pattern.
+        res_big = ConnectionFeatureEngine().generate_features(
+            big, conn, "top", bolt_pattern=pat)
+        res_small = ConnectionFeatureEngine().generate_features(
+            small, conn, "bottom", bolt_pattern=pat)
+        # Extract hole (u,v) by reading the move op's (dx,dy) normalized
+        # against each part's face size.
+        def _uv_fracs(res, face_l, face_w):
+            fracs = []
+            for op in res.ops:
+                if op.get("type") == "move" and "dx" in op:
+                    fracs.append((round(op["dx"] / face_l, 3),
+                                  round(op["dy"] / face_w, 3)))
+            return sorted(fracs)
+        big_uv = _uv_fracs(res_big, 306, 164)
+        small_uv = _uv_fracs(res_small, 50, 70)
+        assert big_uv == small_uv, (
+            f"hole fractions differ: chassis {big_uv[:4]} vs arm {small_uv[:4]}"
+        )
+
+    def test_independent_layout_misaligns(self):
+        """SANITY: WITHOUT the shared pattern (the old behaviour), the two
+        parts get DIFFERENT hole fractions — this is the bug the fix
+        resolves, and this test documents it so the fix can't silently
+        regress."""
+        big = Part(name="chassis_body", category="box", description="",
+                   dimensions={"length": 306, "width": 164, "height": 45})
+        small = Part(name="arm_base_plate", category="plate", description="",
+                     dimensions={"length": 50, "width": 70, "thickness": 6})
+        conn = ConnectionMethod(type="bolted", bolt_size="M3",
+                                bolt_count=4, hole_type="through_hole")
+        # Old path: no shared pattern — each part lays out independently.
+        res_big = ConnectionFeatureEngine().generate_features(big, conn, "top")
+        res_small = ConnectionFeatureEngine().generate_features(small, conn, "bottom")
+        def _uv_fracs(res, face_l, face_w):
+            fracs = []
+            for op in res.ops:
+                if op.get("type") == "move" and "dx" in op:
+                    fracs.append((round(op["dx"] / face_l, 3),
+                                  round(op["dy"] / face_w, 3)))
+            return sorted(fracs)
+        big_uv = _uv_fracs(res_big, 306, 164)
+        small_uv = _uv_fracs(res_small, 50, 70)
+        # The bug: fractions DIFFER (chassis holes spread across its big
+        # face, arm holes across its small face → misaligned).
+        assert big_uv != small_uv, (
+            "independent layouts should misalign (the documented bug); "
+            "if they now match, the default path changed"
+        )
+

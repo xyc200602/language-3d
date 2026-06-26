@@ -186,25 +186,47 @@ class AssemblyContext:
             if any(not math.isfinite(v) for v in pos):
                 warnings.append(f"Part '{name}' has non-finite position: {pos}")
 
-        # 2. Duplicate positions
+        # 2. Duplicate positions.
+        # Parts joined by a joint legitimately share a position (e.g. a
+        # suspension_link co-located with its motor at zero prismatic travel,
+        # or two links at a coincident anchor). Skip such pairs — only flag
+        # UNRELATED parts that overlap at the exact same point.
+        _joint_pairs: set[tuple[str, str]] = set()
+        for j in self.assembly.joints:
+            _joint_pairs.add((j.parent, j.child))
+            _joint_pairs.add((j.child, j.parent))
         seen: dict[str, str] = {}
         for name, pdata in self.positions.items():
             pos = pdata.get("position", [0, 0, 0])
             key = f"{pos[0]:.1f},{pos[1]:.1f},{pos[2]:.1f}"
             if key in seen:
-                warnings.append(f"Parts '{name}' and '{seen[key]}' at same position")
+                other = seen[key]
+                if (name, other) not in _joint_pairs:
+                    warnings.append(f"Parts '{name}' and '{other}' at same position")
             else:
                 seen[key] = name
 
-        # 3. Symmetry: parts with matching suffixes (_fl/_fr/_rl/_rr) should have similar Z
-        suffixes = {"_fl": "wheels", "_fr": "wheels", "_rl": "wheels", "_rr": "wheels",
-                    "_l": "lr_pair", "_r": "lr_pair"}
+        # 3. Symmetry: parts with matching suffixes (_fl/_fr/_rl/_rr) should
+        # have similar Z. IMPORTANT: group by the part's semantic role, not
+        # just its corner suffix — otherwise standoffs (high, near the deck)
+        # get lumped with wheels (low, near the ground) and trigger a false
+        # 41.5mm "wheels Z variation" warning on every wheeled chassis. We
+        # key the group on the prefix-before-the-corner (wheel_/motor_/...)
+        # so each role is validated independently.
+        corner_suffixes = ("_fl", "_fr", "_rl", "_rr")
+        lr_suffixes = ("_l", "_r")
         groups: dict[str, list[str]] = {}
         for part in self.assembly.parts:
-            for suf, grp in suffixes.items():
-                if part.name.endswith(suf):
-                    groups.setdefault(grp, []).append(part.name)
-                    break
+            grp = None
+            if any(part.name.endswith(s) for s in corner_suffixes):
+                # e.g. "wheel_fl" → prefix "wheel", "standoff_rr" → "standoff"
+                prefix = part.name.rsplit("_", 1)[0]
+                grp = prefix
+            elif any(part.name.endswith(s) for s in lr_suffixes):
+                prefix = part.name.rsplit("_", 1)[0]
+                grp = prefix
+            if grp is not None:
+                groups.setdefault(grp, []).append(part.name)
         for grp_name, names in groups.items():
             if len(names) >= 2:
                 zs = [self.positions[n]["position"][2] for n in names if n in self.positions]

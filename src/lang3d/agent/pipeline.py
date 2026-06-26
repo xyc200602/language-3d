@@ -288,6 +288,12 @@ class AssemblyPipeline:
         # (Task-Driven Co-Design). The architect delegates chassis topology
         # to this role so wheel conventions stay structural, not advisory.
         self.chassis_agent = StageAgent(SubAgentRole.CHASSIS_ARCHITECT, "chassis")
+        # Which stage to (re)start from on the next round. The Fixer's routing
+        # decision writes here so a "solver" target actually re-runs only
+        # solver→cad→verifier instead of always re-running the Architect (and
+        # burning an LLM regeneration). Previously the target was computed,
+        # logged, and discarded (the loop always fell through to Architect).
+        self._resume_from: str = "architect"
         self._setup()
 
     def _setup(self) -> None:
@@ -358,12 +364,21 @@ class AssemblyPipeline:
                     ctx.assembly = self._generate_dual_arm_deterministic()
                 else:
                     # Fresh generation from NL.
+                    # Inject the Architect persona on round 1 too (previously
+                    # only ``_regenerate_with_feedback`` did, so the role
+                    # identity only reached the model on repair rounds).
+                    from ..tools.assembly_generator import (
+                        ASSEMBLY_GEN_SYSTEM_PROMPT,
+                    )
                     ctx.assembly = generate_assembly_from_nl(
                         description=ctx.description,
                         api_key=ctx.api_key,
                         base_url=ctx.base_url,
                         model=ctx.text_model,
                         temperature=ctx.temperature,
+                        system_prompt=self.architect_agent.system_prompt(
+                            ASSEMBLY_GEN_SYSTEM_PROMPT
+                        ),
                     )
             else:
                 # Check if the previous round FAILED validation (meaning
@@ -371,21 +386,46 @@ class AssemblyPipeline:
                 # with the error as feedback).  The problems_history's
                 # last entry tells us what went wrong.
                 prev_errors = ctx.problems_history[-1] if ctx.problems_history else []
-                needs_llm_regen = any(
-                    "validation error" in e.lower() or "solver error" in e.lower()
-                    for e in prev_errors
-                )
 
-                if needs_llm_regen:
-                    # LLM regeneration with feedback (mirrors legacy loop).
-                    ctx.assembly = self._regenerate_with_feedback(
-                        ctx.assembly, prev_errors,
+                if ctx.is_wheeled and ctx.is_arm:
+                    # Wheeled dual-arm: NEVER let the LLM regenerate the
+                    # assembly. Letting it do so (the old behaviour)
+                    # re-introduced the exact failures the parametric
+                    # generator exists to prevent — e2e observed wheels
+                    # going from 0mm Z-variation (round 1, deterministic)
+                    # to 41.5mm (round 2+, LLM), plus hallucinated
+                    # "fixed-base arm contains wheels" and base/wheel
+                    # overlaps. The arm-side problems (gripper finger
+                    # spacing, etc.) are handled by the Fixer's targeted
+                    # corrections (apply_targeted_fix_from_vlm) and the
+                    # normalizers below. We preserve the current assembly
+                    # (which carries the Fixer's gripper fixes) and just
+                    # re-sanitize, so the chassis stays deterministic AND
+                    # the gripper corrections survive across rounds.
+                    self.architect_agent.log(
+                        logger,
+                        "dual-arm: preserving deterministic chassis on "
+                        "round %d (no LLM regen)", ctx.round_num,
                     )
-                else:
-                    # Fixer modified the assembly — just re-sanitize.
                     ctx.assembly = normalize_gripper_fingers(ctx.assembly)
                     if ctx.is_arm:
                         ctx.assembly = ensure_arm_default_angles(ctx.assembly)
+                else:
+                    needs_llm_regen = any(
+                        "validation error" in e.lower() or "solver error" in e.lower()
+                        for e in prev_errors
+                    )
+
+                    if needs_llm_regen:
+                        # LLM regeneration with feedback (mirrors legacy loop).
+                        ctx.assembly = self._regenerate_with_feedback(
+                            ctx.assembly, prev_errors,
+                        )
+                    else:
+                        # Fixer modified the assembly — just re-sanitize.
+                        ctx.assembly = normalize_gripper_fingers(ctx.assembly)
+                        if ctx.is_arm:
+                            ctx.assembly = ensure_arm_default_angles(ctx.assembly)
 
             # Validate (raising validators → catch and report)
             if ctx.is_arm and not ctx.is_wheeled:
@@ -462,7 +502,11 @@ class AssemblyPipeline:
         chassis = build_wheeled_base(
             wheel_count=4, drive_type=drive, payload_kg=payload,
         )
-        arm = build_arm_example(n_dof)
+        # profile="mobile": the arm mounts on a wheeled chassis, so it uses the
+        # compact base + shorter links (per docs/references/
+        # wheeled_dual_arm_proportions.md). Servos are the SAME real COTS parts
+        # as the desktop profile — only the structural links/base differ.
+        arm = build_arm_example(n_dof, profile="mobile")
         dual_json = compose_dual_arm_assembly(chassis, arm, arm_dof=n_dof)
         assembly = parse_asm(dual_json)
 
@@ -967,19 +1011,38 @@ class AssemblyPipeline:
         """
         ctx = self.ctx
 
+        # Ordered stages the Fixer can route back to. ``_resume_from`` selects
+        # the earliest stage that (re)runs this round; everything from there to
+        # the Verifier runs. The Fixer previously returned a target that was
+        # only logged — here we honour it, so a "solver"/"cad"/"verifier"
+        # routing actually skips the Architect and its LLM regeneration.
+        _STAGE_ORDER = ("architect", "solver", "cad", "verifier")
+
         for ctx.round_num in range(1, ctx.max_rounds + 1):
             logger.info("=== Pipeline Round %d/%d ===", ctx.round_num, ctx.max_rounds)
 
-            # Stage 1: Architect
-            if not self.run_architect():
-                continue
+            start = self._resume_from if self._resume_from in _STAGE_ORDER else "architect"
 
-            # Stage 2: Solver
-            if not self.run_solver():
-                continue
+            # Stage 1: Architect (skipped when the Fixer routed past it).
+            if start in ("architect",):
+                if not self.run_architect():
+                    # Architect failed validation — force a full restart next
+                    # round so the LLM regenerates from the error feedback.
+                    self._resume_from = "architect"
+                    continue
 
-            # Stage 3: CAD Engineer
-            self.run_cad_engineer()
+            # Stage 2: Solver (re-position the assembly; safe to run on a
+            # Fixer-targeted assembly because positions are recomputed).
+            if start in ("architect", "solver"):
+                if not self.run_solver():
+                    # Solver couldn't place the assembly — it likely has a
+                    # structural defect the Architect must regenerate from.
+                    self._resume_from = "architect"
+                    continue
+
+            # Stage 3: CAD Engineer (regenerate STLs for the current parts).
+            if start in ("architect", "solver", "cad"):
+                self.run_cad_engineer()
 
             # Stage 4: Verifier
             if self.run_verifier():
@@ -992,13 +1055,12 @@ class AssemblyPipeline:
                 ctx.passed = True
                 break
 
-            # The Fixer may have modified the assembly (targeted fix).
-            # The next round's Architect will re-validate it.
-            # For non-targeted routes, the LLM regeneration happens in
-            # the Architect stage when round_num > 1 and the assembly
-            # needs fundamental changes.
+            # Honour the Fixer's routing decision: next round resumes from the
+            # routed stage. ``architect`` re-runs the whole chain (the only
+            # path that can trigger an LLM regeneration).
+            self._resume_from = target
             self.fixer_agent.log(
-                logger, "routed to '%s' — next round will re-run", target)
+                logger, "routed to '%s' — next round resumes from there", target)
 
         # Write loop summary
         self._write_summary()

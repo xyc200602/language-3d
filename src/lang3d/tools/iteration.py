@@ -338,12 +338,33 @@ def _apply_payload(
     )
 
 
+def _is_functional_part(part: "Part") -> bool:
+    """True if *part* is a real COTS functional component that must not be
+    rescaled (AGENTS.md §1.2). Mirrors ``agent.modifier._is_functional_part``
+    (kept local to avoid a tools→agent import cycle). Note: "mechanical" is
+    NOT treated as functional — arm_topology uses it for the designable
+    gripper base/fingers. Only real actuators (servos/motors) are protected."""
+    cat = (part.category or "").lower()
+    if cat in ("actuator", "bearing", "gear", "fastener"):
+        return True
+    desc = (part.description or "").lower()
+    functional_markers = (
+        "servo", "mg996", "sg90", "ds3218", "dynamixel", "nema",
+        "motor", "电机", "舵机", "马达", "bearing", "轴承",
+    )
+    return any(m in desc for m in functional_markers)
+
+
 def _apply_reach(
     snapshot: DesignSnapshot,
     change: RequirementChange,
     diff: ChangeDiff,
 ) -> None:
-    """Apply reach change — scale link dimensions proportionally."""
+    """Apply reach change — scale link dimensions proportionally.
+
+    Functional parts (servos/motors) are SKIPPED: a reach change must not
+    rescale a real COTS actuator. Only the structural links resize.
+    """
     old_reach = max(float(change.old_value), 1.0)
     new_reach = float(change.new_value)
     scale = new_reach / old_reach
@@ -353,10 +374,15 @@ def _apply_reach(
     # Scale pitch-link parts
     revolute = [j for j in snapshot.assembly.joints if j.type == "revolute"]
     pitch_joints = [j for j in revolute if j.axis in ("y", "auto")]
+    skipped_functional = 0
 
     for j in pitch_joints:
         part = next((p for p in snapshot.assembly.parts if p.name == j.child), None)
         if part is None:
+            continue
+        # Functional parts (servos driving the joint) keep their real dimensions.
+        if _is_functional_part(part):
+            skipped_functional += 1
             continue
 
         old_dims = dict(part.dimensions)
@@ -378,6 +404,7 @@ def _apply_reach(
     diff.summary = (
         f"Reach updated: {old_reach}mm → {new_reach}mm "
         f"(scale={scale:.2f}x), {len(diff.part_changes)} part(s) resized"
+        + (f", {skipped_functional} functional part(s) kept (not rescaled)" if skipped_functional else "")
     )
 
 

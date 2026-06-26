@@ -215,13 +215,21 @@ class TestBuildArmExample:
     @pytest.mark.parametrize("n", [2, 3, 4, 5, 6, 7])
     def test_arm_joints_use_front_back(self, n):
         """Every non-base joint uses front/back so link length participates
-        in positioning (the IK axis-to-axis distance requirement)."""
+        in positioning (the IK axis-to-axis distance requirement).
+
+        The base yaw is the ONLY top/bottom joint (sits on the plate,
+        axis=z). All other arm-segment joints (pitch shoulder/elbow, wrist
+        roll) use front/back so each link's ``length`` extends the arm
+        horizontally — this is the convention the solver and the
+        ``_fix_arm_chain_anchors`` sanitizer both expect."""
         data = _load(n)
         for j in data["joints"]:
             if j["parent"] == "base_plate":
                 continue  # base joint is top/bottom
             if j["child"] == "gripper_servo":
                 continue  # gripper servo mounts top/bottom on gripper_base
+            if j["type"] == "prismatic":
+                continue  # gripper fingers use front/back too, handled separately
             assert j["parent_anchor"] == "front", (
                 f"DOF={n}: joint {j['parent']}->{j['child']} "
                 f"anchor={j['parent_anchor']}"

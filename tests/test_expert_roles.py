@@ -362,3 +362,47 @@ class TestPipelineStageAgents:
         assert wl is not None
         assert "assembly" in wl
         assert "freecad" not in wl
+
+    def test_run_architect_round1_injects_persona(self, monkeypatch):
+        """Bug-a guard: round-1 generation must pass the Architect persona as
+        ``system_prompt``. Previously the persona only reached the model on
+        repair rounds (``_regenerate_with_feedback``); round-1 used the bare
+        domain prompt. This is the fix Change 2 pins down."""
+        from lang3d.agent.pipeline import AssemblyPipeline, PipelineContext
+
+        captured: dict = {}
+
+        # Stand-in Assembly so the validators run without an LLM.
+        from lang3d.knowledge.mechanics import Assembly, Part
+        fake_asm = Assembly(
+            name="fake",
+            parts=[Part(
+                name="base_plate", category="structural",
+                description="底座", dimensions={},
+            )],
+            joints=[],
+        )
+
+        def fake_generate(description, **kwargs):
+            captured.update(kwargs)
+            return fake_asm
+
+        # run_architect imports generate_assembly_from_nl lazily from the
+        # helpers re-export module, so patch it there.
+        import lang3d.agent.assembly_generator_helpers as helpers
+        monkeypatch.setattr(helpers, "generate_assembly_from_nl", fake_generate)
+
+        ctx = PipelineContext(description="3自由度机械臂")
+        ctx.round_num = 1
+        pipe = AssemblyPipeline(ctx)
+        # is_arm triggers the arm validation path; is_wheeled stays False so
+        # we hit the NL branch (not the deterministic dual-arm generator).
+        assert ctx.is_arm and not ctx.is_wheeled
+
+        assert pipe.run_architect() is True
+        assert "system_prompt" in captured, "round-1 call must pass system_prompt"
+        assert captured["system_prompt"] is not None
+        # The persona keyword must actually be present (not just any string).
+        assert "架构师" in captured["system_prompt"] or "architect" in captured[
+            "system_prompt"
+        ].lower()

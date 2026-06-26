@@ -79,6 +79,51 @@ def _wheel_z_variation(data: dict) -> float:
     return max(zs) - min(zs)
 
 
+def _wheel_ground_clearance(data: dict) -> float:
+    """Solve and return the minimum wheel-BOTTOM Z (ground contact).
+
+    The ground is Z=0. A wheel resting on the ground has bottom_z ≈ 0.
+    The pre-2026-06-24 Z-stack buried wheels 55mm underground (bottom_z<0)
+    because base_plate was the Z=0 root and wheels hung below it. The
+    Husky-style base_footprint root fixes this: wheel bottoms land ~0.
+    Returns the minimum over all wheels.
+    """
+    asm = _to_assembly(data)
+    pos = AssemblySolver(asm).solve()
+    bottoms = []
+    for p in data["parts"]:
+        if not p["name"].startswith("wheel_"):
+            continue
+        z = pos[p["name"]]["position"][2]
+        radius = p["dimensions"]["diameter"] / 2.0
+        bottoms.append(z - radius)
+    return min(bottoms) if bottoms else 0.0
+
+
+def _base_plate_bottom_z(data: dict) -> float:
+    """Solve and return the base_plate BOTTOM Z (deck underside)."""
+    asm = _to_assembly(data)
+    pos = AssemblySolver(asm).solve()
+    z = pos["base_plate"]["position"][2]
+    half_h = next(
+        p["dimensions"]["height"] / 2.0
+        for p in data["parts"] if p["name"] == "base_plate"
+    )
+    return z - half_h
+
+
+def _wheel_top_z(data: dict) -> float:
+    """Solve and return the maximum wheel-TOP Z (highest point of any wheel)."""
+    asm = _to_assembly(data)
+    pos = AssemblySolver(asm).solve()
+    tops = []
+    for p in data["parts"]:
+        if p["name"].startswith("wheel_"):
+            z = pos[p["name"]]["position"][2]
+            tops.append(z + p["dimensions"]["diameter"] / 2.0)
+    return max(tops) if tops else 0.0
+
+
 # ---------------------------------------------------------------------------
 # Structure
 # ---------------------------------------------------------------------------
@@ -109,13 +154,13 @@ class TestBuildWheeledBase:
     def test_has_core_parts(self, wheel_count):
         names = {p["name"] for p in _load(wheel_count=wheel_count)["parts"]}
         assert "base_plate" in names
-        assert "top_plate" in names
         assert "battery_box" in names
-        # one motor + wheel + standoff per corner
+        # Husky structure: wheel + motor per corner (no top_plate/standoff/suspension).
+        # Arms mount directly on base_plate (the single deck).
+        assert "top_plate" not in names
         for c in ["fl", "fr", "rl", "rr"][:wheel_count]:
-            assert f"motor_{c}" in names
             assert f"wheel_{c}" in names
-            assert f"standoff_{c}" in names
+            assert f"motor_{c}" in names
 
 
 # ---------------------------------------------------------------------------
@@ -164,16 +209,162 @@ class TestWheelConventions:
             if j["child"].startswith("wheel_"):
                 assert j.get("no_distribute") is True
 
+
+class TestHuskyStructure:
+    """Guard the Husky-style chassis topology (real_ugv_chassis_engineering.md).
+
+    The pre-rewrite structure had a 4-layer chain (base_plate→motor→suspension
+    →wheel) plus a separate chassis_body shell and standoffs. That was wrong —
+    real UGVs (Husky, Leo Rover) mount wheels DIRECTLY on base_link via a
+    continuous/revolute joint, with no suspension link and no separate shell.
+    These tests pin the correct structure so it can't regress."""
+
+    def test_wheel_parent_is_base_plate(self):
+        """Every wheel's revolute joint parent must be base_plate (not motor,
+        not suspension). Husky: wheel continuous joint → base_link."""
+        data = _load(wheel_count=4)
+        for j in data["joints"]:
+            if j["child"].startswith("wheel_"):
+                assert j["parent"] == "base_plate", (
+                    f"{j['child']} parent is {j['parent']}, expected base_plate"
+                )
+                assert j["type"] == "revolute"
+                assert j["axis"] == "y"
+
+    def test_has_suspension_parts(self):
+        """Each wheel has a visible suspension strut (project requirement +
+        user direction). The strut is a short cylinder between the wheel axle
+        and the chassis underside, modeled as a real mechanical part — not
+        just metadata. Previously the chassis was rigid (Husky-style, no
+        suspension), but the project expectation explicitly requires
+        suspension to be modeled."""
+        data = _load(wheel_count=4)
+        names = {p["name"] for p in data["parts"]}
+        susp = {n for n in names if n.startswith("suspension_")}
+        assert len(susp) == 4, f"expected 4 suspension struts, got {len(susp)}: {susp}"
+
+    def test_has_chassis_body_shell(self):
+        """The chassis has a visible 3D body shell (chassis_body) that rises
+        above the deck and encloses the drivetrain — like Husky's base_link
+        (267mm tall). Without it the robot reads as "a flat plate on wheels".
+        The shell is narrower than the deck so wheels stay visible at the
+        sides, and sits ON the deck top so it doesn't intersect the wheels."""
+        data = _load(wheel_count=4)
+        names = {p["name"] for p in data["parts"]}
+        assert "chassis_body" in names, "chassis_body shell missing"
+        body = next(p for p in data["parts"] if p["name"] == "chassis_body")
+        deck = next(p for p in data["parts"] if p["name"] == "base_plate")
+        # Body must be taller than the thin deck (it's a real shell, not a plate)
+        assert body["dimensions"]["height"] > deck["dimensions"]["height"] * 2, (
+            "chassis_body should be a tall shell, not a thin plate"
+        )
+
+    def test_no_standoffs(self):
+        """No standoffs — the body itself is the structure (top_plate mounts
+        directly on base_plate with a Z offset)."""
+        data = _load(wheel_count=4)
+        names = {p["name"] for p in data["parts"]}
+        assert not any("standoff" in n.lower() for n in names)
+
+    def test_motor_inside_base(self):
+        """Motors are real COTS parts mounted INSIDE the body (fixed to
+        base_plate), not in the wheel drive chain. Husky drives via belt
+        internally; the motor is visible but doesn't carry the wheel joint."""
+        data = _load(wheel_count=4)
+        for j in data["joints"]:
+            if j["child"].startswith("motor_"):
+                assert j["parent"] == "base_plate"
+                assert j["type"] == "fixed"
+        # And no wheel's parent is a motor (motor is not in the drive chain).
+        for j in data["joints"]:
+            if j["child"].startswith("wheel_"):
+                assert not j["parent"].startswith("motor_"), (
+                    "wheel must not hang off a motor (drive chain simplified)"
+                )
+
+    def test_motor_has_real_model(self):
+        """Motor description carries a real COTS model number (AGENTS.md §1.2:
+        functional parts need real specs, not invented boxes)."""
+        data = _load(wheel_count=4)
+        m = next(p for p in data["parts"] if p["name"] == "motor_fl")
+        assert any(tok in m["description"] for tok in ("JGA25", "GA25", "NEMA", "TT"))
+
+
+class TestGroundContact:
+    """The Husky-style Z-stack (added 2026-06-24): wheels rest ON the ground
+    (bottom Z ≈ 0) and the deck sits ABOVE the wheels.
+
+    The pre-fix Z-stack was inverted: base_plate was the Z=0 root and wheels
+    hung below it via the motors, burying wheels 55mm underground (bottom
+    Z = -55). The fix adds a virtual base_footprint root at Z=0 and raises
+    the real base_plate above the wheel axle. These tests pin both halves of
+    that contract so it cannot regress."""
+
     @pytest.mark.parametrize("wheel_count", [2, 4])
-    def test_motor_distribution_group(self, wheel_count):
-        """Motors share a distribution_group so the solver's 2x2 grid puts
-        them at the four corners of the base underside."""
+    def test_wheels_rest_on_ground(self, wheel_count):
+        """Every wheel's bottom must be at (or within 5mm of) Z=0.
+
+        This is the headline physical-correctness check: a wheel whose
+        bottom is below 0 is buried; above ~10mm is floating. ±5mm accounts
+        for the solver's auto joint-face clearance jitter."""
         data = _load(wheel_count=wheel_count)
-        motor_groups = {
-            j["distribution_group"] for j in data["joints"]
-            if j["child"].startswith("motor_")
-        }
-        assert motor_groups == {"motors"}
+        clearance = _wheel_ground_clearance(data)
+        assert -1.0 <= clearance <= 8.0, (
+            f"wheel bottom Z = {clearance:.2f}mm — not resting on ground "
+            f"(Z=0). Buried (<-1) or floating (>8)."
+        )
+
+    @pytest.mark.parametrize("payload_kg", [2.0, 5.0, 20.0])
+    def test_wheels_grounded_across_payloads(self, payload_kg):
+        """Ground contact must hold for every payload tier (different wheel
+        diameters / clearances), not just the default 5kg."""
+        data = _load(wheel_count=4, payload_kg=payload_kg)
+        clearance = _wheel_ground_clearance(data)
+        assert -1.0 <= clearance <= 8.0, (
+            f"payload={payload_kg}kg wheel bottom Z = {clearance:.2f}mm"
+        )
+
+    @pytest.mark.parametrize("wheel_count", [2, 4])
+    def test_deck_sits_above_axle(self, wheel_count):
+        """The base_plate underside must be ABOVE the wheel axle.
+
+        Wheels poke outward from the chassis corners (in XY they sit outside
+        the base plate), so a Z-overlap between deck and wheel-top is not a
+        physical collision. What matters is that the deck sits ABOVE the
+        axle so the deck isn't at ground level (the old bug) and the wheel
+        can spin freely beneath the deck overhang."""
+        data = _load(wheel_count=wheel_count)
+        deck_bottom = _base_plate_bottom_z(data)
+        wheel_axle = _wheel_top_z(data) - (
+            next(p["dimensions"]["diameter"] for p in data["parts"]
+                 if p["name"].startswith("wheel_")) / 2.0
+        )
+        assert deck_bottom >= wheel_axle, (
+            f"deck bottom Z={deck_bottom:.1f} is below the wheel axle "
+            f"Z={wheel_axle:.1f} — deck would block the wheel"
+        )
+
+    @pytest.mark.parametrize("wheel_count", [2, 4])
+    def test_base_footprint_is_ground_root(self, wheel_count):
+        """base_footprint is the virtual ground-contact root at Z=0.
+
+        Its presence is what lets the rest of the Z-stack reference the
+        ground plane; without it base_plate would be the root and wheels
+        would sink below Z=0 again."""
+        data = _load(wheel_count=wheel_count)
+        names = {p["name"] for p in data["parts"]}
+        assert "base_footprint" in names
+        # It must be the true root (no joint has it as a child).
+        children = {j["child"] for j in data["joints"]}
+        assert "base_footprint" not in children, (
+            "base_footprint must be the root, but a joint parents onto it"
+        )
+        # And it must be the parent of base_plate.
+        bp_joints = [
+            j for j in data["joints"]
+            if j["parent"] == "base_footprint" and j["child"] == "base_plate"
+        ]
+        assert len(bp_joints) == 1, "expected exactly one base_footprint→base_plate joint"
 
 
 # ---------------------------------------------------------------------------
@@ -203,11 +394,22 @@ class TestParametricSizing:
         assert hb > lb
 
     def test_arm_mount_metadata_present(self):
-        """The _arm_mount block tells the composer where arms attach."""
+        """The _arm_mount block tells the composer where arms attach.
+
+        Arms mount on the chassis_body TOP FACE (the visible shell), not on
+        the thin base_plate deck beneath it — this matches real wheeled
+        dual-arm robots (HSR/TIAGo/Fetch), where the arm base is co-planar
+        with the chassis top surface. Mounting on the lower deck had the
+        shell enclose the arm bases (穿模), so this contract is load-bearing
+        for collision-free assembly."""
         data = _load()
         assert "_arm_mount" in data
-        assert data["_arm_mount"]["deck"] == "top_plate"
+        assert data["_arm_mount"]["deck"] == "chassis_body"
         assert "offset_mm" in data["_arm_mount"]
+        # deck_top_z is the shell's top-face height above the deck center;
+        # the composer uses it to raise the arm base onto the shell top.
+        assert "deck_top_z" in data["_arm_mount"]
+        assert data["_arm_mount"]["deck_top_z"] > 0
 
 
 # ---------------------------------------------------------------------------

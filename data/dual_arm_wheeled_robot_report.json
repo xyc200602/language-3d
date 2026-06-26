@@ -28,8 +28,8 @@
     "bolt_alignment_checks": 16,
     "sequence_checks": 36,
     "tolerance_chain_checks": 10,
-    "verification_items_total": 625,
-    "verification_items_passed": 578
+    "verification_items_total": 540,
+    "verification_items_passed": 501
   },
   "key_placements": {
     "base_plate": {
@@ -47,8 +47,8 @@
     },
     "top_plate": {
       "position": [
-        0.0,
-        0.0,
+        -105.0,
+        -70.0,
         54.0
       ],
       "rotation": [
@@ -169,10 +169,10 @@
         -15.0
       ],
       "rotation": [
-        -1.0,
-        0.0,
-        0.0,
-        90.0
+        0,
+        0,
+        1,
+        0
       ]
     },
     "wheel_fr": {
@@ -182,10 +182,10 @@
         -15.0
       ],
       "rotation": [
-        -1.0,
-        0.0,
-        0.0,
-        90.0
+        0,
+        0,
+        1,
+        0
       ]
     },
     "wheel_rl": {
@@ -195,10 +195,10 @@
         -15.0
       ],
       "rotation": [
-        -1.0,
-        0.0,
-        0.0,
-        90.0
+        0,
+        0,
+        1,
+        0
       ]
     },
     "wheel_rr": {
@@ -208,16 +208,16 @@
         -15.0
       ],
       "rotation": [
-        -1.0,
-        0.0,
-        0.0,
-        90.0
+        0,
+        0,
+        1,
+        0
       ]
     },
     "arm_l_base": {
       "position": [
-        -98.0,
-        0.0,
+        -203.0,
+        -70.0,
         63.0
       ],
       "rotation": [
@@ -229,8 +229,8 @@
     },
     "arm_l_shoulder": {
       "position": [
-        -98.0,
-        0.0,
+        -203.0,
+        -70.0,
         89.0
       ],
       "rotation": [
@@ -242,8 +242,8 @@
     },
     "arm_l_upper": {
       "position": [
-        -101.75,
-        0.0,
+        -206.75,
+        -70.0,
         114.72
       ],
       "rotation": [
@@ -255,8 +255,8 @@
     },
     "arm_l_elbow": {
       "position": [
-        -101.75,
-        -64.1,
+        -206.75,
+        -134.1,
         114.72
       ],
       "rotation": [
@@ -268,8 +268,8 @@
     },
     "arm_l_forearm": {
       "position": [
-        -101.75,
-        -118.92,
+        -206.75,
+        -188.92,
         114.72
       ],
       "rotation": [
@@ -281,8 +281,8 @@
     },
     "arm_l_wrist": {
       "position": [
-        -101.75,
-        -173.02,
+        -206.75,
+        -243.02,
         114.72
       ],
       "rotation": [
@@ -294,8 +294,8 @@
     },
     "arm_l_gripper": {
       "position": [
-        -101.75,
-        -209.12,
+        -206.75,
+        -279.12,
         114.72
       ],
       "rotation": [
@@ -307,8 +307,8 @@
     },
     "arm_r_base": {
       "position": [
-        98.0,
-        0.0,
+        -7.0,
+        -70.0,
         63.0
       ],
       "rotation": [
@@ -320,8 +320,8 @@
     },
     "arm_r_shoulder": {
       "position": [
-        98.0,
-        0.0,
+        -7.0,
+        -70.0,
         89.0
       ],
       "rotation": [
@@ -333,8 +333,8 @@
     },
     "arm_r_upper": {
       "position": [
-        94.25,
-        0.0,
+        -10.75,
+        -70.0,
         114.72
       ],
       "rotation": [
@@ -346,8 +346,8 @@
     },
     "arm_r_elbow": {
       "position": [
-        94.25,
-        -64.1,
+        -10.75,
+        -134.1,
         114.72
       ],
       "rotation": [
@@ -359,8 +359,8 @@
     },
     "arm_r_forearm": {
       "position": [
-        94.25,
-        -118.92,
+        -10.75,
+        -188.92,
         114.72
       ],
       "rotation": [
@@ -372,8 +372,8 @@
     },
     "arm_r_wrist": {
       "position": [
-        94.25,
-        -173.02,
+        -10.75,
+        -243.02,
         114.72
       ],
       "rotation": [
@@ -385,8 +385,8 @@
     },
     "arm_r_gripper": {
       "position": [
-        94.25,
-        -209.12,
+        -10.75,
+        -279.12,
         114.72
       ],
       "rotation": [
@@ -411,8 +411,8 @@
     },
     "controller_board": {
       "position": [
-        0.0,
-        0.0,
+        -105.0,
+        -70.0,
         61.5
       ],
       "rotation": [
@@ -424,8 +424,8 @@
     },
     "imu_mount": {
       "position": [
-        0.0,
-        0.0,
+        -105.0,
+        -70.0,
         60.5
       ],
       "rotation": [
@@ -437,8 +437,8 @@
     },
     "imu_sensor": {
       "position": [
-        0.0,
-        0.0,
+        -105.0,
+        -70.0,
         67.0
       ],
       "rotation": [
@@ -450,8 +450,8 @@
     },
     "lidar_mount": {
       "position": [
-        0.0,
-        0.0,
+        -105.0,
+        -70.0,
         63.0
       ],
       "rotation": [
@@ -463,8 +463,8 @@
     },
     "lidar_sensor": {
       "position": [
-        0.0,
-        0.0,
+        -105.0,
+        -70.0,
         89.5
       ],
       "rotation": [

@@ -92,3 +92,5 @@ data/*.png
 
 # Legacy development logs (migrated to docs/history/progress.txt)
 development_log/
+data/runs/
+data/archive_pre_refactor/

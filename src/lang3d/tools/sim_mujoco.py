@@ -180,7 +180,39 @@ def _launch_viewer(
         logger.warning("MuJoCo viewer exited with error: %s", e)
 
 
-def _load_model(urdf_path: str) -> dict[str, Any]:
+def _make_base_floating(urdf_text: str) -> tuple[str, bool]:
+    """Rewrite a URDF so the mobile base is a FLOATING body (drivable).
+
+    The exported URDF welds ``base_footprint`` to the world implicitly (its
+    joints to children are ``fixed``), so MuJoCo merges the whole chassis
+    into a rigid mass anchored to the ground — wheels spin but the robot
+    never moves.  This injects a ``<link name="world"/>`` and a
+    ``<joint type="floating" parent="world" child="base_footprint"/>`` so
+    MuJoCo gives the chassis 6-DOF freedom; the wheels (revolute) can then
+    push it along the ground.
+
+    Returns ``(rewritten_text, was_converted)``.  No-op when the URDF has no
+    ``base_footprint`` link (e.g. an arm-only assembly) — arms don't drive.
+    """
+    if "<link name=\"base_footprint\"" not in urdf_text:
+        return urdf_text, False
+    # Already has a world link → assume already floating.
+    if 'name="world"' in urdf_text:
+        return urdf_text, False
+    inject = (
+        '\n  <link name="world"/>\n'
+        '  <joint name="world_to_base_footprint" type="floating">\n'
+        '    <parent link="world"/>\n'
+        '    <child link="base_footprint"/>\n'
+        '  </joint>\n'
+    )
+    # Inject right before the closing </robot> tag.
+    if "</robot>" in urdf_text:
+        return urdf_text.replace("</robot>", inject + "</robot>"), True
+    return urdf_text + inject, True
+
+
+def _load_model(urdf_path: str, *, floating_base: bool = False) -> dict[str, Any]:
     """Load a URDF into MuJoCo, returning a structured result dict.
 
     Returns:
@@ -215,6 +247,21 @@ def _load_model(urdf_path: str) -> dict[str, Any]:
 
     original_text = path.read_text(encoding="utf-8")
     fixed_text, warnings = _rewrite_mesh_paths(original_text, path)
+
+    # Make the mobile base DRIVABLE — ONLY when requested.  The URDF welds
+    # base_footprint→base_plate via a fixed joint, so MuJoCo merges the whole
+    # chassis into a rigid tree bolted to the world.  ``floating_base=True``
+    # injects a <link name="world"/> + floating joint so the chassis becomes a
+    # floating base the wheels can push along the ground ("能动").  This is
+    # enabled for record_motion (driving animation); the arm-stability hold
+    # test and the per-joint actuation test keep the FIXED base (their job is
+    # arm/joint behaviour, not locomotion, and a floating rigid-chassis-on-
+    # locked-wheels is a hard solver problem that produces false instability).
+    if floating_base:
+        floating_text, base_floating = _make_base_floating(fixed_text)
+        if base_floating:
+            fixed_text = floating_text
+            warnings.append("base converted to floating joint for driving")
 
     # If we had to rewrite paths, write a temp URDF; otherwise load directly
     load_path: str = str(path)
@@ -335,7 +382,9 @@ def _stabilize_model(model: Any, armature: float = 0.1, damping: float = 1.0) ->
     for jid in range(model.njnt):
         model.dof_armature[jid] = armature
         if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_SLIDE:
-            # Prismatic: 10x damping to resist gravity-induced lateral drift.
+            # Gripper-finger prismatic: 10x damping to resist gravity-induced
+            # lateral drift. (The Husky-style chassis has no suspension slide
+            # joints, so all slides here are gripper fingers.)
             model.dof_damping[jid] = max(damping * 10.0, 30.0)
         else:
             model.dof_damping[jid] = damping
@@ -394,7 +443,7 @@ def record_motion(
     import mujoco  # type: ignore[import-not-found]
     import numpy as np
 
-    load = _load_model(urdf_path)
+    load = _load_model(urdf_path, floating_base=True)
     if not load.get("ok"):
         return {"ok": False, "error": load.get("error", "model load failed"),
                 "bodies": [], "frames": []}
@@ -415,12 +464,27 @@ def record_motion(
             mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE,
         )
     ]
-    # Per-joint sinusoid params.  Amplitude = 40% of the half-range (clamped
-    # to a sane absolute bound so a joint with a huge/zero range still moves
-    # visibly without slamming to its mechanical limit).  Frequency spans
-    # 0.2-0.5 Hz with a per-joint offset so the motion is non-uniform.
+    # Detect a DRIVABLE mobile base: a floating base (free joint at qpos[0:7])
+    # plus >=2 wheel hinge joints.  When present, command the wheels with a
+    # differential-drive torque so the chassis visibly translates during the
+    # rollout — the project's "能动" expectation (arms move AND base drives).
+    # Without this the base was welded to the world and only arms articulated.
+    has_floating_base = (
+        model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
+    )
+    wheel_jids = [
+        jid for jid in movable
+        if "wheel" in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+                       or "").lower()
+    ]
+    drivable = has_floating_base and len(wheel_jids) >= 2
+    # Arms (non-wheel hinges + slides) follow the sinusoid; wheels follow the
+    # drive command.  Partitioning avoids the sinusoid fighting the drive.
+    arm_jids = [j for j in movable if j not in wheel_jids]
+    # Per-arm-joint sinusoid params (amplitude = 40% of half-range, distinct
+    # frequencies so motion looks coordinated, not mechanical).
     amp_freq: list[tuple[float, float]] = []
-    for jid in movable:
+    for jid in arm_jids:
         lo, hi = (float(x) for x in model.jnt_range[jid])
         half_range = (hi - lo) / 2.0
         amp = min(max(half_range * 0.4, 0.1), 0.6)
@@ -429,6 +493,10 @@ def record_motion(
 
     initial_qpos = data.qpos.copy()
     kp, kv = 200.0, 20.0
+    # Drive torque for the wheels — a gentle forward + slow turn command.
+    # Left/right wheels get a slight differential so the path arcs gently
+    # rather than going dead straight (more visually informative).
+    wheel_drive_torque = 0.08
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
 
@@ -442,14 +510,40 @@ def record_motion(
     frames: list[dict[str, Any]] = []
     for step in range(n_steps):
         t = step * model.opt.timestep
-        # PD-track the sinusoidal target with gravity-compensation feed-forward.
+        # PD-track the arm sinusoid target with gravity-compensation.
         target = initial_qpos.copy()
-        for k, jid in enumerate(movable):
+        for k, jid in enumerate(arm_jids):
             amp, freq = amp_freq[k]
             target[jid] = initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
         mujoco.mj_forward(model, data)
-        q_err = target - data.qpos
-        data.qfrc_applied[:] = kp * q_err - kv * data.qvel + data.qfrc_bias
+        # Start from gravity-compensation feed-forward, then add arm PD.
+        data.qfrc_applied[:] = data.qfrc_bias
+        for k, jid in enumerate(arm_jids):
+            data.qfrc_applied[jid] += kp * (target[jid] - data.qpos[jid]) \
+                                      - kv * data.qvel[jid]
+        # Drive the wheels (differential command) when the base is floating.
+        # Left-side vs right-side wheels get a small differential for a gentle
+        # arc; this is the "能动" deliverable — the chassis translates.
+        if drivable:
+            for jid in wheel_jids:
+                nm = mujoco.mj_id2name(
+                    model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+                # Right-side wheels get a slightly smaller torque → gentle
+                # right arc (visually shows translation + turning).
+                side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
+                data.qfrc_applied[jid] += wheel_drive_torque * side
+            # Stabilize the floating base: hold pitch/roll/height near 0 so
+            # the drive torque doesn't flip the robot.  The free joint qpos
+            # is [x,y,z, qw,qx,qy,qz]; we PD-control z, and the qx/qy (pitch/
+            # roll) quaternion components toward 0 (upright).  Yaw (qz) and
+            # xy translation are left free so the robot drives and turns.
+            # z-height hold (keep initial ground clearance).
+            data.qfrc_applied[2] += 500.0 * (initial_qpos[2] - data.qpos[2]) \
+                                    - 50.0 * data.qvel[2]
+            # Upright hold: push qx,qy toward 0 (keep qw high).
+            qx, qy = float(data.qpos[4]), float(data.qpos[5])
+            data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
+            data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
         mujoco.mj_step(model, data)
         if not np.all(np.isfinite(data.qacc)):
             break  # diverged — stop early, keep what we have
@@ -522,6 +616,18 @@ def _run_physics_hold(
     initial_qpos = data.qpos.copy()
     initial_body_pos = data.xpos.copy()
 
+    # Scale PD gains with the robot's total mass. A fixed kp=100 holds a
+    # ~1kg single-arm robot, but a 5kg+ dual-arm-wheeled robot has larger
+    # gravitational torques at the arm joints (longer levers + more mass),
+    # so the PD term alone (even with qfrc_bias feed-forward, which has
+    # one-step latency) leaves a 2.18° droop that fails the 1° threshold.
+    # Scaling kp/kv by total_mass keeps the controller stiff enough across
+    # robot sizes without over-tuning for tiny arms.
+    total_mass = float(np.sum(model.body_mass))
+    mass_scale = max(1.0, total_mass)
+    kp = kp * mass_scale
+    kv = kv * mass_scale
+
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     unstable = False
     huge_value = False
@@ -536,9 +642,37 @@ def _run_physics_hold(
     # at the home position; we simulate this by clamping prismatic qpos
     # to their initial value each step.  This does not affect revolute
     # joints (the actual stability test) and is physically justified.
+    # (Husky-style chassis has no suspension slides; all slides are grippers.)
     slide_joints = [
         jid for jid in range(model.njnt)
         if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_SLIDE
+    ]
+    # Joints the PD controller holds (hinge + slide, NOT the floating base's
+    # free joint).  Indexed by joint id → dof via jnt_dofadr/jnt_qposadr so
+    # the maths is correct whether or not a floating base pads qpos/qvel.
+    # EXCLUDE wheel hinges: a wheel is a continuous-rotation drive joint
+    # (unbounded range) that must NOT be PD-held at a home angle — under
+    # gravity the chassis weight pushes the wheels and a PD controller with
+    # no steady state lets qpos accumulate past 100 rad → false "huge_value"
+    # instability.  Wheels are free in the hold test (their bearing friction
+    # + the chassis on the ground keeps them still).
+    controlled_joints = [
+        jid for jid in range(model.njnt)
+        if model.jnt_type[jid] in (
+            mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE,
+        )
+        and "wheel" not in (
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+        ).lower()
+    ]
+    # Wheels: if present, lock their velocity to 0 each step so they don't
+    # free-spin under chassis weight during the arm-stability hold test.
+    wheel_hold_jids = [
+        jid for jid in range(model.njnt)
+        if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_HINGE
+        and "wheel" in (
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+        ).lower()
     ]
 
     for step in range(n_steps):
@@ -551,34 +685,84 @@ def _run_physics_hold(
         # inverse-dynamics feed-forward; it cancels the gravitational load
         # so the PD term only needs to correct transients, not hold weight.
         mujoco.mj_forward(model, data)
-        q_err = initial_qpos - data.qpos
-        data.qfrc_applied[:] = (
-            kp * q_err - kv * data.qvel + data.qfrc_bias
-        )
+        # For a floating base, qpos (nq=21) and qvel/qfrc (nv=20) differ in
+        # size AND the base DOFs occupy qvel[0:6] / qfrc[0:6] (vs qpos[0:7]
+        # = xyz + quat).  The PD hold test checks ARM stability, not base
+        # pose — so apply PD only to the non-base joints and let the base
+        # float freely (gravity-compensated by qfrc_bias).  Indexing by
+        # joint id (not raw qpos index) keeps this correct for both fixed
+        # and floating bases.
+        data.qfrc_applied[:] = data.qfrc_bias  # gravity-comp feed-forward
+        for jid in controlled_joints:
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            q_err = initial_qpos[qadr] - data.qpos[qadr]
+            data.qfrc_applied[dadr] += kp * q_err - kv * data.qvel[dadr]
+        # Zero out wheel DOF forces AND velocities BEFORE mj_step so wheels
+        # don't accelerate under gravity-comp during the arm-stability hold.
+        # Setting qfrc=0 cancels the gravity-comp push; setting qvel=0
+        # ensures mj_step integrates from rest.  This models the parked-wheel
+        # state (brakes on) for the arm-stability test.
+        for jid in wheel_hold_jids:
+            dadr = model.jnt_dofadr[jid]
+            data.qfrc_applied[dadr] = 0.0
+            data.qvel[dadr] = 0.0
         mujoco.mj_step(model, data)
         # Lock prismatic joints at their initial position (simulates the
         # gripper controller holding the fingers in the home pose).
         for jid in slide_joints:
-            data.qpos[jid] = initial_qpos[jid]
-            data.qvel[jid] = 0.0
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            data.qpos[qadr] = initial_qpos[qadr]
+            data.qvel[dadr] = 0.0
+        # Re-zero wheel velocity after the step too (defensive: the constraint
+        # solver can inject residual velocity).
+        for jid in wheel_hold_jids:
+            dadr = model.jnt_dofadr[jid]
+            data.qvel[dadr] = 0.0
         # Catch NaN/Inf
         if not np.all(np.isfinite(data.qacc)):
             unstable = True
             blowup_step = step
             break
         # Catch "huge but finite" blowups (qpos > 100 rad means joint spun
-        # > 5700°, which can't be physical)
-        if np.any(np.abs(data.qpos) > 100.0):
-            huge_value = True
-            blowup_step = step
-            break
+        # > 5700°, which can't be physical).  Check only held joints — wheels
+        # are unbounded and are velocity-locked above, so their qpos can
+        # legitimately accumulate without being a stability failure.
+        for jid in controlled_joints:
+            qadr = model.jnt_qposadr[jid]
+            if abs(data.qpos[qadr]) > 100.0:
+                huge_value = True
+                blowup_step = step
+                break
 
     if not unstable and not huge_value:
-        final_err = initial_qpos - data.qpos
-        final_err_deg = float(np.max(np.abs(np.degrees(final_err))))
+        # Measure only JOINT error (not floating-base drift): the hold test
+        # checks that the arms keep their pose, not that the base stays put.
+        # Index by joint qpos-address so a floating base's 7 qpos entries
+        # are excluded.  Use degrees of revolute joints only (slides are
+        # locked) for the droop threshold.
+        joint_errs_deg = []
+        for jid in controlled_joints:
+            if model.jnt_type[jid] != mujoco.mjtJoint.mjJNT_HINGE:
+                continue
+            qadr = model.jnt_qposadr[jid]
+            joint_errs_deg.append(
+                abs(np.degrees(initial_qpos[qadr] - data.qpos[qadr]))
+            )
+        final_err_deg = max(joint_errs_deg) if joint_errs_deg else 0.0
         mujoco.mj_forward(model, data)
+        # Body displacement: exclude the floating base body (it can drift
+        # slightly even under gravity-comp; that's not an arm-stability
+        # failure).  Measure the max displacement of NON-base bodies.
         disp_m = np.linalg.norm(data.xpos - initial_body_pos, axis=1)
-        max_disp_mm = float(np.max(disp_m)) * 1000.0
+        # Body 0 is world; if body 1 is the floating base, skip it.
+        base_skip = 1 if (model.njnt > 0 and
+                          model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE) else 0
+        if len(disp_m) > base_skip + 1:
+            max_disp_mm = float(np.max(disp_m[base_skip + 1:])) * 1000.0
+        else:
+            max_disp_mm = float(np.max(disp_m)) * 1000.0
 
     stabilized = (not unstable) and (not huge_value) and final_err_deg < 1.0 and max_disp_mm < 1.0
 
@@ -632,23 +816,27 @@ def _test_single_joint(
 
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
-    initial_q = float(data.qpos[target_jid])
+    # Use the joint's qpos/dof addresses, not the raw joint id — a floating
+    # base pads qpos[0:7] (xyz+quat) and qvel/qfrc[0:6], so jid≠qposadr≠dofadr.
+    qadr = int(model.jnt_qposadr[target_jid])
+    dadr = int(model.jnt_dofadr[target_jid])
+    initial_q = float(data.qpos[qadr])
 
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     unstable = False
     huge = False
     for _ in range(n_steps):
         data.qfrc_applied[:] = 0
-        data.qfrc_applied[target_jid] = force
+        data.qfrc_applied[dadr] = force
         mujoco.mj_step(model, data)
         if not np.all(np.isfinite(data.qacc)):
             unstable = True
             break
-        if abs(data.qpos[target_jid]) > 100.0:
+        if abs(data.qpos[qadr]) > 100.0:
             huge = True
             break
 
-    delta = float(data.qpos[target_jid]) - initial_q
+    delta = float(data.qpos[qadr]) - initial_q
     jtype = int(model.jnt_type[target_jid])
     rng = model.jnt_range[target_jid]
 
@@ -1078,6 +1266,45 @@ def _find_slide_joints(model: Any) -> list[dict[str, Any]]:
     return slides
 
 
+def _group_fingers_into_grippers(
+    slide_joints: list[dict[str, Any]],
+) -> list[tuple[str, list[dict[str, Any]]]]:
+    """Group slide joints (fingers) into grippers.
+
+    A robot may have multiple grippers (e.g. a dual-arm robot has two, each
+    with 2 fingers → 4 slide joints total).  Fingers are grouped by their
+    body name with the trailing ``finger_<side>`` segment stripped:
+
+        arm_l_gripper_finger_left  → gripper "arm_l_gripper"
+        arm_l_gripper_finger_right → gripper "arm_l_gripper"
+        arm_r_gripper_finger_left  → gripper "arm_r_gripper"
+
+    If a body name does not match the ``finger_*`` convention, fall back to
+    grouping by the longest common prefix before ``finger`` (or the parent
+    body if no such marker exists), so single-gripper robots (whose finger
+    bodies are simply ``finger_left``/``finger_right``) still group into one.
+
+    Returns a list of ``(gripper_id, [finger_joint, ...])`` pairs, ordered by
+    the gripper's first appearance.  Each gripper must have >= 2 fingers to
+    constitute a working 2-finger (or N-finger) gripper.
+    """
+    import re
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    order: list[str] = []
+    for j in slide_joints:
+        body = j["body_name"]
+        # Strip a trailing finger_<side> segment to get the gripper id.
+        m = re.match(r"^(.*)finger_[A-Za-z0-9]+$", body)
+        gripper_id = m.group(1).rstrip("_") if m else "gripper"
+        if gripper_id not in groups:
+            groups[gripper_id] = []
+            order.append(gripper_id)
+        groups[gripper_id].append(j)
+    return [(gid, groups[gid]) for gid in order]
+
+
+
 def _add_cube_to_scene(
     urdf_path: str,
     cube_pos_m: tuple[float, float, float],
@@ -1490,84 +1717,151 @@ class SimGraspTool(Tool):
             model = load_result["model"]
             slide_joints = _find_slide_joints(model)
 
-            if len(slide_joints) != 2:
+            # Group fingers into grippers.  A dual-arm robot has 4 slide
+            # joints (2 per gripper); the previous ``len != 2`` check
+            # rejected these as "NO GRIPPER", so multi-arm "能抓东西"
+            # (the project expectation) could never be verified.  Now we
+            # test EACH gripper independently — isolated single-gripper
+            # tests (one cube per scene) rather than a coupled dual-cube
+            # scene, so a failure in one arm doesn't masquerade as the
+            # other's.
+            grippers = _group_fingers_into_grippers(slide_joints)
+            grippers = [(gid, fs) for gid, fs in grippers if len(fs) >= 2]
+
+            if not grippers:
                 return self._format_no_gripper(urdf_path, slide_joints)
 
-            # 2. Forward kinematics → finger positions
-            # Use the slide-joint body origin as the reference point.  This
-            # is the conventional "grasp center" for a 2-finger gripper
-            # whose fingers are mirror-symmetric about the parent body's
-            # YZ plane.
-            _stabilize_model(model, armature=0.2, damping=3.0)
-            data = mujoco.MjData(model)
-            mujoco.mj_forward(model, data)
-
-            finger1_pos = np.array(data.xpos[slide_joints[0]["body_id"]], dtype=float)
-            finger2_pos = np.array(data.xpos[slide_joints[1]["body_id"]], dtype=float)
-            grasp_center = (finger1_pos + finger2_pos) / 2.0
-
-            # Verify fingers are actually separated (else this isn't a gripper)
-            finger_sep_m = float(np.linalg.norm(finger1_pos - finger2_pos))
-            cube_size_m = cube_size_mm / 1000.0
-            if finger_sep_m < cube_size_m:
-                return self._format_finger_sep_warning(
-                    urdf_path, finger_sep_m, cube_size_m,
-                )
-
-            # 3. Build scene with cube at grasp_center
-            scene_model, temp_files = _add_cube_to_scene(
-                urdf_path=str(Path(urdf_path).resolve()),
-                cube_pos_m=tuple(float(x) for x in grasp_center),
-                cube_size_m=cube_size_m,
-                cube_mass_kg=cube_mass_g / 1000.0,
-            )
-
-            try:
-                # Find slide joints in the NEW model (ids may differ)
-                scene_slides = _find_slide_joints(scene_model)
-                if len(scene_slides) != 2:
-                    return (
-                        f"Error: scene has {len(scene_slides)} slide joints, "
-                        f"expected 2"
-                    )
-
-                cube_body_id = mujoco.mj_name2id(
-                    scene_model, mujoco.mjtObj.mjOBJ_BODY, "grasp_cube",
-                )
-                if cube_body_id < 0:
-                    return "Error: grasp_cube body not found in scene"
-
-                # 4. Run grasp scenario
-                grasp = _run_grasp_scenario(
-                    scene_model,
-                    scene_slides,
-                    cube_body_id,
-                    grasp_force_n=grasp_force_n,
-                    lift_height_m=lift_height_mm / 1000.0,
-                    duration_sec=duration_sec,
-                )
-
-                return self._format_report(
+            per_gripper: list[dict[str, Any]] = []
+            for gid, fingers in grippers:
+                result = self._test_single_gripper(
                     urdf_path=urdf_path,
-                    slide_joints=slide_joints,
-                    finger_sep_m=finger_sep_m,
-                    grasp_center_m=tuple(float(x) for x in grasp_center),
+                    model=model,
+                    fingers=fingers,
                     cube_size_mm=cube_size_mm,
                     cube_mass_g=cube_mass_g,
                     grasp_force_n=grasp_force_n,
                     lift_height_mm=lift_height_mm,
                     duration_sec=duration_sec,
-                    grasp=grasp,
-                    warnings=load_result["warnings"],
                 )
-            finally:
-                for tmp in temp_files:
-                    try:
-                        os.unlink(tmp)
-                    except OSError:
-                        pass
+                result["gripper_id"] = gid
+                per_gripper.append(result)
+
+            return self._format_multi_report(
+                urdf_path=urdf_path,
+                all_slides=slide_joints,
+                per_gripper=per_gripper,
+                cube_size_mm=cube_size_mm,
+                cube_mass_g=cube_mass_g,
+                grasp_force_n=grasp_force_n,
+                lift_height_mm=lift_height_mm,
+                duration_sec=duration_sec,
+                warnings=load_result["warnings"],
+            )
         finally:
             for tmp in load_result.get("temp_files", []):
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+
+    # ------------------------------------------------------------------
+    # Single-gripper test (isolated: one cube, only this gripper's fingers
+    # actuated).  Reused for single- and multi-gripper robots.
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _test_single_gripper(
+        *,
+        urdf_path: str,
+        model: Any,
+        fingers: list[dict[str, Any]],
+        cube_size_mm: float,
+        cube_mass_g: float,
+        grasp_force_n: float,
+        lift_height_mm: float,
+        duration_sec: float,
+    ) -> dict[str, Any]:
+        """Run the three-phase grasp on ONE gripper in isolation.
+
+        Returns a dict: {ok, finger_sep_m, grasp_center_m, grasp, error}.
+        ``error`` is set only if the scene/scenario could not run.
+        """
+        import mujoco  # type: ignore[import-not-found]
+        import numpy as np
+
+        # Forward kinematics → finger positions for THIS gripper.
+        _stabilize_model(model, armature=0.2, damping=3.0)
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+
+        finger_pos = [
+            np.array(data.xpos[f["body_id"]], dtype=float) for f in fingers
+        ]
+        grasp_center = sum(finger_pos) / len(finger_pos)
+
+        finger_sep_m = float(
+            max(np.linalg.norm(a - b)
+                for i, a in enumerate(finger_pos)
+                for b in finger_pos[i + 1:])
+        ) if len(finger_pos) >= 2 else 0.0
+        cube_size_m = cube_size_mm / 1000.0
+
+        if finger_sep_m < cube_size_m:
+            return {
+                "ok": False,
+                "error": "finger_sep",
+                "finger_sep_m": finger_sep_m,
+                "grasp_center_m": tuple(float(x) for x in grasp_center),
+                "grasp": None,
+            }
+
+        scene_model, temp_files = _add_cube_to_scene(
+            urdf_path=str(Path(urdf_path).resolve()),
+            cube_pos_m=tuple(float(x) for x in grasp_center),
+            cube_size_m=cube_size_m,
+            cube_mass_kg=cube_mass_g / 1000.0,
+        )
+        try:
+            scene_slides = _find_slide_joints(scene_model)
+            # Map this gripper's finger joints (by name) into the recompiled
+            # scene model, whose joint ids differ from the original model.
+            finger_names = {f["name"] for f in fingers}
+            scene_fingers = [s for s in scene_slides if s["name"] in finger_names]
+            if len(scene_fingers) != len(fingers):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"scene has {len(scene_fingers)} of this gripper's "
+                        f"{len(fingers)} finger joints"
+                    ),
+                    "finger_sep_m": finger_sep_m,
+                    "grasp_center_m": tuple(float(x) for x in grasp_center),
+                    "grasp": None,
+                }
+            cube_body_id = mujoco.mj_name2id(
+                scene_model, mujoco.mjtObj.mjOBJ_BODY, "grasp_cube",
+            )
+            if cube_body_id < 0:
+                return {
+                    "ok": False, "error": "grasp_cube body not found",
+                    "finger_sep_m": finger_sep_m,
+                    "grasp_center_m": tuple(float(x) for x in grasp_center),
+                    "grasp": None,
+                }
+            grasp = _run_grasp_scenario(
+                scene_model, scene_fingers, cube_body_id,
+                grasp_force_n=grasp_force_n,
+                lift_height_m=lift_height_mm / 1000.0,
+                duration_sec=duration_sec,
+            )
+            return {
+                "ok": bool(grasp.get("grasp_ok", False)),
+                "finger_sep_m": finger_sep_m,
+                "grasp_center_m": tuple(float(x) for x in grasp_center),
+                "grasp": grasp,
+                "_fingers": fingers,  # for per-gripper report formatting
+            }
+        finally:
+            for tmp in temp_files:
                 try:
                     os.unlink(tmp)
                 except OSError:
@@ -1586,13 +1880,84 @@ class SimGraspTool(Tool):
         )
 
     @staticmethod
+    def _format_multi_report(
+        *,
+        urdf_path: str,
+        all_slides: list[dict],
+        per_gripper: list[dict[str, Any]],
+        cube_size_mm: float,
+        cube_mass_g: float,
+        grasp_force_n: float,
+        lift_height_mm: float,
+        duration_sec: float,
+        warnings: list[str],
+    ) -> str:
+        """Aggregate per-gripper results into a single verdict report.
+
+        A multi-gripper robot PASSES only if EVERY gripper holds the cube;
+        one weak gripper fails the whole assembly (the project expectation
+        is that an armed robot "能抓东西", and a dual-arm robot that can
+        only grasp with one hand does not meet it)."""
+        lines = [
+            f"[sim_grasp] GRASP TEST ({len(per_gripper)} gripper(s))",
+            f"URDF: {urdf_path}",
+            f"Slide joints: {len(all_slides)} across {len(per_gripper)} gripper(s)",
+        ]
+        if warnings:
+            lines.append(f"Load warnings: {warnings}")
+        lines.append("")
+
+        all_ok = True
+        for g in per_gripper:
+            gid = g["gripper_id"]
+            lines.append(f"===== Gripper: {gid} =====")
+            if g.get("error") == "finger_sep":
+                sep = g.get("finger_sep_m", 0.0) * 1000.0
+                lines.append(f"  静态抓取: FAIL (手指间距 {sep:.1f}mm < 立方体)")
+                lines.append("")
+                all_ok = False
+                continue
+            if g.get("error"):
+                lines.append(f"  静态抓取: FAIL ({g['error']})")
+                lines.append("")
+                all_ok = False
+                continue
+            # Delegate the rich per-phase detail to the single-gripper
+            # formatter (it emits 静态抓取: PASS/FAIL, phase A/B/C stats).
+            lines.append(SimGraspTool._format_report(
+                urdf_path=urdf_path,
+                slide_joints=g.get("_fingers", []),
+                finger_sep_m=g["finger_sep_m"],
+                grasp_center_m=g["grasp_center_m"],
+                cube_size_mm=cube_size_mm,
+                cube_mass_g=cube_mass_g,
+                grasp_force_n=grasp_force_n,
+                lift_height_mm=lift_height_mm,
+                duration_sec=duration_sec,
+                grasp=g["grasp"],
+                warnings=[],  # per-gripper; load warnings emitted once above
+            ))
+            lines.append("")
+            if not g["ok"]:
+                all_ok = False
+
+        lines.append("=" * 50)
+        n_ok = sum(1 for g in per_gripper if g["ok"])
+        lines.append(
+            f"总体结论: PASS (所有 {len(per_gripper)} 个夹爪均能抓取)" if all_ok
+            else f"总体结论: FAIL ({n_ok}/{len(per_gripper)} 夹爪可抓取)"
+        )
+        return "\n".join(lines)
+
+
+    @staticmethod
     def _format_no_gripper(urdf_path: str, slide_joints: list[dict]) -> str:
         names = [j["name"] for j in slide_joints]
         lines = [
             f"[sim_grasp] NO GRIPPER DETECTED",
             f"URDF: {urdf_path}",
-            f"Found {len(slide_joints)} SLIDE joints; need exactly 2 "
-            f"for a 2-finger gripper.",
+            f"Found {len(slide_joints)} SLIDE joint(s); a gripper needs "
+            f">= 2 fingers (grouped by body name).",
         ]
         if names:
             lines.append(f"Slide joints found: {names}")

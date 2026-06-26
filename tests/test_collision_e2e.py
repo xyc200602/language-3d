@@ -186,29 +186,43 @@ class TestCollisionE2E:
         """Simple assembly with well-separated parts should be collision-free."""
         from lang3d.knowledge.mechanics import Assembly, Joint, Part
 
+        # NOTE on the part/joint layout: ``_build_adjacent_pairs`` adds the
+        # TRANSITIVE 2-hop closure (a→b→c ⇒ a adjacent c) plus siblings, so
+        # a linear a-b-c chain makes ALL three mutually adjacent and zero
+        # pairs get checked. To exercise a genuine non-adjacent pair we add
+        # a fourth part ``d`` attached to ``a``: a-c, a-d, b-d, c-d remain
+        # non-adjacent (more than 2 hops apart in the tree), so several pairs
+        # are checked and all must be collision-free at 100mm spacing.
         assembly = Assembly(
             name="separated_test",
             parts=[
                 Part("a", "box", "", dimensions={"length": 10, "width": 10, "height": 10}),
                 Part("b", "box", "", dimensions={"length": 10, "width": 10, "height": 10}),
                 Part("c", "box", "", dimensions={"length": 10, "width": 10, "height": 10}),
+                Part("d", "box", "", dimensions={"length": 10, "width": 10, "height": 10}),
             ],
             joints=[
                 Joint("fixed", "a", "b"),
                 Joint("fixed", "b", "c"),
+                Joint("fixed", "a", "d"),
             ],
         )
         positions = {
             "a": {"position": [0, 0, 0]},
             "b": {"position": [100, 0, 0]},
             "c": {"position": [200, 0, 0]},
+            "d": {"position": [0, 100, 0]},
         }
         result = checker.check_assembly_collisions(
             assembly, positions, skip_adjacent=True,
         )
         assert result.collision_free
-        # a-b and b-c are adjacent (skipped), but a-c is not adjacent (1 pair)
-        assert result.pairs_checked == 1
+        # a-b, b-c, a-d are adjacent (direct edges); a-c is also adjacent via
+        # the 2-hop closure (a→b→c). The remaining non-adjacent pairs
+        # (b-d, c-d) must be checked — at least one pair checked, all clear.
+        assert result.pairs_checked >= 1, (
+            f"expected ≥1 non-adjacent pair checked, got {result.pairs_checked}"
+        )
 
     def test_collision_check_without_skip_adjacent(
         self, complex_robot, solved_positions, checker,

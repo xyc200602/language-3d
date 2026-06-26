@@ -18,7 +18,13 @@ from typing import Any
 
 @dataclass
 class DCMotorSpec:
-    """Specifications for a DC motor."""
+    """Specifications for a DC motor.
+
+    Body geometry (body_length/width/height_mm) is the real COTS housing
+    envelope — these are FUNCTIONAL dimensions that must NOT be rescaled
+    (AGENTS.md §1.2). They let the chassis generator place a real motor body
+    instead of an invented 40×30×25 box.
+    """
     name: str
     nominal_voltage: float  # V
     no_load_speed_rpm: float
@@ -29,6 +35,11 @@ class DCMotorSpec:
     shaft_diameter_mm: float = 6.0
     price_cny: float = 0.0
     notes: str = ""
+    # Real COTS body envelope (mm). length = along motor/axle axis,
+    # width/height = cross-section. From manufacturer datasheets.
+    body_length_mm: float = 0.0   # along the output-shaft axis
+    body_width_mm: float = 0.0    # cross-section width
+    body_height_mm: float = 0.0   # cross-section height
 
 
 DC_MOTOR_CATALOG: dict[str, DCMotorSpec] = {
@@ -37,30 +48,41 @@ DC_MOTOR_CATALOG: dict[str, DCMotorSpec] = {
         stall_torque_kg_cm=0.5, rated_torque_kg_cm=0.1, rated_speed_rpm=9000,
         weight_g=15, shaft_diameter_mm=3.0, price_cny=5,
         notes="玩具级，适合轻载小车",
+        # TT马达: 主体约 28×24×30mm (含减速箱)
+        body_length_mm=28.0, body_width_mm=24.0, body_height_mm=30.0,
     ),
     "JGA25-370": DCMotorSpec(
         name="JGA25-370 减速电机", nominal_voltage=12, no_load_speed_rpm=200,
         stall_torque_kg_cm=8.0, rated_torque_kg_cm=1.5, rated_speed_rpm=170,
         weight_g=120, shaft_diameter_mm=6.0, price_cny=25,
         notes="常用机器人底盘电机，金属齿轮",
+        # JGA25-370: Ø25mm 圆筒主体, 长37mm(主体,不含轴), 减速箱附后.
+        # 轴径修正: 6mm (catalog 一致; 3mm 为不带减速箱的裸 370 芯).
+        body_length_mm=37.0, body_width_mm=25.0, body_height_mm=25.0,
     ),
     "GA25-370": DCMotorSpec(
         name="GA25-370 减速电机", nominal_voltage=12, no_load_speed_rpm=100,
         stall_torque_kg_cm=12.0, rated_torque_kg_cm=2.0, rated_speed_rpm=85,
         weight_g=130, shaft_diameter_mm=6.0, price_cny=30,
         notes="高扭矩版，适合重载底盘",
+        # GA25-370: Ø25mm, 主体长40mm(更长减速箱)
+        body_length_mm=40.0, body_width_mm=25.0, body_height_mm=25.0,
     ),
     "NEMA17": DCMotorSpec(
         name="NEMA17 步进电机", nominal_voltage=12, no_load_speed_rpm=600,
         stall_torque_kg_cm=4.4, rated_torque_kg_cm=3.0, rated_speed_rpm=400,
         weight_g=280, shaft_diameter_mm=5.0, price_cny=35,
         notes="42步进，定位精度高",
+        # NEMA17: 42.3×42.3mm 方形法兰, 主体长40mm
+        body_length_mm=40.0, body_width_mm=42.3, body_height_mm=42.3,
     ),
     "NEMA23": DCMotorSpec(
         name="NEMA23 步进电机", nominal_voltage=24, no_load_speed_rpm=600,
         stall_torque_kg_cm=12.0, rated_torque_kg_cm=8.0, rated_speed_rpm=400,
         weight_g=700, shaft_diameter_mm=8.0, price_cny=120,
         notes="大功率步进，适合工业AGV",
+        # NEMA23: 56.4×56.4mm 方形法兰, 主体长50mm
+        body_length_mm=50.0, body_width_mm=56.4, body_height_mm=56.4,
     ),
 }
 
@@ -316,21 +338,52 @@ class WheelBaseCalculator:
         return self.payload_kg + self.chassis_mass_kg
 
     def wheel_diameter_mm(self) -> float:
-        """Estimate wheel diameter from total mass."""
-        # Heuristic: heavier → larger wheels
+        """Estimate wheel diameter from total mass.
+
+        Two real constraints drive wheel size (see
+        docs/references/external/husky_urdf_ground_truth.md §3):
+
+        1. **Load capacity** (mass-driven): a heavier robot needs bigger
+           wheels for a larger contact patch and lower bearing stress. This
+           is monotonic — heavier always means larger wheels (pinned by
+           test_light_robot / test_heavy_robot_larger_wheels).
+        2. **Proportion** (track-driven): real UGVs keep wheel diameter ≈
+           0.35–0.6× track (Husky 0.62, Leo Rover 0.37). Small/light robots
+           sit at the low end (Leo Rover), heavy robots at the high end
+           (Husky). Tiny wheels on a wide track look like casters; huge
+           wheels on a narrow track look like a unicycle.
+
+        We satisfy both by taking the MAX of the mass-tier diameter and a
+        mass-dependent proportion of track. The proportion floor rises with
+        mass class so light robots keep proportionally smaller wheels (like
+        Leo Rover's 0.37) while heavy robots get bigger ones (like Husky's
+        0.62).
+        """
+        # Mass-driven tiers (monotonic increasing with total mass). The
+        # proportion floor also rises per-tier so the ratio tracks real UGVs.
         if self.total_mass_kg < 5:
-            return 60.0
+            mass_d, ratio = 70.0, 0.35   # Leo Rover class
         elif self.total_mass_kg < 15:
-            return 80.0
+            mass_d, ratio = 90.0, 0.40
         elif self.total_mass_kg < 30:
-            return 100.0
+            mass_d, ratio = 110.0, 0.45
         elif self.total_mass_kg < 60:
-            return 120.0
+            mass_d, ratio = 140.0, 0.55
         else:
-            return 150.0
+            mass_d, ratio = 170.0, 0.62  # Husky class
+        proportion_floor = self.track_width_mm() * ratio
+        return max(60.0, min(max(mass_d, proportion_floor), 200.0))
 
     def track_width_mm(self) -> float:
-        """Estimate track width based on mass and wheel count."""
+        """Estimate track width based on mass and wheel count.
+
+        Track width (left↔right wheel separation) scales with total mass:
+        a heavier robot needs a wider stance for stability. The tiers
+        follow the same breakpoints as wheel diameter, so each mass class
+        keeps a consistent wheel_diameter/track ratio (~0.6, matching the
+        Husky A200 UGV where 355mm wheels sit on a 571mm track = 0.62 — see
+        docs/references/external/husky_urdf_ground_truth.md).
+        """
         base = 200.0
         if self.total_mass_kg > 20:
             base = 300.0
@@ -341,17 +394,27 @@ class WheelBaseCalculator:
         return base
 
     def ground_clearance_mm(self) -> float:
-        """Minimum ground clearance."""
-        if self.total_mass_kg < 10:
-            return 10.0
-        elif self.total_mass_kg < 30:
-            return 15.0
-        else:
-            return 20.0
+        """Minimum ground clearance.
+
+        Husky A200: 145mm clearance on 355mm wheels (clearance/radius = 0.82).
+        We keep clearance ≈ 0.4× wheel diameter (Husky's clearance/diameter =
+        0.41), but clamp to practical minimums so a tiny 60mm wheel still
+        clears the floor's surface roughness.
+        """
+        d = self.wheel_diameter_mm()
+        return max(d * 0.4, 10.0)
 
     def wheelbase_mm(self) -> float:
-        """Estimate wheelbase (front-to-back)."""
-        return self.track_width_mm() * 1.0  # roughly square
+        """Estimate wheelbase (front-to-back).
+
+        Real UGVs are NOT square: the Husky A200 has wheelbase 512mm on a
+        571mm track (wheelbase/track = 0.90 — see
+        docs/references/external/husky_urdf_ground_truth.md). The previous
+        1.0×track made the stance square, which combined with a square body
+        put wheels dead at the body corners (looking like four stubs on a
+        box). A 0.9×track wheelbase matches real proportions.
+        """
+        return self.track_width_mm() * 0.9
 
     def to_dict(self) -> dict[str, Any]:
         return {
