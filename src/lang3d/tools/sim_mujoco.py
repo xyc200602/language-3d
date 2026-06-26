@@ -1200,14 +1200,18 @@ class SimMujocoTool(Tool):
         # Physics
         if physics is not None:
             lines.append("")
-            lines.append(f"--- 物理稳定性 (PD hold, {physics['timesteps']} steps) ---")
-            status = "PASS" if physics["stabilized"] else "FAIL"
-            lines.append(f"  状态: {status}")
-            lines.append(f"  最大关节角误差: {physics['max_qpos_error_deg']:.3f}° (阈值 1°)")
-            lines.append(f"  最大 body 位移: {physics['max_body_displacement_mm']:.3f}mm (阈值 1mm)")
-            if physics["unstable"]:
-                lines.append("  WARN: 数值不稳定 (NaN/Inf in QACC) — see notes")
-            lines.append(f"  备注: {physics['notes']}")
+            if physics.get("interactive"):
+                lines.append("--- 物理稳定性 (interactive viewer, user-verified) ---")
+                lines.append("  状态: INTERACTIVE (user watched the viewer)")
+            else:
+                lines.append(f"--- 物理稳定性 (PD hold, {physics['timesteps']} steps) ---")
+                status = "PASS" if physics["stabilized"] else "FAIL"
+                lines.append(f"  状态: {status}")
+                lines.append(f"  最大关节角误差: {physics['max_qpos_error_deg']:.3f}° (阈值 1°)")
+                lines.append(f"  最大 body 位移: {physics['max_body_displacement_mm']:.3f}mm (阈值 1mm)")
+                if physics["unstable"]:
+                    lines.append("  WARN: 数值不稳定 (NaN/Inf in QACC) — see notes")
+                lines.append(f"  备注: {physics['notes']}")
 
         # Joint test
         if joint_results:
@@ -1269,7 +1273,7 @@ class SimMujocoTool(Tool):
                 lines.append(f"    - {reason}")
 
         # Physics stability (soft signal)
-        physics_ok = physics is not None and physics["stabilized"]
+        physics_ok = physics is not None and physics.get("stabilized", physics.get("stable", False))
         if physics is not None:
             if physics_ok:
                 lines.append("  物理稳定: PASS — PD 控制下能保持初始姿态")
