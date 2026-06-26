@@ -362,30 +362,41 @@ function applyFrame(frame) {
     'upper_arm_link': 'shoulder_pitch_servo',
     'forearm_link': 'elbow_pitch_servo',
     'wrist_link': 'wrist_roll_servo',
-    'gripper_base': 'wrist_roll_servo',   // via wrist_link → wrist_roll_servo
-    'gripper_servo': 'wrist_roll_servo',   // via gripper_base → wrist_link → ...
+    'gripper_base': 'wrist_roll_servo',
+    'gripper_servo': 'wrist_roll_servo',
   };
 
-  // Save initial relative offsets (first frame) so we can reconstruct
-  // each merged link's position from its servo parent's motion.
-  if (!applyFrame._initOffsets) {
-    applyFrame._initOffsets = {};
+  // On first call, capture the initial world transform of each servo
+  // ancestor and the initial world position of each merged link, so we
+  // can compute the rigid delta transform on subsequent frames.
+  if (!applyFrame._init) {
+    applyFrame._init = {};
     const f0 = motionFrames.frames[0];
+    const f0poses = {};
+    for (let i = 0; i < names.length; i++) f0poses[names[i]] = f0.poses[i];
+
     for (const m of stlMeshes) {
-      const ancestor = fixedParent[m.name] || m.name;
-      if (bodyPose[ancestor] && f0) {
-        const ap = f0.poses[names.indexOf(ancestor)];
-        if (ap) {
-          applyFrame._initOffsets[m.name] = {
-            // world position of STL at frame 0 (mm)
-            px: m.mesh.position.x, py: m.mesh.position.y, pz: m.mesh.position.z,
-            // MuJoCo ancestor position at frame 0 (mm)
-            ax: ap[0]*1000, ay: ap[1]*1000, az: ap[2]*1000,
-          };
-        }
-      }
+      const anc = fixedParent[m.name];
+      if (!anc || !f0poses[anc]) continue;
+      const ap = f0poses[anc];
+      // Ancestor initial world transform (mm + quaternion)
+      const ancMat = new THREE.Matrix4();
+      const ancPos = new THREE.Vector3(ap[0]*1000, ap[1]*1000, ap[2]*1000);
+      const ancQuat = new THREE.Quaternion(ap[4], ap[5], ap[6], ap[3]);
+      const ancScale = new THREE.Vector3(1,1,1);
+      ancMat.compose(ancPos, ancQuat, ancScale);
+      // Inverse for delta computation
+      const ancMatInv = new THREE.Matrix4().copy(ancMat).invert();
+      // Link initial world position (mm)
+      const linkPos = m.mesh.position.clone();
+      applyFrame._init[m.name] = { ancMatInv, linkPos, ancName: anc };
     }
   }
+
+  const tmpVec = new THREE.Vector3();
+  const tmpQuat = new THREE.Quaternion();
+  const tmpScale = new THREE.Vector3();
+  const tmpMat = new THREE.Matrix4();
 
   for (const m of stlMeshes) {
     // Direct match: this STL IS a MuJoCo body.
@@ -396,18 +407,26 @@ function applyFrame(frame) {
       continue;
     }
     // Indirect: this STL was merged into a servo body via fixed joint.
-    const ancestor = fixedParent[m.name];
-    if (ancestor && bodyPose[ancestor]) {
-      const p = bodyPose[ancestor];
-      const off = applyFrame._initOffsets[m.name];
-      if (off) {
-        // Follow the ancestor's translation delta from frame 0.
-        const dx = p[0]*1000 - off.ax;
-        const dy = p[1]*1000 - off.ay;
-        const dz = p[2]*1000 - off.az;
-        m.mesh.position.set(off.px + dx, off.py + dy, off.pz + dz);
-        // Follow the ancestor's rotation.
-        m.mesh.quaternion.set(p[4], p[5], p[6], p[3]);
+    // Compute the rigid delta transform from frame 0 and apply it to
+    // the link's initial position.  This correctly handles BOTH rotation
+    // and translation of the ancestor — the link swings around the
+    // servo's center, not just slides.
+    const init = applyFrame._init[m.name];
+    if (init) {
+      const p = bodyPose[init.ancName];
+      if (p) {
+        // Ancestor current world transform
+        const curPos = new THREE.Vector3(p[0]*1000, p[1]*1000, p[2]*1000);
+        const curQuat = new THREE.Quaternion(p[4], p[5], p[6], p[3]);
+        const curMat = new THREE.Matrix4().compose(curPos, curQuat, new THREE.Vector3(1,1,1));
+        // Delta = curMat × initAncMat⁻¹
+        const delta = new THREE.Matrix4().multiplyMatrices(curMat, init.ancMatInv);
+        // Apply delta to link's initial world position
+        const newPos = init.linkPos.clone().applyMatrix4(delta);
+        m.mesh.position.copy(newPos);
+        // Apply delta rotation to link's initial quaternion
+        delta.decompose(tmpVec, tmpQuat, tmpScale);
+        m.mesh.quaternion.premultiply(tmpQuat);
       }
     }
   }
