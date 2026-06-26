@@ -284,6 +284,33 @@ def _load_model(urdf_path: str, *, floating_base: bool = False) -> dict[str, Any
             "temp_files": temp_files,
         }
 
+    # Raise the per-pair contact limit for dense-mesh assemblies (dual-arm
+    # robots with 38 STL collision meshes can produce >8 contacts between
+    # two geoms, crashing mj_forward with "expected at most 8").  Recompile
+    # the model as MJCF with nconmax=200 injected into <size>.
+    try:
+        mjcf_fd, mjcf_path = tempfile.mkstemp(
+            suffix=".xml", dir=str(path.parent), prefix="_nconmax_",
+        )
+        os.close(mjcf_fd)
+        mujoco.mj_saveLastXML(mjcf_path, model)
+        mjcf_text = Path(mjcf_path).read_text("utf-8")
+        if "<size" in mjcf_text:
+            if "nconmax" not in mjcf_text:
+                mjcf_text = mjcf_text.replace(
+                    "<size", '<size nconmax="200"', 1,
+                )
+        else:
+            mjcf_text = mjcf_text.replace(
+                "<mujoco>", '<mujoco><size nconmax="200"/>', 1,
+            )
+        Path(mjcf_path).write_text(mjcf_text, "utf-8")
+        temp_files.append(mjcf_path)
+        model = mujoco.MjModel.from_xml_path(mjcf_path)
+        warnings.append("raised nconmax=200 for dense-mesh collisions")
+    except Exception:
+        pass  # keep the original model if MJCF patching fails
+
     return {
         "ok": True,
         "error": "",
@@ -382,9 +409,6 @@ def _stabilize_model(model: Any, armature: float = 0.1, damping: float = 1.0) ->
     for jid in range(model.njnt):
         model.dof_armature[jid] = armature
         if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_SLIDE:
-            # Gripper-finger prismatic: 10x damping to resist gravity-induced
-            # lateral drift. (The Husky-style chassis has no suspension slide
-            # joints, so all slides here are gripper fingers.)
             model.dof_damping[jid] = max(damping * 10.0, 30.0)
         else:
             model.dof_damping[jid] = damping
@@ -455,6 +479,25 @@ def record_motion(
         model.opt.timestep = 0.0005
 
     data = mujoco.MjData(model)
+
+    # Disable mesh-mesh collisions to avoid mj_narrowphase maxContact crash.
+    # Complex dual-arm assemblies (38 STL meshes) produce >8 contacts per
+    # pair, exceeding MuJoCo's hard-coded mj_maxContact=8.  Arm-to-arm
+    # avoidance is already handled at composition time; in playback we only
+    # need wheel-ground contact for driving.  contype/conaffinity bitmask:
+    # ground=bit0, wheels=bit1 → only wheel×ground collides.
+    if model.ngeom > 10:
+        for gid in range(model.ngeom):
+            model.geom_contype[gid] = 0
+            model.geom_conaffinity[gid] = 0
+        for gid in range(model.ngeom):
+            bid = int(model.geom_bodyid[gid])
+            bname = mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+            if bid == 0 or "wheel" in bname.lower():
+                model.geom_contype[gid] = 1
+                model.geom_conaffinity[gid] = 1
+
     mujoco.mj_forward(model, data)
 
     # Actuated joints = HINGE or SLIDE (fixed joints are merged out by MuJoCo).
