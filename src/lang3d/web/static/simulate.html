@@ -327,12 +327,14 @@ function fmtDims(d) {
   return `{${items}}`;
 }
 
-// ---------------- Animation playback ----------------
-// motionFrames: the per-body pose time-series returned by /animate (metres).
-// playback handles (so a new load/sim cancels any running loop).
-let motionFrames = null;       // {bodies:[...], fps, frames:[{t, poses:[[x,y,z,w,qx,qy,qz], ...]}]}
-let animHandle = null;         // requestAnimationFrame id
+// ---------------- Animation playback (FK-based) ----------------
+// motionFrames now contains JOINT ANGLE sequences, not body poses.
+// Each frame's angles are sent to /fk_positions which forward-kinematics
+// ALL parts correctly via the solver — every part follows its DOF.
+let motionFrames = null;
+let animHandle = null;
 let animFrameIdx = 0;
+let fkCache = {};  // frame index → positions (avoid re-solving same frame)
 
 function stopAnimation() {
   if (animHandle !== null) {
@@ -341,97 +343,52 @@ function stopAnimation() {
   }
 }
 
-// Apply one frame's body poses to the matching STL meshes.
-// MuJoCo returns metres + quaternion (w,x,y,z); the renderer uses mm, so ×1000.
-function applyFrame(frame) {
-  if (!frame || !motionFrames) return;
-  const names = motionFrames.bodies;
-  const poses = frame.poses;
+// Apply one frame: fetch FK positions for the joint angles, update meshes.
+async function applyFrame(frameIdx) {
+  if (!motionFrames || frameIdx < 0 || frameIdx >= motionFrames.frames.length) return;
+  const frame = motionFrames.frames[frameIdx];
 
-  // Build a map: MuJoCo body name → pose, for quick lookup.
-  const bodyPose = {};
-  for (let i = 0; i < names.length; i++) {
-    bodyPose[names[i]] = poses[i];
+  // Check cache first (slider scrub re-visits frames).
+  if (fkCache[frameIdx]) {
+    applyPositions(fkCache[frameIdx]);
+    return;
   }
 
-  // URDF fixed-joint child→ancestor chain: links merged into servo bodies
-  // by MuJoCo.  Each STL that isn't a direct animate body follows its
-  // servo ancestor's motion (rigidly bolted via fixed joint).
-  const fixedParent = {
-    'yaw_link': 'base_yaw_servo',
-    'upper_arm_link': 'shoulder_pitch_servo',
-    'forearm_link': 'elbow_pitch_servo',
-    'wrist_link': 'wrist_roll_servo',
-    'gripper_base': 'wrist_roll_servo',
-    'gripper_servo': 'wrist_roll_servo',
-  };
+  // Call /fk_positions to solve the assembly with these joint angles.
+  try {
+    const resp = await fetch(
+        `/api/runs/${currentRun.case}/${currentRun.timestamp}/fk_positions`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({angles: frame.angles}),
+    });
+    const data = await resp.json();
+    if (data.positions) {
+      fkCache[frameIdx] = data.positions;
+      applyPositions(data.positions);
+    }
+  } catch (e) {
+    // Network or solver error — skip this frame.
+  }
+}
 
-  // On first call, capture the initial world transform of each servo
-  // ancestor and the initial world transform of EVERY mesh (including
-  // the swap_xy + solver rotation baked into the geometry), so we can
-  // compute the rigid delta transform on subsequent frames.
-  if (!applyFrame._init) {
-    applyFrame._init = {};
-    const f0 = motionFrames.frames[0];
-    const f0poses = {};
-    for (let i = 0; i < names.length; i++) f0poses[names[i]] = f0.poses[i];
-
-    for (const m of stlMeshes) {
-      // Save this mesh's initial position + quaternion (from /positions
-      // + swap_xy + solver rotation — all already applied at load time).
-      const initPos = m.mesh.position.clone();
-      const initQuat = m.mesh.quaternion.clone();
-
-      // Determine which animate body drives this mesh.
-      let driverName = m.name;  // direct match by default
-      if (!f0poses[m.name]) {
-        // Merged link: follow its servo ancestor.
-        driverName = fixedParent[m.name] || null;
-      }
-      if (!driverName || !f0poses[driverName]) continue;
-
-      const ap = f0poses[driverName];
-      const drvPos = new THREE.Vector3(ap[0]*1000, ap[1]*1000, ap[2]*1000);
-      const drvQuat = new THREE.Quaternion(ap[4], ap[5], ap[6], ap[3]);
-      const drvMat = new THREE.Matrix4().compose(
-        drvPos, drvQuat, new THREE.Vector3(1,1,1));
-      const drvMatInv = new THREE.Matrix4().copy(drvMat).invert();
-
-      applyFrame._init[m.name] = { initPos, initQuat, drvMatInv, driverName };
+// Update each STL mesh to its FK-solved world position + rotation.
+function applyPositions(positions) {
+  for (const m of stlMeshes) {
+    const p = positions[m.name];
+    if (!p) continue;
+    if (p.position) {
+      m.mesh.position.set(p.position[0], p.position[1], p.position[2]);
+    }
+    if (p.rotation && p.rotation[3] !== 0) {
+      const [ax, ay, az, angDeg] = p.rotation;
+      const axis = new THREE.Vector3(ax, ay, az).normalize();
+      m.mesh.quaternion.setFromAxisAngle(axis, angDeg * Math.PI / 180);
+    } else {
+      m.mesh.quaternion.identity();
     }
   }
-
-  for (const m of stlMeshes) {
-    const init = applyFrame._init[m.name];
-    if (!init) continue;
-
-    const p = bodyPose[init.driverName];
-    if (!p) continue;
-
-    // Build driver's CURRENT world transform.
-    const curPos = new THREE.Vector3(p[0]*1000, p[1]*1000, p[2]*1000);
-    const curQuat = new THREE.Quaternion(p[4], p[5], p[6], p[3]);
-    const curMat = new THREE.Matrix4().compose(
-      curPos, curQuat, new THREE.Vector3(1,1,1));
-
-    // Delta transform = curMat × initDriverMat⁻¹
-    const delta = new THREE.Matrix4().multiplyMatrices(curMat, init.drvMatInv);
-
-    // Decompose delta into translation + rotation.
-    const dPos = new THREE.Vector3();
-    const dQuat = new THREE.Quaternion();
-    const dScale = new THREE.Vector3();
-    delta.decompose(dPos, dQuat, dScale);
-
-    // Apply: start from mesh's INITIAL transform (not previous frame's),
-    // then apply the world-frame delta on top.
-    m.mesh.position.copy(init.initPos).applyMatrix4(
-      new THREE.Matrix4().makeTranslation(dPos.x, dPos.y, dPos.z));
-    // Actually we need full rigid: newPos = delta * initPos
-    m.mesh.position.copy(init.initPos).applyMatrix4(delta);
-    // Rotation: mesh_quat = deltaQuat * initQuat (world-frame delta first)
-    m.mesh.quaternion.copy(dQuat).multiply(init.initQuat);
-  }
+  controls.update();
 }
 
 function playAnimation() {
@@ -442,21 +399,25 @@ function playAnimation() {
   const total = motionFrames.frames.length;
   slider.max = total - 1;
   animFrameIdx = 0;
-  const stepMs = 1000 / (motionFrames.fps || 30);
+  fkCache = {};  // clear cache for new playback
+  const stepMs = 1000 / (motionFrames.fps || 15);
   let lastT = performance.now();
+  let pending = false;
 
-  function loop(now) {
-    if (!motionFrames) return;  // cancelled
+  async function loop(now) {
+    if (!motionFrames) return;
     const elapsed = now - lastT;
-    if (elapsed >= stepMs) {
-      lastT = now - (elapsed % stepMs);
+    if (elapsed >= stepMs && !pending) {
+      lastT = now;
       animFrameIdx = Math.min(animFrameIdx + 1, total - 1);
-      applyFrame(motionFrames.frames[animFrameIdx]);
       slider.value = animFrameIdx;
       label.textContent = `${motionFrames.frames[animFrameIdx].t.toFixed(2)}s`;
+      pending = true;
+      await applyFrame(animFrameIdx);
+      pending = false;
       if (animFrameIdx >= total - 1) {
-        // Loop playback so the motion is continuously visible.
         animFrameIdx = -1;
+        fkCache = {};
       }
     }
     animHandle = requestAnimationFrame(loop);
@@ -464,12 +425,13 @@ function playAnimation() {
   animHandle = requestAnimationFrame(loop);
 }
 
-// ---------------- Run simulation (animate) ----------------
+// ---------------- Run simulation ----------------
 async function runSimulation() {
   if (!currentRun) { setStatus('Load a run first', 'err'); return; }
-  setStatus('Running MuJoCo physics rollout for animation ...');
+  setStatus('Running MuJoCo physics (joint-angle mode) ...');
   stopAnimation();
   motionFrames = null;
+  fkCache = {};
   const r = await fetch(
       `/api/runs/${currentRun.case}/${currentRun.timestamp}/animate`, {
     method: 'POST',
@@ -478,11 +440,11 @@ async function runSimulation() {
   if (data.error) { setStatus(data.error, 'err'); return; }
   motionFrames = data;
   const panel = document.getElementById('diffPanel');
-  panel.innerHTML = `<span class="changed">Animated:</span> ` +
-      `${data.bodies.length} bodies, ${data.frames.length} frames @ ${data.fps}fps ` +
+  panel.innerHTML = `<span class="changed">Joint-angle animation:</span> ` +
+      `${data.joints.length} joints, ${data.frames.length} frames @ ${data.fps}fps ` +
       `(${data.duration_sec}s).<br>` +
-      `<span class="added">Bodies:</span> ${data.bodies.join(', ')}`;
-  setStatus('Playing animation (loop). Drag the slider to scrub.', 'ok');
+      `<span class="added">Joints:</span> ${data.joints.map(j => j.name).join(', ')}`;
+  setStatus('Playing animation via FK. Each frame re-solves all parts.', 'ok');
   playAnimation();
 }
 
@@ -507,7 +469,7 @@ document.getElementById('modInput').addEventListener('keydown', (e) => {
 });
 
 // Timeline slider — scrubs the recorded animation (or nothing before a run).
-document.getElementById('timeSlider').addEventListener('input', (e) => {
+document.getElementById('timeSlider').addEventListener('input', async (e) => {
   if (!motionFrames || !motionFrames.frames.length) {
     document.getElementById('timeLabel').textContent = '0.00s';
     return;
@@ -516,7 +478,7 @@ document.getElementById('timeSlider').addEventListener('input', (e) => {
   stopAnimation();
   const idx = Math.max(0, Math.min(motionFrames.frames.length - 1,
                                    parseInt(e.target.value, 10)));
-  applyFrame(motionFrames.frames[idx]);
+  await applyFrame(idx);
   document.getElementById('timeLabel').textContent =
       `${motionFrames.frames[idx].t.toFixed(2)}s`;
 });

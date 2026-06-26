@@ -624,11 +624,10 @@ async def run_positions(case: str, ts: str) -> JSONResponse:
 async def animate_run(case: str, ts: str) -> JSONResponse:
     """Record a short physics rollout for browser playback.
 
-    Runs ``record_motion`` (a PD-tracked sinusoidal sweep of each actuated
-    joint) and returns one frame per timestep with per-body world pose
-    (metres + quaternion).  The frontend applies these to the STL meshes
-    to animate the robot.  Non-streaming: the whole clip (a few seconds,
-    ~50KB JSON) is returned at once.
+    Returns JOINT ANGLE sequences per frame (not body poses).  The
+    frontend calls /fk_positions per frame to forward-kinematics every
+    part's correct world position from the joint angles — so ALL parts
+    (including fixed-joint-merged links) move correctly along their DOF.
     """
     run_dir = DATA_ROOT / "runs" / case / ts
     urdf = run_dir / "engineering_package" / "urdf.xml"
@@ -636,8 +635,8 @@ async def animate_run(case: str, ts: str) -> JSONResponse:
         return JSONResponse({"error": f"URDF not found: {urdf}"},
                             status_code=404)
     try:
-        from ..tools.sim_mujoco import record_motion
-        result = record_motion(str(urdf), duration_sec=3.0, fps=30)
+        from ..tools.sim_mujoco import record_joint_motion
+        result = record_joint_motion(str(urdf), duration_sec=3.0, fps=15)
         if not result.get("ok"):
             return JSONResponse({"error": result.get("error", "animation failed")},
                                 status_code=500)
@@ -645,6 +644,55 @@ async def animate_run(case: str, ts: str) -> JSONResponse:
     except ImportError as e:
         return JSONResponse({"error": f"mujoco not installed: {e}"},
                             status_code=503)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/runs/{case}/{ts}/fk_positions")
+async def fk_positions(case: str, ts: str) -> JSONResponse:
+    """Forward-kinematics: given joint angles, return all part positions.
+
+    The web animation calls this for each frame with the joint angles from
+    /animate.  This solves the assembly with those angles and returns the
+    world position + rotation of EVERY part (all 13, not just 6 MuJoCo
+    bodies).  This is the correct way to animate — every part follows the
+    kinematic chain exactly.
+    """
+    import json as _json
+    body = await request.json()
+    angles = body.get("angles", {})
+
+    run_dir = DATA_ROOT / "runs" / case / ts
+    asm_file = run_dir / "assembly.json"
+    if not asm_file.exists():
+        return JSONResponse({"error": "Run not found"}, status_code=404)
+
+    try:
+        from ..tools.assembly_generator import _parse_assembly_json
+        from ..tools.assembly_solver import AssemblySolver
+
+        assembly = _parse_assembly_json(asm_file.read_text("utf-8"))
+        # Merge provided angles with defaults.
+        merged = dict(assembly.default_angles)
+        # MuJoCo joint names may differ from assembly part names; match
+        # by looking up the child part name embedded in the joint name.
+        for jname, jval in angles.items():
+            # MuJoCo joint names like "base_plate_to_base_yaw_servo"
+            # → the child is "base_yaw_servo" (last segment after "to_").
+            if "_to_" in jname:
+                child = jname.rsplit("_to_", 1)[-1]
+                merged[child] = float(jval)
+            else:
+                merged[jname] = float(jval)
+
+        positions = AssemblySolver(assembly).solve(joint_angles=merged)
+        out: dict[str, Any] = {}
+        for name, pose in positions.items():
+            out[name] = {
+                "position": list(pose.get("position", (0.0, 0.0, 0.0))),
+                "rotation": list(pose.get("rotation", (0.0, 0.0, 1.0, 0.0))),
+            }
+        return JSONResponse({"positions": out})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 async def render_run(case: str, ts: str) -> JSONResponse:

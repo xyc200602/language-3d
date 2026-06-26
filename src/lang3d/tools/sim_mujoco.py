@@ -663,6 +663,202 @@ def record_motion(
     }
 
 
+def record_joint_motion(
+    urdf_path: str,
+    duration_sec: float = 3.0,
+    fps: int = 30,
+    stabilize: bool = True,
+) -> dict[str, Any]:
+    """Run a physics rollout and record JOINT ANGLE sequences per frame.
+
+    Unlike ``record_motion`` (which returns per-body world poses — useless
+    for FK-based web playback because MuJoCo merges fixed joints and only
+    6 of 13 parts appear), this returns the raw **joint angles** at each
+    frame.  The web frontend then calls AssemblySolver.solve(joint_angles)
+    per frame to get every part's correct world position via forward
+    kinematics — so ALL 13 parts move correctly along their DOF, not just
+    the 6 MuJoCo bodies.
+
+    Returns::
+
+        {
+          "ok": bool,
+          "joints": [{"name": str, "axis": str, "type": str}, ...],
+          "fps": int,
+          "duration_sec": float,
+          "frames": [
+            {"t": float, "angles": {"joint_name": angle_deg, ...}}, ...
+          ],
+          # For wheeled robots: base trajectory (so FK can place chassis)
+          "base_trajectory": [{"t": float, "x": mm, "y": mm, "z": mm,
+                               "qw": ..., "qx": ..., "qy": ..., "qz": ...}, ...]
+                             or null for fixed-base robots.
+        }
+    """
+    import mujoco  # type: ignore[import-not-found]
+    import numpy as np
+
+    load = _load_model(urdf_path, floating_base=True)
+    if not load.get("ok"):
+        return {"ok": False, "error": load.get("error", "model load failed"),
+                "joints": [], "frames": []}
+
+    model = load["model"]
+    if stabilize:
+        _stabilize_model(model, armature=0.2, damping=3.0)
+    if model.opt.timestep > 0.0005:
+        model.opt.timestep = 0.0005
+
+    data = mujoco.MjData(model)
+
+    # Disable mesh-mesh collisions (same as record_motion).
+    if model.ngeom > 10:
+        for gid in range(model.ngeom):
+            model.geom_contype[gid] = 0
+            model.geom_conaffinity[gid] = 0
+        for gid in range(model.ngeom):
+            bid = int(model.geom_bodyid[gid])
+            bname = mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+            if bid == 0 or "wheel" in bname.lower():
+                model.geom_contype[gid] = 1
+                model.geom_conaffinity[gid] = 1
+
+    mujoco.mj_forward(model, data)
+
+    # Classify joints and set up coordinated motion (same as record_motion).
+    movable = [
+        jid for jid in range(model.njnt)
+        if model.jnt_type[jid] in (
+            mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE,
+        )
+    ]
+    has_floating_base = (
+        model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
+    )
+    wheel_jids = [
+        jid for jid in movable
+        if "wheel" in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
+                       or "").lower()
+    ]
+    drivable = has_floating_base and len(wheel_jids) >= 2
+    arm_jids = [jid for jid in movable if jid not in wheel_jids]
+
+    pitch_jids, yaw_jids, roll_jids, finger_jids = [], [], [], []
+    for jid in arm_jids:
+        jtype = model.jnt_type[jid]
+        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+        if jtype == mujoco.mjtJoint.mjJNT_SLIDE:
+            finger_jids.append(jid)
+        else:
+            ax = abs(float(model.jnt_axis[jid][0]))
+            ay = abs(float(model.jnt_axis[jid][1]))
+            az = abs(float(model.jnt_axis[jid][2]))
+            if az > 0.5:
+                yaw_jids.append(jid)
+            elif ay > 0.5:
+                roll_jids.append(jid)
+            else:
+                pitch_jids.append(jid)
+
+    gesture_freq = 0.15
+    coordinated_params: dict[int, tuple[float, float]] = {}
+    for jid in pitch_jids:
+        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+        coordinated_params[jid] = (min((hi - lo) * 0.25, 0.5), gesture_freq)
+    for jid in yaw_jids:
+        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+        coordinated_params[jid] = (min((hi - lo) * 0.15, 0.3), gesture_freq * 0.7)
+    for jid in roll_jids:
+        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+        coordinated_params[jid] = (min((hi - lo) * 0.1, 0.2), gesture_freq * 1.3)
+
+    initial_qpos = data.qpos.copy()
+    kp, kv = 200.0, 20.0
+    wheel_drive_torque = 0.08
+    n_steps = max(1, int(duration_sec / model.opt.timestep))
+    frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
+
+    # Joint metadata for the frontend.
+    joint_info = []
+    for jid in movable:
+        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or f"j{jid}"
+        jtype_raw = model.jnt_type[jid]
+        jtype = "hinge" if jtype_raw == mujoco.mjtJoint.mjJNT_HINGE else "slide"
+        axis_v = model.jnt_axis[jid]
+        axis = "x" if abs(axis_v[0]) > 0.5 else ("y" if abs(axis_v[1]) > 0.5 else "z")
+        joint_info.append({"name": nm, "axis": axis, "type": jtype})
+
+    frames: list[dict[str, Any]] = []
+    base_traj: list[dict[str, Any]] = []
+
+    for step in range(n_steps):
+        t = step * model.opt.timestep
+        target = initial_qpos.copy()
+        for jid, (amp, freq) in coordinated_params.items():
+            target[jid] = initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
+        mujoco.mj_forward(model, data)
+        data.qfrc_applied[:] = data.qfrc_bias
+        for jid in coordinated_params:
+            data.qfrc_applied[jid] += kp * (target[jid] - data.qpos[jid]) \
+                                      - kv * data.qvel[jid]
+        for jid in finger_jids:
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            data.qfrc_applied[dadr] += kp * (initial_qpos[qadr] - data.qpos[qadr]) \
+                                       - kv * data.qvel[dadr]
+        if drivable:
+            for jid in wheel_jids:
+                nm = mujoco.mj_id2name(
+                    model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+                side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
+                data.qfrc_applied[jid] += wheel_drive_torque * side
+            data.qfrc_applied[2] += 500.0 * (initial_qpos[2] - data.qpos[2]) \
+                                    - 50.0 * data.qvel[2]
+            qx, qy = float(data.qpos[4]), float(data.qpos[5])
+            data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
+            data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break
+
+        if step % frame_every == 0:
+            # Record joint angles in DEGREES (solver convention).
+            angles: dict[str, float] = {}
+            for jid in movable:
+                nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or f"j{jid}"
+                qadr = model.jnt_qposadr[jid]
+                val = float(data.qpos[qadr])
+                # HINGE: radians → degrees; SLIDE: metres → mm.
+                if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_HINGE:
+                    angles[nm] = round(float(np.degrees(val)), 2)
+                else:
+                    angles[nm] = round(val * 1000.0, 3)
+            frames.append({"t": round(t, 4), "angles": angles})
+
+            # For floating-base robots: record base trajectory.
+            if drivable:
+                base_traj.append({
+                    "t": round(t, 4),
+                    "x": round(float(data.qpos[0]) * 1000, 2),
+                    "y": round(float(data.qpos[1]) * 1000, 2),
+                    "z": round(float(data.qpos[2]) * 1000, 2),
+                    "qw": round(float(data.qpos[3]), 6),
+                    "qx": round(float(data.qpos[4]), 6),
+                    "qy": round(float(data.qpos[5]), 6),
+                    "qz": round(float(data.qpos[6]), 6),
+                })
+
+    return {
+        "ok": True,
+        "joints": joint_info,
+        "fps": fps,
+        "duration_sec": duration_sec,
+        "frames": frames,
+        "base_trajectory": base_traj if drivable else None,
+    }
+
+
 def _run_physics_hold(
     model: Any,
     duration_sec: float = 1.0,
