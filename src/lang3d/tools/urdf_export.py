@@ -110,9 +110,14 @@ def _infer_collision_primitive(part: Part) -> tuple[str, tuple[float, ...]] | No
         return ("cylinder", (_mm_to_m(dia / 2.0), _mm_to_m(h)))
 
     if has_box_dims:
+        # URDF <box size="X Y Z">.  Solver convention: X=width, Y=length,
+        # Z=height (matches freecad.py makeBox(width, length, height) and
+        # _infer_inertia/_infer_local_com which use lx=width, ly=length).
+        # Previously this emitted (length, width, height) — X/Y swapped
+        # relative to the mesh, mis-sizing the collision box.
         return ("box", (
-            _mm_to_m(d["length"]),
             _mm_to_m(d["width"]),
+            _mm_to_m(d["length"]),
             _mm_to_m(d["height"]),
         ))
 

@@ -540,7 +540,7 @@ def _build_script(operations: list[dict]) -> str:
             if expected_dims:
                 for dim_name, dim_val in expected_dims.items():
                     dim_val = float(dim_val)
-                    dim_map = {"length": "XLength", "width": "YLength", "height": "ZLength",
+                    dim_map = {"length": "YLength", "width": "XLength", "height": "ZLength",
                                "x": "XLength", "y": "YLength", "z": "ZLength"}
                     attr = dim_map.get(dim_name.lower(), dim_name)
                     tol = float(checks.get("tolerance_mm", 1.0))
@@ -1091,7 +1091,10 @@ def _build_batch_script(all_ops: list[list[dict]]) -> str:
             elif op_type == "make_box":
                 l, w, h = float(op["length"]), float(op["width"]), float(op["height"])
                 name = _safe_name(op.get("name", "Box"))
-                part_lines.append(f'box = Part.makeBox({l}, {w}, {h})')
+                # Solver convention: X=width, Y=length, Z=height (see
+                # _build_script make_box).  makeBox(X,Y,Z) → (width, length,
+                # height).  This batch path must match the single-script path.
+                part_lines.append(f'box = Part.makeBox({w}, {l}, {h})')
                 part_lines.append(f'obj = doc.addObject("Part::Feature", "{name}")')
                 part_lines.append("obj.Shape = box")
                 part_lines.append("doc.recompute()")
