@@ -233,8 +233,8 @@ class Agent:
                 "type_tool": GUITypeTool(),
                 "press_key_tool": GUIPressKeyTool(),
             }
-        except Exception:
-            pass
+        except ImportError as e:
+            logger.warning("GUI/VLM tools unavailable (headless?): %s", e)
 
         from ..tools import discover_and_register
         discover_and_register(

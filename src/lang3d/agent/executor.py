@@ -50,8 +50,8 @@ def execute_tool_calls(
         if on_tool_call:
             try:
                 on_tool_call(tc.name, tc.arguments)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("on_tool_call callback failed for '%s': %s", tc.name, e)
 
         try:
             result = tools.execute(tc.name, **tc.arguments)
@@ -71,10 +71,10 @@ def execute_tool_calls(
                         tc.name,
                         result.encode("utf-8", errors="replace").decode("utf-8"),
                     )
-                except Exception:
-                    pass
-            except Exception:
-                pass
+                except Exception as e:
+                    logger.warning("on_tool_result callback failed (after utf-8 fallback) for '%s': %s", tc.name, e)
+            except Exception as e:
+                logger.warning("on_tool_result callback failed for '%s': %s", tc.name, e)
 
         messages.append(
             Message(role="tool", content=result, tool_call_id=tc.id)

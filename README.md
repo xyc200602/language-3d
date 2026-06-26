@@ -270,10 +270,13 @@ language-3d/
 
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
-| Unit + Integration / 单元 + 集成 | 3,608 | 3,605 PASS, 3 known failures (gripper/coordinate) |
-| E2E Production (legacy) / 端到端 | 1 | **92.9% score, 0 critical fails** |
-| E2E Production (pipeline) / 流水线 | 1 | **92.9% score, 0 critical fails** |
-| Expert Roles / 专家角色 | 21 | 21 PASS |
+| Unit + Integration / 单元 + 集成 | 3,619 | 3,616 PASS, 3 known failures (gripper/coordinate) |
+| E2E Production (legacy) / 端到端 | 1 | **92.9% score, 0 critical fails** (requires GLM_API_KEY) |
+| E2E Production (pipeline) / 流水线 | 1 | **92.9% score, 0 critical fails** (requires GLM_API_KEY) |
+| Expert Roles / 专家角色 | 27 | 27 PASS |
+
+> **Note / 注意**: E2E tests require `GLM_API_KEY` — without it they are skipped (not failed). The 92.9% score is the pipeline-path result with a real key.
+> E2E 测试需要 `GLM_API_KEY`——没有 key 时跳过（不是失败）。92.9% 是有 key 时的流水线路径结果。
 
 ```bash
 # Run tests / 运行测试
