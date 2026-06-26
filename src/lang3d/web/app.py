@@ -1805,7 +1805,12 @@ def _get_default_robot_data() -> dict[str, Any]:
 
 @app.get("/api/design/hierarchy")
 async def api_design_hierarchy() -> JSONResponse:
-    """Return subsystem decomposition for the complex robot design."""
+    """Return subsystem decomposition for the complex robot design.
+
+    NOTE: uses a demo robot configuration (not the active run's assembly).
+    The hierarchy/tree/stability/power endpoints are design-exploration aids
+    with representative parameters, not computed from a specific generated
+    assembly."""
     try:
         data = _get_default_robot_data()
         assembly = data["assembly"]

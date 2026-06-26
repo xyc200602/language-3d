@@ -532,7 +532,7 @@ class AssemblyPipeline:
             try:
                 return float(m.group(1))
             except ValueError:
-                pass
+                logger.warning("pipeline: failed to parse payload '%s'", m.group(1))
         # Heuristic: "heavy"/"重" → 20kg, "light"/"轻" → 3kg
         d = (description or "").lower()
         if "重" in description or "heavy" in d or "工业" in description:

@@ -43,8 +43,8 @@ class MessageBus:
         for callback in subs:
             try:
                 callback(message)
-            except Exception:
-                pass  # Don't let subscriber errors disrupt the bus
+            except Exception as e:
+                logger.warning("message_bus subscriber failed: %s", e)
 
     def get_messages(
         self,

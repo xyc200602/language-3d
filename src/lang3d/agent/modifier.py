@@ -173,7 +173,7 @@ def _params_for_intent(intent: str, text_lower: str) -> dict[str, Any]:
                     f = 1.0 / f
                 params["factor"] = f
             except ValueError:
-                pass
+                logger.warning("modifier: failed to parse scale factor '%s'", m.group(1))
         m = re.search(r"(\d+(?:\.\d+)?)\s*%", text_lower)
         if m:
             try:
@@ -183,7 +183,7 @@ def _params_for_intent(intent: str, text_lower: str) -> dict[str, Any]:
                 else:
                     params["factor"] = 1.0 - pct if pct < 1.0 else 1.0 / pct
             except ValueError:
-                pass
+                logger.warning("modifier: failed to parse percentage '%s'", m.group(1))
         # Chinese numerals
         cn_map = {"两": 2.0, "二": 2.0, "三": 3.0, "半": 0.5}
         for cn, val in cn_map.items():
