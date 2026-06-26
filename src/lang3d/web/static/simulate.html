@@ -347,17 +347,69 @@ function applyFrame(frame) {
   if (!frame || !motionFrames) return;
   const names = motionFrames.bodies;
   const poses = frame.poses;
+
+  // Build a map: MuJoCo body name → pose, for quick lookup.
+  const bodyPose = {};
   for (let i = 0; i < names.length; i++) {
-    const name = names[i];
-    const pose = poses[i];
-    if (!pose) continue;
-    // body name from URDF == sanitized part name == STL stem; match loosely.
-    const entry = stlMeshes.find(m => m.name === name) ||
-                  stlMeshes.find(m => m.name.includes(name) || name.includes(m.name));
-    if (!entry) continue;
-    entry.mesh.position.set(pose[0] * 1000, pose[1] * 1000, pose[2] * 1000);
-    // quaternion order is (w, x, y, z)
-    entry.mesh.quaternion.set(pose[4], pose[5], pose[6], pose[3]);
+    bodyPose[names[i]] = poses[i];
+  }
+
+  // URDF fixed-joint child→ancestor chain: links merged into servo bodies
+  // by MuJoCo.  Each STL that isn't a direct animate body follows its
+  // servo ancestor's motion (rigidly bolted via fixed joint).
+  const fixedParent = {
+    'yaw_link': 'base_yaw_servo',
+    'upper_arm_link': 'shoulder_pitch_servo',
+    'forearm_link': 'elbow_pitch_servo',
+    'wrist_link': 'wrist_roll_servo',
+    'gripper_base': 'wrist_roll_servo',   // via wrist_link → wrist_roll_servo
+    'gripper_servo': 'wrist_roll_servo',   // via gripper_base → wrist_link → ...
+  };
+
+  // Save initial relative offsets (first frame) so we can reconstruct
+  // each merged link's position from its servo parent's motion.
+  if (!applyFrame._initOffsets) {
+    applyFrame._initOffsets = {};
+    const f0 = motionFrames.frames[0];
+    for (const m of stlMeshes) {
+      const ancestor = fixedParent[m.name] || m.name;
+      if (bodyPose[ancestor] && f0) {
+        const ap = f0.poses[names.indexOf(ancestor)];
+        if (ap) {
+          applyFrame._initOffsets[m.name] = {
+            // world position of STL at frame 0 (mm)
+            px: m.mesh.position.x, py: m.mesh.position.y, pz: m.mesh.position.z,
+            // MuJoCo ancestor position at frame 0 (mm)
+            ax: ap[0]*1000, ay: ap[1]*1000, az: ap[2]*1000,
+          };
+        }
+      }
+    }
+  }
+
+  for (const m of stlMeshes) {
+    // Direct match: this STL IS a MuJoCo body.
+    if (bodyPose[m.name]) {
+      const p = bodyPose[m.name];
+      m.mesh.position.set(p[0] * 1000, p[1] * 1000, p[2] * 1000);
+      m.mesh.quaternion.set(p[4], p[5], p[6], p[3]);
+      continue;
+    }
+    // Indirect: this STL was merged into a servo body via fixed joint.
+    const ancestor = fixedParent[m.name];
+    if (ancestor && bodyPose[ancestor]) {
+      const p = bodyPose[ancestor];
+      const off = applyFrame._initOffsets[m.name];
+      if (off) {
+        // Follow the ancestor's translation delta from frame 0.
+        const dx = p[0]*1000 - off.ax;
+        const dy = p[1]*1000 - off.ay;
+        const dz = p[2]*1000 - off.az;
+        m.mesh.position.set(off.px + dx, off.py + dy, off.pz + dz);
+        // Follow the ancestor's rotation.
+        m.mesh.quaternion.set(p[4], p[5], p[6], p[3]);
+      }
+    }
   }
 }
 
