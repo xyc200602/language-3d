@@ -174,8 +174,19 @@ def _launch_viewer(
             while viewer.is_running() and step < max_steps:
                 mujoco.mj_step(model, data)
                 viewer.sync()
-                _time.sleep(model.opt.timestep)
+                # Real-time playback: sleep one timestep per step.
+                # But cap the sleep so physics doesn't fall behind on slow
+                # machines.  Use a minimum of 0 to avoid blocking on very
+                # small timesteps.
+                _time.sleep(max(model.opt.timestep, 0.001))
                 step += 1
+            # Keep the window open even after physics steps are done —
+            # the user closes it manually.  This was the original intent
+            # ("close the viewer window to exit") but duration_sec=2.0
+            # killed it after 2 seconds.
+            while viewer.is_running():
+                viewer.sync()
+                _time.sleep(0.016)  # ~60fps refresh
     except Exception as e:
         logger.warning("MuJoCo viewer exited with error: %s", e)
 
