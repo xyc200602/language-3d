@@ -984,6 +984,12 @@ class AssemblyPipeline:
                 _p.description = _p.description or ""
             for _j in ctx.assembly.joints:
                 _j.description = _j.description or ""
+                _j.type = _j.type or "fixed"
+                _j.parent = _j.parent or "base_plate"
+                _j.child = _j.child or "part"
+                _j.axis = _j.axis or "z"
+                _j.parent_anchor = _j.parent_anchor or "center"
+                _j.child_anchor = _j.child_anchor or "center"
             result = export_engineering_package(
                 assembly=ctx.assembly,
                 output_dir=export_dir,
