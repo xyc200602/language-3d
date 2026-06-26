@@ -62,16 +62,16 @@
 <script type="importmap">
 {
   "imports": {
-    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    "three": "/static/three/three.module.js",
+    "three/addons/": "/static/three/"
   }
 }
 </script>
 
 <script type="module">
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { STLLoader } from 'three/addons/loaders/STLLoader.js';
+import { OrbitControls } from '/static/three/OrbitControls.js';
+import { STLLoader } from '/static/three/STLLoader.js';
 
 // ---------------- Three.js setup ----------------
 const viewport = document.getElementById('viewport');
@@ -189,8 +189,30 @@ async function loadRun() {
       const url = `/api/file?path=${encodeURIComponent(stlDir + '/' + stl.filename)}`;
       const geom = await loader.loadAsync(url);
       geom.computeVertexNormals();
-      // STL geometry is authored around its own origin; the mesh's .position
-      // carries the solved world placement (set below from /positions).
+      // CENTER the geometry: FreeCAD STLs are authored corner-at-origin
+      // (bbox from 0,0,0 to L,W,H), but solver positions are the CENTRE
+      // of each part.  Without centering, the mesh's corner (not its
+      // centre) lands at the solved position → everything offset.
+      // VTK's load_stl does the same centering (shift -cx,-cy,-cz).
+      geom.computeBoundingBox();
+      const bb = geom.boundingBox;
+      const cx = (bb.min.x + bb.max.x) / 2;
+      const cy = (bb.min.y + bb.max.y) / 2;
+      const cz = (bb.min.z + bb.max.z) / 2;
+      geom.translate(-cx, -cy, -cz);
+
+      // SWAP X/Y for arm-chain parts (matches VTK renderer's swap_xy).
+      // FreeCAD makeBox puts length on X, but the solver convention is
+      // length→Y(front/back).  Wheel/chassis-box STLs already match
+      // solver axes (width=X, length=Y) and must NOT be swapped.
+      const lname = stl.name.toLowerCase();
+      const isWheel = lname.startsWith('wheel_');
+      const isChassisBox = ['base_plate','chassis_body','battery_box','top_plate'].includes(lname)
+                           || lname.startsWith('standoff_');
+      if (!isWheel && !isChassisBox) {
+        geom.rotateZ(-Math.PI / 2);
+      }
+
       const category = guessCategory(stl.name, asmData.assembly);
       const color = CATEGORY_COLORS[category] || DEFAULT_COLOR;
       const mat = new THREE.MeshPhongMaterial({ color, flatShading: false });
@@ -212,6 +234,14 @@ async function loadRun() {
         const p = posData.positions[m.name];
         if (p && p.position) {
           m.mesh.position.set(p.position[0], p.position[1], p.position[2]);
+        }
+        // Apply solver rotation (axis-angle [ax,ay,az,angle_deg]) so
+        // parts point the right way — without this all parts sit upright
+        // in their default STL orientation, ignoring the arm's bend.
+        if (p && p.rotation && p.rotation[3] !== 0) {
+          const [ax, ay, az, angDeg] = p.rotation;
+          const axis = new THREE.Vector3(ax, ay, az).normalize();
+          m.mesh.setRotationFromAxisAngle(axis, angDeg * Math.PI / 180);
         }
       }
       setStatus(`Loaded ${stlMeshes.length} parts at solved positions.`, 'ok');

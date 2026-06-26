@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Three.js Test</title></head>
+<body>
+<h2>Three.js Local Load Test</h2>
+<div id="status">Loading...</div>
+<div id="box" style="width:400px;height:300px;border:1px solid #333;"></div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "/static/three/three.module.js",
+    "three/addons/": "/static/three/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+document.getElementById('status').textContent = 'Three.js loaded! Version: ' + THREE.REVISION;
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(50, 400/300, 0.1, 1000);
+cam.position.z = 5;
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(400, 300);
+document.getElementById('box').appendChild(renderer.domElement);
+const geo = new THREE.BoxGeometry(2,2,2);
+const mat = new THREE.MeshBasicMaterial({color: 0x00ff00});
+const cube = new THREE.Mesh(geo, mat);
+scene.add(cube);
+renderer.render(scene, cam);
+document.getElementById('status').textContent += ' | Cube rendered OK!';
+</script>
+</body>
+</html>

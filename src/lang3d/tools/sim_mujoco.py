@@ -521,18 +521,53 @@ def record_motion(
                        or "").lower()
     ]
     drivable = has_floating_base and len(wheel_jids) >= 2
-    # Arms (non-wheel hinges + slides) follow the sinusoid; wheels follow the
-    # drive command.  Partitioning avoids the sinusoid fighting the drive.
-    arm_jids = [j for j in movable if j not in wheel_jids]
-    # Per-arm-joint sinusoid params (amplitude = 40% of half-range, distinct
-    # frequencies so motion looks coordinated, not mechanical).
-    amp_freq: list[tuple[float, float]] = []
+    # Arms (non-wheel hinges + slides) follow a COORDINATED motion profile
+    # (not independent sinusoids).  The motion simulates a reach-and-retract
+    # gesture: the shoulder leads, the elbow follows with a phase delay, and
+    # the wrist rotates slowly — like a real arm reaching for an object.
+    # Finger slides are locked (their range is ±0 in most assemblies; even
+    # when non-zero they should open/close in sync, not oscillate randomly).
+    arm_jids = [jid for jid in movable if jid not in wheel_jids]
+    # Classify arm joints by role for coordinated motion.
+    # Group 1: pitch joints (shoulder, elbow) — lead the reach gesture.
+    # Group 2: yaw joints (base rotation) — slow scan.
+    # Group 3: roll/wrist — gentle rotation.
+    # Group 4: finger slides — locked or open-close in sync.
+    pitch_jids = []   # axis≈X, the bending joints
+    yaw_jids = []      # axis≈Z, the base rotation
+    roll_jids = []     # axis≈Y, the wrist
+    finger_jids = []   # slide type, gripper fingers
     for jid in arm_jids:
-        lo, hi = (float(x) for x in model.jnt_range[jid])
-        half_range = (hi - lo) / 2.0
-        amp = min(max(half_range * 0.4, 0.1), 0.6)
-        freq = 0.2 + 0.05 * (jid % 6)
-        amp_freq.append((amp, freq))
+        jtype = model.jnt_type[jid]
+        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+        if jtype == mujoco.mjtJoint.mjJNT_SLIDE:
+            finger_jids.append(jid)
+        else:
+            ax = abs(float(model.jnt_axis[jid][0]))
+            ay = abs(float(model.jnt_axis[jid][1]))
+            az = abs(float(model.jnt_axis[jid][2]))
+            if az > 0.5:
+                yaw_jids.append(jid)
+            elif ay > 0.5:
+                roll_jids.append(jid)
+            else:
+                pitch_jids.append(jid)
+
+    # Coordinated reach gesture: a single slow sinusoid (0.15 Hz) drives
+    # the whole arm.  Pitch joints get full amplitude, yaw gets half,
+    # roll gets quarter — so the arm reaches forward and retracts as a
+    # unit, not flailing randomly.
+    gesture_freq = 0.15  # one reach-retract cycle per ~6.7 seconds
+    coordinated_params: dict[int, tuple[float, float]] = {}
+    for jid in pitch_jids:
+        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+        coordinated_params[jid] = (min((hi - lo) * 0.25, 0.5), gesture_freq)
+    for jid in yaw_jids:
+        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+        coordinated_params[jid] = (min((hi - lo) * 0.15, 0.3), gesture_freq * 0.7)
+    for jid in roll_jids:
+        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+        coordinated_params[jid] = (min((hi - lo) * 0.1, 0.2), gesture_freq * 1.3)
 
     initial_qpos = data.qpos.copy()
     kp, kv = 200.0, 20.0
@@ -553,17 +588,23 @@ def record_motion(
     frames: list[dict[str, Any]] = []
     for step in range(n_steps):
         t = step * model.opt.timestep
-        # PD-track the arm sinusoid target with gravity-compensation.
+        # PD-track the coordinated gesture target with gravity-compensation.
+        # Pitch/yaw/roll joints follow the reach-retract gesture; fingers
+        # are locked at their home position (no random finger oscillation).
         target = initial_qpos.copy()
-        for k, jid in enumerate(arm_jids):
-            amp, freq = amp_freq[k]
+        for jid, (amp, freq) in coordinated_params.items():
             target[jid] = initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
         mujoco.mj_forward(model, data)
-        # Start from gravity-compensation feed-forward, then add arm PD.
         data.qfrc_applied[:] = data.qfrc_bias
-        for k, jid in enumerate(arm_jids):
+        for jid in coordinated_params:
             data.qfrc_applied[jid] += kp * (target[jid] - data.qpos[jid]) \
                                       - kv * data.qvel[jid]
+        # Lock finger slides at home (gripper controller holding).
+        for jid in finger_jids:
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            data.qfrc_applied[dadr] += kp * (initial_qpos[qadr] - data.qpos[qadr]) \
+                                       - kv * data.qvel[dadr]
         # Drive the wheels (differential command) when the base is floating.
         # Left-side vs right-side wheels get a small differential for a gentle
         # arc; this is the "能动" deliverable — the chassis translates.
