@@ -1246,9 +1246,17 @@ def _arm_link_ops(name: str, d: dict) -> list[dict]:
     - Both ends: servo mounting ears with M3 holes
     - Lightening pocket in the center web
     """
-    length = d.get("length", 100)
-    width = d.get("width", 25)
-    height = d.get("height", 15)
+    length = d.get("length", 100)   # solver: Y extent (front/back)
+    width = d.get("width", 25)      # solver: X extent (left/right)
+    height = d.get("height", 15)    # solver: Z extent
+
+    # IMPORTANT: FreeCAD makeBox(X, Y, Z).  Solver convention: X=width,
+    # Y=length, Z=height (same as make_box/plate_with_holes ops — see
+    # freecad.py).  All makeBox calls here use (W, L, H) so the STL bbox
+    # matches what the solver expects.  Without this the STL has length
+    # on X (FreeCAD default) and the mesh appears rotated 90° vs the
+    # solved position → interpenetration with adjacent parts.
+    # Mounting tabs are removed (they exceeded the height budget).
 
     script = f'''
 import FreeCAD, Part
@@ -1258,38 +1266,31 @@ web_t = max(3.0, W * 0.15)
 flange_w = (W - web_t) / 2
 
 # --- Build C-channel profile via boolean fuse ---
-# Top flange
-top = Part.makeBox(L, flange_w, web_t)
+# makeBox(X, Y, Z) = (width, length, height) per solver convention.
+# Top flange (X=width, Y=length/2 - web/2, Z=web_t at top)
+top = Part.makeBox(W, (L - web_t) / 2, web_t)
 top.translate(FreeCAD.Vector(0, 0, H - web_t))
 # Bottom flange
-bot = Part.makeBox(L, flange_w, web_t)
-# Web (vertical center)
-web = Part.makeBox(L, web_t, H)
-web.translate(FreeCAD.Vector(0, flange_w, 0))
+bot = Part.makeBox(W, (L - web_t) / 2, web_t)
+# Web (vertical center, full length)
+web = Part.makeBox(W, web_t, H)
+web.translate(FreeCAD.Vector(0, (L - web_t) / 2, 0))
 
 body = top.fuse(bot).fuse(web)
 
 # --- Lightening pocket ---
 pocket_l = L * 0.45
 pocket_h = max(H - 2*web_t - 4, 2)
-pocket = Part.makeBox(pocket_l, web_t, pocket_h)
-pocket.translate(FreeCAD.Vector((L - pocket_l)/2, flange_w, web_t + 2))
+pocket = Part.makeBox(W, pocket_l, pocket_h)
+pocket.translate(FreeCAD.Vector(0, (L - pocket_l)/2, web_t + 2))
 body = body.cut(pocket)
 
 # --- M3 mounting holes at both ends ---
-for x_pos in [L * 0.1, L * 0.9]:
-    for y_off in [flange_w * 0.5]:
+for y_pos in [L * 0.1, L * 0.9]:
+    for x_off in [W * 0.5]:
         h_cyl = Part.makeCylinder({_M3_CLEARANCE_R}, H + 2)
-        h_cyl.translate(FreeCAD.Vector(x_pos, y_off, -1))
+        h_cyl.translate(FreeCAD.Vector(x_off, y_pos, -1))
         body = body.cut(h_cyl)
-
-# --- Mounting tabs at ends (L-brackets) ---
-tab_h = 8
-tab_w = 4
-for x_pos in [0, L - tab_w]:
-    tab = Part.makeBox(tab_w, tab_w, H + tab_h)
-    tab.translate(FreeCAD.Vector(x_pos, 0, 0))
-    body = body.fuse(tab)
 
 # --- Fillet small edges ---
 try:
@@ -1422,10 +1423,11 @@ def _gripper_base_ops(name: str, d: dict) -> list[dict]:
     - Top mounting holes (to attach to wrist)
     - Side servo wire exit
     """
-    length = d.get("length", 40)
-    width = d.get("width", 35)
-    height = d.get("height", 15)
+    length = d.get("length", 40)    # solver: Y extent
+    width = d.get("width", 35)      # solver: X extent
+    height = d.get("height", 15)    # solver: Z extent
 
+    # makeBox(X=width, Y=length, Z=height) per solver convention.
     script = f'''
 import FreeCAD, Part, math
 
@@ -1433,33 +1435,32 @@ L, W, H = {length}, {width}, {height}
 rail_depth = max(2.0, H * 0.15)
 rail_w = max(5.0, W * 0.15)
 
-# --- Main housing block ---
-body = Part.makeBox(L, W, H)
+# --- Main housing block (X=width, Y=length, Z=height) ---
+body = Part.makeBox(W, L, H)
 
 # --- Servo cavity (hollowed center) ---
 cavity_l = L * 0.55
 cavity_w = W * 0.45
-cavity = Part.makeBox(cavity_l, cavity_w, H - 4)
-cavity.translate(FreeCAD.Vector(L * 0.1, (W - cavity_w) / 2, 2))
+cavity = Part.makeBox(cavity_w, cavity_l, H - 4)
+cavity.translate(FreeCAD.Vector((W - cavity_w) / 2, L * 0.1, 2))
 body = body.cut(cavity)
 
-# --- Two parallel linear rail grooves on FRONT face (X = L) ---
-# These grooves guide the finger tabs for prismatic sliding
-for y_center in [W * 0.25, W * 0.75]:
-    rail = Part.makeBox(rail_depth + 1, rail_w, H - 4)
-    rail.translate(FreeCAD.Vector(L - rail_depth, y_center - rail_w / 2, 2))
+# --- Two parallel linear rail grooves on FRONT face (Y = L) ---
+for x_center in [W * 0.25, W * 0.75]:
+    rail = Part.makeBox(rail_w, rail_depth + 1, H - 4)
+    rail.translate(FreeCAD.Vector(x_center - rail_w / 2, L - rail_depth, 2))
     body = body.cut(rail)
 
 # --- Top mounting holes (2x M3 to attach to wrist joint) ---
-for x_off in [L * 0.25, L * 0.75]:
-    for y_off in [W * 0.2, W * 0.8]:
+for x_off in [W * 0.25, W * 0.75]:
+    for y_off in [L * 0.2, L * 0.8]:
         h_cyl = Part.makeCylinder({_M3_CLEARANCE_R}, H + 2)
         h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
         body = body.cut(h_cyl)
 
-# --- Servo wire exit slot (back face) ---
-wire = Part.makeBox(4, 8, 5)
-wire.translate(FreeCAD.Vector(-1, W * 0.4, H * 0.2))
+# --- Servo wire exit slot (back face Y=0) ---
+wire = Part.makeBox(8, 4, 5)
+wire.translate(FreeCAD.Vector(W * 0.4, -1, H * 0.2))
 body = body.cut(wire)
 
 # --- Decorative fillet on front edges ---
@@ -1584,51 +1585,46 @@ def _gripper_finger_ops(name: str, d: dict) -> list[dict]:
 
     Left vs right is detected from the name to mirror the tip direction.
     """
-    length = d.get("length", 35)
-    width = d.get("width", 12)
-    height = d.get("height", 15)
+    length = d.get("length", 35)    # solver: Y extent
+    width = d.get("width", 12)      # solver: X extent
+    height = d.get("height", 15)    # solver: Z extent
 
     # Detect left/right from name to mirror the L-tip direction
     n_lower = name.lower()
     is_left = "left" in n_lower
-    # In FreeCAD coords: left finger sits at -Y, so tip hooks toward +Y
-    # Right finger sits at +Y, so tip hooks toward -Y
     tip_dir = 1.0 if is_left else -1.0
 
+    # Solver convention: makeBox(X=width, Y=length, Z=height).
+    # The finger's main bar extends along Y (length = forward direction).
+    # The L-tip hooks sideways along X (width direction).
     script = f'''
 import FreeCAD, Part, math
 
 L, W, H = {length}, {width}, {height}
 tip_dir = {tip_dir}
 
-# --- Main bar (extends forward in +X) ---
-bar = Part.makeBox(L, W, H)
+# --- Main bar (X=width, Y=length, Z=height) ---
+bar = Part.makeBox(W, L, H)
 
-# --- Rail tab on back (protrudes in -X, fits into base rail groove) ---
+# --- Rail tab on back (fits into base rail groove) ---
+# Tab protrudes in -Y (backward, short) and spans X (width).
 rail_tab_l = max(3.0, L * 0.1)
 rail_tab_w = max(3.0, W * 0.8)
-rail_tab = Part.makeBox(rail_tab_l, rail_tab_w, H * 0.6)
-rail_tab.translate(FreeCAD.Vector(-rail_tab_l * 0.5,
-                    (W - rail_tab_w) / 2, H * 0.2))
+rail_tab = Part.makeBox(rail_tab_w, rail_tab_l, H * 0.6)
+rail_tab.translate(FreeCAD.Vector((W - rail_tab_w) / 2,
+                    -rail_tab_l * 0.5, H * 0.2))
 bar = bar.fuse(rail_tab)
 
-# --- L-shaped tip at front end (hooks inward) ---
+# --- L-shaped tip at front end (hooks inward along X) ---
 tip_l = L * 0.25
-# Tip width: keep the finger slender.  The previous W*2.0 made the tip
-# as wide as 2× the bar, inflating the finger's total Y extent to
-# W + 2W = 3W (e.g. 14→42mm), turning a slender finger into a stubby
-# block that the VLM reads as a "solid circular component".  The tip
-# only needs to hook inward enough to grip — ~0.4×W keeps the total
-# finger aspect ratio > 3 (slender bar, not a block) while still
-# forming a visible L-hook.
 tip_w = max(4.0, W * 0.4)
-# Tip extends inward (toward center of gripper)
+# Tip extends sideways (X direction) at the front (Y = L - tip_l).
 if tip_dir > 0:
-    tip_y = W  # extend toward +Y
+    tip_x = W  # extend toward +X
 else:
-    tip_y = -tip_w  # extend toward -Y
-tip = Part.makeBox(tip_l, tip_w, H)
-tip.translate(FreeCAD.Vector(L - tip_l, tip_y, 0))
+    tip_x = -tip_w  # extend toward -X
+tip = Part.makeBox(tip_w, tip_l, H)
+tip.translate(FreeCAD.Vector(tip_x, L - tip_l, 0))
 bar = bar.fuse(tip)
 
 # --- Grip pad ribs (grooves on inner face of tip) ---
@@ -1642,9 +1638,9 @@ bar = bar.fuse(tip)
 rib_count = 3
 rib_spacing = tip_w / (rib_count + 1)
 for i in range(rib_count):
-    rib_y = tip_y + rib_spacing * (i + 1) if tip_dir > 0 else tip_y + tip_w - rib_spacing * (i + 1)
-    rib = Part.makeBox(tip_l * 0.8, 1.0, 1.5)
-    rib.translate(FreeCAD.Vector(L - tip_l * 0.9, rib_y - 0.5, 1.0))
+    rib_x = tip_x + rib_spacing * (i + 1) if tip_dir > 0 else tip_x + tip_w - rib_spacing * (i + 1)
+    rib = Part.makeBox(1.0, tip_l * 0.8, 1.5)
+    rib.translate(FreeCAD.Vector(rib_x - 0.5, L - tip_l * 0.9, 1.0))
     bar = bar.cut(rib)
 
 # --- NO chamfer on the finger body ---
