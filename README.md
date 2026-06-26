@@ -23,7 +23,7 @@
 
 Language-3D Agent is an autonomous AI system that understands natural language descriptions of mechanical assemblies, generates production-level 3D models (STL/STEP), exports complete engineering packages (URDF, BOM, assembly guide, firmware), and verifies results through **dual-channel inspection** — code-side geometric checks and vision-side AI analysis, with **geometric arbitration** that overrules VLM false-negatives when the geometry is provably correct.
 
-The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer routes a failure back to the specific upstream stage that needs re-running (e.g. a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration), rather than always regenerating from scratch. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard — every assembly generated at runtime flows through it, with the legacy monolithic loop retained only as an automatic fallback if the pipeline raises.
+The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer classifies failures via keyword-based heuristics and routes each failure back to the specific upstream stage that needs re-running (e.g. a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration), rather than always regenerating from scratch. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard — every assembly generated at runtime flows through it, with the legacy monolithic loop retained only as an automatic fallback if the pipeline raises.
 
 **中文**
 
@@ -239,7 +239,7 @@ language-3d/
 │   │   └── ...
 │   ├── models/                    # LLM/VLM Backends
 │   │   ├── glm.py                 # GLM-5.2 (text) + GLM-4.6V (vision)
-│   │   └── router.py              # 4-level vision routing (fast/standard/detailed/maximum)
+│   │   └── router.py              # 4-level vision model tiers (fast/standard/detailed/maximum; default: detailed)
 │   ├── tools/                     # 57 tool modules
 │   │   ├── assembly_generator.py  # NL → assembly JSON + VLM loop + geometric arbitration
 │   │   ├── assembly_solver.py     # Position & constraint solving
@@ -303,7 +303,7 @@ python tests/test_e2e_production.py --case 4dof_arm --pipeline  # Multi-agent pi
 
 ### Phase 1 — Foundation / 基础 (Completed)
 - [x] FreeCAD subprocess bridge (23 tools)
-- [x] VLM visual verification (4-level routing)
+- [x] VLM visual verification (4-level model tiers, default: detailed)
 - [x] GUI automation (PyAutoGUI, 8 tools)
 - [x] Dual verification pipeline
 
