@@ -182,13 +182,19 @@ class TestWheelConventions:
         assert _wheel_z_variation(data) < 1.0  # < 1mm tolerance for float noise
 
     @pytest.mark.parametrize("wheel_count", [2, 4])
-    def test_wheel_joint_axis_is_y(self, wheel_count):
-        """axis=y is what makes the cylinder lie horizontal and roll.
-        axis=z (the LLM's frequent mistake) stands the wheel vertical."""
+    def test_wheel_joint_axis_is_x(self, wheel_count):
+        """axis=x is what makes the wheel roll along the body's LONG edge.
+
+        The body's long edge (base_length) maps to Y (front/back).  A wheel
+        that rolls along Y (forward/back) must have its axle perpendicular
+        to Y, i.e. along X.  axis=z would stand the wheel vertical (wrong);
+        axis=y (the old value) made it roll along X (the SHORT edge / the
+        width), which is sideways relative to the long body — the
+        '轮子不应该顺着长边吗' defect."""
         data = _load(wheel_count=wheel_count)
         for j in data["joints"]:
             if j["child"].startswith("wheel_"):
-                assert j["axis"] == "y", f"{j['child']} axis={j['axis']}"
+                assert j["axis"] == "x", f"{j['child']} axis={j['axis']}"
 
     @pytest.mark.parametrize("wheel_count", [2, 4])
     def test_wheel_child_anchor_is_center(self, wheel_count):
@@ -229,7 +235,7 @@ class TestHuskyStructure:
                     f"{j['child']} parent is {j['parent']}, expected base_plate"
                 )
                 assert j["type"] == "revolute"
-                assert j["axis"] == "y"
+                assert j["axis"] == "x"  # rolls along Y (the long edge)
 
     def test_has_suspension_parts(self):
         """Each wheel has a visible suspension strut (project requirement +

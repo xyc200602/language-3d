@@ -580,7 +580,7 @@ def _generate_standard_body(
             # STL is a flat disc (磨盘) lying in the XY plane, not a wheel.
             # Convention matches vtk_renderer._add_dimension_approximation
             # (name.startswith("wheel_") → orient "y").
-            "orient_axis": "y" if name.lower().startswith("wheel_") else "z",
+            "orient_axis": "x" if name.lower().startswith("wheel_") else "z",
             "name": body,
         })
     elif _has_cylindrical_dims(d):
@@ -588,7 +588,7 @@ def _generate_standard_body(
             "type": "make_cylinder",
             "radius": _cyl_radius(d),
             "height": d.get("height", d.get("length", 10)),
-            "orient_axis": "y" if name.lower().startswith("wheel_") else "z",
+            "orient_axis": "x" if name.lower().startswith("wheel_") else "z",
             "name": body,
         })
     elif "length" in d and "width" in d:

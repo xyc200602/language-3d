@@ -1445,7 +1445,9 @@ def _add_dimension_approximation(
         d = dims.get("outer_diameter", dims.get("diameter", 10))
         h = dims.get("height", dims.get("length", 10))
         # Wheels have axle along Y (axis="y"); everything else is vertical (Z).
-        orient = "y" if name.lower().startswith("wheel_") else "z"
+        # Wheels have axle along X (revolute axis="x" — the body's long edge
+        # is Y/front-back, so wheels roll along Y; axle perpendicular = X).
+        orient = "x" if name.lower().startswith("wheel_") else "z"
         renderer.add_cylinder(
             radius=d / 2, height=h, color=color, position=tuple(position),
             rotation=rotation, category=category, orient_axis=orient,

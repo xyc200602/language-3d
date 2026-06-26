@@ -396,7 +396,7 @@ def build_wheeled_base(
         })
         joints.append({
             "type": "revolute", "parent": "base_plate", "child": f"wheel_{corner}",
-            "axis": "y", "range_deg": [-360, 360],
+            "axis": "x", "range_deg": [-360, 360],
             "parent_anchor": "center", "child_anchor": "center",
             "offset": [_corner_xy[corner][0], _corner_xy[corner][1], _wheel_drop],
             "no_distribute": True,
