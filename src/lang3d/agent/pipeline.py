@@ -164,6 +164,7 @@ class PipelineContext:
     assembly: Assembly | None = None
     positions: dict[str, dict] = None
     real_stl_dir: str | None = None
+    cad_failed: bool = False  # True when the CAD stage crashed (trimesh fallback in use)
     problems_history: list[list[str]] = field(default_factory=list)
     passed: bool = False
     round_num: int = 0
@@ -808,7 +809,18 @@ class AssemblyPipeline:
         except Exception as e:
             self.cad_agent.log_warning(logger, "stage failed: %s", e)
             ctx.real_stl_dir = None
-            return True  # Non-fatal — Verifier will use trimesh fallback
+            # Record the CAD failure so downstream stages know the STLs are
+            # trimesh previews, not real CAD.  Previously this returned True
+            # unconditionally, masking the failure — the Verifier used
+            # trimesh box approximations and neither it nor the user knew
+            # the production CAD path had crashed (AGENTS.md §1.1).
+            ctx.cad_failed = True
+            self.cad_agent.log_warning(
+                logger,
+                "CAD stage FAILED — downstream uses trimesh PREVIEW "
+                "geometry, not real FreeCAD STLs.",
+            )
+            return True  # Proceed with trimesh fallback, but flag is set.
 
     # ------------------------------------------------------------------
     # Stage 4: Verifier — render + VLM + geometric arbitration

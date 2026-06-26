@@ -7127,21 +7127,23 @@ def format_fc_script(template: PartTemplate, params: dict[str, Any]) -> str:
         else:
             clean_params[k] = str(v)
 
-    # P0-FIX: Validate that all placeholders in the template have corresponding
-    # parameters.  Previously a missing parameter would raise KeyError at
-    # runtime, producing an unfriendly crash.  Now we log a warning and
-    # substitute 0 for missing values so the script is still usable.
-    class _SafeFormatDict(dict):
-        """Dict that returns '0' for missing keys instead of raising."""
+    # Validate that all placeholders have corresponding parameters.
+    # Previously a missing parameter would substitute '0' (makeBox(0,0,0) =
+    # zero-volume garbage geometry) — that violated AGENTS.md §1.1 "do not
+    # silently fix absurd values; raise so the caller retries".  Now a
+    # missing parameter raises a clear error naming the template + field.
+    class _StrictFormatDict(dict):
+        """Dict that RAISES on missing keys — no silent zero-substitution."""
         def __missing__(self, key):
-            logger.warning(
-                "FreeCAD script for '%s' references missing parameter '%s', "
-                "substituting 0", template.name, key
+            raise KeyError(
+                f"FreeCAD script for template '{template.name}' references "
+                f"missing parameter '{key}'. The PartTemplate's FreeCAD "
+                f"script has a placeholder {{{key}}} but no matching value "
+                f"was provided. Fix the template's params or the caller."
             )
-            return '0'
 
     try:
-        return script_template.format_map(_SafeFormatDict(clean_params))
+        return script_template.format_map(_StrictFormatDict(clean_params))
     except (KeyError, ValueError, IndexError) as e:
         logger.error(
             "FreeCAD script formatting failed for template '%s': %s. "
