@@ -297,7 +297,18 @@ def build_wheeled_base(
     #   fl (-X,+Y)  fr (+X,+Y)   ← front (+Y)
     #   rl (-X,-Y)  rr (+X,-Y)   ← rear (-Y)
     track_half = dims["track_width"] / 2.0   # X: left (-) / right (+)
-    wb_half = dims["wheelbase"] / 2.0        # Y: front (+) / rear (-)
+    # Wheel Y position along the LONG edge of the body.  The body is
+    # longer than the nominal wheelbase (base_length = wheelbase × 1.9), so
+    # placing wheels at ±wheelbase/2 leaves the body's ends overhanging
+    # with the wheels bunched mid-span — the user's "轮子不应该顺着长边吗":
+    # the wheels must sit near the ENDS of the long edge (front & rear
+    # wheels at the body's long-edge extremes, like a car), not bunched in
+    # the middle.  We place them at 0.78 × base_half-length so the body
+    # ends overhang by ~22% (a short bumper), matching how a real UGV's
+    # wheels sit near the body ends.  The wheel AXLE is still along X
+    # (differential drive), only the wheels' position along Y moves.
+    base_half_l = dims["base_length"] / 2.0
+    wb_half = base_half_l * 0.78
     _corner_xy = {
         "fl": (-track_half, +wb_half),
         "fr": (+track_half, +wb_half),
