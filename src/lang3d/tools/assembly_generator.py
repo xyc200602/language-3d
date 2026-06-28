@@ -3991,12 +3991,21 @@ def generate_assembly_with_vlm_loop(
                             f"{_resolution.remaining_count} remain "
                             f"(history {_resolution.collision_history})"
                         )
-            except ImportError:
-                pass  # trimesh/python-fcl not installed — skip silently
-            except Exception as _e:
-                logger.debug(
-                    "Collision check skipped in round %d: %s",
+            except ImportError as _e:
+                # trimesh/python-fcl not installed. Previously a bare
+                # ``pass`` (AGENTS.md §1.1) silently dropped ALL collision
+                # checking, so a severely self-colliding assembly sailed
+                # through the VLM loop untouched. Log it loudly so the run
+                # record shows collisions were NOT checked (audit P0-6).
+                logger.warning(
+                    "Collision pre-check SKIPPED in round %d — python-fcl/"
+                    "trimesh not installed. Self-collisions will NOT be "
+                    "caught before VLM verification: %s",
                     round_num, _e,
+                )
+            except Exception as _e:
+                logger.warning(
+                    "Collision check failed in round %d: %s", round_num, _e,
                 )
 
         # --- Step C: Render + VLM check ---
