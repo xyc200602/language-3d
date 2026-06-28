@@ -67,9 +67,17 @@ def pytest_configure(config: pytest.Config) -> None:
 # Keyword → marker mapping.  The check is substring-based against the
 # test file's source text, so it survives renames better than import
 # inspection.  Tuned from the audit run on 2026-06-18.
+# A test is 'e2e' ONLY if it drives the natural-language → assembly path
+# (the defining feature of end-to-end). Mere use of export_engineering_package
+# or a filename containing '_e2e' is NOT sufficient — 4 files
+# (test_e2e_design, test_complex_robot_e2e, test_dual_arm_wheeled_robot_e2e,
+# test_e2e_bolted_assembly) build assemblies programmatically (hardcoded
+# parts) and only exercise export downstream. Those are 'integration', not
+# 'e2e' (audit P1-3: mislabeling them as e2e inflated the e2e count and
+# implied NL→assembly coverage that does not exist for them).
 _E2E_KEYWORDS = (
     "generate_assembly_with_vlm_loop",
-    "export_engineering_package",
+    "generate_assembly_from_nl",
     "run_e2e_case",
 )
 _API_KEYWORDS = (
@@ -122,9 +130,10 @@ def _classify_test_file(path: Path) -> set[str]:
         text = ""
 
     name_lower = path.name.lower()
-    # Filename-based e2e detection (covers test_*_e2e.py and test_e2e_*.py)
-    if "_e2e" in name_lower or name_lower.startswith("e2e_"):
-        markers.add("e2e")
+    # Filename-based e2e detection is INTENTIONALLY REMOVED. A filename
+    # containing '_e2e' does not make a test end-to-end — the 4 hardcoded
+    # assembly tests prove this (audit P1-3). e2e is now decided SOLELY by
+    # the source-based NL→assembly keywords below.
 
     # Source-based detection
     if any(k in text for k in _E2E_KEYWORDS):
