@@ -2551,11 +2551,17 @@ class AssemblyGenerateTool(Tool):
                     "severity-graded fix loop, deterministic compose path, "
                     "and cad_failed propagation.", e,
                 )
-                result = generate_assembly_with_vlm_loop(
-                    description=description,
-                    output_dir=output_dir,
-                    max_rounds=max_rounds,
-                )
+                try:
+                    result = generate_assembly_with_vlm_loop(
+                        description=description,
+                        output_dir=output_dir,
+                        max_rounds=max_rounds,
+                    )
+                except Exception as legacy_err:
+                    # Both paths failed — honor the Executor contract
+                    # (tool returns str, not raises).
+                    logger.error("Legacy loop also failed: %s", legacy_err)
+                    return f"Error: {legacy_err}"
             else:
                 logger.error("AssemblyPipeline failed: %s", e)
                 raise
