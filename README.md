@@ -23,7 +23,7 @@
 
 Language-3D Agent is an AI system that understands natural language descriptions of mechanical assemblies, generates functional-prototype 3D models (STL/STEP via boolean geometry), exports complete engineering packages (URDF, BOM, assembly guide, firmware), and verifies results through **dual-channel inspection** — code-side geometric checks and vision-side AI analysis, with **geometric arbitration** that overrules VLM false-negatives when the geometry is provably correct.
 
-The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer classifies failures via keyword-based heuristics and routes each failure back to the specific upstream stage that needs re-running (e.g. a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration), rather than always regenerating from scratch. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard — every assembly generated at runtime flows through it, with the legacy monolithic loop retained only as an automatic fallback if the pipeline raises.
+The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer classifies VLM failures by severity (HARD geometry defects vs SOFT framing nitpicks) and routes each failure back to the specific upstream stage that needs re-running — a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration, while a soft VLM framing complaint on a deterministic compose output is retained rather than triggering a corrupting LLM regeneration. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard; pipeline errors propagate (fail-loud) rather than silently falling back to the legacy loop.
 
 **中文**
 
@@ -261,6 +261,7 @@ language-3d/
 ├── data/runs/                     # E2E outputs (canonical layout)
 ├── docs/references/               # Real-robot reference data (proportions, COTS specs)
 ├── examples/                      # Usage examples
+├── .github/workflows/ci.yml       # CI: unit + integration tests on push/PR
 └── pyproject.toml
 ```
 
@@ -270,19 +271,19 @@ language-3d/
 
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
-| Unit + Integration / 单元 + 集成 | 3,619 | 3,616 PASS, 3 known failures (gripper/coordinate) |
-| E2E Production (legacy) / 端到端 | 1 | **~95% score** (single-case, requires GLM_API_KEY) |
-| E2E Production (pipeline) / 流水线 | 1 | **~95% score** (single-case, requires GLM_API_KEY) |
+| Unit + Integration / 单元 + 集成 | 2,343+ | 5 pre-existing failures (wheel-rotation/gripper/message-bus, registered in AGENTS.md §6.3) |
+| E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **~95%** (0 SKIP; MuJoCo + grasp + motion-collision PASS) |
+| E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **~95%** (0 SKIP; deterministic compose, dual arms symmetric) |
 | Expert Roles / 专家角色 | 27 | 27 PASS |
 
-> **Note / 注意**: E2E tests require `GLM_API_KEY` — without it they are skipped (not failed). The score is a **single-case** result (4dof_arm), not a multi-case average. Scoring counts PASS/(PASS+FAIL+WARN); SKIP (missing optional dep) is excluded from the denominator, and critical checks (collision, COM stability, MuJoCo physics, grasp) FAIL rather than downgrade to warning. The score varies run-to-run due to LLM non-determinism.
-> E2E 测试需要 `GLM_API_KEY`——没有 key 时跳过（不是失败）。评分是**单一 case**（4dof_arm）的结果，不是多 case 平均。评分公式为 PASS/(PASS+FAIL+WARN)，SKIP（缺可选依赖）不计入分母，critical 检查（碰撞、COM 稳定性、MuJoCo 物理、抓取）失败即 FAIL 不再降级为 warning。因 LLM 非确定性，分数每次运行会波动。
+> **Note / 注意**: E2E tests require `GLM_API_KEY` + FreeCAD — without them they are skipped. Scores are **per-case** results (not a multi-case average). Scoring = PASS/(PASS+FAIL+WARN); SKIP (missing optional dep) is excluded from the denominator, and critical checks (collision, COM stability, MuJoCo physics, grasp) FAIL rather than downgrade to warning. The 4dof_arm score varies slightly run-to-run due to LLM non-determinism; the wheeled dual-arm is deterministic (compose path).
+> E2E 测试需要 `GLM_API_KEY` + FreeCAD——没有时跳过。分数是**各 case 单独**的结果（非多 case 平均）。评分公式 PASS/(PASS+FAIL+WARN)，SKIP 不计分母，critical 检查失败即 FAIL 不降级。4dof_arm 因 LLM 非确定性分数会小幅波动；轮式双臂走确定性 compose 路径，稳定。
 
 ```bash
 # Run tests / 运行测试
-python -m pytest tests/ -m "not e2e" -q    # Unit tests / 单元测试
-python tests/test_e2e_production.py --case 4dof_arm           # Legacy e2e
-python tests/test_e2e_production.py --case 4dof_arm --pipeline  # Multi-agent pipeline
+python -m pytest tests/ -m "not e2e" -q    # Unit + Integration / 单元 + 集成
+python tests/test_e2e_production.py --case 4dof_arm           # 机械臂 e2e
+python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 ```
 
 ### E2E 4dof_arm Score Breakdown / 端到端评分明细
@@ -318,9 +319,9 @@ python tests/test_e2e_production.py --case 4dof_arm --pipeline  # Multi-agent pi
 ### Phase 3 — Multi-Agent Architecture / 多智能体架构 (Completed)
 - [x] Expert agent roles (Architect/Solver/CAD/Verifier/Fixer/Chassis)
 - [x] Tool whitelisting per role (ROLE_TOOL_CATEGORIES)
-- [x] AssemblyPipeline is the production path (CLI/web route through it, legacy loop as fallback)
+- [x] AssemblyPipeline is the production path (pipeline errors propagate; legacy loop is opt-in via LANG3D_LEGACY_FALLBACK)
 - [x] Architect persona injected on round 1 (not only on repair rounds)
-- [x] Selective Fixer routing (re-runs only the routed stage, skips unnecessary regeneration)
+- [x] Selective Fixer routing with severity grading (HARD defects trigger fix; SOFT VLM complaints on deterministic output are retained, not regenerated)
 - [x] Deterministic dual-arm generation (chassis expert tools, no LLM for topology)
 - [x] Geometric arbitration (Check 7 connectivity + false-alarm filtering)
 - [x] Split VLM verification (structural panoramic + gripper close-up)
@@ -333,13 +334,13 @@ python tests/test_e2e_production.py --case 4dof_arm --pipeline  # Multi-agent pi
 - [x] Wheeled base drives in MuJoCo (floating-base + differential wheel torque in record_motion)
 - [x] Assembly STL with fastener bodies (trimesh fallback bypasses FreeCAD stack limit)
 - [x] Collision-aware bolt-hole alignment across mating parts (shared ConnectionInterface)
-- [ ] Wheeled dual-arm proportion coupling (arm scale matched to chassis — see docs/references/)
-- [x] Real COTS servos wired into arm generator (MG996R/DS3218/SG90 in _SERVO_SPECS)
+- [x] Wheeled dual-arm proportion coupling (mobile profile + chassis-matched arm scale)
+- [x] Real COTS servos wired into arm generator (MG996R/DS3218/SG90 sourced from parts_catalog)
 - [ ] URDF `<transmission>` + `ros2_control` for Gazebo actuation
 - [ ] Closed-chain kinematic solver
 - [ ] FEA structural analysis (CalculiX)
 - [x] Grasp simulation (sim_grasp three-phase, dual-gripper support)
-- [x] Dual-arm collision avoidance (collision-aware pose configurator)
+- [x] Dual-arm collision avoidance (static collision-aware pose configurator + workspace-safe joint limits; NOT real-time motion planning)
 
 ### Phase 5 — Production System / 生产系统
 - [ ] Web dashboard (real-time monitoring)
