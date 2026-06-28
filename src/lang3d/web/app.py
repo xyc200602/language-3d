@@ -128,8 +128,8 @@ def _workspace_root() -> Path:
                 ws_path = Path(ws)
                 if ws_path.exists():
                     return ws_path
-        except Exception:
-            pass
+        except Exception as e:  # agent state access — log, don't crash the UI
+            logger.debug("workspace_root lookup failed: %s", e)
     return DATA_ROOT
 
 
@@ -248,14 +248,14 @@ def set_agent_instance(agent: Any) -> None:
     _agent_instance = agent
     try:
         _agent_state["session_id"] = getattr(agent.state, "session_id", "")
-    except Exception:
-        pass
+    except Exception as e:  # agent.state shape varies across versions
+        logger.debug("register_agent: session_id read failed: %s", e)
     try:
         ws = getattr(agent.state, "workspace", None)
         if ws:
             add_log(f"Agent registered (workspace={Path(ws)})", level="info")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("register_agent: workspace read failed: %s", e)
 
 
 def _run_task_background(task: str, mode: str = "run") -> None:
@@ -334,8 +334,8 @@ def _diff(prev: dict[str, Any], curr: dict[str, Any]) -> dict[str, Any]:
 async def _send_json(ws: WebSocket, payload: dict[str, Any]) -> None:
     try:
         await ws.send_text(json.dumps(payload, ensure_ascii=False, default=str))
-    except Exception:
-        pass
+    except Exception as e:  # client disconnected mid-broadcast — expected, log debug
+        logger.debug("websocket send failed (client gone?): %s", e)
 
 
 async def broadcast_state_async() -> None:
@@ -1538,8 +1538,8 @@ if _export_list:
         try:
             from ..tools.freecad import _find_freecad_python
             fc_python = _find_freecad_python()
-        except Exception:
-            pass
+        except Exception as e:  # FreeCAD not installed — optional dep
+            logger.debug("FreeCAD python not found: %s", e)
 
     if not fc_python:
         raise HTTPException(status_code=503, detail="FreeCAD not available for part generation")
@@ -2058,9 +2058,9 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        pass
-    except Exception:
-        pass
+        pass  # normal client disconnect — no action needed
+    except Exception as e:  # unexpected socket error — log, then clean up
+        logger.debug("websocket listener exited: %s", e)
     finally:
         if websocket in _websockets:
             _websockets.remove(websocket)

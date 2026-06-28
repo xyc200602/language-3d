@@ -495,8 +495,8 @@ class Agent:
         except Exception:
             try:
                 update_agent_state(plan=payload)
-            except Exception:
-                pass
+            except Exception as e:  # state update is best-effort UI sync
+                logger.debug("plan state update failed: %s", e)
 
     def _run_with_planning(self, task: str) -> str:
         """Run a task with full planning pipeline."""
@@ -511,8 +511,8 @@ class Agent:
         if self._on_thinking:
             try:
                 self._on_thinking("正在分析任务并制定计划...")
-            except Exception:
-                pass
+            except Exception as e:  # UI callback — must not crash planning
+                logger.debug("on_thinking callback failed: %s", e)
 
         if self.state.plan is None:
             self.state.plan = self.planner.create_plan(task)
@@ -577,8 +577,8 @@ class Agent:
                 if self._on_thinking:
                     try:
                         self._on_thinking(f"反思：{reflection}")
-                    except Exception:
-                        pass
+                    except Exception as e:  # UI callback — must not crash reflection
+                        logger.debug("on_thinking(reflection) callback failed: %s", e)
 
                 # Get replacement step from planner
                 new_step = self.planner.replan_from_failure(

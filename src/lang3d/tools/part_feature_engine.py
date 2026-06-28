@@ -1307,11 +1307,13 @@ for y_pos in [L * 0.1, L * 0.9]:
         body = body.cut(h_cyl)
 
 # --- Fillet small edges (cosmetic; guarded so a non-manifold edge never
-# aborts the whole STL export — see _gripper_finger_ops for the same pattern) ---
+# aborts the whole STL export — see _gripper_finger_ops for the same
+# pattern). Per AGENTS.md §1.1, do NOT silently pass — print a WARN so a
+# consistently-failing fillet is visible in the FreeCAD subprocess output. ---
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < W * 0.6][:40])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN arm-link fillet skipped: {_e}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1393,11 +1395,11 @@ groove_inner.translate(FreeCAD.Vector(0, 0, flange_h - 1))
 groove = groove_outer.cut(groove_inner)
 body = body.cut(groove)
 
-# --- Fillet ---
+# --- Fillet (guarded; print WARN on failure per AGENTS.md §1.1) ---
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < od * 0.3][:30])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN arm-joint fillet skipped: {_e}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1478,12 +1480,12 @@ wire = Part.makeBox(8, 4, 5)
 wire.translate(FreeCAD.Vector(W * 0.4, -1, H * 0.2))
 body = body.cut(wire)
 
-# --- Decorative fillet on front edges ---
+# --- Decorative fillet on front edges (guarded; WARN on failure) ---
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges
                                   if _e.Length < W * 0.3][:25])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN gripper-base fillet skipped: {_e}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1575,12 +1577,12 @@ for x_off in [base_l * 0.3, base_l * 0.7]:
         h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
         body = body.cut(h_cyl)
 
-# --- Chamfer finger tips for grip ---
+# --- Chamfer finger tips for grip (guarded; WARN on failure) ---
 try:
     body = body.makeChamfer(0.5, [_e for _e in body.Edges
                                    if _e.Length < finger_w * 2][:30])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN finger chamfer skipped: {_e}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
