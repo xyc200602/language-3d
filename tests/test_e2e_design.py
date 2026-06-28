@@ -102,7 +102,7 @@ def run_full_pipeline() -> DesignReport:
             "revolute_joints": len(revolute),
         }
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -119,7 +119,7 @@ def run_full_pipeline() -> DesignReport:
             assert all(math.isfinite(p) for p in pos), f"Non-finite position for {name}"
         stage.details = {"parts_positioned": len(placements)}
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -149,7 +149,7 @@ def run_full_pipeline() -> DesignReport:
             "avg_error_mm": round(sum(errors) / len(errors), 2) if errors else 0,
         }
         stage.success = reachable >= 1  # At least 1 target reachable
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -170,7 +170,7 @@ def run_full_pipeline() -> DesignReport:
             "sensor_count": len(budget.get("sensors", [])),
         }
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -193,7 +193,7 @@ def run_full_pipeline() -> DesignReport:
         assert "Serial.begin" in ino
         stage.details = {"files_generated": len(firmware), "files": list(firmware.keys())}
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -207,7 +207,7 @@ def run_full_pipeline() -> DesignReport:
         assert "GND" in wiring
         stage.details = {"length_chars": len(wiring)}
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -222,7 +222,7 @@ def run_full_pipeline() -> DesignReport:
         assert "[ ]" in test_seq
         stage.details = {"length_chars": len(test_seq)}
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -242,7 +242,7 @@ def run_full_pipeline() -> DesignReport:
             "total_cost_cny": bom["cost_summary"]["total_cost_cny"],
         }
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -259,7 +259,7 @@ def run_full_pipeline() -> DesignReport:
         assert "常见问题" in guide
         stage.details = {"length_chars": len(guide)}
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -278,7 +278,7 @@ def run_full_pipeline() -> DesignReport:
             "total_print_time_min": print_result["summary"]["total_print_time_min"],
         }
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
@@ -303,7 +303,7 @@ def run_full_pipeline() -> DesignReport:
             "maintenance_schedules": len(maint["schedules"]),
         }
         stage.success = True
-    except Exception as e:
+    except AssertionError as e:
         stage.error = str(e)
     stage.duration_ms = (time.perf_counter() - t1) * 1000
 
