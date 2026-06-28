@@ -1313,7 +1313,7 @@ for y_pos in [L * 0.1, L * 0.9]:
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < W * 0.6][:40])
 except Exception as _e:
-    print(f"WARN arm-link fillet skipped: {_e}")
+    print(f"WARN arm-link fillet skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1399,7 +1399,7 @@ body = body.cut(groove)
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < od * 0.3][:30])
 except Exception as _e:
-    print(f"WARN arm-joint fillet skipped: {_e}")
+    print(f"WARN arm-joint fillet skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1485,7 +1485,7 @@ try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges
                                   if _e.Length < W * 0.3][:25])
 except Exception as _e:
-    print(f"WARN gripper-base fillet skipped: {_e}")
+    print(f"WARN gripper-base fillet skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1582,7 +1582,7 @@ try:
     body = body.makeChamfer(0.5, [_e for _e in body.Edges
                                    if _e.Length < finger_w * 2][:30])
 except Exception as _e:
-    print(f"WARN finger chamfer skipped: {_e}")
+    print(f"WARN finger chamfer skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
