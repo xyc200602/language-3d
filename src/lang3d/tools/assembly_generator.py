@@ -2304,7 +2304,7 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # arm_l_base_yaw). Symmetric cap on yaw still let the arm reach the
     # other side → collision. So: yaw range = [min(home, -10), max(home,
     # home)] clamped to ±90°, never containing both signs.
-    _ARM_PITCH_CAP = 90.0
+    _ARM_PITCH_CAP = 60.0  # ±60° workspace (a real arm can't fold further without hitting its base)
     _ARM_YAW_CAP = 90.0
     for j in revolute_joints:
         if not _is_arm_pitch_joint(j) and j.axis != "z":
