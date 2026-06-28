@@ -2521,36 +2521,44 @@ class AssemblyGenerateTool(Tool):
         # whitelists, SAGE geometric-vs-VLM arbitration, and selective
         # re-run routing). It returns a dict with the same keys the legacy
         # loop returned, so the summary builder below is unchanged.
-        # If the pipeline raises, fall back to the legacy monolithic loop
-        # (kept intentionally — see AGENTS.md: avoid silent failures, and
-        # give operators a working path while the pipeline issue is
-        # diagnosed).
-        result = None
-        try:
-            from ..agent.pipeline import AssemblyPipeline, PipelineContext
+        #
+        # If the pipeline raises, the DEFAULT is to let the error propagate
+        # (fail loud, AGENTS.md §1.1). Previously a bare ``except Exception``
+        # silently fell back to the legacy monolithic loop, which meant any
+        # pipeline improvement (cad_failed propagation, severity-graded fix
+        # loop, deterministic compose) could be bypassed by a single KeyError
+        # without the operator ever knowing the legacy path ran instead (the
+        # audit's "legacy fallback black hole", P0-5). The legacy loop is
+        # still reachable for diagnosis via LANG3D_LEGACY_FALLBACK=1, but it
+        # is no longer the silent default.
+        from ..agent.pipeline import AssemblyPipeline, PipelineContext
 
-            ctx = PipelineContext(
-                description=description,
-                output_dir=output_dir,
-                max_rounds=max_rounds,
-            )
+        ctx = PipelineContext(
+            description=description,
+            output_dir=output_dir,
+            max_rounds=max_rounds,
+        )
+        try:
             result = AssemblyPipeline(ctx).run()
         except Exception as e:
-            logger.error(
-                "AssemblyPipeline failed (%s); falling back to legacy "
-                "generate_assembly_with_vlm_loop", e,
-            )
-
-        if result is None:
-            try:
+            if os.environ.get("LANG3D_LEGACY_FALLBACK", "").lower() in (
+                "1", "true", "yes",
+            ):
+                logger.error(
+                    "AssemblyPipeline failed (%s); LANG3D_LEGACY_FALLBACK is "
+                    "set — falling back to legacy generate_assembly_with_vlm_"
+                    "loop. NOTE: the legacy loop lacks the pipeline's "
+                    "severity-graded fix loop, deterministic compose path, "
+                    "and cad_failed propagation.", e,
+                )
                 result = generate_assembly_with_vlm_loop(
                     description=description,
                     output_dir=output_dir,
                     max_rounds=max_rounds,
                 )
-            except Exception as e:
-                logger.error("Assembly generation with VLM loop failed: %s", e)
-                return f"Error: {e}"
+            else:
+                logger.error("AssemblyPipeline failed: %s", e)
+                raise
 
         try:
             summary = {
