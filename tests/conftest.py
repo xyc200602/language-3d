@@ -166,12 +166,46 @@ def pytest_collection_modifyitems(
 
     Runs after collection, before execution.  Cheap: 134 files read once,
     results cached.  Adds 1+ markers to every test item.
+
+    Also auto-skips integration tests that need FreeCAD when FreeCAD is
+    not installed (CI runs on Linux without FreeCAD; these tests would
+    error rather than skip, breaking CI). The skip is applied ONLY to
+    tests whose source references FreeCAD and lack their own guard.
     """
+    # Detect FreeCAD availability once per session.
+    freecad_available = False
+    try:
+        from lang3d.tools.freecad import _find_freecad_python
+        freecad_available = _find_freecad_python() is not None
+    except Exception:
+        pass
+
+    # Files that reference FreeCAD (spawn it, import it, or call export
+    # which needs it). Cached like the marker classification.
+    _FREECAD_KEYWORDS = ("freecad", "FreeCAD", "_find_freecad", "FCBatchTool",
+                         "export_engineering_package", "generate_part_stls")
+
     for item in items:
         path = Path(str(item.fspath))
         markers = _classify_test_file(path)
         for marker_name in markers:
             item.add_marker(getattr(pytest.mark, marker_name))
+
+        # Auto-skip FreeCAD-dependent integration tests when FreeCAD is
+        # absent (CI protection — audit P1-4 follow-up).
+        if not freecad_available and "integration" in markers:
+            try:
+                text = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                text = ""
+            if any(kw in text for kw in _FREECAD_KEYWORDS):
+                # Check the file does NOT already have its own FreeCAD
+                # skip guard (don't double-skip).
+                if "freecad_available" not in text and "importorskip" not in text:
+                    item.add_marker(pytest.mark.skip(
+                        reason="FreeCAD not installed (CI); integration test "
+                               "needs it. Auto-skipped by conftest.",
+                    ))
 
 
 # ---------------------------------------------------------------------------
