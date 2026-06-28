@@ -29,7 +29,11 @@
 </head>
 <body>
 
-<h1>Language-3D — Run Viewer</h1>
+<h1>Language-3D — Run Viewer
+  <a href="/" style="font-size:13px; vertical-align:middle; margin-left:16px;
+     color:#8ab4f8; text-decoration:none;"
+     title="Back to the Agent Monitor">← Agent Monitor</a>
+</h1>
 <div id="statusMsg"></div>
 
 <div class="row">
@@ -201,17 +205,21 @@ async function loadRun() {
       const cz = (bb.min.z + bb.max.z) / 2;
       geom.translate(-cx, -cy, -cz);
 
-      // SWAP X/Y for arm-chain parts (matches VTK renderer's swap_xy).
-      // FreeCAD makeBox puts length on X, but the solver convention is
-      // length→Y(front/back).  Wheel/chassis-box STLs already match
-      // solver axes (width=X, length=Y) and must NOT be swapped.
-      const lname = stl.name.toLowerCase();
-      const isWheel = lname.startsWith('wheel_');
-      const isChassisBox = ['base_plate','chassis_body','battery_box','top_plate'].includes(lname)
-                           || lname.startsWith('standoff_');
-      if (!isWheel && !isChassisBox) {
-        geom.rotateZ(-Math.PI / 2);
-      }
+      // SWAP X/Y policy — DISABLED (matches the VTK renderer fix).
+      // HISTORY: this swap compensated raw_scripts that built arm-chain
+      // parts with makeBox(L, W, H) (length on X), rotating +X→-Y to match
+      // the solver's length→Y convention. But ALL raw_scripts now use
+      // makeBox(W, L, H) (length already on Y), so the swap double-rotates
+      // links → they render as wide slabs instead of long rods
+      // ("机械臂的杆变成了宽的"). No part should swap in modern code.
+      // (Wheel/chassis detection kept commented for documentation only.)
+      // const lname = stl.name.toLowerCase();
+      // const isWheel = lname.startsWith('wheel_');
+      // const isChassisBox = ['base_plate','chassis_body','battery_box','top_plate'].includes(lname)
+      //                      || lname.startsWith('standoff_');
+      // if (!isWheel && !isChassisBox) {
+      //   geom.rotateZ(-Math.PI / 2);
+      // }
 
       const category = guessCategory(stl.name, asmData.assembly);
       const color = CATEGORY_COLORS[category] || DEFAULT_COLOR;

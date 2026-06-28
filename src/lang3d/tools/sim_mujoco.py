@@ -132,18 +132,166 @@ def _mujoco_available() -> bool:
         return False
 
 
+# ============================================================================
+# Motion controller (shared by record_motion and the interactive viewer)
+# ============================================================================
+#
+# This class was extracted from ``record_motion``'s inline controller so the
+# interactive MuJoCo GUI (``_launch_viewer``) can drive the SAME coordinated
+# arm gesture + differential wheel drive that the headless rollout uses.
+# Previously the GUI loop just called ``mj_step`` with no applied forces, so
+# the robot only slumped under gravity — the user saw none of the planned
+# motion despite it existing in the headless path. Sharing one controller is
+# also required by AGENTS.md §1.1 (no duplicated control logic).
+
+
+class _MotionController:
+    """PD controller that drives a coordinated reach gesture + wheel drive.
+
+    Built once from a loaded ``(model, data)`` pair. Call :meth:`apply` each
+    timestep BEFORE ``mj_step`` to populate ``data.qfrc_applied``.
+
+    Encapsulates:
+      - joint classification (pitch / yaw / roll / finger / wheel)
+      - coordinated sinusoidal gesture (0.15 Hz reach-retract)
+      - finger lock at home
+      - differential wheel torque (when the base is floating/drivable)
+      - floating-base height + upright stabilization
+
+    Mirrors the inline logic that lived in ``record_motion`` (2026-06-26); the
+    behaviour is identical so existing rollouts are unaffected.
+    """
+
+    # Gesture frequency: one reach-retract cycle per ~6.7 seconds.
+    GESTURE_FREQ = 0.15
+    # Gentle forward + slow turn wheel command (left/right differential).
+    WHEEL_DRIVE_TORQUE = 0.08
+    # PD gains (match the original inline values).
+    KP = 200.0
+    KV = 20.0
+
+    def __init__(self, model, data, *, np) -> None:
+        self.model = model
+        self.data = data
+        self.np = np
+        import mujoco  # local import; sim_mujoco defers this everywhere
+        self._mj = mujoco
+
+        movable = [
+            jid for jid in range(model.njnt)
+            if model.jnt_type[jid] in (
+                mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE,
+            )
+        ]
+        has_floating_base = (
+            model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
+        )
+        self.wheel_jids = [
+            jid for jid in movable
+            if "wheel" in (
+                mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+            ).lower()
+        ]
+        self.drivable = has_floating_base and len(self.wheel_jids) >= 2
+        arm_jids = [jid for jid in movable if jid not in self.wheel_jids]
+
+        # Classify arm joints by axis (pitch=X, yaw=Z, roll=Y) + fingers (slide).
+        self.pitch_jids: list[int] = []
+        self.yaw_jids: list[int] = []
+        self.roll_jids: list[int] = []
+        self.finger_jids: list[int] = []
+        for jid in arm_jids:
+            if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_SLIDE:
+                self.finger_jids.append(jid)
+                continue
+            ax = abs(float(model.jnt_axis[jid][0]))
+            ay = abs(float(model.jnt_axis[jid][1]))
+            az = abs(float(model.jnt_axis[jid][2]))
+            if az > 0.5:
+                self.yaw_jids.append(jid)
+            elif ay > 0.5:
+                self.roll_jids.append(jid)
+            else:
+                self.pitch_jids.append(jid)
+
+        # Coordinated reach gesture: pitch=25% range, yaw=15%, roll=10%,
+        # each on a slightly different frequency so the arm reaches as a unit.
+        self.coordinated: dict[int, tuple[float, float]] = {}
+        for jid in self.pitch_jids:
+            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+            self.coordinated[jid] = (min((hi - lo) * 0.25, 0.5), self.GESTURE_FREQ)
+        for jid in self.yaw_jids:
+            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+            self.coordinated[jid] = (min((hi - lo) * 0.15, 0.3),
+                                     self.GESTURE_FREQ * 0.7)
+        for jid in self.roll_jids:
+            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+            self.coordinated[jid] = (min((hi - lo) * 0.1, 0.2),
+                                     self.GESTURE_FREQ * 1.3)
+
+        # Snapshot the home pose (computed after mj_forward by the caller).
+        self.initial_qpos = data.qpos.copy()
+
+    def apply(self, t: float) -> None:
+        """Populate ``data.qfrc_applied`` for the gesture + drive at time ``t``.
+
+        Must be called each timestep before ``mj_step``.
+        """
+        model, data, np = self.model, self.data, self.np
+        mujoco = self._mj
+        kp, kv = self.KP, self.KV
+
+        # PD-track the coordinated gesture target with gravity compensation.
+        target = self.initial_qpos.copy()
+        for jid, (amp, freq) in self.coordinated.items():
+            target[jid] = self.initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
+        mujoco.mj_forward(model, data)
+        data.qfrc_applied[:] = data.qfrc_bias
+        for jid in self.coordinated:
+            data.qfrc_applied[jid] += kp * (target[jid] - data.qpos[jid]) \
+                                      - kv * data.qvel[jid]
+        # Lock finger slides at home (gripper holding, not oscillating).
+        for jid in self.finger_jids:
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            data.qfrc_applied[dadr] += kp * (self.initial_qpos[qadr]
+                                             - data.qpos[qadr]) \
+                                       - kv * data.qvel[dadr]
+        # Differential wheel drive — the "能动" deliverable (chassis translates).
+        if self.drivable:
+            for jid in self.wheel_jids:
+                nm = mujoco.mj_id2name(
+                    model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+                side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
+                data.qfrc_applied[jid] += self.WHEEL_DRIVE_TORQUE * side
+            # Floating-base stabilization: hold height + upright so the drive
+            # torque doesn't flip the robot. xy translation + yaw stay free.
+            data.qfrc_applied[2] += 500.0 * (self.initial_qpos[2] - data.qpos[2]) \
+                                    - 50.0 * data.qvel[2]
+            qx, qy = float(data.qpos[4]), float(data.qpos[5])
+            data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
+            data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
+
+
 def _launch_viewer(
     model: Any,
     *,
     duration_sec: float = 10.0,
     stabilize: bool = True,
 ) -> None:
-    """Open the MuJoCo passive viewer and step physics until window closes.
+    """Open the MuJoCo passive viewer and drive the planned motion live.
 
     Added 2026-06-18 to give the simulation path a real GUI (the user
     observed "simulation was done without a graphical interface").  Uses
     ``mujoco.viewer.launch_passive`` which does NOT block on its own —
     the caller must run a step loop and call ``viewer.sync()`` each frame.
+
+    The loop drives the SAME coordinated arm-gesture + differential wheel
+    motion as the headless ``record_motion`` rollout (via
+    :class:`_MotionController`), so the user actually sees the robot reach
+    and drive — not just slump under gravity. This was the Bug #4 defect:
+    the viewer stepped raw ``mj_step`` with no applied forces, so none of
+    the planned articulation was visible.
 
     Falls back to a no-op log message on headless environments or
     import errors so e2e tests can still call ``interactive=False`` on a
@@ -152,6 +300,7 @@ def _launch_viewer(
     try:
         import mujoco  # type: ignore[import-not-found]
         import mujoco.viewer  # type: ignore[import-not-found]
+        import numpy as np  # type: ignore[import-not-found]
         import time as _time
     except ImportError as e:
         logger.warning("MuJoCo viewer unavailable: %s", e)
@@ -163,27 +312,37 @@ def _launch_viewer(
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
 
+    # Build the shared controller so the GUI shows the planned motion.
+    controller = _MotionController(model, data, np=np)
+
     max_steps = int(duration_sec / max(model.opt.timestep, 1e-5))
     logger.info(
-        "Launching MuJoCo viewer (max_steps=%d, dt=%.4fs)",
-        max_steps, model.opt.timestep,
+        "Launching MuJoCo viewer (max_steps=%d, dt=%.4fs, drivable=%s, "
+        "arm_joints=%d)",
+        max_steps, model.opt.timestep, controller.drivable,
+        len(controller.coordinated) + len(controller.finger_jids),
     )
+    t0 = _time.time()
     try:
         with mujoco.viewer.launch_passive(model, data) as viewer:
             step = 0
             while viewer.is_running() and step < max_steps:
+                # Drive the planned motion (gesture + wheels) each step.
+                t = step * model.opt.timestep
+                controller.apply(t)
                 mujoco.mj_step(model, data)
                 viewer.sync()
-                # Real-time playback: sleep one timestep per step.
-                # But cap the sleep so physics doesn't fall behind on slow
-                # machines.  Use a minimum of 0 to avoid blocking on very
-                # small timesteps.
+                # Real-time playback: sleep one timestep per step, floored
+                # so physics doesn't fall behind on slow machines.
                 _time.sleep(max(model.opt.timestep, 0.001))
                 step += 1
-            # Keep the window open even after physics steps are done —
-            # the user closes it manually.  This was the original intent
-            # ("close the viewer window to exit") but duration_sec=2.0
-            # killed it after 2 seconds.
+            # Keep the window open after the motion finishes — the user
+            # closes it manually. (Previously duration_sec=2.0 killed it.)
+            motion_sec = _time.time() - t0
+            logger.info(
+                "Motion playback finished (%.1fs) — viewer stays open until "
+                "you close the window.", motion_sec,
+            )
             while viewer.is_running():
                 viewer.sync()
                 _time.sleep(0.016)  # ~60fps refresh
@@ -511,81 +670,12 @@ def record_motion(
 
     mujoco.mj_forward(model, data)
 
-    # Actuated joints = HINGE or SLIDE (fixed joints are merged out by MuJoCo).
-    movable = [
-        jid for jid in range(model.njnt)
-        if model.jnt_type[jid] in (
-            mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE,
-        )
-    ]
-    # Detect a DRIVABLE mobile base: a floating base (free joint at qpos[0:7])
-    # plus >=2 wheel hinge joints.  When present, command the wheels with a
-    # differential-drive torque so the chassis visibly translates during the
-    # rollout — the project's "能动" expectation (arms move AND base drives).
-    # Without this the base was welded to the world and only arms articulated.
-    has_floating_base = (
-        model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
-    )
-    wheel_jids = [
-        jid for jid in movable
-        if "wheel" in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
-                       or "").lower()
-    ]
-    drivable = has_floating_base and len(wheel_jids) >= 2
-    # Arms (non-wheel hinges + slides) follow a COORDINATED motion profile
-    # (not independent sinusoids).  The motion simulates a reach-and-retract
-    # gesture: the shoulder leads, the elbow follows with a phase delay, and
-    # the wrist rotates slowly — like a real arm reaching for an object.
-    # Finger slides are locked (their range is ±0 in most assemblies; even
-    # when non-zero they should open/close in sync, not oscillate randomly).
-    arm_jids = [jid for jid in movable if jid not in wheel_jids]
-    # Classify arm joints by role for coordinated motion.
-    # Group 1: pitch joints (shoulder, elbow) — lead the reach gesture.
-    # Group 2: yaw joints (base rotation) — slow scan.
-    # Group 3: roll/wrist — gentle rotation.
-    # Group 4: finger slides — locked or open-close in sync.
-    pitch_jids = []   # axis≈X, the bending joints
-    yaw_jids = []      # axis≈Z, the base rotation
-    roll_jids = []     # axis≈Y, the wrist
-    finger_jids = []   # slide type, gripper fingers
-    for jid in arm_jids:
-        jtype = model.jnt_type[jid]
-        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
-        if jtype == mujoco.mjtJoint.mjJNT_SLIDE:
-            finger_jids.append(jid)
-        else:
-            ax = abs(float(model.jnt_axis[jid][0]))
-            ay = abs(float(model.jnt_axis[jid][1]))
-            az = abs(float(model.jnt_axis[jid][2]))
-            if az > 0.5:
-                yaw_jids.append(jid)
-            elif ay > 0.5:
-                roll_jids.append(jid)
-            else:
-                pitch_jids.append(jid)
+    # Build the shared motion controller (joint classification + coordinated
+    # gesture + differential wheel drive + floating-base stabilization).
+    # This is the same controller the interactive viewer uses, factored out so
+    # the headless rollout and the GUI stay in sync (AGENTS.md §1.1).
+    controller = _MotionController(model, data, np=np)
 
-    # Coordinated reach gesture: a single slow sinusoid (0.15 Hz) drives
-    # the whole arm.  Pitch joints get full amplitude, yaw gets half,
-    # roll gets quarter — so the arm reaches forward and retracts as a
-    # unit, not flailing randomly.
-    gesture_freq = 0.15  # one reach-retract cycle per ~6.7 seconds
-    coordinated_params: dict[int, tuple[float, float]] = {}
-    for jid in pitch_jids:
-        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.25, 0.5), gesture_freq)
-    for jid in yaw_jids:
-        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.15, 0.3), gesture_freq * 0.7)
-    for jid in roll_jids:
-        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.1, 0.2), gesture_freq * 1.3)
-
-    initial_qpos = data.qpos.copy()
-    kp, kv = 200.0, 20.0
-    # Drive torque for the wheels — a gentle forward + slow turn command.
-    # Left/right wheels get a slight differential so the path arcs gently
-    # rather than going dead straight (more visually informative).
-    wheel_drive_torque = 0.08
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
 
@@ -599,46 +689,8 @@ def record_motion(
     frames: list[dict[str, Any]] = []
     for step in range(n_steps):
         t = step * model.opt.timestep
-        # PD-track the coordinated gesture target with gravity-compensation.
-        # Pitch/yaw/roll joints follow the reach-retract gesture; fingers
-        # are locked at their home position (no random finger oscillation).
-        target = initial_qpos.copy()
-        for jid, (amp, freq) in coordinated_params.items():
-            target[jid] = initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
-        mujoco.mj_forward(model, data)
-        data.qfrc_applied[:] = data.qfrc_bias
-        for jid in coordinated_params:
-            data.qfrc_applied[jid] += kp * (target[jid] - data.qpos[jid]) \
-                                      - kv * data.qvel[jid]
-        # Lock finger slides at home (gripper controller holding).
-        for jid in finger_jids:
-            qadr = model.jnt_qposadr[jid]
-            dadr = model.jnt_dofadr[jid]
-            data.qfrc_applied[dadr] += kp * (initial_qpos[qadr] - data.qpos[qadr]) \
-                                       - kv * data.qvel[dadr]
-        # Drive the wheels (differential command) when the base is floating.
-        # Left-side vs right-side wheels get a small differential for a gentle
-        # arc; this is the "能动" deliverable — the chassis translates.
-        if drivable:
-            for jid in wheel_jids:
-                nm = mujoco.mj_id2name(
-                    model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
-                # Right-side wheels get a slightly smaller torque → gentle
-                # right arc (visually shows translation + turning).
-                side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
-                data.qfrc_applied[jid] += wheel_drive_torque * side
-            # Stabilize the floating base: hold pitch/roll/height near 0 so
-            # the drive torque doesn't flip the robot.  The free joint qpos
-            # is [x,y,z, qw,qx,qy,qz]; we PD-control z, and the qx/qy (pitch/
-            # roll) quaternion components toward 0 (upright).  Yaw (qz) and
-            # xy translation are left free so the robot drives and turns.
-            # z-height hold (keep initial ground clearance).
-            data.qfrc_applied[2] += 500.0 * (initial_qpos[2] - data.qpos[2]) \
-                                    - 50.0 * data.qvel[2]
-            # Upright hold: push qx,qy toward 0 (keep qw high).
-            qx, qy = float(data.qpos[4]), float(data.qpos[5])
-            data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
-            data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
+        # Apply the coordinated gesture + wheel drive for this timestep.
+        controller.apply(t)
         mujoco.mj_step(model, data)
         if not np.all(np.isfinite(data.qacc)):
             break  # diverged — stop early, keep what we have

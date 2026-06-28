@@ -695,8 +695,16 @@ async def fk_positions(case: str, ts: str, request: Request) -> JSONResponse:
         return JSONResponse({"positions": out})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/runs/{case}/{ts}/render")
 async def render_run(case: str, ts: str) -> JSONResponse:
-    """Trigger a fresh VTK render of the assembly."""
+    """Trigger a fresh VTK render of the assembly.
+
+    Registered as a POST route — previously this function existed but had no
+    ``@app.post`` decorator, so the frontend's "Re-render" button
+    (simulate.html) hit a 404 and silently failed.
+    """
     run_dir = DATA_ROOT / "runs" / case / ts
     if not (run_dir / "assembly.json").exists():
         return JSONResponse({"error": "Run not found"}, status_code=404)

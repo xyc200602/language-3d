@@ -428,10 +428,15 @@ def build_wheeled_base(
     # shell ENCLOSE the arm bases — the穿模 defect the user reported (arm
     # base_yaw_servo piercing the body). See _arm_mount.deck = "chassis_body".
     _body_height = max(dims["wheel_diameter"] * 0.5, 40.0)
-    # Body footprint: inset from the deck edges so it doesn't cover the wheels.
-    # Wheels are at X=±track/2; body half-width stays inside that.
-    _body_half_w = (dims["base_width"] / 2.0) - wheel_radius * 0.4
-    _body_half_l = (dims["base_length"] / 2.0) - wheel_radius * 0.4
+    # Body footprint: nearly as wide as the track so wheels sit at the body's
+    # edges (flush or slightly proud — the standard UGV look: Husky A200,
+    # Leo Rover, Jackal all have body_width ≈ track, with wheels just visible
+    # at the sides). A previous revision inset the body by 0.4×wheel_radius,
+    # leaving a 36mm gap on each side so the wheels looked "too far out" /
+    # floating beside a narrow shell. Reduce the inset to 0.12×radius so the
+    # body visually wraps the wheels (small reveal, not a gap).
+    _body_half_w = (dims["base_width"] / 2.0) - wheel_radius * 0.12
+    _body_half_l = (dims["base_length"] / 2.0) - wheel_radius * 0.12
     parts.append({
         "name": "chassis_body", "category": "structural",
         "description": "车体外壳（base_link body，包覆传动）", "material": "Aluminum",
