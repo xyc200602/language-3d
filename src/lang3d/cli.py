@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 from typing import Any
 
@@ -19,6 +20,7 @@ from .config import load_config
 
 console = Console()
 error_console = Console(stderr=True)
+logger = logging.getLogger(__name__)
 
 
 def print_banner() -> None:
@@ -370,7 +372,7 @@ def run_cli() -> None:
         from .web.app import set_agent_instance
         set_agent_instance(agent)
     except Exception as _e:
-        pass  # TODO: web agent instance registration failed (no logger available)
+        logger.debug("web agent instance registration failed: %s", _e)
 
     # Set up callbacks
     def on_tool_call(name: str, args: dict) -> None:
@@ -578,7 +580,7 @@ def _run_sim(argv: list[str]) -> None:
                 if cases:
                     console.print(f"[dim]Available cases: {', '.join(cases)}[/dim]")
         except Exception as _e:
-            pass  # TODO: e2e case list lookup failed (no logger available)
+            logger.debug("e2e case list lookup failed: %s", _e)
         sys.exit(2)
 
     folder = argv[0].rstrip("\\/").replace("\\", "/")

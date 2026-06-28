@@ -1715,7 +1715,7 @@ def _resolve_assembly(name: str, json_str: str) -> Assembly | None:
         try:
             return _parse_assembly_json(json_str)
         except Exception as _e:
-            pass  # TODO: parse_assembly_json from cache failed (no logger available)
+            logger.debug("parse_assembly_json from cache failed: %s", _e)
 
     # Built-in assemblies
     from ..knowledge.mechanics import (
@@ -1741,7 +1741,7 @@ def _resolve_assembly(name: str, json_str: str) -> Assembly | None:
             data = json.loads(path.read_text(encoding="utf-8"))
             return _parse_assembly_dict(data)
         except Exception as _e:
-            pass  # TODO: parse_assembly from file failed (no logger available)
+            logger.debug("parse_assembly from file failed: %s", _e)
 
     # Try assembly templates (exact ID match only)
     try:
@@ -1750,7 +1750,7 @@ def _resolve_assembly(name: str, json_str: str) -> Assembly | None:
         if tpl_key in TEMPLATES:
             return template_to_assembly(TEMPLATES[tpl_key])
     except Exception as _e:
-        pass  # TODO: template lookup failed (no logger available)
+        logger.debug("template lookup failed: %s", _e)
 
     return None
 

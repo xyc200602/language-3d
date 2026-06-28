@@ -527,7 +527,7 @@ class CADVerifyTool(Tool):
             cfg = load_config()
             search_dirs.append(cfg.agent.workspace)
         except Exception as _e:
-            pass  # TODO: config workspace lookup failed (no logger available)
+            logger.debug("config workspace lookup failed: %s", _e)
 
         best_path: str | None = None
         best_mtime = 0.0

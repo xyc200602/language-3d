@@ -1953,7 +1953,7 @@ for i in range(tooth_count):
     try:
         belt = belt.cut(tooth)
     except Exception as _e:
-        pass  # TODO: belt tooth cut failed (cosmetic) (no logger available)
+        logger.debug("belt tooth cut failed (cosmetic: %s", _e)
 
 obj = doc.addObject("Part::Feature", "GT2Belt")
 obj.Shape = belt
@@ -2147,7 +2147,7 @@ for i in range(int(jaw_count)):
     try:
         hub1 = hub1.cut(jaw_rot.Shape)
     except Exception as _e:
-        pass  # TODO: hub jaw cut failed (cosmetic) (no logger available)
+        logger.debug("hub jaw cut failed (cosmetic: %s", _e)
 
 # Hub 2 (top half)
 hub2 = Part.makeCylinder(od/2, half_l)

@@ -426,7 +426,7 @@ try:
         mat_dict["Density"] = f"{{mat.density}} kg/m^3"
         mat_dict["YieldStrength"] = f"{{mat.yield_strength}} MPa"
 except Exception as _e:
-    pass  # TODO: material property enrichment failed (no logger available)
+    logger.debug("material property enrichment failed: %s", _e)
 
 material.Material = mat_dict
 analysis.addObject(material)
@@ -455,7 +455,7 @@ if _force_normal.dot(_face_normal) < 0:
     try:
         force.Reversed = True
     except Exception as _e:
-        pass  # TODO: force reversal failed (FreeCAD FEM) (no logger available)
+        logger.debug("force reversal failed (FreeCAD FEM: %s", _e)
 analysis.addObject(force)
 
 # Solver (CalculiX)
@@ -1528,4 +1528,4 @@ def register_simulation_tools(
         from .motion import register_motion_tools
         register_motion_tools(registry, router=router, screenshot_dir=screenshot_dir)
     except Exception as _e:
-        pass  # TODO: motion tool registration failed (no logger available)
+        logger.debug("motion tool registration failed: %s", _e)

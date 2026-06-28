@@ -3571,7 +3571,7 @@ def _generate_preview_stls(parts: list[dict], output_dir: str) -> str:
         try:
             mesh.apply_translation(-mesh.bounding_box.centroid)
         except Exception as _e:
-            pass  # TODO: mesh bounding-box center recentre failed (no logger available)
+            logger.debug("mesh bounding-box center recentre failed: %s", _e)
 
         stl_path = os.path.join(preview_dir, f"{name}.stl")
         try:

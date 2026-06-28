@@ -2435,7 +2435,7 @@ class FCOpenGUITool(Tool):
             if cache_dir.exists():
                 shutil.rmtree(cache_dir, ignore_errors=True)
         except Exception as _e:
-            pass  # TODO: FreeCAD cache cleanup failed (no logger available)
+            logger.debug("FreeCAD cache cleanup failed: %s", _e)
 
         # Disable welcome screen before launching GUI (headless config set)
         try:
@@ -2454,7 +2454,7 @@ class FCOpenGUITool(Tool):
                     encoding="utf-8", errors="replace",
                 )
         except Exception as _e:
-            pass  # TODO: FreeCAD version probe failed (no logger available)
+            logger.debug("FreeCAD version probe failed: %s", _e)
 
         # Also directly patch the user.cfg to ensure settings persist
         try:
@@ -2471,7 +2471,7 @@ class FCOpenGUITool(Tool):
                 _xml_set_param(root, "Start", "ShowOnStartup", "0")
                 tree.write(str(cfg_path), encoding="UTF-8", xml_declaration=True)
         except Exception as _e:
-            pass  # TODO: FreeCAD config tweak failed (no logger available)
+            logger.debug("FreeCAD config tweak failed: %s", _e)
 
         view_method = VIEW_METHODS.get(view, "viewIsometric")
         cmd = [fc_exe]
