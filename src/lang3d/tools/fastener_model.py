@@ -392,8 +392,8 @@ nut = hex_prism.cut(hole)
 # Chamfer both faces
 try:
     nut = nut.makeChamfer(0.3, [_e for _e in nut.Edges if _e.Length < r_thread * 4][:12])
-except Exception:
-    pass
+except Exception as _e:
+    pass  # TODO: nut chamfer failed (cosmetic) (no logger available)
 
 obj = doc.addObject("Part::Feature", "nut_{size}")
 obj.Shape = nut

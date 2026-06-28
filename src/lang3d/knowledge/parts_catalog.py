@@ -1952,8 +1952,8 @@ for i in range(tooth_count):
     tooth.translate(FreeCAD.Vector(cx, cy, 0))
     try:
         belt = belt.cut(tooth)
-    except Exception:
-        pass
+    except Exception as _e:
+        pass  # TODO: belt tooth cut failed (cosmetic) (no logger available)
 
 obj = doc.addObject("Part::Feature", "GT2Belt")
 obj.Shape = belt
@@ -2146,8 +2146,8 @@ for i in range(int(jaw_count)):
     jaw_rot.rotate(FreeCAD.Vector(0, 0, half_l), FreeCAD.Vector(0, 0, 1), math.degrees(angle))
     try:
         hub1 = hub1.cut(jaw_rot.Shape)
-    except Exception:
-        pass
+    except Exception as _e:
+        pass  # TODO: hub jaw cut failed (cosmetic) (no logger available)
 
 # Hub 2 (top half)
 hub2 = Part.makeCylinder(od/2, half_l)

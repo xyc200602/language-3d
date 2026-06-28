@@ -3570,8 +3570,8 @@ def _generate_preview_stls(parts: list[dict], output_dir: str) -> str:
         # is a no-op and the part lands exactly where the solver expects.
         try:
             mesh.apply_translation(-mesh.bounding_box.centroid)
-        except Exception:
-            pass
+        except Exception as _e:
+            pass  # TODO: mesh bounding-box center recentre failed (no logger available)
 
         stl_path = os.path.join(preview_dir, f"{name}.stl")
         try:

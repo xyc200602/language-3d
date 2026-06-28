@@ -106,8 +106,8 @@ def execute_tool_calls(
                             f"智能修复：{fix_ctx.failure_type.value}，"
                             f"注入定向提示（第 {verify_fail_count} 次）"
                         )
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug("executor auto-fix hint injection failed: %s", _e)
         elif tc.name == "cad_verify" and "match: true" in result.lower():
             verify_fail_count = 0
 
@@ -246,8 +246,8 @@ class Executor:
             if on_thinking and response.content:
                 try:
                     on_thinking(response.content)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug("on_thinking callback failed: %s", _e)
 
             # If no tool calls, the agent is done
             if not response.tool_calls:

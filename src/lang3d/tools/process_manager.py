@@ -55,8 +55,8 @@ def _find_window_for_pid(pid: int) -> int | None:
     try:
         WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
         ctypes.windll.user32.EnumWindows(WNDENUMPROC(_enum_cb), 0)
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug("window enumeration failed (non-Windows?): %s", _e)
 
     return result_hwnd[0] if result_hwnd else None
 
@@ -97,8 +97,8 @@ def _graceful_kill(pid: int, timeout: float = 5.0) -> bool:
             encoding="utf-8",
             errors="replace",
         )
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug("process list query failed: %s", _e)
 
     return False
 

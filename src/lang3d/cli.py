@@ -369,8 +369,8 @@ def run_cli() -> None:
     try:
         from .web.app import set_agent_instance
         set_agent_instance(agent)
-    except Exception:
-        pass
+    except Exception as _e:
+        pass  # TODO: web agent instance registration failed (no logger available)
 
     # Set up callbacks
     def on_tool_call(name: str, args: dict) -> None:
@@ -577,8 +577,8 @@ def _run_sim(argv: list[str]) -> None:
                 cases = sorted(p.name for p in runs_root.iterdir() if p.is_dir())
                 if cases:
                     console.print(f"[dim]Available cases: {', '.join(cases)}[/dim]")
-        except Exception:
-            pass
+        except Exception as _e:
+            pass  # TODO: e2e case list lookup failed (no logger available)
         sys.exit(2)
 
     folder = argv[0].rstrip("\\/").replace("\\", "/")

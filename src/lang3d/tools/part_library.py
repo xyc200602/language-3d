@@ -135,8 +135,8 @@ def _workspace_dir() -> str:
             parts_dir = Path(ws) / "parts_library"
             parts_dir.mkdir(parents=True, exist_ok=True)
             return str(parts_dir)
-    except Exception:
-        pass
+    except Exception as _e:
+        pass  # TODO: parts dir resolution failed (fallback to data/parts_library) (no logger available)
     # Fallback: data/parts_library
     parts_dir = Path.cwd() / "data" / "parts_library"
     parts_dir.mkdir(parents=True, exist_ok=True)
@@ -691,8 +691,8 @@ elif ext == "fcstd":
         if hasattr(obj, "Shape") and obj.Shape is not None:
             try:
                 shapes.append(obj.Shape)
-            except Exception:
-                pass
+            except Exception as _e:
+                pass  # TODO: FreeCAD shape extraction failed for a part (no logger available)
     if shapes:
         import MeshPart
         compound = Part.makeCompound(shapes) if len(shapes) > 1 else shapes[0]
@@ -851,8 +851,8 @@ for _o in _import_doc_{idx}.Objects:
     if hasattr(_o, 'Shape') and _o.Shape is not None:
         try:
             _shapes_{idx}.append(_o.Shape)
-        except Exception:
-            pass
+        except Exception as _e:
+            pass  # TODO: FreeCAD shape extraction failed for a part (script) (no logger available)
 if _shapes_{idx}:
     _compound_{idx} = Part.makeCompound(_shapes_{idx}) if len(_shapes_{idx}) > 1 else _shapes_{idx}[0]
     rot_{idx} = FreeCAD.Rotation(FreeCAD.Vector({rax}, {ray}, {raz}), {rangle})

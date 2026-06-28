@@ -1195,8 +1195,8 @@ class CollisionFixTool(Tool):
             try:
                 from .assembly_solver import _parse_assembly_json
                 assembly = _parse_assembly_json(assembly_json)
-            except Exception:
-                pass
+            except Exception as _e:
+                pass  # TODO: assembly JSON parse for collision check failed (no logger available)
 
         suggester = CollisionFixSuggester()
         report = suggester.suggest_fixes(result, assembly)

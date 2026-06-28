@@ -596,8 +596,8 @@ class AssemblyToURDF:
                     if _act and _act.torque_kgcm > 0:
                         _effort = round(torque_to_nm(_act.torque_kgcm) * 2.0, 2)
                         _velocity = round(math.pi / (3.0 * max(_act.speed_s_per_60deg, 0.01)), 2)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    pass  # TODO: actuator effort/velocity lookup failed (no logger available)
 
             self._joints.append(URDFJoint(
                 name=f"{parent_name}_to_{child_name}",

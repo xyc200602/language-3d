@@ -1343,8 +1343,8 @@ def _run_post_export_sim_validation(
                 mujoco_summary = _json.loads(
                     report[json_start + len("--- JSON ---"):].strip()
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                pass  # TODO: mujoco summary JSON parse failed (no logger available)
         # Extract the key signals
         result["mujoco"] = {
             "verdict_ok": mujoco_summary.get("verdict_ok"),
@@ -1404,8 +1404,8 @@ def _run_post_export_sim_validation(
                 grasp_summary = _json.loads(
                     report[json_start + len("--- JSON ---"):].strip()
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                pass  # TODO: grasp summary JSON parse failed (no logger available)
         result["grasp"] = {
             "ran": True,
             "grasp_ok": grasp_summary.get("grasp_ok"),
@@ -1501,8 +1501,8 @@ def _resolve_assembly_input(
             if "default_angles" in data:
                 assembly.default_angles = data["default_angles"]
             return assembly
-        except Exception:
-            pass
+        except Exception as _e:
+            pass  # TODO: assembly.json re-parse for web failed (no logger available)
 
     if assembly_name:
         builtin = _get_builtin_assembly(assembly_name)
