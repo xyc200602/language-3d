@@ -2,13 +2,13 @@
 
 # Language-3D Agent
 
-**Autonomous Multi-Expert Agent System for Production-Level 3D Modeling**
-**自主多专家智能体系统 — 生产级 3D 建模**
+**Multi-Expert Agent System for Functional-Prototype 3D Modeling**
+**多专家智能体系统 — 功能原型级 3D 建模**
 
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://python.org)
 [![FreeCAD 1.1](https://img.shields.io/badge/FreeCAD-1.1-green.svg)](https://freecad.org)
 [![GLM-5.2](https://img.shields.io/badge/LLM-GLM--5.2-orange.svg)](https://open.bigmodel.cn)
-[![E2E Score](https://img.shields.io/badge/E2E-92.9%25-brightgreen.svg)](#test-results)
+[![E2E Score](https://img.shields.io/badge/E2E-~95%25-brightgreen.svg)](#test-results)
 
 *LLM Reasoning + VLM Visual Perception + CAD Automation + Geometric Arbitration*
 *LLM 推理 + VLM 视觉感知 + CAD 自动化 + 几何仲裁*
@@ -21,15 +21,15 @@
 
 **English**
 
-Language-3D Agent is an autonomous AI system that understands natural language descriptions of mechanical assemblies, generates production-level 3D models (STL/STEP), exports complete engineering packages (URDF, BOM, assembly guide, firmware), and verifies results through **dual-channel inspection** — code-side geometric checks and vision-side AI analysis, with **geometric arbitration** that overrules VLM false-negatives when the geometry is provably correct.
+Language-3D Agent is an AI system that understands natural language descriptions of mechanical assemblies, generates functional-prototype 3D models (STL/STEP via boolean geometry), exports complete engineering packages (URDF, BOM, assembly guide, firmware), and verifies results through **dual-channel inspection** — code-side geometric checks and vision-side AI analysis, with **geometric arbitration** that overrules VLM false-negatives when the geometry is provably correct.
 
 The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer classifies failures via keyword-based heuristics and routes each failure back to the specific upstream stage that needs re-running (e.g. a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration), rather than always regenerating from scratch. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard — every assembly generated at runtime flows through it, with the legacy monolithic loop retained only as an automatic fallback if the pipeline raises.
 
 **中文**
 
-Language-3D Agent 是一个自主 AI 系统，能够理解自然语言描述的机械装配体，生成生产级 3D 模型（STL/STEP），导出完整工程包（URDF、BOM、装配指南、固件），并通过**双通道验证**（代码侧几何检查 + 视觉侧 AI 分析）确保质量。当几何验证确认正确时，**几何仲裁**会推翻 VLM 的误判。
+Language-3D Agent 是一个 AI 系统，能够理解自然语言描述的机械装配体，生成功能原型级 3D 模型（STL/STEP，基于布尔几何），导出完整工程包（URDF、BOM、装配指南、固件），并通过**双通道验证**（代码侧几何检查 + 视觉侧 AI 分析）确保质量。当几何验证确认正确时，**几何仲裁**会推翻 VLM 的误判。
 
-系统使用**多专家智能体流水线**（架构师 → 求解器 → CAD 工程师 → 验证器 → 修复器），每个阶段是独立的专家角色，有自己的系统提示和工具白名单。修复器把失败精准路由到需要重跑的上游阶段（例如求解器判定的碰撞只重跑 求解器→CAD→验证器，跳过不必要的架构师重生成），而非每次都从头重生。该流水线是 CLI（`lang3d`）和网页面板的**生产路径**——运行时生成的每个装配体都流经它，旧的单体循环仅在流水线抛异常时作为自动回退保留。
+系统使用**多专家智能体流水线**（架构师 → 求解器 → CAD 工程师 → 验证器 → 修复器），每个阶段是独立的专家角色，有自己的系统提示和工具白名单。修复器把失败精准路由到需要重跑的上游阶段（例如求解器判定的碰撞只重跑 求解器→CAD→验证器，跳过不必要的架构师重生成），而非每次都从头重生。该流水线是 CLI（`lang3d`）和网页面板的**生产路径**——运行时生成的每个装配体都流经它；流水线抛错时会**显式报错**（不再静默回退旧循环，旧循环仅供 `LANG3D_LEGACY_FALLBACK=1` 诊断用）。
 
 ```
 "设计一个 4 自由度机械臂，带夹爪"     ← Natural Language / 自然语言
@@ -184,7 +184,7 @@ assembly = generate_assembly_from_nl("4自由度机械臂，带夹爪")
 
 ## Tool System / 工具系统
 
-57 tool modules organized into 9 categories. Each expert agent sees only its whitelisted tools (`ROLE_TOOL_CATEGORIES`):
+55 tool modules organized into 9 categories. Each expert agent sees only its whitelisted tools (`ROLE_TOOL_CATEGORIES`):
 
 | Category / 类别 | Tools | Key Modules / 关键模块 |
 |---|---|---|
@@ -240,7 +240,7 @@ language-3d/
 │   ├── models/                    # LLM/VLM Backends
 │   │   ├── glm.py                 # GLM-5.2 (text) + GLM-4.6V (vision)
 │   │   └── router.py              # 4-level vision model tiers (fast/standard/detailed/maximum; default: detailed)
-│   ├── tools/                     # 57 tool modules
+│   ├── tools/                     # 55 tool modules
 │   │   ├── assembly_generator.py  # NL → assembly JSON + VLM loop + geometric arbitration
 │   │   ├── assembly_solver.py     # Position & constraint solving
 │   │   ├── part_feature_engine.py # Per-part CAD features (axis-correct bolt holes)
@@ -271,12 +271,12 @@ language-3d/
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
 | Unit + Integration / 单元 + 集成 | 3,619 | 3,616 PASS, 3 known failures (gripper/coordinate) |
-| E2E Production (legacy) / 端到端 | 1 | **92.9% score, 0 critical fails** (requires GLM_API_KEY) |
-| E2E Production (pipeline) / 流水线 | 1 | **92.9% score, 0 critical fails** (requires GLM_API_KEY) |
+| E2E Production (legacy) / 端到端 | 1 | **~95% score** (single-case, requires GLM_API_KEY) |
+| E2E Production (pipeline) / 流水线 | 1 | **~95% score** (single-case, requires GLM_API_KEY) |
 | Expert Roles / 专家角色 | 27 | 27 PASS |
 
-> **Note / 注意**: E2E tests require `GLM_API_KEY` — without it they are skipped (not failed). The 92.9% score is the pipeline-path result with a real key.
-> E2E 测试需要 `GLM_API_KEY`——没有 key 时跳过（不是失败）。92.9% 是有 key 时的流水线路径结果。
+> **Note / 注意**: E2E tests require `GLM_API_KEY` — without it they are skipped (not failed). The score is a **single-case** result (4dof_arm), not a multi-case average. Scoring counts PASS/(PASS+FAIL+WARN); SKIP (missing optional dep) is excluded from the denominator, and critical checks (collision, COM stability, MuJoCo physics, grasp) FAIL rather than downgrade to warning. The score varies run-to-run due to LLM non-determinism.
+> E2E 测试需要 `GLM_API_KEY`——没有 key 时跳过（不是失败）。评分是**单一 case**（4dof_arm）的结果，不是多 case 平均。评分公式为 PASS/(PASS+FAIL+WARN)，SKIP（缺可选依赖）不计入分母，critical 检查（碰撞、COM 稳定性、MuJoCo 物理、抓取）失败即 FAIL 不再降级为 warning。因 LLM 非确定性，分数每次运行会波动。
 
 ```bash
 # Run tests / 运行测试
