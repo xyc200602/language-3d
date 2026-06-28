@@ -1317,22 +1317,36 @@ def render_assembly_from_positions(
         rot_tuple = tuple(rot) if rot and rot[3] != 0.0 else None
 
         # STL axis-swap policy.  FreeCAD's makeBox puts the FIRST arg on X.
-        # - Arm-chain parts (raw_script families: arm_link / arm_joint /
-        #   gripper / gripper_finger) generate length on X, so they need
-        #   swap_xy (R_z(-90°): +X → -Y) so the link extends along the arm.
-        # - Chassis BOX parts (base_plate, chassis_body, battery_box, top_plate)
-        #   now generate with X=width, Y=length (the make_box/plate_with_holes
-        #   ops swap to match the solver convention).  swap_xy would
-        #   DOUBLE-rotate them → the long edge ends up on the wrong axis
-        #   (the "车底盘方向不对" defect).  These must NOT swap.
-        # - Wheels (orient_axis="y") are radially symmetric about Y; swapping
-        #   turns them into 磨盘.  No swap.
+        #
+        # HISTORY: this swap was a compensation for raw_scripts that built
+        # arm-chain parts with ``makeBox(L, W, H)`` (length on X), which the
+        # solver then expected on Y. R_z(-90°) rotated +X→-Y to fix it.  But
+        # ALL raw_scripts were since corrected to ``makeBox(W, L, H)`` (length
+        # already on Y, matching the solver) — see part_feature_engine's
+        # _arm_link_ops / _gripper_finger_ops / _gripper_base_ops. With the
+        # source STLs now correct, swap_xy DOUBLE-rotates them: a Y-long link
+        # gets rotated so its length lands on X → the link renders as a wide
+        # slab instead of a long rod ("机械臂的杆变成了宽的"). Verified across
+        # 8 parts (all links + fingers + short servos) that Y is the longest
+        # non-Z axis, so swap is harmful for all of them.
+        #
+        # Chassis boxes and wheels also must NOT swap (documented below).
+        # Conclusion: NO part should swap in modern code. Keep the wheel/
+        # chassis detection only for documentation; default _swap to False.
+        #
+        # - Chassis BOX parts (base_plate, chassis_body, ...): X=width, Y=length
+        #   from make_box/plate_with_holes (already correct). swap would
+        #   double-rotate → "车底盘方向不对".
+        # - Wheels (orient_axis="x"): radially symmetric about X (the axle);
+        #   swapping turns them into 磨盘 (flat discs).
         n_lower = name.lower()
         _is_wheel = n_lower.startswith("wheel_")
         _is_chassis_box = n_lower in (
             "base_plate", "chassis_body", "battery_box", "top_plate",
         ) or n_lower.startswith("standoff_")
-        _swap = not _is_wheel and not _is_chassis_box
+        # Modern raw_scripts emit solver-convention STLs (length on Y), so
+        # swap is never needed. Disabled to stop the wide-link regression.
+        _swap = False
 
         # Try STL first (real geometry)
         stl_loaded = False

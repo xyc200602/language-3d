@@ -85,8 +85,10 @@ class TestAssemblyGenerateToolBridge:
         assert data["export_dir"] == "/tmp/e"
 
     def test_pipeline_failure_falls_back_to_legacy_loop(self, monkeypatch):
-        """When the pipeline raises, the legacy loop must be invoked so the
-        operator still has a working path (AGENTS.md: avoid silent failures)."""
+        """When the pipeline raises, the error propagates (fail-loud) unless
+        LANG3D_LEGACY_FALLBACK=1 is set (audit P0-5: the old silent auto-
+        fallback was a black hole that bypassed all pipeline improvements).
+        With the env var set, the legacy loop runs as before."""
         import lang3d.tools.assembly_generator as ag
         import lang3d.agent.pipeline as pipeline_mod
 
@@ -106,8 +108,16 @@ class TestAssemblyGenerateToolBridge:
             return self._ok_result()
         monkeypatch.setattr(ag, "generate_assembly_with_vlm_loop", legacy_fallback)
 
+        # Without LANG3D_LEGACY_FALLBACK: error propagates (fail-loud).
+        monkeypatch.delenv("LANG3D_LEGACY_FALLBACK", raising=False)
+        with pytest.raises(RuntimeError, match="pipeline boom"):
+            self._make_tool().execute(description="4自由度机械臂")
+        assert legacy_called["n"] == 0, "legacy must NOT run without opt-in"
+
+        # With LANG3D_LEGACY_FALLBACK=1: legacy runs (opt-in fallback).
+        monkeypatch.setenv("LANG3D_LEGACY_FALLBACK", "1")
         out = self._make_tool().execute(description="4自由度机械臂")
-        assert legacy_called["n"] == 1, "legacy loop must run on pipeline failure"
+        assert legacy_called["n"] == 1, "legacy loop must run when opted in"
         data = json.loads(out)
         assert data["passed"] is True
 
@@ -117,9 +127,10 @@ class TestAssemblyGenerateToolBridge:
         assert "description" in out
 
     def test_both_paths_failing_returns_error(self, monkeypatch):
-        """If BOTH the pipeline and the legacy loop raise, the tool returns
-        an error string rather than propagating (the Executor contract is
-        'tool returns str')."""
+        """With LANG3D_LEGACY_FALLBACK=1, if BOTH the pipeline and the legacy
+        loop raise, the tool returns an error string (the Executor contract is
+        'tool returns str'). Without the env var, only the pipeline runs and
+        its error propagates (audit P0-5: fail-loud, not silent fallback)."""
         import lang3d.tools.assembly_generator as ag
         import lang3d.agent.pipeline as pipeline_mod
 
@@ -136,5 +147,12 @@ class TestAssemblyGenerateToolBridge:
             lambda **kw: (_ for _ in ()).throw(RuntimeError("legacy boom")),
         )
 
+        # Without opt-in: pipeline error propagates directly.
+        monkeypatch.delenv("LANG3D_LEGACY_FALLBACK", raising=False)
+        with pytest.raises(RuntimeError, match="pipeline boom"):
+            self._make_tool().execute(description="4自由度机械臂")
+
+        # With opt-in: both fail → legacy boom → tool returns error string.
+        monkeypatch.setenv("LANG3D_LEGACY_FALLBACK", "1")
         out = self._make_tool().execute(description="4自由度机械臂")
         assert out.startswith("Error:")

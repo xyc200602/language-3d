@@ -125,10 +125,16 @@ def _infer_collision_primitive(part: Part) -> tuple[str, tuple[float, ...]] | No
 
 
 def _resolve_axis(joint: Joint) -> list[float]:
-    if joint.axis != "auto" and joint.axis.lower() in _AXIS_MAP:
-        return _AXIS_MAP[joint.axis.lower()]
+    # ``joint.axis`` may be None when the LLM omits it (or for fixed joints
+    # that have no rotational axis). Guard the .lower() so export doesn't
+    # crash on a None axis — fall through to the anchor-based inference,
+    # which always returns a valid vector. Same class of None-guard the
+    # pipeline broadened for Joint string fields (commit on export safety).
+    axis = joint.axis or ""
+    if axis != "auto" and axis.lower() in _AXIS_MAP:
+        return _AXIS_MAP[axis.lower()]
     # Infer from parent_anchor
-    anchor = joint.parent_anchor.lower()
+    anchor = (joint.parent_anchor or "").lower()
     if anchor in ("top", "bottom"):
         return [0.0, 0.0, 1.0]
     elif anchor in ("left", "right"):

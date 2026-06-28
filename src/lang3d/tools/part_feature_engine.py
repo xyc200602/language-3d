@@ -1263,26 +1263,40 @@ import FreeCAD, Part
 
 L, W, H = {length}, {width}, {height}
 web_t = max(3.0, W * 0.15)
-flange_w = (W - web_t) / 2
 
-# --- Build C-channel profile via boolean fuse ---
+# --- Build a structural C-channel spanning the FULL length L ---
+# A real C-channel (like aluminium extrusion / bent sheet) is one continuous
+# profile extruded along its length. Cross-section in X-Z is a "[":
+#   - top flange + bottom flange (horizontal, full width W)
+#   - web (vertical, full height H) on one side connecting them.
+# All three span the FULL length L (the extrusion direction, solver Y).
+#
+# BUG HISTORY: the previous version built flanges of length (L-web_t)/2 and a
+# short central web, producing a part whose total Y-extent was only ~L/2.
+# The solver positioned joints assuming length=L, so adjacent joints sat
+# ~L/2 apart in empty space — every link looked disconnected from its
+# neighbour with a 20-50mm gap (data/runs/4dof_arm STL bbox analysis showed
+# shoulder_link_1 solver L=120 vs actual STL L=62). Fix: flanges + web all
+# span the full length L so the STL bbox matches the solver's assumption.
 # makeBox(X, Y, Z) = (width, length, height) per solver convention.
-# Top flange (X=width, Y=length/2 - web/2, Z=web_t at top)
-top = Part.makeBox(W, (L - web_t) / 2, web_t)
-top.translate(FreeCAD.Vector(0, 0, H - web_t))
-# Bottom flange
-bot = Part.makeBox(W, (L - web_t) / 2, web_t)
-# Web (vertical center, full length)
-web = Part.makeBox(W, web_t, H)
-web.translate(FreeCAD.Vector(0, (L - web_t) / 2, 0))
 
+# Top flange: full width + length, thin, at the top.
+top = Part.makeBox(W, L, web_t)
+top.translate(FreeCAD.Vector(0, 0, H - web_t))
+# Bottom flange: full width + length, thin, at the bottom.
+bot = Part.makeBox(W, L, web_t)
+# Web: vertical plate connecting top+bottom along the full length, on the
+# -X side (forms the "[" opening toward +X so the joint housings on +X
+# have clearance). Full height H, full length L.
+web = Part.makeBox(web_t, L, H)
 body = top.fuse(bot).fuse(web)
 
-# --- Lightening pocket ---
-pocket_l = L * 0.45
-pocket_h = max(H - 2*web_t - 4, 2)
+# --- Lightening pocket (cut a window in the +X-facing web gap to reduce
+# weight while keeping the structural flanges + web intact) ---
+pocket_l = L * 0.55
+pocket_h = max(H - 2 * web_t - 4, 2)
 pocket = Part.makeBox(W, pocket_l, pocket_h)
-pocket.translate(FreeCAD.Vector(0, (L - pocket_l)/2, web_t + 2))
+pocket.translate(FreeCAD.Vector(0, (L - pocket_l) / 2, web_t + 2))
 body = body.cut(pocket)
 
 # --- M3 mounting holes at both ends ---
@@ -1292,11 +1306,13 @@ for y_pos in [L * 0.1, L * 0.9]:
         h_cyl.translate(FreeCAD.Vector(x_off, y_pos, -1))
         body = body.cut(h_cyl)
 
-# --- Fillet small edges ---
+# --- Fillet small edges (cosmetic; guarded so a non-manifold edge never
+# aborts the whole STL export). Per AGENTS.md §1.1, do NOT silently pass —
+# print a WARN so a consistently-failing fillet is visible in the run log. ---
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < W * 0.6][:40])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN arm-link fillet skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1378,11 +1394,11 @@ groove_inner.translate(FreeCAD.Vector(0, 0, flange_h - 1))
 groove = groove_outer.cut(groove_inner)
 body = body.cut(groove)
 
-# --- Fillet ---
+# --- Fillet (guarded; print WARN on failure per AGENTS.md §1.1) ---
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < od * 0.3][:30])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN arm-joint fillet skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1463,12 +1479,12 @@ wire = Part.makeBox(8, 4, 5)
 wire.translate(FreeCAD.Vector(W * 0.4, -1, H * 0.2))
 body = body.cut(wire)
 
-# --- Decorative fillet on front edges ---
+# --- Decorative fillet on front edges (guarded; WARN on failure) ---
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges
                                   if _e.Length < W * 0.3][:25])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN gripper-base fillet skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1560,12 +1576,12 @@ for x_off in [base_l * 0.3, base_l * 0.7]:
         h_cyl.translate(FreeCAD.Vector(x_off, y_off, -1))
         body = body.cut(h_cyl)
 
-# --- Chamfer finger tips for grip ---
+# --- Chamfer finger tips for grip (guarded; WARN on failure) ---
 try:
     body = body.makeChamfer(0.5, [_e for _e in body.Edges
                                    if _e.Length < finger_w * 2][:30])
-except Exception:
-    pass
+except Exception as _e:
+    print(f"WARN finger chamfer skipped: {{_e}}")
 
 obj = doc.addObject("Part::Feature", "{name}_final")
 obj.Shape = body
@@ -1595,19 +1611,26 @@ def _gripper_finger_ops(name: str, d: dict) -> list[dict]:
     tip_dir = 1.0 if is_left else -1.0
 
     # Solver convention: makeBox(X=width, Y=length, Z=height).
-    # The finger's main bar extends along Y (length = forward direction).
-    # The L-tip hooks sideways along X (width direction).
+    # The finger's main bar extends along -Y (FRONT, the reach direction —
+    # the arm chain reaches toward -Y/front, so the gripper fingers must
+    # also point -Y to grip objects in front of the robot). The L-tip hooks
+    # sideways along X (width direction) at the front (-Y) end.
+    # NOTE: a previous version built the bar at +Y (0..+L) with the tip at
+    # the +Y end, which pointed the fingers BACKWARD (+Y = back anchor) —
+    # the "夹爪前后反了" defect. Flip to -Y so the tip leads into the
+    # forward workspace.
     script = f'''
 import FreeCAD, Part, math
 
 L, W, H = {length}, {width}, {height}
 tip_dir = {tip_dir}
 
-# --- Main bar (X=width, Y=length, Z=height) ---
+# --- Main bar extends toward -Y (front). makeBox then mirror about Y=0. ---
 bar = Part.makeBox(W, L, H)
+# Shift so the bar spans Y = -L .. 0 (tip end at -L, rail end at 0).
+bar.translate(FreeCAD.Vector(0, -L, 0))
 
-# --- Rail tab on back (fits into base rail groove) ---
-# Tab protrudes in -Y (backward, short) and spans X (width).
+# --- Rail tab on back (fits into base rail groove), at the +Y (rear) end. ---
 rail_tab_l = max(3.0, L * 0.1)
 rail_tab_w = max(3.0, W * 0.8)
 rail_tab = Part.makeBox(rail_tab_w, rail_tab_l, H * 0.6)
@@ -1615,16 +1638,15 @@ rail_tab.translate(FreeCAD.Vector((W - rail_tab_w) / 2,
                     -rail_tab_l * 0.5, H * 0.2))
 bar = bar.fuse(rail_tab)
 
-# --- L-shaped tip at front end (hooks inward along X) ---
+# --- L-shaped tip at front end (Y = -L .. -L+tip_l), hooks inward along X. ---
 tip_l = L * 0.25
 tip_w = max(4.0, W * 0.4)
-# Tip extends sideways (X direction) at the front (Y = L - tip_l).
 if tip_dir > 0:
     tip_x = W  # extend toward +X
 else:
     tip_x = -tip_w  # extend toward -X
 tip = Part.makeBox(tip_w, tip_l, H)
-tip.translate(FreeCAD.Vector(tip_x, L - tip_l, 0))
+tip.translate(FreeCAD.Vector(tip_x, -L, 0))
 bar = bar.fuse(tip)
 
 # --- Grip pad ribs (grooves on inner face of tip) ---
@@ -1640,7 +1662,7 @@ rib_spacing = tip_w / (rib_count + 1)
 for i in range(rib_count):
     rib_x = tip_x + rib_spacing * (i + 1) if tip_dir > 0 else tip_x + tip_w - rib_spacing * (i + 1)
     rib = Part.makeBox(1.0, tip_l * 0.8, 1.5)
-    rib.translate(FreeCAD.Vector(rib_x - 0.5, L - tip_l * 0.9, 1.0))
+    rib.translate(FreeCAD.Vector(rib_x - 0.5, -L + tip_l * 0.1, 1.0))
     bar = bar.cut(rib)
 
 # --- NO chamfer on the finger body ---

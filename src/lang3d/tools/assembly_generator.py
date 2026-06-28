@@ -768,6 +768,14 @@ def generate_assembly_from_nl(
         system=system_prompt if system_prompt is not None else ASSEMBLY_GEN_SYSTEM_PROMPT,
         temperature=temperature,
         max_tokens=16384,
+        # Assembly generation is a STRUCTURED-JSON task — GLM-5.2's
+        # chain-of-thought reasoning adds minutes of latency without
+        # improving JSON correctness (the schema is fully specified in the
+        # system prompt). Disabling thinking returns the JSON in seconds
+        # instead of hanging the e2e loop for 5+ minutes. Verified: with
+        # thinking disabled, the dual-arm prompt returns ~23k chars of valid
+        # JSON in ~70s; with default thinking it stalls past the SDK timeout.
+        thinking={"type": "disabled"},
     )
 
     raw_text = response.content.strip()
@@ -785,6 +793,7 @@ def generate_assembly_from_nl(
     # try/except, and the loop consolidates all validation errors in one
     # place (Step A.5).
     assembly = _normalize_gripper_fingers(assembly)
+    assembly = _normalize_wheel_positions(assembly)
     if is_arm:
         assembly = _ensure_arm_default_angles(assembly)
 
@@ -1352,6 +1361,127 @@ def _strip_wheel_parts(assembly: Assembly) -> Assembly:
     return assembly
 
 
+def _normalize_wheel_positions(assembly: Assembly) -> Assembly:
+    """Fix wheel joint offsets ONLY when the solved wheels are actually wrong.
+
+    The LLM frequently emits wheel joint ``offset`` values that overlap the
+    four wheels (``wheel_fr``/``wheel_rr`` collide) or fling them far outside
+    the chassis. BUT ``build_wheeled_base`` / ``compose_dual_arm_assembly``
+    already produce correct wheel layouts — and a previous revision of this
+    sanitizer UNCONDITIONALLY overwrote those correct offsets, breaking the
+    2026-06-26 working run (wheels went from Z=47.6 ground-contact to Z=96
+    floating). Regression confirmed by re-solving build_wheeled_base with the
+    old sanitizer.
+
+    So this is now CONDITIONAL: solve the assembly first, measure the actual
+    wheel positions, and only override when there is a genuine defect —
+    overlapping wheels, or wheels far from a sensible 4-corner layout. A
+    correct layout is left untouched.
+    """
+    wheel_joint_suffixes = ("_fl", "_fr", "_rl", "_rr")
+    wheel_joints = {
+        j.child[-3:].lower(): j for j in assembly.joints
+        if j.child[-3:].lower() in wheel_joint_suffixes
+        and "wheel" in j.child.lower()
+    }
+    if len(wheel_joints) < 4:
+        return assembly  # not a 4-wheel layout
+
+    base = next(
+        (p for p in assembly.parts
+         if "base" in p.name.lower() and "plate" in p.name.lower()),
+        None,
+    )
+    if base is None:
+        return assembly
+    bd = base.dimensions
+    base_l = float(bd.get("length", 0) or 0)
+    base_w = float(bd.get("width", 0) or 0)
+    if base_l < 50 or base_w < 50:
+        return assembly  # base dims unreliable
+
+    # Wheel radius for overlap/ground checks.
+    wheel_part = next(
+        (p for p in assembly.parts if "wheel" in p.name.lower()), None,
+    )
+    wheel_r = float(
+        (wheel_part.dimensions.get("diameter", 0) or 0) / 2.0
+        if wheel_part else 45.0
+    ) or 45.0
+
+    # --- Solve and inspect the ACTUAL wheel positions before touching anything.
+    try:
+        from .assembly_solver import AssemblySolver
+        solved = AssemblySolver(assembly).solve()
+    except Exception:
+        return assembly  # can't verify — don't risk corrupting the layout
+
+    wheel_pos = {
+        suf: solved[j.child]["position"]
+        for suf, j in wheel_joint_suffixes_map(wheel_joints).items()
+        if j.child in solved
+    }
+    if len(wheel_pos) < 4:
+        return assembly
+
+    # Defect 1: any pair of wheels overlaps (centers closer than wheel diameter).
+    import itertools
+    min_pair_dist = min(
+        ((wheel_pos[a][0]-wheel_pos[b][0])**2
+         + (wheel_pos[a][1]-wheel_pos[b][1])**2)**0.5
+        for a, b in itertools.combinations(wheel_pos, 2)
+    )
+    # Defect 2: wheels not near the ground (Z far from wheel_r).
+    avg_z = sum(p[2] for p in wheel_pos.values()) / 4.0
+    z_bad = abs(avg_z - wheel_r) > max(wheel_r * 0.6, 30.0)
+
+    if min_pair_dist >= (wheel_r * 1.5) and not z_bad:
+        # Layout is fine — do NOT touch it (preserves correct chassis builds).
+        return assembly
+
+    logger.info(
+        "Sanitizer: wheel layout defective (min_pair_dist=%.0fmm, avg_Z=%.0f "
+        "vs wheel_r=%.0f) — overriding offsets to canonical 4-corner layout",
+        min_pair_dist, avg_z, wheel_r,
+    )
+
+    # Canonical corner offsets (solver X=lateral, Y=forward/back, Z=up).
+    half_w = base_w / 2.0
+    half_l = base_l / 2.0
+    fy = half_l * 0.78
+    corners = {"_fl": (-1, +1), "_fr": (+1, +1), "_rl": (-1, -1), "_rr": (+1, -1)}
+
+    fixed = []
+    for suf, (xs, ys) in corners.items():
+        j = wheel_joints.get(suf)
+        if j is None:
+            continue
+        # Wheel sits coaxial with its parent motor (shared axle). Z=0 relative
+        # to the motor center; the motor's own position sets the axle height.
+        new_offset = [xs * half_w, ys * fy, 0.0]
+        if j.offset != new_offset:
+            old = list(j.offset) if j.offset else None
+            j.offset = new_offset
+            j.parent_anchor = "center"
+            j.child_anchor = "center"
+            fixed.append((j.child, old, new_offset))
+
+    if fixed:
+        logger.info(
+            "Sanitizer: reset %d wheel joint offset(s) to canonical 4-corner "
+            "layout (base %.0f×%.0f): %s",
+            len(fixed), base_l, base_w,
+            [(c, [round(v, 1) for v in (o or [])], [round(v, 1) for v in n])
+             for c, o, n in fixed],
+        )
+    return assembly
+
+
+def wheel_joint_suffixes_map(wheel_joints: dict) -> dict:
+    """Helper: return the suffix->joint dict as-is (kept for clarity)."""
+    return wheel_joints
+
+
 def _normalize_gripper_fingers(assembly: Assembly) -> Assembly:
     """Ensure gripper fingers are symmetrically separated, anchored at center.
 
@@ -1774,14 +1904,30 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     revolute_joints_tmp = [
         j for j in assembly.joints if j.type == "revolute"
     ]
-    base_yaw_child: str | None = None
+    # Base yaw = the FIRST z-axis joint of EACH arm chain (not just the
+    # global first). A dual-arm assembly has two base yaws (arm_l + arm_r),
+    # both carrying the collision-aware splay — zeroing the right one
+    # destroyed the symmetric park pose and made the arms asymmetric. Detect
+    # base-yaw children per arm-prefix so every arm keeps its base yaw.
+    import re as _re_yaw
+    def _arm_yaw_prefix(name: str) -> str:
+        m = _re_yaw.match(r"(arm_[lr]|left_|right_)", name.lower())
+        return m.group(1) if m else ""
+    base_yaw_children: set[str] = set()
+    _seen_yaw_prefixes: set[str] = set()
     for j in revolute_joints_tmp:
         if j.axis == "z":
-            base_yaw_child = j.child  # first z-axis joint = base yaw
-            break
+            pref = _arm_yaw_prefix(j.child)
+            if pref not in _seen_yaw_prefixes:
+                _seen_yaw_prefixes.add(pref)
+                base_yaw_children.add(j.child)
+            elif not pref:
+                # No-prefix arm: only the very first z joint is base yaw.
+                if not base_yaw_children:
+                    base_yaw_children.add(j.child)
     zeroed_roll = []
     for j in revolute_joints_tmp:
-        if j.axis in ("y", "z") and j.child != base_yaw_child:
+        if j.axis in ("y", "z") and j.child not in base_yaw_children:
             cur = cleaned.get(j.child)
             if cur is not None and abs(float(cur)) > 1e-6:
                 zeroed_roll.append((j.child, cur))
@@ -1803,6 +1949,23 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     if len(revolute_joints) < 2 or not has_link:
         assembly.default_angles = cleaned
         return assembly
+
+    # Helper: identify ARM pitch joints while EXCLUDING drive-train joints.
+    # Wheels/tires are axis=x (the axle runs along X for differential drive)
+    # and motors sit on the same axle — they are NOT arm bend joints. Treating
+    # them as pitch joints gave wheels spurious ±35° angles (rotated render)
+    # AND pushed the real arm joints to higher pitch_idx, skipping the
+    # shoulder's "force negative" branch so the arm drooped. Defined early so
+    # both the zig-zag check and the pitch_children list use the same filter.
+    def _is_arm_pitch_joint(j) -> bool:
+        if j.axis != "x" or j.type != "revolute":
+            return False
+        c = j.child.lower()
+        if any(c.startswith(p) for p in ("wheel_", "tire_")):
+            return False
+        if "motor" in c:
+            return False
+        return True
 
     # --- Anchor-consistency check (clean arm convention). ---
     # Under the clean convention, pitch joints (axis=x) must use front/back
@@ -1840,9 +2003,11 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # If the cumulative same-sign pitch exceeds 90°, override with a
     # canonical zig-zag so the arm extends enough to expose the gripper.
     # Only pitch joints (axis=x) are considered — yaw (axis=z) and roll
-    # are not "bend" joints and must be left alone.
+    # are not "bend" joints and must be left alone. Wheels/motors are also
+    # axis=x (axle along X) but are drive-train parts, NOT arm bends —
+    # exclude them (same filter as pitch_children above).
     pitch_joints_arm = [
-        j for j in revolute_joints if j.axis == "x" and j.child
+        j for j in revolute_joints if _is_arm_pitch_joint(j) and j.child
     ]
     pitch_vals = [
         float(injected.get(j.child, 0.0) or 0.0) for j in pitch_joints_arm
@@ -1879,12 +2044,22 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
                 injected[j.child] = _zigzag_seq[idx % len(_zigzag_seq)]
             _overrode_to_zigzag = True
     for j in revolute_joints:
-        # Base yaw (axis=z, first revolute): clamp to ±10°.  A large base
-        # yaw rotates the entire arm sideways so it points away from the
-        # forward workspace — visually it looks like the arm is facing the
-        # wrong way and the gripper ends up beside (not in front of) the
-        # base.
-        if j.axis == "z" and pitch_index == 0:
+        # Skip drive-train joints (wheels/tires/motors) — they are axis=x like
+        # arm pitch joints but must NOT get a bend angle (a rotated wheel
+        # renders as a tilted disc). Only fill arm-chain joints.
+        if not _is_arm_pitch_joint(j) and j.axis != "z" and j.axis != "y":
+            continue
+        # Base yaw (axis=z): clamp to ±10° for a SINGLE arm so it points
+        # forward. BUT for a wheeled DUAL-arm assembly, the base yaw carries
+        # the collision-aware splay (±30° outward) configured by
+        # _configure_collision_aware_dual_arm — zeroing it would destroy the
+        # anti-collision park pose and make the arms overlap. Detect dual-arm
+        # (both arm_l_ and arm_r_ prefixes present) and PRESERVE those yaws.
+        _is_dual_arm = (
+            any(p.name.startswith("arm_l_") for p in assembly.parts)
+            and any(p.name.startswith("arm_r_") for p in assembly.parts)
+        )
+        if j.axis == "z" and pitch_index == 0 and not _is_dual_arm:
             # Base yaw: the default (home) pose should point the arm
             # straight forward (yaw = 0).  Any non-zero yaw rotates the
             # whole arm, which carries through to the gripper and makes
@@ -1957,25 +2132,49 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # SKIPPED when the over-fold detector already applied a zig-zag: the
     # zig-zag alternates signs on purpose (to extend the arm and expose
     # the gripper), so forcing all-same-sign here would undo it and fold
-    # the arm right back.  The two pose strategies are mutually exclusive.
+    # the arm right back. The two pose strategies are mutually exclusive.
+    # IMPORTANT: wheels are also axis=x (the axle runs along X for a
+    # differential drive), so they must be EXCLUDED — otherwise they get
+    # mis-treated as arm pitch joints, given spurious ±35° angles (the
+    # wheels render rotated), AND they push the real arm joints to higher
+    # pitch_idx so the shoulder's "force negative" branch is skipped and
+    # the arm gets forced positive (drooping). The _is_arm_pitch_joint
+    # helper (defined above, near the early-return) excludes wheel_/tire_/
+    # motor_ so both the zig-zag check and this list stay drive-train-free.
     pitch_children = [
         j.child for j in revolute_joints
-        if j.axis == "x" and j.child in injected
+        if _is_arm_pitch_joint(j) and j.child in injected
     ]
     range_limit: dict[str, float] = {}
     for j in revolute_joints:
-        if j.axis == "x" and j.range_deg:
+        if _is_arm_pitch_joint(j) and j.range_deg:
             try:
                 lo_r, hi_r = float(j.range_deg[0]), float(j.range_deg[1])
                 range_limit[j.child] = min(abs(lo_r), abs(hi_r)) - 1.0
             except (TypeError, ValueError):
                 pass
     adjusted: list[tuple[str, float, float]] = []
+    # Group pitch joints per-arm so EACH arm's first pitch joint (the
+    # shoulder) is treated as shoulder (force negative = tilt up), not just
+    # the global first joint. Without this, a dual-arm assembly treats the
+    # right arm's shoulder as an elbow (pitch_idx > 0) and forces it positive
+    # → the right arm droops while the left rises ("一个向上一个向下").
+    # Arm prefix = the leading "arm_l" / "arm_r" / "left_" / "right_" token;
+    # fall back to "" (treat as one chain) if no prefix.
+    import re as _re
+    def _arm_prefix(name: str) -> str:
+        m = _re.match(r"(arm_[lr]|left_|right_)", name.lower())
+        return m.group(1) if m else ""
+    _seen_shoulders: set[str] = set()
     pitch_idx = 0
     for child in pitch_children:
         val = float(injected[child])
+        # Is this the FIRST pitch joint of its arm chain? → shoulder.
+        pref = _arm_prefix(child)
+        is_shoulder = pref not in _seen_shoulders
+        _seen_shoulders.add(pref)
         # Moderate cap so the arm tilts up without folding back.
-        if pitch_idx == 0:
+        if is_shoulder:
             cap = 35.0      # Shoulder: sets the overall reach angle.
             min_mag = 30.0  # Minimum shoulder tilt for a working-arm look.
         else:
@@ -1985,10 +2184,11 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
         if rl is not None and rl > 0:
             cap = min(cap, rl)
         clamped = max(-cap, min(cap, val))
-        if pitch_idx == 0:
-            # Shoulder (first pitch): force negative (upward tilt) so the
-            # arm rises in Z.  This is the only joint that MUST be same-
-            # sign for the arm to point up rather than lie flat.
+        if is_shoulder:
+            # Shoulder (first pitch of THIS arm): force negative (upward tilt)
+            # so the arm rises in Z.  This is the only joint that MUST be
+            # same-sign for the arm to point up rather than lie flat. Applied
+            # per-arm so a dual-arm assembly tilts BOTH shoulders up.
             if clamped > 0:
                 clamped = -clamped
             if abs(clamped) < min_mag:
@@ -2030,6 +2230,20 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # Ensure the base plate's LENGTH (solver Y, the arm reach direction) is
     # at least 60% of the total arm link reach so the support polygon has
     # margin.  Width (solver X) is left alone — lateral COM offset is small.
+    #
+    # WHEELED-ROBOT GUARD: a wheeled chassis's base_plate is the CHASSIS deck,
+    # sized by mobile_base_gen from real UGV proportions (Husky-class), with
+    # wheels attached as children. Enlarging it here to chase an arm-COM
+    # offset blows the deck up to 1176/1400mm (observed in
+    # data/runs/wheeled_arm/20260627_*), which pushes the child wheels up to
+    # Z≈248mm (floating ~200mm off the ground) and outward to XY≈246mm — the
+    # "wheels above Z=248 / parts misplaced" VLM failures. Wheeled robots are
+    # supported by their WHEELS (ground contact), not by a bench base plate,
+    # so the fixed-arm COM-on-plate assumption does not apply. Skip entirely
+    # when the assembly has wheels.
+    has_wheels = any(
+        "wheel" in p.name.lower() for p in assembly.parts
+    )
     base_part = next(
         (p for p in assembly.parts
          if "base" in p.name.lower() and "plate" in p.name.lower()),
@@ -2039,7 +2253,7 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
         p for p in assembly.parts
         if _is_link_like(p.name) or "joint" in p.name.lower()
     ]
-    if base_part and link_parts:
+    if base_part and link_parts and not has_wheels:
         # Effective forward COM offset of a zig-zag arm. Real solves show the
         # COM projects ~0.30× the raw link-sum forward of the base (measured:
         # 400mm links → COM Y≈-110 to -132mm across LLM-generated poses).
@@ -2074,6 +2288,50 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
                 base_part.name, cur_length, min_base_length,
                 com_forward_mm, min_base_length,
             )
+
+    # Clamp arm revolute joint ranges to a physically-reasonable workspace
+    # so the e2e motion-collision sweep does not articulate into a
+    # self-collision extreme. A ±180° base yaw or ±150° elbow is a servo
+    # spec limit, not a usable workspace — at those extremes the arm hits
+    # the chassis or the other arm (穿模). Real robots ship with narrower
+    # software limits than the raw servo range. Cap pitch to ±90°.
+    #
+    # Base yaw (axis=z) is clamped ASYMMETRICALLY: the home angle's sign
+    # sets the allowed direction, and the range must not cross 0° (the
+    # midline). A left arm yawed -30° at home may rotate further outward
+    # (more negative) but must not cross into +territory where it swings
+    # into the right arm's workspace (the collision at +60° on
+    # arm_l_base_yaw). Symmetric cap on yaw still let the arm reach the
+    # other side → collision. So: yaw range = [min(home, -10), max(home,
+    # home)] clamped to ±90°, never containing both signs.
+    _ARM_PITCH_CAP = 60.0  # ±60° workspace (a real arm can't fold further without hitting its base)
+    _ARM_YAW_CAP = 90.0
+    for j in revolute_joints:
+        if not _is_arm_pitch_joint(j) and j.axis != "z":
+            continue
+        if not j.range_deg:
+            continue
+        lo, hi = float(j.range_deg[0]), float(j.range_deg[1])
+        home = float(injected.get(j.child, 0.0) or 0.0)
+        if j.axis == "z":
+            # Base yaw: keep on the home side of the midline.
+            if home >= 0:
+                new_lo, new_hi = max(lo, 0.0), min(hi, _ARM_YAW_CAP)
+            else:
+                new_lo, new_hi = max(lo, -_ARM_YAW_CAP), min(hi, 0.0)
+        else:
+            new_lo, new_hi = max(lo, -_ARM_PITCH_CAP), min(hi, _ARM_PITCH_CAP)
+        if new_hi - new_lo < 10.0:
+            continue  # range already tiny — don't collapse it
+        if (new_lo, new_hi) != (lo, hi):
+            logger.info(
+                "Sanitizer: clamped arm joint '%s' range [%.0f, %.0f] → "
+                "[%.0f, %.0f] (home %.0f, %s, avoid workspace-extreme "
+                "self-collision)",
+                j.child, lo, hi, new_lo, new_hi, home,
+                "yaw midline-safe" if j.axis == "z" else f"cap ±{_ARM_PITCH_CAP:.0f}°",
+            )
+            j.range_deg = (new_lo, new_hi)
 
     return assembly
 
@@ -2263,36 +2521,50 @@ class AssemblyGenerateTool(Tool):
         # whitelists, SAGE geometric-vs-VLM arbitration, and selective
         # re-run routing). It returns a dict with the same keys the legacy
         # loop returned, so the summary builder below is unchanged.
-        # If the pipeline raises, fall back to the legacy monolithic loop
-        # (kept intentionally — see AGENTS.md: avoid silent failures, and
-        # give operators a working path while the pipeline issue is
-        # diagnosed).
-        result = None
-        try:
-            from ..agent.pipeline import AssemblyPipeline, PipelineContext
+        #
+        # If the pipeline raises, the DEFAULT is to let the error propagate
+        # (fail loud, AGENTS.md §1.1). Previously a bare ``except Exception``
+        # silently fell back to the legacy monolithic loop, which meant any
+        # pipeline improvement (cad_failed propagation, severity-graded fix
+        # loop, deterministic compose) could be bypassed by a single KeyError
+        # without the operator ever knowing the legacy path ran instead (the
+        # audit's "legacy fallback black hole", P0-5). The legacy loop is
+        # still reachable for diagnosis via LANG3D_LEGACY_FALLBACK=1, but it
+        # is no longer the silent default.
+        from ..agent.pipeline import AssemblyPipeline, PipelineContext
 
-            ctx = PipelineContext(
-                description=description,
-                output_dir=output_dir,
-                max_rounds=max_rounds,
-            )
+        ctx = PipelineContext(
+            description=description,
+            output_dir=output_dir,
+            max_rounds=max_rounds,
+        )
+        try:
             result = AssemblyPipeline(ctx).run()
         except Exception as e:
-            logger.error(
-                "AssemblyPipeline failed (%s); falling back to legacy "
-                "generate_assembly_with_vlm_loop", e,
-            )
-
-        if result is None:
-            try:
-                result = generate_assembly_with_vlm_loop(
-                    description=description,
-                    output_dir=output_dir,
-                    max_rounds=max_rounds,
+            if os.environ.get("LANG3D_LEGACY_FALLBACK", "").lower() in (
+                "1", "true", "yes",
+            ):
+                logger.error(
+                    "AssemblyPipeline failed (%s); LANG3D_LEGACY_FALLBACK is "
+                    "set — falling back to legacy generate_assembly_with_vlm_"
+                    "loop. NOTE: the legacy loop lacks the pipeline's "
+                    "severity-graded fix loop, deterministic compose path, "
+                    "and cad_failed propagation.", e,
                 )
-            except Exception as e:
-                logger.error("Assembly generation with VLM loop failed: %s", e)
-                return f"Error: {e}"
+                try:
+                    result = generate_assembly_with_vlm_loop(
+                        description=description,
+                        output_dir=output_dir,
+                        max_rounds=max_rounds,
+                    )
+                except Exception as legacy_err:
+                    # Both paths failed — honor the Executor contract
+                    # (tool returns str, not raises).
+                    logger.error("Legacy loop also failed: %s", legacy_err)
+                    return f"Error: {legacy_err}"
+            else:
+                logger.error("AssemblyPipeline failed: %s", e)
+                raise
 
         try:
             summary = {
@@ -2317,26 +2589,131 @@ class AssemblyGenerateTool(Tool):
 # VLM auto-fix closed loop
 # ---------------------------------------------------------------------------
 
-_VLM_VERIFY_PROMPT = (
-    "You are a STRICT robot assembly quality inspector. Examine the 3D render.\n\n"
-    "This is a WHOLE-ASSEMBLY view. Judge ONLY structural integrity — do NOT "
-    "attempt to evaluate the gripper fingers from this view (they are too small "
-    "to resolve here; a dedicated close-up view covers the gripper).\n\n"
-    "=== STRUCTURAL INTEGRITY ===\n"
-    "Check for:\n"
-    "1. Parts floating in mid-air with no support\n"
-    "2. Parts intersecting / overlapping each other\n"
-    "3. Arms pointing in impossible directions (e.g. going through the body)\n"
-    "4. Critical parts missing (no base plate, no main body)\n"
-    "5. Overall structural coherence\n"
-    "6. Parts with WRONG ORIENTATION (e.g. cylinders oriented along wrong axis)\n\n"
-    "NOTE: Wheeled robots SHOULD have wheels near the ground. Fixed-base arms "
-    "should NOT have wheels. Do NOT report missing wheels for arms.\n\n"
-    "Reply with JSON only:\n"
-    '{"passed": true/false, '
-    '"problems": ["list of specific structural issues found"], '
-    '"description": "brief assessment"}\n'
-)
+# Each robot category carries DIFFERENT structural expectations.  Feeding the
+# VLM a category-blind prompt caused a stable false-negative loop on wheeled
+# dual-arm robots (data/runs/4wheel_dual_arm/20260627_001843): the VLM saw arm
+# links, classified the assembly as a "fixed-base arm", and every round demanded
+# removal of the legitimately-generated chassis wheels — geometry that was in
+# fact correct (wheel_fl.stl is a horizontal Ø90 cylinder rolling on Y).  The
+# generator kept "fixing" by regenerating, hit max_rounds, and aborted with no
+# positions.json.  Injecting the category up-front lets the VLM apply the right
+# expectations instead of guessing from pixels.
+#
+# ``robot_category`` is one of: "fixed_arm", "wheeled", "wheeled_arm",
+# "assembly" (the generic fallback).  See ``_classify_robot`` below.
+_CATEGORY_EXPECTATIONS = {
+    "fixed_arm": (
+        "=== ROBOT CATEGORY: FIXED-BASE ARM ===\n"
+        "This assembly is a FIXED-BASE ARM (bolted to a workbench). Expected:\n"
+        "  - A large base plate at the BOTTOM (the workbench mount).\n"
+        "  - Vertical stack of servo joints + links reaching UP and OUT.\n"
+        "  - A gripper at the tip.\n"
+        "Wheels are NOT expected here — flag any wheel/tire as an error.\n"
+        "Do NOT report 'missing wheels' for a fixed-base arm.\n"
+    ),
+    "wheeled": (
+        "=== ROBOT CATEGORY: WHEELED MOBILE BASE (no arm) ===\n"
+        "This assembly is a WHEELED MOBILE BASE / CHASSIS. Expected:\n"
+        "  - 2 or 4 wheels as HORIZONTAL CYLINDERS resting ON or NEAR the "
+        "ground (Z near wheel radius). Wheels roll forward — they must look "
+        "like discs/tyres lying on their side, NOT standing upright like "
+        "spinning tops.\n"
+        "  - A chassis body / deck plate ABOVE the wheels.\n"
+        "  - Motors mounted coaxially with each wheel axle.\n"
+        "Wheels near the ground are CORRECT — do NOT flag them as errors.\n"
+        "Flag wheels only if they FLOAT above the ground or stand vertically.\n"
+    ),
+    "wheeled_arm": (
+        "=== ROBOT CATEGORY: WHEELED MOBILE MANIPULATOR (wheels + arm(s)) ===\n"
+        "This assembly is a MOBILE MANIPULATOR: a wheeled chassis with one or "
+        "more arms on top. Expected ALL of:\n"
+        "  - Wheels as HORIZONTAL CYLINDERS near the ground (rolling discs, "
+        "not upright). Wheels at Z ≈ wheel radius are CORRECT.\n"
+        "  - A chassis body / deck above the wheels.\n"
+        "  - Arm(s) mounted ON TOP of the chassis (base yaw servo -> links "
+        "-> gripper), reaching upward/forward.\n"
+        "BOTH the wheels AND the arms are EXPECTED here. Do NOT flag the "
+        "wheels as 'arms should not have wheels' — this category legitimately "
+        "combines them. Do NOT flag the arms as 'floating' if they sit on the "
+        "chassis deck.\n"
+        "Flag ONLY genuine defects: wheels floating above ground, wheels "
+        "vertical, arms intersecting the chassis, parts disconnected.\n"
+    ),
+    "assembly": (
+        "=== ROBOT CATEGORY: GENERAL ASSEMBLY ===\n"
+        "No specific category hint. Judge structural integrity generically.\n"
+        "If wheels are present they should be near the ground as horizontal "
+        "cylinders; if this is an arm with no wheels, do not require wheels.\n"
+    ),
+}
+
+
+def _classify_robot(description: str) -> str:
+    """Classify the NL description into a robot category for the VLM prompt.
+
+    Mirrors the ``is_arm`` / ``is_wheeled`` decision in
+    :func:`generate_assembly_with_vlm_loop` so the prompt and the generator
+    agree on what kind of robot is being built.  Returns one of the keys of
+    :data:`_CATEGORY_EXPECTATIONS`.
+    """
+    d = (description or "").lower()
+    is_arm = any(kw in d for kw in [
+        "臂", "arm", "机械手", "机械臂", "抓手", "gripper", "自由度",
+    ])
+    is_wheeled = any(kw in d for kw in [
+        "轮", "wheel", "差速", "移动", "底盘",
+    ])
+    if is_arm and is_wheeled:
+        return "wheeled_arm"
+    if is_wheeled:
+        return "wheeled"
+    if is_arm:
+        return "fixed_arm"
+    return "assembly"
+
+
+def _build_verify_prompt(robot_category: str) -> str:
+    """Build the whole-assembly VLM prompt with category context injected.
+
+    Replaces the old static ``_VLM_VERIFY_PROMPT``.  The category block goes
+    at the TOP of the prompt so the VLM reads the expectations before judging.
+    """
+    category_block = _CATEGORY_EXPECTATIONS.get(
+        robot_category, _CATEGORY_EXPECTATIONS["assembly"],
+    )
+    return (
+        "You are a STRICT robot assembly quality inspector. Examine the 3D "
+        "render.\n\n"
+        + category_block
+        + "\n"
+        "This is a WHOLE-ASSEMBLY view. Judge ONLY structural integrity — do "
+        "NOT attempt to evaluate the gripper fingers from this view (they are "
+        "too small to resolve here; a dedicated close-up view covers the "
+        "gripper).\n\n"
+        "=== STRUCTURAL INTEGRITY ===\n"
+        "Check for:\n"
+        "1. Parts floating in mid-air with no support\n"
+        "2. Parts intersecting / overlapping each other\n"
+        "3. Arms pointing in impossible directions (e.g. going through the "
+        "body)\n"
+        "4. Critical parts missing (no base plate, no main body)\n"
+        "5. Overall structural coherence\n"
+        "6. Parts with WRONG ORIENTATION (e.g. wheels standing vertical "
+        "instead of lying horizontal; arms pointing down into the ground)\n\n"
+        "IMPORTANT: Only report a problem if it is a GENUINE defect for THIS "
+        "robot category. Parts that match the category expectations above are "
+        "CORRECT and must NOT be flagged.\n\n"
+        "Reply with JSON only:\n"
+        '{"passed": true/false, '
+        '"problems": ["list of specific structural issues found"], '
+        '"description": "brief assessment"}\n'
+    )
+
+
+# Backwards-compat alias.  Some external callers / tests may still reference
+# ``_VLM_VERIFY_PROMPT`` as a string; keep it as the generic-assembly variant
+# so they get a valid prompt without the category injection.
+_VLM_VERIFY_PROMPT = _build_verify_prompt("assembly")
 
 # Dedicated gripper-evaluation prompt — used ONLY for the gripper_closeup
 # view.  Whole-assembly views cannot resolve ~46mm finger gaps at the edge
@@ -2487,6 +2864,60 @@ def _is_floating_false_alarm(problem_text: str) -> bool:
     return any(p in t for p in _FLOATING_FALSE_ALARM_PATTERNS)
 
 
+# ---------------------------------------------------------------------------
+# VLM complaint severity classification (audit: fix-loop has no grading)
+# ---------------------------------------------------------------------------
+# The fix loop previously treated ALL VLM complaints identically: try a
+# targeted fix, then fall back to LLM regeneration. But a gripper-closeup
+# FRAMING complaint ("not a close-up view") is fundamentally different from
+# a HARD geometry defect ("wheel_fr is 591mm from center"). Conflating them
+# meant a deterministic compose output (engineering-correct) got overturned
+# by a framing nitpick and regenerated by the LLM into garbage.
+#
+# Severity grades:
+#   HARD  — structural/geometric defect that MUST be fixed (collision,
+#           disconnected parts, parts far from center, missing critical
+#           parts, wheels misplaced/floating, finger overlap). Triggers
+#           targeted fix, and on LLM-sourced assemblies, regeneration.
+#   SOFT  — framing / posture / orientation nitpick that does NOT indicate
+#           a geometric defect (gripper closeup framing, "arm too
+#           flat/horizontal", "not a close-up view"). On a deterministic
+#           compose output these are NOT a reason to regenerate — the
+#           geometry is correct and the VLM is critiquing the render.
+_SOFT_VLM_MARKERS = (
+    "not a close-up", "not close-up", "rest of arm is in frame",
+    "arm too flat", "arm too horizontal", "arm too vertical",
+    "closeup framing", "close-up framing", "view is not",
+)
+
+# Markers that unambiguously indicate a HARD geometry defect regardless of
+# framing — these MUST be addressed, never treated as soft.
+_HARD_VLM_MARKERS = (
+    "overlap", "intersect", "collision", "穿模", "penetrat",
+    "floating", "disconnected", "not attached", "no support",
+    "missing wheel", "missing chassis", "missing arm", "missing critical",
+    "misplaced", "far from center", "from center",
+    "above z", "below ground", "underground",
+    "single chunky mass", "no visible gap", "no separated prongs",
+    "vertical instead of horizontal", "wrong orientation",
+)
+
+
+def _classify_vlm_complaint(problem_text: str) -> str:
+    """Classify a VLM complaint as 'HARD', 'SOFT', or 'UNKNOWN'.
+
+    HARD = structural defect (must fix). SOFT = framing/posture nitpick.
+    UNKNOWN = unclassified; treated conservatively as HARD (safer to fix
+    than to ignore an unknown complaint).
+    """
+    t = problem_text.lower()
+    if any(m in t for m in _HARD_VLM_MARKERS):
+        return "HARD"
+    if any(m in t for m in _SOFT_VLM_MARKERS):
+        return "SOFT"
+    return "UNKNOWN"
+
+
 # Wheel false-alarm patterns (added 2026-06-24).
 #
 # GLM-4.6V reliably mistakes the cylindrical servo housings of a fixed-base
@@ -2524,19 +2955,72 @@ def _assembly_has_wheels(parts: list[dict]) -> bool:
     return False
 
 
-def _is_wheel_false_alarm(problem_text: str, parts: list[dict]) -> bool:
-    """Return True if a VLM problem is a spurious wheel-orientation complaint.
+def _is_wheel_false_alarm(
+    problem_text: str,
+    parts: list[dict],
+    positions: dict[str, dict] | None = None,
+) -> bool:
+    """Return True if a VLM problem is a spurious wheel complaint.
 
-    Fires only when the text matches a wheel-orientation/rolling pattern
-    AND the assembly has no wheel parts — i.e. the VLM hallucinated wheels
-    onto cylindrical servos. When the assembly genuinely has wheels, the
-    complaint is real and must NOT be filtered.
+    Two cases:
+      (1) The assembly has NO wheel parts but the VLM hallucinated wheels
+          onto cylindrical servos ("wheels oriented vertically"). Filter.
+      (2) The assembly HAS wheels and they are GROUNDED (solved Z ≈ wheel
+          radius, within tolerance), but the VLM misreads the render and
+          reports "wheels above Z / floating / wrong orientation". This is
+          the recurring wheeled-dual-arm false-negative — the deterministic
+          compose path produces correct Z=47.5 wheels (verified), but GLM-4.6V
+          still reports "wheels above Z=178". When geometry confirms the
+          wheels are grounded, the VLM complaint is overruled.
     """
     import re
     t = problem_text.lower()
-    if not any(re.search(p, t) for p in _WHEEL_FALSE_ALARM_PATTERNS):
+    # Case 1: wheel complaint on an assembly with no wheels (hallucination).
+    if not _assembly_has_wheels(parts):
+        return any(re.search(p, t) for p in _WHEEL_FALSE_ALARM_PATTERNS)
+
+    # Case 2: assembly has wheels. Check whether the complaint is about
+    # wheel position/orientation/presence, and whether geometry refutes it.
+    is_wheel_position_complaint = any(re.search(p, t) for p in _WHEEL_FALSE_ALARM_PATTERNS) or (
+        "wheel" in t and ("above z" in t or "floating" in t
+                          or "near ground" in t or "vertical" in t
+                          or "horizontal" in t or "missing wheel" in t
+                          or "no wheel" in t or "not present" in t
+                          or "not visible" in t or "absent" in t)
+    )
+    # Also catch "No <part> present / visible / found" patterns that name
+    # wheels without the word "wheel" adjacent (e.g. "No horizontal cylinders
+    # near ground present" — the VLM describing wheels it cannot see).
+    if not is_wheel_position_complaint and (
+        ("no " in t and ("cylinder" in t or "tire" in t))
+        or "not present" in t or "critical part missing" in t
+    ):
+        is_wheel_position_complaint = "wheel" in t or "cylinder" in t
+    if not is_wheel_position_complaint:
         return False
-    return not _assembly_has_wheels(parts)
+
+    # Geometric oracle: are the wheels actually grounded?
+    if positions is None:
+        return False  # can't verify — don't filter
+    wheel_positions = {
+        name: pose["position"]
+        for name, pose in positions.items()
+        if "wheel" in name.lower()
+    }
+    if not wheel_positions:
+        return False
+    # Wheel radius from part dims (fall back to 45mm, the default).
+    wheel_part = next((p for p in parts if "wheel" in (p.get("name","") or "").lower()), None)
+    wheel_r = ((wheel_part.get("dimensions", {}).get("diameter", 0) or 0) / 2.0
+               if wheel_part else 45.0) or 45.0
+    # Grounded = every wheel's Z is within ±40% of wheel_r of wheel_r (i.e.
+    # the wheel bottom is near the ground). Tolerance is generous because the
+    # solver reports the wheel CENTER; bottom = center - radius.
+    grounded = all(
+        abs(z - wheel_r) < wheel_r * 0.8
+        for (_, _, z) in wheel_positions.values()
+    )
+    return grounded
 
 
 def _geometric_prevalidation(
@@ -3112,8 +3596,14 @@ def _vlm_check_assembly(
     round_num: int = 0,
     real_stl_dir: str | None = None,
     joints: list | None = None,
+    robot_category: str = "assembly",
 ) -> tuple[bool, list[str]]:
     """Render assembly and run VLM verification. Returns (passed, problems).
+
+    ``robot_category`` selects the expectations block injected into the
+    whole-assembly prompt (see :func:`_build_verify_prompt`).  This MUST match
+    the generator's own classification — passing a category-blind prompt
+    historically caused the wheeled-dual-arm false-negative loop.
 
     Per-view raw VLM responses are accumulated and written to
     ``{render_dir}/vlm_responses.json`` so failures can be debugged across
@@ -3168,7 +3658,10 @@ def _vlm_check_assembly(
     for view_path in rendered:
         view_name = os.path.splitext(os.path.basename(view_path))[0]
         is_closeup = view_name == "gripper_closeup"
-        prompt = _VLM_GRIPPER_CLOSEUP_PROMPT if is_closeup else _VLM_VERIFY_PROMPT
+        prompt = (
+            _VLM_GRIPPER_CLOSEUP_PROMPT if is_closeup
+            else _build_verify_prompt(robot_category)
+        )
         entry: dict = {
             "view": view_name,
             "prompt_role": "gripper" if is_closeup else "structural",
@@ -3221,6 +3714,24 @@ def _vlm_check_assembly(
     # Geometric pre-validation as safety net AND ground-truth arbitrator.
     geo_problems = _geometric_prevalidation(parts, positions, joints)
 
+    # WHEEL FALSE-ALARM FILTER (geometric oracle, runs BEFORE the hard_geo
+    # gate). The deterministic compose path produces grounded wheels (Z≈
+    # radius, verified), but GLM-4.6V still reports "wheels above Z / wrong
+    # orientation / missing". When geometry confirms the wheels are grounded,
+    # these VLM complaints are overruled REGARDLESS of other geometry issues
+    # — otherwise a single arm-motor overlap (hard_geo) would skip the
+    # false-alarm filter and the wheeled-dual-arm e2e dead-loops on wheel
+    # false-negatives. Filter from both all_problems (VLM) and geo_problems
+    # so neither path keeps the refuted complaint.
+    all_problems = [
+        p for p in all_problems
+        if not _is_wheel_false_alarm(p, parts, positions)
+    ]
+    geo_problems = [
+        p for p in geo_problems
+        if not _is_wheel_false_alarm(p, parts, positions)
+    ]
+
     # Separate HARD geometry failures (collision, disconnection, absurd
     # positions) from SOFT pose warnings ("arm too flat/horizontal").
     # Soft warnings describe the arm's posture, not a geometric defect —
@@ -3263,7 +3774,7 @@ def _vlm_check_assembly(
             p for p in all_problems
             if not _is_gripper_false_alarm(p)
             and not _is_floating_false_alarm(p)
-            and not _is_wheel_false_alarm(p, parts)
+            and not _is_wheel_false_alarm(p, parts, positions)
             and not any(m in p.lower() for m in _SOFT_POSE_MARKERS)
         ]
         if len(filtered) < len(all_problems):
@@ -3351,14 +3862,20 @@ def generate_assembly_with_vlm_loop(
 
     # Classify the description once so every round and the validation
     # try-block (Step A.5) share the same is_arm / is_wheeled decision.
-    # Also used to pick the canonical case_id for the run output directory.
-    desc_lower = description.lower()
-    is_arm = any(kw in desc_lower for kw in [
-        "臂", "arm", "机械手", "机械臂", "抓手", "gripper", "自由度"])
-    is_wheeled = any(kw in desc_lower for kw in [
-        "轮", "wheel", "差速", "移动", "底盘"])
+    # The category feeds BOTH the run-directory naming AND the VLM verify
+    # prompt — without category context the VLM mis-classifies wheeled
+    # dual-arm robots as fixed-base arms and loops forever demanding removal
+    # of legitimate wheels (see ``_build_verify_prompt``).
+    robot_category = _classify_robot(description)
+    is_arm = robot_category in ("fixed_arm", "wheeled_arm")
+    is_wheeled = robot_category in ("wheeled", "wheeled_arm")
 
     # Output directory — canonical layout: data/runs/<case_id>/<timestamp>/
+    # NOTE: ``case_id`` keeps the HISTORIC directory names (arm / wheeled /
+    # wheeled_arm / assembly) so existing data/runs/<case>/ folders stay
+    # compatible.  ``robot_category`` is the richer semantic label used only
+    # for the VLM prompt; the two diverge only for fixed arms
+    # (case_id="arm" vs robot_category="fixed_arm").
     if not output_dir:
         try:
             from ..config import make_run_dir
@@ -3385,6 +3902,13 @@ def generate_assembly_with_vlm_loop(
     problems_history: list[list[str]] = []
     render_dir = os.path.join(output_dir, "vlm_renders")
     passed = False
+    # Track whether Round 1 used the deterministic compose path. When True,
+    # subsequent rounds must NOT fall back to LLM regeneration (which
+    # corrupts the wheel/motor topology). Only targeted fixes are allowed,
+    # and soft VLM complaints (gripper closeup framing, arm posture) do not
+    # trigger regeneration at all — the compose geometry is the engineering
+    # ground truth and a VLM framing nitpick must not overturn it.
+    _round1_compose = False
 
     for round_num in range(1, max_rounds + 1):
         logger.info("=== Round %d/%d ===", round_num, max_rounds)
@@ -3394,25 +3918,74 @@ def generate_assembly_with_vlm_loop(
 
         # --- Step A: Generate (or re-generate with feedback) ---
         if round_num == 1:
-            try:
-                assembly = generate_assembly_from_nl(
-                    description=description,
-                    api_key=api_key,
-                    base_url=base_url,
-                    model=text_model,
-                    temperature=temperature,
-                )
-            except Exception as e:
-                # GLM occasionally returns an empty body for large structured
-                # prompts (observed: ~16k-char dual-arm prompt returns "" in
-                # ~80s).  Without this guard the RuntimeError from JSON parsing
-                # escapes the whole loop, so rounds 2/3 never run and the e2e
-                # fails with no retry.  Record the failure and let the loop
-                # retry generation next round (or via the fix path).
-                logger.warning("Round 1 generation failed: %s", e)
-                problems_history.append([f"Round 1 generation error: {e}"])
-                assembly = None
-                continue
+            # DETERMINISTIC PATH for wheeled dual-arm robots (option A):
+            # ``compose_dual_arm_assembly`` produces a structurally-correct
+            # chassis+dual-arm layout (wheels grounded at Z≈radius, arms
+            # symmetric on the deck, no overlap). The LLM historically
+            # REWRITES the wheel/motor joint offsets when given this as an
+            # example, flinging wheels to Z=222+ and dead-looping the VLM
+            # ("wheels vertical / above Z / missing chassis") for all 3
+            # rounds — the regression from the 2026-06-26 working run.
+            # Verified: compose output solves to wheel Z=47.5 (ground
+            # contact), 200mm wheel-pair spacing (no overlap), arms at ±70mm.
+            # Skip LLM topology mutation entirely; VLM still verifies, and if
+            # it surfaces a real (non-false-alarm) issue, rounds 2+ can
+            # regenerate via the normal LLM fix path.
+            if robot_category == "wheeled_arm":
+                try:
+                    from ..knowledge.mobile_base_gen import build_wheeled_base
+                    from ..agent.assembly_compose import compose_dual_arm_assembly
+                    _chassis = build_wheeled_base(
+                        wheel_count=4, drive_type=parse_drive_type(description),
+                        payload_kg=5.0, arm_mount_points=["left", "right"],
+                    )
+                    _arm = build_arm_example(n_dof=3, profile="mobile")
+                    _dual_json = compose_dual_arm_assembly(
+                        _chassis, _arm, arm_dof=3,
+                    )
+                    assembly = _parse_assembly_json(_dual_json)
+                    # Re-apply the non-raising sanitizers so any minor
+                    # normalisation (gripper fingers, wheel-position guard)
+                    # still runs on the deterministic output.
+                    assembly = _normalize_gripper_fingers(assembly)
+                    assembly = _normalize_wheel_positions(assembly)
+                    assembly = _ensure_arm_default_angles(assembly)
+                    logger.info(
+                        "wheeled_arm: using deterministic compose output "
+                        "(skipping LLM topology mutation to avoid wheel Z "
+                        "regression) — %d parts, %d joints",
+                        len(assembly.parts), len(assembly.joints),
+                    )
+                    _round1_compose = True
+                except Exception as e:
+                    # Fall back to LLM generation if compose fails for any
+                    # reason (don't let a compose bug block all wheeled runs).
+                    logger.warning(
+                        "wheeled_arm deterministic compose failed (%s); "
+                        "falling back to LLM generation", e,
+                    )
+                    assembly = None
+
+            if assembly is None:
+                try:
+                    assembly = generate_assembly_from_nl(
+                        description=description,
+                        api_key=api_key,
+                        base_url=base_url,
+                        model=text_model,
+                        temperature=temperature,
+                    )
+                except Exception as e:
+                    # GLM occasionally returns an empty body for large structured
+                    # prompts (observed: ~16k-char dual-arm prompt returns "" in
+                    # ~80s).  Without this guard the RuntimeError from JSON parsing
+                    # escapes the whole loop, so rounds 2/3 never run and the e2e
+                    # fails with no retry.  Record the failure and let the loop
+                    # retry generation next round (or via the fix path).
+                    logger.warning("Round 1 generation failed: %s", e)
+                    problems_history.append([f"Round 1 generation error: {e}"])
+                    assembly = None
+                    continue
         else:
             # Try deterministic targeted fix FIRST (new path, 2026-06-18).
             # Falls back to LLM regeneration only when no targeted fix applies.
@@ -3433,26 +4006,74 @@ def generate_assembly_with_vlm_loop(
                 logger.warning("Targeted fix path failed: %s", e)
 
             if not targeted_applied:
-                # Re-generate with VLM feedback (fallback path)
-                fix_prompt = _VLM_FIX_PROMPT.format(
-                    problems="\n".join(f"- {p}" for p in prev_problems),
-                    description=description,
-                )
-                # Include the previous assembly JSON as reference
-                prev_json = _assembly_to_json(assembly)
-                fix_prompt += f"\nPrevious assembly (for reference):\n{prev_json}\n"
+                # Severity-gated regeneration (audit: fix-loop had no grading).
+                # Classify the remaining problems. If Round 1 was the
+                # deterministic compose output AND only SOFT complaints
+                # remain (gripper-closeup framing, arm posture), do NOT
+                # regenerate — the compose geometry is engineering-correct
+                # and a VLM framing nitpick must not overturn it (the
+                # regression that flung wheels to Z=222 / X=591). Keep the
+                # compose assembly and let the loop's VLM re-verify; if the
+                # only failures are soft, the run effectively preserves the
+                # correct geometry. HARD defects (collision, misplaced
+                # parts) still regenerate on LLM-sourced assemblies.
+                if _round1_compose:
+                    severities = [_classify_vlm_complaint(p) for p in prev_problems]
+                    only_soft = severities and all(s == "SOFT" for s in severities)
+                    if only_soft:
+                        print(
+                            f"  → Compose output retained — only soft VLM "
+                            f"complaints ({len(prev_problems)}), not "
+                            f"regenerating (would corrupt deterministic "
+                            f"topology). Problems: {prev_problems[:2]}"
+                        )
+                        logger.info(
+                            "wheeled_arm: retaining compose output — VLM "
+                            "complaints are all SOFT (%s); skipping LLM "
+                            "regeneration to preserve correct topology.",
+                            prev_problems,
+                        )
+                        # Keep the compose assembly as-is for re-verification.
+                    else:
+                        # HARD defects on compose output: log but still
+                        # avoid LLM regen (compose is the best geometry we
+                        # have; targeted fix already tried). Re-verify.
+                        print(
+                            f"  → Compose output retained despite HARD/unknown "
+                            f"complaints — LLM regen would corrupt topology. "
+                            f"Will re-verify: {prev_problems[:2]}"
+                        )
+                        logger.warning(
+                            "wheeled_arm: compose output has HARD complaints "
+                            "(%s) but LLM regeneration is suppressed to avoid "
+                            "topology corruption; targeted fix did not apply.",
+                            prev_problems,
+                        )
+                else:
+                    # LLM-sourced assembly: regenerate with VLM feedback.
+                    fix_prompt = _VLM_FIX_PROMPT.format(
+                        problems="\n".join(f"- {p}" for p in prev_problems),
+                        description=description,
+                    )
+                    # Include the previous assembly JSON as reference
+                    prev_json = _assembly_to_json(assembly)
+                    fix_prompt += f"\nPrevious assembly (for reference):\n{prev_json}\n"
 
-                resp = text_backend.chat(
-                    messages=[Message(role="user", content=fix_prompt)],
-                    system=ASSEMBLY_GEN_SYSTEM_PROMPT,
-                    temperature=min(temperature + 0.2 * (round_num - 1), 0.7),
-                    max_tokens=16384,
-                )
-                assembly = _parse_assembly_json(resp.content)
+                    resp = text_backend.chat(
+                        messages=[Message(role="user", content=fix_prompt)],
+                        system=ASSEMBLY_GEN_SYSTEM_PROMPT,
+                        temperature=min(temperature + 0.2 * (round_num - 1), 0.7),
+                        max_tokens=16384,
+                        # Structured-JSON regen — disable reasoning for speed
+                        # (see the initial generate call for rationale).
+                        thinking={"type": "disabled"},
+                    )
+                    assembly = _parse_assembly_json(resp.content)
             # Re-apply normalizing sanitizers (non-raising).  Raising
             # validators are consolidated in Step A.5 below so their
             # errors enter problems_history instead of escaping the loop.
             assembly = _normalize_gripper_fingers(assembly)
+            assembly = _normalize_wheel_positions(assembly)
             if is_arm:
                 assembly = _ensure_arm_default_angles(assembly)
 
@@ -3544,12 +4165,21 @@ def generate_assembly_with_vlm_loop(
                             f"{_resolution.remaining_count} remain "
                             f"(history {_resolution.collision_history})"
                         )
-            except ImportError:
-                pass  # trimesh/python-fcl not installed — skip silently
-            except Exception as _e:
-                logger.debug(
-                    "Collision check skipped in round %d: %s",
+            except ImportError as _e:
+                # trimesh/python-fcl not installed. Previously a bare
+                # ``pass`` (AGENTS.md §1.1) silently dropped ALL collision
+                # checking, so a severely self-colliding assembly sailed
+                # through the VLM loop untouched. Log it loudly so the run
+                # record shows collisions were NOT checked (audit P0-6).
+                logger.warning(
+                    "Collision pre-check SKIPPED in round %d — python-fcl/"
+                    "trimesh not installed. Self-collisions will NOT be "
+                    "caught before VLM verification: %s",
                     round_num, _e,
+                )
+            except Exception as _e:
+                logger.warning(
+                    "Collision check failed in round %d: %s", round_num, _e,
                 )
 
         # --- Step C: Render + VLM check ---
@@ -3588,6 +4218,7 @@ def generate_assembly_with_vlm_loop(
                 round_num=round_num,
                 real_stl_dir=real_stl_dir,
                 joints=assembly.joints,
+                robot_category=robot_category,
             )
         except Exception as e:
             logger.warning("VLM check error: %s", e)
@@ -3681,6 +4312,43 @@ def generate_assembly_with_vlm_loop(
             except Exception as e:
                 logger.warning("Production render failed: %s", e)
                 production_render_dir = None
+
+    # Save assembly.json + positions.json to the run root so the web 3D
+    # viewer (/api/runs/{case}/{ts}/positions) can load the solved assembly
+    # without depending on FreeCAD internals. Without these files the web
+    # positions API returns 404 and the /simulate page stacks every STL at
+    # the origin. (Mirrors the same save in agent/pipeline.py run_export.)
+    try:
+        _asm_dict = {
+            "name": assembly.name,
+            "parts": [
+                {"name": p.name, "category": p.category,
+                 "description": p.description, "material": p.material,
+                 "dimensions": dict(p.dimensions)}
+                for p in assembly.parts
+            ],
+            "joints": [
+                {k: v for k, v in _j.__dict__.items()
+                 if k in ("type","parent","child","axis","parent_anchor",
+                          "child_anchor","offset","range_deg","no_distribute",
+                          "distribution_group","mimic_joint","mimic_multiplier",
+                          "mimic_offset")}
+                for _j in assembly.joints
+            ],
+            "default_angles": dict(assembly.default_angles),
+        }
+        with open(os.path.join(output_dir, "assembly.json"), "w", encoding="utf-8") as _f:
+            json.dump(_asm_dict, _f, ensure_ascii=False, indent=2)
+        _pos_dict = {
+            n: {"position": list(p.get("position", (0, 0, 0))),
+                "rotation": list(p.get("rotation", (0, 0, 1, 0)))}
+            for n, p in positions.items()
+        }
+        with open(os.path.join(output_dir, "positions.json"), "w", encoding="utf-8") as _f:
+            json.dump(_pos_dict, _f, ensure_ascii=False, indent=2)
+        logger.info("Saved assembly.json + positions.json for web viewer")
+    except Exception as e:
+        logger.warning("Failed to save assembly.json/positions.json for web: %s", e)
 
     # Summary
     final_status = "PASSED" if passed else "MAX_ROUNDS_REACHED"

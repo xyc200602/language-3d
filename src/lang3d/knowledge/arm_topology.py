@@ -44,7 +44,58 @@ from __future__ import annotations
 
 import json
 import math
+import logging
 from typing import Any, Literal
+
+logger = logging.getLogger(__name__)
+
+
+def _servo_spec_from_catalog(catalog_key: str) -> tuple[str, int, int]:
+    """Look up a real COTS servo's body envelope from ``parts_catalog``.
+
+    Returns ``(model_number, diameter, height)`` where ``diameter`` is the
+    servo body's largest cross-section dimension (so a cylinder proxy matches
+    the real rectangular body's footprint) and ``height`` is the body height.
+
+    This is the SINGLE source of truth for servo geometry — ``arm_topology``
+    previously hard-coded its own ``_SERVO_SPECS`` list with rounded values
+    (MG996R Ø41/h43 vs the catalog's 40.7×19.7×42.9) that silently diverged
+    from ``parts_catalog``. Editing the catalog had no effect on the arm
+    generator. Per docs/references/notes/wheeled_dual_arm_proportions.md and
+    AGENTS.md §3.2, servo dimensions must come from the catalog, not invented.
+
+    Falls back to the legacy rounded values (with a warning) only if the
+    catalog entry is missing — so a partial catalog never crashes the arm
+    generator, but the divergence is logged rather than silent.
+    """
+    try:
+        from .parts_catalog import PART_CATALOG
+        tpl = PART_CATALOG[catalog_key]
+        params = {p.name: p.default for p in tpl.parameters}
+        body_l = float(params["body_length"])
+        body_w = float(params["body_width"])
+        body_h = float(params["body_height"])
+        # Cylinder proxy: diameter = max cross-section dim, height = body height.
+        # Rounding to int mm matches the legacy tuple shape and the generator's
+        # mm-grid convention; the sub-mm difference (40.7 -> 41) is below the
+        # 3D-printing/machining tolerance that matters downstream.
+        diameter = int(round(max(body_l, body_w)))
+        height = int(round(body_h))
+        return (tpl.model_number or catalog_key, diameter, height)
+    except (KeyError, ImportError, AttributeError, TypeError) as e:
+        # Legacy fallback values — kept ONLY so a missing catalog entry does
+        # not crash arm generation. Logged so the divergence is visible.
+        logger.warning(
+            "Servo spec lookup for %r failed (%s); using legacy rounded "
+            "values. Update parts_catalog to remove this fallback.",
+            catalog_key, e,
+        )
+        _LEGACY = {
+            "servo_mg996r": ("MG996R", 41, 43),
+            "servo_ds3218": ("DS3218", 40, 39),
+            "servo_sg90": ("SG90", 23, 31),
+        }
+        return _LEGACY.get(catalog_key, ("SG90", 23, 31))
 
 
 # ---------------------------------------------------------------------------
@@ -155,20 +206,20 @@ def zigzag_angles(n_pitch_joints: int, base: list[float] | None = None) -> list[
 # real robots have arm-reach ≈ 1-1.5× chassis width, not 5×).
 #
 # Servo specs — keyed by role position (heavy→light down the chain). Each is a
-# real catalog servo: (model, cylinder diameter≈body max dim, height=body height).
+# real catalog servo, looked up from parts_catalog via _servo_spec_from_catalog
+# so the cylinder proxy (diameter ≈ body max dim, height = body height) stays
+# in sync with the authoritative COTS data. Previously these were hard-coded
+# rounded values that diverged from parts_catalog (AGENTS.md §3.2 single-source
+# rule); the lookup is now the single source of truth.
 _SERVO_SPECS = [
-    # base / shoulder — highest torque → MG996R (40.7 wide → Ø41)
-    ("MG996R", 41, 43),
-    # elbow — high torque → DS3218 (40.0 wide → Ø40)
-    ("DS3218", 40, 39),
-    # upper wrist → SG90 (22.2 wide → Ø23) — lighter, orientation only
-    ("SG90", 23, 31),
-    # distal wrist → SG90
-    ("SG90", 23, 31),
+    _servo_spec_from_catalog("servo_mg996r"),  # base / shoulder — highest torque
+    _servo_spec_from_catalog("servo_ds3218"),  # elbow — high torque
+    _servo_spec_from_catalog("servo_sg90"),    # upper wrist — lighter
+    _servo_spec_from_catalog("servo_sg90"),    # distal wrist
 ]
 
-# SG90 also drives the gripper (small, low torque).
-_GRIPPER_SERVO_SPEC = ("SG90", 23, 31)  # model, Ø, height
+# SG90 also drives the gripper (small, low torque) — same catalog source.
+_GRIPPER_SERVO_SPEC = _servo_spec_from_catalog("servo_sg90")
 
 
 class _Profile:

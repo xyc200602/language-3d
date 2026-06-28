@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lang3d"
 version = "0.1.0"
-description = "Language-3D Agent: Autonomous 3D modeling agent with VLM screen awareness"
+description = "Language-3D Agent: Multi-expert 3D modeling agent with VLM verification"
 authors = [{name = "Language-3D Contributors"}]
 license = {text = "MIT"}
 readme = "README.md"
@@ -57,5 +57,10 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 markers = [
-    "e2e: end-to-end tests requiring API keys",
+    "unit: Pure-Python tests with no external deps (default). Runs in seconds.",
+    "integration: Tests that load real geometry / spawn FreeCAD / use trimesh+fcl / use MuJoCo.",
+    "e2e: End-to-end pipeline tests (NL → assembly → export). Slow; often needs GLM API key.",
+    "api: Tests that call out to a remote LLM (GLM API). Skipped when GLM_API_KEY unset.",
+    "gui: Tests that require a desktop/display (PyAutoGUI, FreeCAD GUI, VLM screenshot). Skip on headless CI.",
+    "freecad: Alias for backward compatibility — treated as 'integration'.",
 ]

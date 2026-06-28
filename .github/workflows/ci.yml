@@ -1,0 +1,68 @@
+# Language-3D continuous integration.
+#
+# Runs the unit + integration test suite on every push and pull request.
+# Tests that require a GLM API key (e2e, api), a desktop display (gui), or
+# are explicitly end-to-end are excluded — they are exercised manually with
+# a real key. This catches regressions in the core pipeline, geometry, and
+# solver logic before they land.
+#
+# Optional dependencies that broaden coverage (trimesh+python-fcl for
+# collision checks, mujoco for physics) are installed so those integration
+# tests run rather than skip.
+
+name: CI
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+    branches: [master, main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package + dev/test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev,collision,sim]"
+          # VTK is used by the renderer integration tests; install the
+          # headless wheel so no display is needed.
+          pip install vtk
+
+      - name: Run unit + integration tests (no e2e/api/gui)
+        env:
+          # Ensure tests that check for a key skip cleanly instead of
+          # reading a stale local .env.
+          GLM_API_KEY: ""
+        run: |
+          pytest tests/ \
+            -m "not e2e and not api and not gui" \
+            --maxfail=10 \
+            -q \
+            --no-header \
+            -p no:cacheprovider
+
+      - name: Upload test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs
+          path: |
+            logs/*.log
+            data/runs/
+          retention-days: 7

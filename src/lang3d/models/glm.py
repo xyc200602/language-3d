@@ -101,6 +101,109 @@ class GLMBackend(ModelBackend):
             )
         return self._alt_client
 
+    def _streamed_create(self, **kwargs: Any) -> Any:
+        """Run a chat completion with STREAMING and reassemble a full response.
+
+        GLM-5.2 is a reasoning model: non-streaming ``create`` blocks until
+        the ENTIRE chain-of-thought finishes, which for complex prompts
+        (assembly-gen, ~3k-token prompt) can take many minutes — long enough
+        that the SDK's connection timeout never trips (tokens keep trickling,
+        so the socket stays alive) and the e2e loop looks permanently frozen.
+
+        Streaming delivers tokens incrementally, keeping the connection
+        observably active and letting the SDK's read timeout fire if the
+        upstream truly stalls. We accumulate ``content`` + ``reasoning_content``
+        + ``tool_calls`` across chunks and return an object shaped like the
+        non-streaming ``ChatCompletion`` so the rest of ``chat`` is unchanged.
+
+        Falls back to the non-streaming call if the server rejects streaming.
+        """
+        kwargs = dict(kwargs)
+        kwargs["stream"] = True
+        kwargs.setdefault("stream_options", {"include_usage": True})
+
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_calls: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
+        usage: dict[str, Any] = {}
+        model_name = kwargs.get("model", self.model)
+
+        try:
+            stream = self.client.chat.completions.create(**kwargs)
+            for chunk in stream:
+                if not getattr(chunk, "choices", None):
+                    # Final usage-only chunk (include_usage).
+                    _u = getattr(chunk, "usage", None)
+                    if _u is not None:
+                        usage = dict(_u) if isinstance(_u, dict) else {
+                            k: getattr(_u, k) for k in ("prompt_tokens",
+                            "completion_tokens", "total_tokens")
+                            if hasattr(_u, k)
+                        }
+                    continue
+                choice = chunk.choices[0]
+                delta = choice.delta
+                if getattr(delta, "content", None):
+                    content_parts.append(delta.content)
+                _rc = getattr(delta, "reasoning_content", None)
+                if _rc:
+                    reasoning_parts.append(_rc)
+                if getattr(delta, "tool_calls", None):
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        slot = tool_calls.setdefault(idx, {
+                            "id": "", "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        })
+                        if tc.id:
+                            slot["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            slot["function"]["name"] = tc.function.name
+                        if tc.function and tc.function.arguments:
+                            slot["function"]["arguments"] += tc.function.arguments
+                if getattr(choice, "finish_reason", None):
+                    finish_reason = choice.finish_reason
+        except Exception as e:
+            # If streaming is unsupported/failed, fall back to blocking call
+            # so this never breaks callers that worked before.
+            logger.warning(
+                "Streaming create failed (%s); falling back to non-stream", e,
+            )
+            fb = dict(kwargs)
+            fb.pop("stream", None)
+            fb.pop("stream_options", None)
+            return call_with_retry(
+                self.client.chat.completions.create,
+                retry_config=self.retry_config,
+                **fb,
+            )
+
+        # Assemble a ChatCompletion-like object. We use a lightweight wrapper
+        # rather than constructing the SDK's dataclass (its constructor is
+        # version-sensitive) — chat() only reads .choices[0].message.content /
+        # .reasoning_content / .finish_reason / .tool_calls.
+        class _Msg:
+            def __init__(self) -> None:
+                self.content = "".join(content_parts)
+                self.reasoning_content = "".join(reasoning_parts)
+                self.tool_calls = [
+                    tool_calls[i] for i in sorted(tool_calls)
+                ] or None
+
+        class _Choice:
+            def __init__(self) -> None:
+                self.message = _Msg()
+                self.finish_reason = finish_reason
+
+        class _Resp:
+            def __init__(self) -> None:
+                self.choices = [_Choice()]
+                self.usage = usage
+                self.model = model_name
+
+        return _Resp()
+
     def chat(
         self,
         messages: list[Message],
@@ -109,6 +212,16 @@ class GLMBackend(ModelBackend):
         max_tokens: int = 100000,
         temperature: float = 0.7,
         system: str | None = None,
+        # GLM-5.2 is a reasoning model that emits a long chain-of-thought in
+        # ``reasoning_content`` before the answer. For STRUCTURED outputs
+        # (assembly JSON, fix commands) the reasoning is pure latency — the
+        # model just needs to emit the JSON. Passing thinking={"type":
+        # "disabled"} via extra_body skips reasoning and returns the answer
+        # in seconds instead of minutes. Callers that WANT reasoning (open-
+        # ended planning) leave this None. ``extra_body`` lets callers pass
+        # any other vendor-specific params too.
+        thinking: dict[str, Any] | None = None,
+        extra_body: dict[str, Any] | None = None,
     ) -> ModelResponse:
         """Send a chat completion request via OpenAI-compatible API."""
         api_messages = self._convert_messages(messages, system)
@@ -122,6 +235,13 @@ class GLMBackend(ModelBackend):
 
         if tools:
             kwargs["tools"] = self._convert_tools(tools)
+
+        # Vendor-specific params (GLM thinking control, etc.) go via extra_body.
+        merged_extra: dict[str, Any] = dict(extra_body or {})
+        if thinking is not None:
+            merged_extra["thinking"] = thinking
+        if merged_extra:
+            kwargs["extra_body"] = merged_extra
 
         # Check cache for deterministic requests (temperature=0)
         cache = get_cache()
@@ -138,11 +258,7 @@ class GLMBackend(ModelBackend):
             if cached is not None:
                 return cached
 
-        response = call_with_retry(
-            self.client.chat.completions.create,
-            **kwargs,
-            retry_config=self.retry_config,
-        )
+        response = self._streamed_create(**kwargs)
 
         if not response.choices:
             return ModelResponse(content="", tool_calls=[], finish_reason="empty", usage={})
@@ -173,11 +289,7 @@ class GLMBackend(ModelBackend):
             )
             retry_kwargs = dict(kwargs)
             retry_kwargs["max_tokens"] = bigger
-            response = call_with_retry(
-                self.client.chat.completions.create,
-                **retry_kwargs,
-                retry_config=self.retry_config,
-            )
+            response = self._streamed_create(**retry_kwargs)
             if response.choices:
                 choice = response.choices[0]
                 content = choice.message.content or ""

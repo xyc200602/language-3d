@@ -127,6 +127,14 @@ class StageAgent:
 
 logger = logging.getLogger(__name__)
 
+# COM stability margin: the base_plate length must extend past the
+# forward COM by this many mm so the support polygon has margin. A single
+# constant shared by both the solver-stage and export-stage COM checks
+# (audit P2-7: the two used different values — 25mm vs 30mm — so the same
+# assembly could be "stable" at solve time but "unstable" at export,
+# triggering the wheeled base_plate enlargement regression).
+_COM_MARGIN_MM = 30.0
+
 
 # ---------------------------------------------------------------------------
 # Pipeline context — the inter-stage state carrier
@@ -681,8 +689,8 @@ class AssemblyPipeline:
         com_y = check.center_of_mass_mm[1] if check.center_of_mass_mm else 0.0
         forward = abs(com_y)
         cur_length = float(base.dimensions.get("length", 0) or 0)
-        # Need length/2 >= forward + 25mm margin.
-        needed = 2.0 * (forward + 25.0)
+        # Need length/2 >= forward + margin (shared _COM_MARGIN_MM).
+        needed = 2.0 * (forward + _COM_MARGIN_MM)
         if cur_length >= needed:
             return  # already big enough (COM may be off in X — out of scope)
         base.dimensions["length"] = needed
@@ -756,10 +764,10 @@ class AssemblyPipeline:
                 return  # already stable per export's metric
             margin = stab.get("margin_mm", 0.0)
             # Enlarge base LENGTH (solver Y / forward) so the forward edge
-            # covers |COM_y| with a 30mm margin, then re-solve positions.
+            # covers |COM_y| with the shared margin, then re-solve positions.
             com_y = com[1] if len(com) > 1 else 0.0
             forward = abs(com_y)
-            needed = 2.0 * (forward + 30.0)
+            needed = 2.0 * (forward + _COM_MARGIN_MM)
             cur_length = float(base.dimensions.get("length", 0) or 0)
             if cur_length < needed:
                 base.dimensions["length"] = needed
@@ -830,10 +838,26 @@ class AssemblyPipeline:
         """Run the dual-channel verification (VLM + geometric).
 
         Returns True if the assembly passes verification.
+
+        If :attr:`ctx.cad_failed` is set, the VLM is judging trimesh box
+        PREVIEW geometry, not real FreeCAD STLs. The verdict is still
+        collected (so the loop can route fixes), but it is logged as a
+        warning so the run record reflects that the visual channel ran on
+        degraded geometry — per AGENTS.md §5.2, a verify result obtained on
+        fallback geometry must not be silently equated to a real pass.
         """
         from .assembly_generator_helpers import vlm_check_assembly
 
         ctx = self.ctx
+
+        if ctx.cad_failed:
+            self.verifier_agent.log_warning(
+                logger,
+                "CAD stage FAILED earlier — VLM is judging trimesh PREVIEW "
+                "geometry, NOT real FreeCAD STLs. Treat the visual verdict "
+                "as provisional (AGENTS.md §5.2).",
+            )
+
         parts_dicts = [
             {"name": p.name, "category": p.category, "dimensions": p.dimensions}
             for p in ctx.assembly.parts
@@ -842,6 +866,13 @@ class AssemblyPipeline:
             ctx.output_dir, "vlm_renders", f"round_{ctx.round_num}",
         )
         os.makedirs(render_dir, exist_ok=True)
+
+        # Classify once so the VLM prompt carries the right category
+        # expectations (wheeled vs fixed-arm vs generic). Without this the
+        # VLM mis-classifies wheeled dual-arm robots and dead-loops — see
+        # _build_verify_prompt in assembly_generator.py.
+        from ..tools.assembly_generator import _classify_robot
+        robot_category = _classify_robot(ctx.description)
 
         passed, problems = vlm_check_assembly(
             positions=ctx.positions,
@@ -853,6 +884,7 @@ class AssemblyPipeline:
             round_num=ctx.round_num,
             real_stl_dir=ctx.real_stl_dir,
             joints=ctx.assembly.joints,
+            robot_category=robot_category,
         )
 
         ctx.problems_history.append(problems)
@@ -1135,6 +1167,9 @@ class AssemblyPipeline:
             "render_dir": os.path.join(ctx.output_dir, "vlm_renders"),
             "export_dir": ctx.export_dir,
             "production_render_dir": ctx.production_render_dir,
+            # Propagate so callers can distinguish a genuine pass from a
+            # pass on trimesh-preview geometry (CAD crashed upstream).
+            "cad_failed": ctx.cad_failed,
         }
 
     def _write_summary(self) -> None:
@@ -1149,6 +1184,12 @@ class AssemblyPipeline:
             "verification_status": (
                 "PASSED" if ctx.passed else "FAILED_MAX_ROUNDS"
             ),
+            # Surface the CAD-failure flag so downstream consumers (e2e
+            # tests, web UI, design_report readers) can tell a real pass
+            # from a pass on trimesh-preview geometry. Previously this flag
+            # was written in run_cad_engineer but never read anywhere,
+            # masking CAD crashes (AGENTS.md §1.1).
+            "cad_failed": ctx.cad_failed,
             "problems_history": ctx.problems_history,
         }
         try:

@@ -218,10 +218,26 @@ def _has_category_parts(assembly: Any, keywords: list[str]) -> bool:
 
 
 def _compute_score(checks: list[dict]) -> float:
+    """Score = PASS / (PASS + FAIL + WARN), excluding SKIP.
+
+    Previously this divided PASS by len(checks), counting SKIP in the
+    denominator — a test that skipped MuJoCo (3 checks) + motion collision
+    + static collision could still score 92.9% with the core "能动能抓能
+    在仿真跑" value propositions entirely unverified. SKIP means "could not
+    evaluate" (missing optional dep / no gripper); it must NOT inflate the
+    score. Only actually-evaluated checks (PASS/FAIL/WARN) count.
+
+    WARN is kept in the denominator (it is a real evaluation that surfaced
+    a concern) but not the numerator, so a WARN lowers the score without
+    failing the run.
+    """
     if not checks:
         return 0.0
-    passed = sum(1 for c in checks if c["status"] == PASS)
-    return round(passed / len(checks) * 100, 1)
+    evaluated = [c for c in checks if c["status"] != SKIP]
+    if not evaluated:
+        return 0.0
+    passed = sum(1 for c in evaluated if c["status"] == PASS)
+    return round(passed / len(evaluated) * 100, 1)
 
 
 def _save_report(
@@ -231,11 +247,26 @@ def _save_report(
     checks: list[dict],
     score: float,
 ) -> str:
+    # Honest breakdown so the score is interpretable: a 92.9% with 5 SKIPs
+    # means something very different from 92.9% with 0 SKIPs. Surface the
+    # counts alongside the score rather than hiding them in the checks list.
+    counts = {
+        PASS: sum(1 for c in checks if c["status"] == PASS),
+        FAIL: sum(1 for c in checks if c["status"] == FAIL),
+        SKIP: sum(1 for c in checks if c["status"] == SKIP),
+        WARN: sum(1 for c in checks if c["status"] == WARN),
+    }
+    critical_fails = sum(
+        1 for c in checks if c["status"] == FAIL and c.get("critical")
+    )
     report = {
         "test_id": test_id,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "description": description,
         "score": score,
+        "score_formula": "PASS / (PASS + FAIL + WARN), SKIP excluded",
+        "check_counts": counts,
+        "critical_fails": critical_fails,
         "checks": checks,
     }
     report_path = os.path.join(output_dir, "e2e_report.json")
@@ -814,7 +845,14 @@ def _phase6_physical_sanity(
     """
     phase = "phase6"
 
-    # Collision detection (optional)
+    # Collision detection.
+    # Severe static collisions (>5mm penetration) are a structural FAIL
+    # (critical), not a warning. Previously this used _warn, so an arm
+    # piercing the chassis body scored as a harmless warning and "0 critical
+    # fails" hid real interpenetration (audit P0-2). ImportError on
+    # python-fcl/trimesh is a legitimate SKIP (optional dep); any OTHER
+    # exception (checker present but crashed) is a critical FAIL so the
+    # error is visible, not buried (audit P0-6).
     try:
         from lang3d.tools.mesh_collision import MeshCollisionChecker
 
@@ -831,14 +869,19 @@ def _phase6_physical_sanity(
         severe = [
             c for c in collisions if c.is_collision and c.penetration_depth_mm > 5.0
         ]
-        _warn(
+        _check(
             checks, phase, "no_severe_collisions",
-            f"Severe(>5mm): {len(severe)}, checked: {collision_result.pairs_checked} ({dt:.2f}s)",
+            len(severe) == 0,
+            f"Severe(>5mm): {len(severe)}, checked: "
+            f"{collision_result.pairs_checked if collision_result else 0} ({dt:.2f}s)"
+            + (f" — pairs: {', '.join(p.name_a + '<->' + p.name_b for p in severe[:3])}" if severe else ""),
+            critical=True,
         )
-    except (ImportError, RuntimeError):
-        _skip(checks, phase, "collision_detection", "MeshCollisionChecker not available")
+    except ImportError:
+        _skip(checks, phase, "collision_detection", "python-fcl/trimesh not installed")
     except Exception as exc:
-        _warn(checks, phase, "collision_detection", f"Error: {exc}")
+        _check(checks, phase, "collision_detection", False,
+               f"Collision checker error: {exc}", critical=True)
 
     # Motion sweep: sample each revolute joint across its range_deg and FCL
     # collide at every sample.  Catches self-collisions that only appear mid
@@ -874,13 +917,16 @@ def _phase6_physical_sanity(
             + (" — collision-free" if not colliding else " — 穿模 detected"),
             critical=True,
         )
-    except (ImportError, RuntimeError) as exc:
-        _warn(
+    except ImportError as exc:
+        _skip(
             checks, phase, "motion_collision_sweep",
             f"Skipped (needs python-fcl trimesh): {exc}",
         )
     except Exception as exc:
-        _warn(checks, phase, "motion_collision_sweep", f"Error: {exc}")
+        # Motion checker present but crashed — critical FAIL, not a warning.
+        # Previously _warn masked a real checker error (audit P0-3).
+        _check(checks, phase, "motion_collision_sweep", False,
+               f"Motion checker error: {exc}", critical=True)
 
     # COM stability: assembly center of mass must project inside the support
     # polygon formed by the ground-contact parts, otherwise the robot tips
@@ -900,7 +946,10 @@ def _phase6_physical_sanity(
             critical=True,
         )
     except Exception as exc:
-        _warn(checks, phase, "com_stability", f"Check error: {exc}")
+        # Verifier crash is a critical FAIL — previously _warn masked it,
+        # so a tipping robot could score "0 critical fails" (audit P0-3).
+        _check(checks, phase, "com_stability", False,
+               f"COM check error: {exc}", critical=True)
 
     # Parts reachable from root
     if assembly.joints and positions:
@@ -968,8 +1017,13 @@ def _phase6_physical_sanity(
                     ee = placements.get(ee_name, {}).get("position")
                     if ee:
                         samples.append(tuple(ee))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Solver failed at this joint sample. Previously a bare
+                    # except: pass silently dropped the sample (AGENTS.md
+                    # §1.1 violation). Log it so a systematically-broken
+                    # solver does not quietly shrink the workspace bbox to
+                    # a pass.
+                    print(f"  [warn] workspace sample failed for {j.child}@{target}: {exc}")
 
         if len(samples) >= 2:
             xs = [s[0] for s in samples]
@@ -994,12 +1048,15 @@ def _phase6_physical_sanity(
                 critical=True,
             )
         else:
-            _warn(
-                checks, phase, "workspace_nontrivial",
-                "Insufficient samples for workspace analysis",
-            )
+            # Not a warning — a kinematically degenerate assembly (only the
+            # home pose sampled) is a real defect. Critical FAIL.
+            _check(checks, phase, "workspace_nontrivial", False,
+                   "Insufficient samples for workspace analysis", critical=True)
     except Exception as exc:
-        _warn(checks, phase, "workspace_nontrivial", f"Error: {exc}")
+        # Workspace analysis itself crashed — critical FAIL, not a warning
+        # (audit P0-3). Previously _warn masked it.
+        _check(checks, phase, "workspace_nontrivial", False,
+               f"Workspace analysis error: {exc}", critical=True)
 
 
 # ---------------------------------------------------------------------------
