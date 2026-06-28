@@ -1307,9 +1307,8 @@ for y_pos in [L * 0.1, L * 0.9]:
         body = body.cut(h_cyl)
 
 # --- Fillet small edges (cosmetic; guarded so a non-manifold edge never
-# aborts the whole STL export — see _gripper_finger_ops for the same
-# pattern). Per AGENTS.md §1.1, do NOT silently pass — print a WARN so a
-# consistently-failing fillet is visible in the FreeCAD subprocess output. ---
+# aborts the whole STL export). Per AGENTS.md §1.1, do NOT silently pass —
+# print a WARN so a consistently-failing fillet is visible in the run log. ---
 try:
     body = body.makeFillet(0.8, [_e for _e in body.Edges if _e.Length < W * 0.6][:40])
 except Exception as _e:
