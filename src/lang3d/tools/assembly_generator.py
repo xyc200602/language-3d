@@ -2304,7 +2304,8 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # arm_l_base_yaw). Symmetric cap on yaw still let the arm reach the
     # other side → collision. So: yaw range = [min(home, -10), max(home,
     # home)] clamped to ±90°, never containing both signs.
-    _ARM_PITCH_CAP = 60.0  # ±60° workspace (a real arm can't fold further without hitting its base)
+    _ARM_PITCH_CAP = 90.0   # forward (downward reach) — generous
+    _ARM_PITCH_BACK_CAP = 30.0  # backward (folds toward base) — tight, avoids 穿模
     _ARM_YAW_CAP = 90.0
     for j in revolute_joints:
         if not _is_arm_pitch_joint(j) and j.axis != "z":
@@ -2320,7 +2321,18 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
             else:
                 new_lo, new_hi = max(lo, -_ARM_YAW_CAP), min(hi, 0.0)
         else:
-            new_lo, new_hi = max(lo, -_ARM_PITCH_CAP), min(hi, _ARM_PITCH_CAP)
+            # Pitch: asymmetric. The "forward" direction (the sign that
+            # reaches into the workspace, = home sign) is generous (±90°).
+            # The "backward" direction (opposite sign, folds the arm back
+            # toward/into the base_plate) is tight (±30°). A fixed ±60° cap
+            # was unstable across LLM-generated arm lengths: a long arm at
+            # +60° backward swings the upper_arm_link into the base_plate
+            # (base_plate ↔ upper_arm_link collision). The asymmetric cap
+            # adapts: forward reach stays wide, backward fold is bounded.
+            if home >= 0:
+                new_lo, new_hi = max(lo, -_ARM_PITCH_BACK_CAP), min(hi, _ARM_PITCH_CAP)
+            else:
+                new_lo, new_hi = max(lo, -_ARM_PITCH_CAP), min(hi, _ARM_PITCH_BACK_CAP)
         if new_hi - new_lo < 10.0:
             continue  # range already tiny — don't collapse it
         if (new_lo, new_hi) != (lo, hi):
