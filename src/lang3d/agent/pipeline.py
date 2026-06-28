@@ -127,6 +127,14 @@ class StageAgent:
 
 logger = logging.getLogger(__name__)
 
+# COM stability margin: the base_plate length must extend past the
+# forward COM by this many mm so the support polygon has margin. A single
+# constant shared by both the solver-stage and export-stage COM checks
+# (audit P2-7: the two used different values — 25mm vs 30mm — so the same
+# assembly could be "stable" at solve time but "unstable" at export,
+# triggering the wheeled base_plate enlargement regression).
+_COM_MARGIN_MM = 30.0
+
 
 # ---------------------------------------------------------------------------
 # Pipeline context — the inter-stage state carrier
@@ -681,8 +689,8 @@ class AssemblyPipeline:
         com_y = check.center_of_mass_mm[1] if check.center_of_mass_mm else 0.0
         forward = abs(com_y)
         cur_length = float(base.dimensions.get("length", 0) or 0)
-        # Need length/2 >= forward + 25mm margin.
-        needed = 2.0 * (forward + 25.0)
+        # Need length/2 >= forward + margin (shared _COM_MARGIN_MM).
+        needed = 2.0 * (forward + _COM_MARGIN_MM)
         if cur_length >= needed:
             return  # already big enough (COM may be off in X — out of scope)
         base.dimensions["length"] = needed
@@ -756,10 +764,10 @@ class AssemblyPipeline:
                 return  # already stable per export's metric
             margin = stab.get("margin_mm", 0.0)
             # Enlarge base LENGTH (solver Y / forward) so the forward edge
-            # covers |COM_y| with a 30mm margin, then re-solve positions.
+            # covers |COM_y| with the shared margin, then re-solve positions.
             com_y = com[1] if len(com) > 1 else 0.0
             forward = abs(com_y)
-            needed = 2.0 * (forward + 30.0)
+            needed = 2.0 * (forward + _COM_MARGIN_MM)
             cur_length = float(base.dimensions.get("length", 0) or 0)
             if cur_length < needed:
                 base.dimensions["length"] = needed
