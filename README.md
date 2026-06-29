@@ -241,7 +241,12 @@ language-3d/
 │   │   ├── glm.py                 # GLM-5.2 (text) + GLM-4.6V (vision)
 │   │   └── router.py              # 4-level vision model tiers (fast/standard/detailed/maximum; default: detailed)
 │   ├── tools/                     # 55 tool modules
-│   │   ├── assembly_generator.py  # NL → assembly JSON + VLM loop + geometric arbitration
+│   │   ├── assembly_generator.py  # NL → assembly JSON + VLM loop (main loop)
+│   │   ├── assembly_gen/          # Extracted sub-modules (P1-1 split)
+│   │   │   ├── sanitizers.py      # Post-generation correction (anchors, angles, limits)
+│   │   │   └── vlm_verify.py      # VLM verification + false-alarm filters + geometric pre-validation
+│   │   ├── freecad_script_builder.py  # FreeCAD operation → Python script generation
+│   │   ├── sim_grasp.py           # Three-phase grasp simulation (zero-G → gravity → lift)
 │   │   ├── assembly_solver.py     # Position & constraint solving
 │   │   ├── part_feature_engine.py # Per-part CAD features (axis-correct bolt holes)
 │   │   ├── connection_features.py # Bolt holes (anchor-rotated), bearings, snaps
@@ -251,11 +256,19 @@ language-3d/
 │   │   ├── sim_mujoco.py          # MuJoCo physics (prismatic joint clamping)
 │   │   └── ...
 │   ├── knowledge/                 # Domain Knowledge
+│   │   ├── parts_catalog.py       # COTS part templates + lookup functions
+│   │   ├── _catalog_entries.py    # PART_CATALOG dict entries (94 templates)
 │   │   └── ...
-│   ├── web/app.py                 # FastAPI dashboard
+│   ├── web/
+│   │   ├── app.py                 # FastAPI dashboard (core routes + WebSocket)
+│   │   └── routes/                # API route modules (P1-1 split)
+│   │       ├── convert.py         # STEP/FCStd conversion
+│   │       ├── parts.py           # Part catalog, generate, analyze
+│   │       ├── slicing.py         # G-code slicing
+│   │       └── design.py          # Design hierarchy, stability, power
 │   └── config.py                  # Configuration
-├── tests/                         # 3,600+ tests
-│   ├── test_e2e_production.py     # E2E pipeline (--pipeline flag for multi-agent)
+├── tests/                         # 2,300+ tests
+│   ├── test_e2e_production.py     # E2E pipeline (4dof_arm + 4wheel_dual_arm)
 │   ├── test_expert_roles.py       # Expert agent role + tool whitelist tests
 │   └── ...
 ├── data/runs/                     # E2E outputs (canonical layout)
