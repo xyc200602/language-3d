@@ -763,7 +763,16 @@ class AssemblyToURDF:
             collision = ET.SubElement(link_el, "collision")
             col_origin = ET.SubElement(collision, "origin")
             col_origin.set("xyz", "0 0 0")
-            col_origin.set("rpy", "0 0 0")
+            # Wheels have their axle along X (joint axis=x), but URDF
+            # cylinders are always Z-aligned. Rotate 90° about Y so the
+            # cylinder axis matches the wheel axle. Without this the
+            # collision cylinder lies flat in MuJoCo → wheels look like
+            # discs and don't roll correctly.
+            import math as _cm
+            if "wheel" in link.name.lower() and link.collision_primitive is not None:
+                col_origin.set("rpy", f"0 {_cm.pi / 2:.6f} 0")
+            else:
+                col_origin.set("rpy", "0 0 0")
             col_geom = ET.SubElement(collision, "geometry")
             if link.collision_primitive is not None:
                 prim_type, prim_dims = link.collision_primitive
