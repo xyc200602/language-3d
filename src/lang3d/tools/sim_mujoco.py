@@ -164,12 +164,13 @@ class _MotionController:
 
     # Gesture frequency: one reach-retract cycle per ~6.7 seconds.
     GESTURE_FREQ = 0.15
-    # Forward drive torque — enough to visibly translate the chassis over a
-    # few seconds. Tuned for a ~12kg dual-arm robot with wheel friction=1.0.
-    WHEEL_DRIVE_TORQUE = 0.5
-    # PD gains (match the original inline values).
-    KP = 200.0
-    KV = 20.0
+    # Forward drive torque — enough to visibly translate the chassis.
+    # Tuned for a ~12kg dual-arm robot with wheel friction=1.0, kp=50 PD.
+    WHEEL_DRIVE_TORQUE = 2.0
+    # PD gains — low enough to avoid numerical instability on light joints
+    # (kp=200 caused NaN at arm_r_pitch_servo_2; kp=50 is stable).
+    KP = 50.0
+    KV = 5.0
 
     def __init__(self, model, data, *, np) -> None:
         self.model = model
@@ -277,15 +278,10 @@ class _MotionController:
                 side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
                 dadr = model.jnt_dofadr[jid]
                 data.qfrc_applied[dadr] += self.WHEEL_DRIVE_TORQUE * side
-            # Floating-base stabilization: hold height + upright so the drive
-            # torque doesn't flip the robot. xy translation + yaw stay free.
-            # These DOF indices (0-5) are always the free-joint translational
-            # + rotational DOFs, so direct indexing is correct here.
-            # z-hold: keep base at settled height (not initial URDF z=0, which
-            # may not match contact equilibrium). 200 kp × 0.05m = 10N — gentle
-            # enough to allow wheel traction but firm enough to prevent sinking.
-            data.qfrc_applied[2] += 200.0 * (self.initial_qpos[2] - data.qpos[2]) \
-                                    - 20.0 * data.qvel[2]
+            # Floating-base stabilization: ONLY prevent tipping (upright hold
+            # on roll/pitch). Do NOT z-hold — the contact solver + gravity
+            # handle height naturally. z-hold was preventing chassis translation
+            # because it over-constrained the free joint.
             qx, qy = float(data.qpos[4]), float(data.qpos[5])
             data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
             data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
@@ -328,6 +324,23 @@ def _launch_viewer(
         _stabilize_model(model)
 
     data = mujoco.MjData(model)
+
+    # Wheel-ground contact setup (same as record_motion/record_joint_motion).
+    if model.ngeom > 10:
+        for gid in range(model.ngeom):
+            model.geom_contype[gid] = 0
+            model.geom_conaffinity[gid] = 0
+        for gid in range(model.ngeom):
+            bid = int(model.geom_bodyid[gid])
+            bname = mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+            if bid == 0 or "wheel" in bname.lower():
+                model.geom_contype[gid] = 1
+                model.geom_conaffinity[gid] = 1
+                model.geom_friction[gid] = [1.0, 0.005, 0.0001]
+    # Drop z slightly for floating-base so wheels contact the ground.
+    if model.njnt > 0 and model.jnt_type[0] == 0:
+        data.qpos[2] = -0.001
     mujoco.mj_forward(model, data)
 
     # Build the shared controller so the GUI shows the planned motion.
@@ -854,7 +867,7 @@ def record_joint_motion(
 
     initial_qpos = data.qpos.copy()
     kp, kv = 50.0, 5.0  # Low-gain PD (high kp causes numerical instability on light joints)
-    wheel_drive_torque = 0.5  # Forward drive (must overcome PD holding friction)
+    wheel_drive_torque = 2.0  # Forward drive (must overcome PD holding friction)
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
 
@@ -896,8 +909,7 @@ def record_joint_motion(
                 side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
                 dadr = model.jnt_dofadr[jid]
                 data.qfrc_applied[dadr] += wheel_drive_torque * side
-            data.qfrc_applied[2] += 200.0 * (initial_qpos[2] - data.qpos[2]) \
-                                    - 20.0 * data.qvel[2]
+            # Upright hold only (no z-hold — let contact + gravity handle height).
             qx, qy = float(data.qpos[4]), float(data.qpos[5])
             data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
             data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
@@ -1339,8 +1351,10 @@ class SimMujocoTool(Tool):
         if not urdf_path:
             return "Error: urdf_path is required"
 
-        # Load
-        load_result = _load_model(urdf_path)
+        # Load — use floating_base for interactive mode so wheeled robots
+        # can actually drive in the viewer (the base is injected as a FREE
+        # joint, enabling chassis translation).
+        load_result = _load_model(urdf_path, floating_base=interactive)
         try:
             if not load_result["ok"]:
                 return self._format_load_failure(urdf_path, load_result)
