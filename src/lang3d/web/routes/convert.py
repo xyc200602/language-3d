@@ -21,8 +21,15 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Shared paths from app.py
-from ..app import DATA_ROOT
+# Deferred imports from app.py (avoid circular dependency: app.py includes
+# this router at module level). Resolved on first use.
+_app_helpers = None
+def _get_app_helpers():
+    global _app_helpers
+    if _app_helpers is None:
+        from ..app import DATA_ROOT, _workspace_root, _resolve_safe
+        _app_helpers = (DATA_ROOT, _workspace_root, _resolve_safe)
+    return _app_helpers
 
 @router.get("/api/convert-step")
 async def api_convert_step(path: str = Query(...)) -> JSONResponse:
@@ -32,8 +39,8 @@ async def api_convert_step(path: str = Query(...)) -> JSONResponse:
     freecad = _find_freecad()
     if freecad is None:
         raise HTTPException(status_code=503, detail="FreeCAD not available on server")
-    ws = _workspace_root()
-    src = _resolve_safe(path, ws)
+    ws = _get_app_helpers()[1]()
+    src = _get_app_helpers()[2](path, ws)
     if src is None or not src.exists() or src.suffix.lower() not in {".step", ".stp"}:
         raise HTTPException(status_code=404, detail="STEP file not found or access denied")
 
@@ -96,8 +103,8 @@ async def api_convert_fcstd(path: str = Query(...)) -> JSONResponse:
     freecad = _find_freecad()
     if freecad is None:
         raise HTTPException(status_code=503, detail="FreeCAD not available on server")
-    ws = _workspace_root()
-    src = _resolve_safe(path, ws)
+    ws = _get_app_helpers()[1]()
+    src = _get_app_helpers()[2](path, ws)
     if src is None or not src.exists() or src.suffix.lower() != ".fcstd":
         raise HTTPException(status_code=404, detail="FCStd file not found or access denied")
 
@@ -253,7 +260,7 @@ def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str
             except OSError:
                 pass
 
-        ws = _workspace_root()
+        ws = _get_app_helpers()[1]()
         try:
             rel = str(output_path.relative_to(ws)).replace("\\", "/")
         except ValueError:
@@ -272,8 +279,8 @@ def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str
 @router.post("/api/convert-async")
 async def api_convert_async(path: str = Query(...), format: str = Query("stl")) -> JSONResponse:
     """Submit an asynchronous conversion task. Returns a job_id for polling."""
-    ws = _workspace_root()
-    src = _resolve_safe(path, ws)
+    ws = _get_app_helpers()[1]()
+    src = _get_app_helpers()[2](path, ws)
     if src is None or not src.exists():
         raise HTTPException(status_code=404, detail="File not found or access denied")
 

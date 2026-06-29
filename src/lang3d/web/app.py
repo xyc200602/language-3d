@@ -957,7 +957,7 @@ async def api_browse(
                 "name": child.name,
                 "path": str(child),
                 "rel_path": str(child.relative_to(ws)).replace("\\", "/"),
-                "type": _classify_file(child),
+                "type": _get_classify_file()(child),
                 "size_kb": stat.st_size // 1024,
                 "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
             })
@@ -1036,7 +1036,17 @@ from .routes import convert as _convert_routes
 from .routes import parts as _parts_routes
 from .routes import slicing as _slicing_routes
 from .routes import design as _design_routes
-from .routes.convert import _classify_file  # used by /api/browse (kept in app.py)
+# _classify_file is used by /api/browse (kept in app.py) but defined in
+# routes/convert.py. Deferred import to avoid circular dependency
+# (convert.py imports DATA_ROOT from app.py).
+_classify_file = None
+def _get_classify_file():
+    global _classify_file
+    if _classify_file is None:
+        from .routes.convert import _classify_file as _cf
+        _classify_file = _cf
+    return _classify_file
+
 app.include_router(_convert_routes.router)
 app.include_router(_parts_routes.router)
 app.include_router(_slicing_routes.router)

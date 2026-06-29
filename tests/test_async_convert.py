@@ -11,7 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from lang3d.web.app import app, _convert_queue, _convert_lock
+from lang3d.web.app import app
+from lang3d.web.routes.convert import _convert_queue, _convert_lock
 
 
 @pytest.fixture

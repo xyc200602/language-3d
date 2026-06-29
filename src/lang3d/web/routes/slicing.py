@@ -22,7 +22,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Shared paths from app.py
-from ..app import DATA_ROOT
+# _get_data_root() — deferred to avoid circular import
+_DATA_ROOT = None
+def _get_data_root():
+    global _DATA_ROOT
+    if _DATA_ROOT is None:
+        from ..app import DATA_ROOT
+        _DATA_ROOT = _get_data_root()
+    return _DATA_ROOT
 
 @router.post("/api/slice")
 async def api_slice(payload: dict[str, Any]) -> JSONResponse:
@@ -34,7 +41,7 @@ async def api_slice(payload: dict[str, Any]) -> JSONResponse:
     ws = _workspace_root()
     resolved = _resolve_safe(stl_path, ws)
     if resolved is None:
-        resolved = _resolve_safe(stl_path, DATA_ROOT)
+        resolved = _resolve_safe(stl_path, _get_data_root())
     if resolved is None or not resolved.exists():
         raise HTTPException(status_code=404, detail="STL file not found or access denied")
 
@@ -75,7 +82,7 @@ async def api_slice_analyze(payload: dict[str, Any]) -> JSONResponse:
     ws = _workspace_root()
     resolved = _resolve_safe(gcode_path, ws)
     if resolved is None:
-        resolved = _resolve_safe(gcode_path, DATA_ROOT)
+        resolved = _resolve_safe(gcode_path, _get_data_root())
     if resolved is None or not resolved.exists():
         raise HTTPException(status_code=404, detail="G-code file not found or access denied")
 
@@ -105,7 +112,7 @@ async def api_slice_layers(payload: dict[str, Any]) -> JSONResponse:
     ws = _workspace_root()
     resolved = _resolve_safe(gcode_path, ws)
     if resolved is None:
-        resolved = _resolve_safe(gcode_path, DATA_ROOT)
+        resolved = _resolve_safe(gcode_path, _get_data_root())
     if resolved is None or not resolved.exists():
         raise HTTPException(status_code=404, detail="G-code file not found or access denied")
 

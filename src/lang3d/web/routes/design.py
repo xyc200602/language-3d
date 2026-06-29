@@ -22,7 +22,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Shared paths from app.py
-from ..app import DATA_ROOT
+# _get_data_root() — deferred to avoid circular import
+_DATA_ROOT = None
+def _get_data_root():
+    global _DATA_ROOT
+    if _DATA_ROOT is None:
+        from ..app import DATA_ROOT
+        _DATA_ROOT = _get_data_root()
+    return _DATA_ROOT
 
 @router.get("/api/design/hierarchy")
 async def api_design_hierarchy() -> JSONResponse:

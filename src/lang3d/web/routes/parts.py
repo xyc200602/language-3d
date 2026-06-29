@@ -22,7 +22,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Shared paths from app.py
-from ..app import DATA_ROOT
+# _get_data_root() — deferred to avoid circular import
+_DATA_ROOT = None
+def _get_data_root():
+    global _DATA_ROOT
+    if _DATA_ROOT is None:
+        from ..app import DATA_ROOT
+        _DATA_ROOT = _get_data_root()
+    return _DATA_ROOT
 
 @router.get("/api/parts/catalog")
 async def api_parts_catalog(
@@ -343,7 +350,7 @@ async def api_parts_assemble(payload: dict[str, Any]) -> JSONResponse:
             raise HTTPException(status_code=400, detail="Each part must have a 'file' field")
         resolved = _resolve_safe(fpath, ws)
         if resolved is None:
-            resolved = _resolve_safe(fpath, DATA_ROOT)
+            resolved = _resolve_safe(fpath, _get_data_root())
         if resolved is None or not resolved.exists():
             raise HTTPException(status_code=404, detail=f"File not found: {fpath}")
         validated_parts.append({
