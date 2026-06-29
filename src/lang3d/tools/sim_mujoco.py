@@ -164,8 +164,9 @@ class _MotionController:
 
     # Gesture frequency: one reach-retract cycle per ~6.7 seconds.
     GESTURE_FREQ = 0.15
-    # Gentle forward + slow turn wheel command (left/right differential).
-    WHEEL_DRIVE_TORQUE = 0.08
+    # Forward drive torque — enough to visibly translate the chassis over a
+    # few seconds. Tuned for a ~12kg dual-arm robot with wheel friction=1.0.
+    WHEEL_DRIVE_TORQUE = 0.5
     # PD gains (match the original inline values).
     KP = 200.0
     KV = 20.0
@@ -236,6 +237,14 @@ class _MotionController:
         """Populate ``data.qfrc_applied`` for the gesture + drive at time ``t``.
 
         Must be called each timestep before ``mj_step``.
+
+        IMPORTANT: joint ``jid`` is NOT a qpos/dof index. For floating-base
+        models, the FREE joint at jid=0 pads qpos by 7 and qvel/qfrc by 6,
+        so every subsequent joint's qpos/dof address is offset. We must use
+        ``model.jnt_qposadr[jid]`` and ``model.jnt_dofadr[jid]`` to index
+        into qpos/qvel/qfrc — same pattern as ``_run_physics_hold`` (L1039)
+        and ``_hold_arm`` (L300). Using ``jid`` directly is the root cause
+        of the wheeled robot not driving (all forces applied to wrong DOFs).
         """
         model, data, np = self.model, self.data, self.np
         mujoco = self._mj
@@ -244,12 +253,15 @@ class _MotionController:
         # PD-track the coordinated gesture target with gravity compensation.
         target = self.initial_qpos.copy()
         for jid, (amp, freq) in self.coordinated.items():
-            target[jid] = self.initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
+            qadr = model.jnt_qposadr[jid]
+            target[qadr] = self.initial_qpos[qadr] + amp * np.sin(2 * np.pi * freq * t)
         mujoco.mj_forward(model, data)
         data.qfrc_applied[:] = data.qfrc_bias
         for jid in self.coordinated:
-            data.qfrc_applied[jid] += kp * (target[jid] - data.qpos[jid]) \
-                                      - kv * data.qvel[jid]
+            dadr = model.jnt_dofadr[jid]
+            qadr = model.jnt_qposadr[jid]
+            data.qfrc_applied[dadr] += kp * (target[qadr] - data.qpos[qadr]) \
+                                       - kv * data.qvel[dadr]
         # Lock finger slides at home (gripper holding, not oscillating).
         for jid in self.finger_jids:
             qadr = model.jnt_qposadr[jid]
@@ -263,11 +275,17 @@ class _MotionController:
                 nm = mujoco.mj_id2name(
                     model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
                 side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
-                data.qfrc_applied[jid] += self.WHEEL_DRIVE_TORQUE * side
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] += self.WHEEL_DRIVE_TORQUE * side
             # Floating-base stabilization: hold height + upright so the drive
             # torque doesn't flip the robot. xy translation + yaw stay free.
-            data.qfrc_applied[2] += 500.0 * (self.initial_qpos[2] - data.qpos[2]) \
-                                    - 50.0 * data.qvel[2]
+            # These DOF indices (0-5) are always the free-joint translational
+            # + rotational DOFs, so direct indexing is correct here.
+            # z-hold: keep base at settled height (not initial URDF z=0, which
+            # may not match contact equilibrium). 200 kp × 0.05m = 10N — gentle
+            # enough to allow wheel traction but firm enough to prevent sinking.
+            data.qfrc_applied[2] += 200.0 * (self.initial_qpos[2] - data.qpos[2]) \
+                                    - 20.0 * data.qvel[2]
             qx, qy = float(data.qpos[4]), float(data.qpos[5])
             data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
             data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
@@ -644,7 +662,7 @@ def record_motion(
 
     model = load["model"]
     if stabilize:
-        _stabilize_model(model, armature=0.2, damping=3.0)
+        _stabilize_model(model, armature=0.5, damping=5.0)
     if model.opt.timestep > 0.0005:
         model.opt.timestep = 0.0005
 
@@ -667,7 +685,12 @@ def record_motion(
             if bid == 0 or "wheel" in bname.lower():
                 model.geom_contype[gid] = 1
                 model.geom_conaffinity[gid] = 1
+                model.geom_friction[gid] = [1.0, 0.005, 0.0001]
 
+    # For floating-base robots: ensure wheels rest ON the ground for traction.
+    # Drop z slightly so contact is established (URDF z=0 leaves a ~3mm gap).
+    if model.njnt > 0 and model.jnt_type[0] == 0:  # free joint = floating
+        data.qpos[2] = -0.001
     mujoco.mj_forward(model, data)
 
     # Build the shared motion controller (joint classification + coordinated
@@ -757,13 +780,14 @@ def record_joint_motion(
 
     model = load["model"]
     if stabilize:
-        _stabilize_model(model, armature=0.2, damping=3.0)
+        _stabilize_model(model, armature=0.5, damping=5.0)
     if model.opt.timestep > 0.0005:
         model.opt.timestep = 0.0005
 
     data = mujoco.MjData(model)
 
     # Disable mesh-mesh collisions (same as record_motion).
+    # Also set wheel friction + drop z for ground contact.
     if model.ngeom > 10:
         for gid in range(model.ngeom):
             model.geom_contype[gid] = 0
@@ -775,6 +799,9 @@ def record_joint_motion(
             if bid == 0 or "wheel" in bname.lower():
                 model.geom_contype[gid] = 1
                 model.geom_conaffinity[gid] = 1
+                model.geom_friction[gid] = [1.0, 0.005, 0.0001]
+    if model.njnt > 0 and model.jnt_type[0] == 0:
+        data.qpos[2] = -0.001
 
     mujoco.mj_forward(model, data)
 
@@ -826,8 +853,8 @@ def record_joint_motion(
         coordinated_params[jid] = (min((hi - lo) * 0.1, 0.2), gesture_freq * 1.3)
 
     initial_qpos = data.qpos.copy()
-    kp, kv = 200.0, 20.0
-    wheel_drive_torque = 0.08
+    kp, kv = 50.0, 5.0  # Low-gain PD (high kp causes numerical instability on light joints)
+    wheel_drive_torque = 0.5  # Forward drive (must overcome PD holding friction)
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
 
@@ -848,12 +875,15 @@ def record_joint_motion(
         t = step * model.opt.timestep
         target = initial_qpos.copy()
         for jid, (amp, freq) in coordinated_params.items():
-            target[jid] = initial_qpos[jid] + amp * np.sin(2 * np.pi * freq * t)
+            qadr = model.jnt_qposadr[jid]
+            target[qadr] = initial_qpos[qadr] + amp * np.sin(2 * np.pi * freq * t)
         mujoco.mj_forward(model, data)
         data.qfrc_applied[:] = data.qfrc_bias
         for jid in coordinated_params:
-            data.qfrc_applied[jid] += kp * (target[jid] - data.qpos[jid]) \
-                                      - kv * data.qvel[jid]
+            dadr = model.jnt_dofadr[jid]
+            qadr = model.jnt_qposadr[jid]
+            data.qfrc_applied[dadr] += kp * (target[qadr] - data.qpos[qadr]) \
+                                       - kv * data.qvel[dadr]
         for jid in finger_jids:
             qadr = model.jnt_qposadr[jid]
             dadr = model.jnt_dofadr[jid]
@@ -864,9 +894,10 @@ def record_joint_motion(
                 nm = mujoco.mj_id2name(
                     model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
                 side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
-                data.qfrc_applied[jid] += wheel_drive_torque * side
-            data.qfrc_applied[2] += 500.0 * (initial_qpos[2] - data.qpos[2]) \
-                                    - 50.0 * data.qvel[2]
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] += wheel_drive_torque * side
+            data.qfrc_applied[2] += 200.0 * (initial_qpos[2] - data.qpos[2]) \
+                                    - 20.0 * data.qvel[2]
             qx, qy = float(data.qpos[4]), float(data.qpos[5])
             data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
             data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
@@ -942,7 +973,7 @@ def _run_physics_hold(
         # Stronger defaults than Phase A's first attempt — tiny masses in
         # the chain (29g gripper fingers) require meaningful armature to
         # avoid numerical resonance at the joint-limit boundary.
-        _stabilize_model(model, armature=0.2, damping=3.0)
+        _stabilize_model(model, armature=0.5, damping=5.0)
 
     model.opt.gravity[:] = (0.0, 0.0, -9.81)
     if model.opt.timestep > 0.0005:
@@ -1152,7 +1183,7 @@ def _test_single_joint(
     import numpy as np
 
     if stabilize:
-        _stabilize_model(model, armature=0.2, damping=3.0)
+        _stabilize_model(model, armature=0.5, damping=5.0)
     model.opt.gravity[:] = (0.0, 0.0, -9.81)
     if model.opt.timestep > 0.0005:
         model.opt.timestep = 0.0005
