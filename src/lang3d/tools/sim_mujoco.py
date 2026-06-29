@@ -343,7 +343,22 @@ def _launch_viewer(
         data.qpos[2] = -0.001
     mujoco.mj_forward(model, data)
 
-    # Build the shared controller so the GUI shows the planned motion.
+    # Physics settle phase: let gravity + contacts reach equilibrium
+    # BEFORE the viewer opens and the PD controller starts. Without this,
+    # the arm parts are in free-fall at t=0 and the PD controller's first
+    # correction is huge → parts "fly" before settling. Run ~200 steps
+    # with gravity compensation only (no PD, no drive) so the model finds
+    # its resting pose.
+    for _settle_step in range(200):
+        mujoco.mj_forward(model, data)
+        data.qfrc_applied[:] = data.qfrc_bias  # gravity comp only
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break  # diverged — skip settle (rare, but don't hang)
+
+    # Build the shared controller AFTER settle so initial_qpos is the
+    # equilibrium pose (not the URDF home), preventing the "fly then
+    # settle" artifact.
     controller = _MotionController(model, data, np=np)
 
     max_steps = int(duration_sec / max(model.opt.timestep, 1e-5))
