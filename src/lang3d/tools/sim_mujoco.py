@@ -123,6 +123,64 @@ def _rewrite_mesh_paths(urdf_text: str, urdf_path: Path) -> tuple[str, list[str]
 # ============================================================================
 
 
+def _apply_home_pose(model: Any, urdf_path: str) -> None:
+    """Set model qpos to the assembly's default_angles (home pose).
+
+    MuJoCo loads URDF with all revolute joints at qpos=0 (a straight arm).
+    But the arm's design has a bent home pose (shoulder -35°, elbow +40°).
+    This reads the assembly.json sibling file, extracts default_angles,
+    and sets the corresponding qpos entries so the arm starts in its
+    designed pose — not straight. Without this the PD controller yanks
+    the arm from straight to bent on frame 1 → "fly then settle".
+    """
+    import json as _json
+    from pathlib import Path
+
+    # Look for assembly.json near the URDF
+    urdf_p = Path(urdf_path)
+    candidates = [
+        urdf_p.parent / "assembly.json",
+        urdf_p.parent.parent / "assembly.json",
+        urdf_p.parent.parent.parent / "assembly.json",
+    ]
+    asm_path = None
+    for c in candidates:
+        if c.exists():
+            asm_path = c
+            break
+    if asm_path is None:
+        return  # no assembly.json — leave qpos at 0
+
+    try:
+        asm = _json.loads(asm_path.read_text("utf-8"))
+    except Exception:
+        return
+
+    default_angles = asm.get("default_angles") or {}
+    if not default_angles:
+        return
+
+    import mujoco
+    applied = 0
+    for jid in range(model.njnt):
+        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+        # Match joint name to default_angles key. URDF joint names often
+        # contain the full "parent_to_child" path; the default_angles key
+        # is just the child part name (e.g. "shoulder_pitch_servo").
+        for angle_key, angle_val in default_angles.items():
+            if angle_key in nm or nm.endswith("_to_" + angle_key):
+                qadr = model.jnt_qposadr[jid]
+                # default_angles are in degrees; MuJoCo uses radians for hinge
+                if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_HINGE:
+                    model.qpos0[qadr] = float(angle_val) * (3.14159265358979 / 180.0)
+                else:
+                    model.qpos0[qadr] = float(angle_val) / 1000.0  # mm → m for slide
+                applied += 1
+                break
+    if applied:
+        logger.info("Applied %d home-pose angles from %s", applied, asm_path.name)
+
+
 def _mujoco_available() -> bool:
     """Return True if the ``mujoco`` package is importable."""
     try:
@@ -537,6 +595,15 @@ def _load_model(urdf_path: str, *, floating_base: bool = False) -> dict[str, Any
 
     try:
         model = mujoco.MjModel.from_xml_path(load_path)
+
+        # Set initial joint positions from the assembly's default_angles.
+        # MuJoCo loads URDF with all joints at qpos=0 (straight arm), but the
+        # arm's home pose has bent joints (shoulder -35°, elbow +40°, etc.).
+        # Without this, the arm starts straight → the PD controller yanks it
+        # to the bent pose → "fly then settle". By setting qpos to the home
+        # pose BEFORE the first mj_step, the arm starts already bent and the
+        # motion is smooth from frame 1.
+        _apply_home_pose(model, urdf_path)
     except Exception as exc:
         return {
             "ok": False,
