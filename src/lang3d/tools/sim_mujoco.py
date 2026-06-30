@@ -382,6 +382,14 @@ def _launch_viewer(
     t0 = _time.time()
     try:
         with mujoco.viewer.launch_passive(model, data) as viewer:
+            # Show the settled initial pose for ~1 second BEFORE starting
+            # motion, so the user sees a stable robot first (not a flash
+            # of unstable frames while the viewer initializes rendering +
+            # the first mj_step adjusts positions).
+            viewer.sync()
+            _time.sleep(1.0)
+            viewer.sync()
+
             step = 0
             while viewer.is_running() and step < max_steps:
                 # Drive the planned motion (gesture + wheels) each step.
