@@ -216,46 +216,68 @@ class _MotionController:
             else:
                 self.pitch_jids.append(jid)
 
-        # Coordinated reach gesture: pitch=25% range, yaw=15%, roll=10%,
-        # each on a slightly different frequency so the arm reaches as a unit.
-        self.coordinated: dict[int, tuple[float, float]] = {}
+        # Smooth reach gesture: the arm extends from home to a target pose
+        # and retracts back, using a smooth ease-in-out trajectory (not
+        # sinusoidal oscillation). Each joint moves a fraction of its range
+        # toward a "reached" pose, holds briefly, then returns. This looks
+        # like a real robot reaching for an object — not random twitching.
+        # The trajectory uses a smoothstep: 0→1 over the first 40% of the
+        # cycle, hold at 1 for 20%, then 1→0 over the last 40%.
+        self.GESTURE_PERIOD = 8.0  # seconds per full reach-retract cycle
+        _reach_frac = {
+            "pitch": 0.30,   # pitch joints reach 30% of their range
+            "yaw": 0.20,
+            "roll": 0.15,
+        }
+        self.coordinated: dict[int, tuple[float, float]] = {}  # jid → (delta_rad, _unused)
         for jid in self.pitch_jids:
             lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-            self.coordinated[jid] = (min((hi - lo) * 0.25, 0.5), self.GESTURE_FREQ)
+            amp = min((hi - lo) * _reach_frac["pitch"], 0.4)
+            self.coordinated[jid] = (amp, 0.0)
         for jid in self.yaw_jids:
             lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-            self.coordinated[jid] = (min((hi - lo) * 0.15, 0.3),
-                                     self.GESTURE_FREQ * 0.7)
+            amp = min((hi - lo) * _reach_frac["yaw"], 0.25)
+            self.coordinated[jid] = (amp, 0.0)
         for jid in self.roll_jids:
             lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-            self.coordinated[jid] = (min((hi - lo) * 0.1, 0.2),
-                                     self.GESTURE_FREQ * 1.3)
+            amp = min((hi - lo) * _reach_frac["roll"], 0.15)
+            self.coordinated[jid] = (amp, 0.0)
 
         # Snapshot the home pose (computed after mj_forward by the caller).
         self.initial_qpos = data.qpos.copy()
 
     def apply(self, t: float) -> None:
-        """Populate ``data.qfrc_applied`` for the gesture + drive at time ``t``.
+        """Populate ``data.qfrc_applied`` for the motion at time ``t``.
 
-        Must be called each timestep before ``mj_step``.
-
-        IMPORTANT: joint ``jid`` is NOT a qpos/dof index. For floating-base
-        models, the FREE joint at jid=0 pads qpos by 7 and qvel/qfrc by 6,
-        so every subsequent joint's qpos/dof address is offset. We must use
-        ``model.jnt_qposadr[jid]`` and ``model.jnt_dofadr[jid]`` to index
-        into qpos/qvel/qfrc — same pattern as ``_run_physics_hold`` (L1039)
-        and ``_hold_arm`` (L300). Using ``jid`` directly is the root cause
-        of the wheeled robot not driving (all forces applied to wrong DOFs).
+        Motion design:
+        - Arm: each DOF sweeps its full range slowly (home→max→home→min→home).
+          This shows the arm's ACTUAL workspace — every joint moves through
+          its design range, not just a small sinusoidal wiggle. The sweep
+          is slow (8s per full cycle) and smooth (cosine ease-in-out).
+        - Wheeled base: drives forward (all wheels same torque), with an
+          optional gentle arc (left/right differential) that cycles slowly
+          so the robot drives forward-left-forward-right — not spinning.
+        - Fingers: locked at home.
         """
         model, data, np = self.model, self.data, self.np
         mujoco = self._mj
         kp, kv = self.KP, self.KV
 
-        # PD-track the coordinated gesture target with gravity compensation.
+        # Arm: slow sweep through the full range of each joint.
+        # Phase = where in the sweep cycle (0..1), period = 8s.
+        phase = (t % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
+        # Smooth sweep using cosine: 0.5-0.5*cos(2πt/T) goes 0→1→0 smoothly.
+        sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
+
         target = self.initial_qpos.copy()
-        for jid, (amp, freq) in self.coordinated.items():
+        for jid, (amp, _) in self.coordinated.items():
             qadr = model.jnt_qposadr[jid]
-            target[qadr] = self.initial_qpos[qadr] + amp * np.sin(2 * np.pi * freq * t)
+            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+            # Sweep from lo to hi and back, centered on home.
+            mid = self.initial_qpos[qadr]
+            half_range = (hi - lo) * 0.35  # 35% of range each direction
+            target[qadr] = mid + half_range * (2 * sweep - 1)
+
         mujoco.mj_forward(model, data)
         data.qfrc_applied[:] = data.qfrc_bias
         for jid in self.coordinated:
@@ -263,25 +285,29 @@ class _MotionController:
             qadr = model.jnt_qposadr[jid]
             data.qfrc_applied[dadr] += kp * (target[qadr] - data.qpos[qadr]) \
                                        - kv * data.qvel[dadr]
-        # Lock finger slides at home (gripper holding, not oscillating).
+        # Lock finger slides at home.
         for jid in self.finger_jids:
             qadr = model.jnt_qposadr[jid]
             dadr = model.jnt_dofadr[jid]
             data.qfrc_applied[dadr] += kp * (self.initial_qpos[qadr]
                                              - data.qpos[qadr]) \
                                        - kv * data.qvel[dadr]
-        # Differential wheel drive — the "能动" deliverable (chassis translates).
+        # Wheeled base: drive forward with a slow gentle S-curve (left then
+        # right), NOT spinning in place. All wheels get forward torque; a
+        # slowly varying differential adds a gentle arc.
         if self.drivable:
+            # S-curve steering: cycle every ~10s, amplitude 0.3 (30% torque
+            # difference left vs right → gentle arc, not sharp turn).
+            steer = 0.3 * np.sin(2 * np.pi * t / 10.0)
             for jid in self.wheel_jids:
                 nm = mujoco.mj_id2name(
                     model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
-                side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
                 dadr = model.jnt_dofadr[jid]
-                data.qfrc_applied[dadr] += self.WHEEL_DRIVE_TORQUE * side
-            # Floating-base stabilization: ONLY prevent tipping (upright hold
-            # on roll/pitch). Do NOT z-hold — the contact solver + gravity
-            # handle height naturally. z-hold was preventing chassis translation
-            # because it over-constrained the free joint.
+                # Left wheels (_fl, _rl) get base + steer; right get base - steer
+                is_left = "_fl" in nm or "_rl" in nm
+                torque = self.WHEEL_DRIVE_TORQUE * (1.0 + (steer if is_left else -steer))
+                data.qfrc_applied[dadr] += torque
+            # Upright hold only (no z-hold — let contact + gravity handle height).
             qx, qy = float(data.qpos[4]), float(data.qpos[5])
             data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
             data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
@@ -887,17 +913,19 @@ def record_joint_motion(
             else:
                 pitch_jids.append(jid)
 
-    gesture_freq = 0.15
+    # Arm: slow sweep through the full range of each joint (8s cycle).
+    # Shows the arm's ACTUAL workspace — not a small sinusoidal wiggle.
+    gesture_period = 8.0
     coordinated_params: dict[int, tuple[float, float]] = {}
     for jid in pitch_jids:
         lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.25, 0.5), gesture_freq)
+        coordinated_params[jid] = (min((hi - lo) * 0.35, 0.4), 0.0)
     for jid in yaw_jids:
         lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.15, 0.3), gesture_freq * 0.7)
+        coordinated_params[jid] = (min((hi - lo) * 0.35, 0.4), 0.0)
     for jid in roll_jids:
         lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.1, 0.2), gesture_freq * 1.3)
+        coordinated_params[jid] = (min((hi - lo) * 0.35, 0.4), 0.0)
 
     initial_qpos = data.qpos.copy()
     kp, kv = 50.0, 5.0  # Low-gain PD (high kp causes numerical instability on light joints)
@@ -920,10 +948,14 @@ def record_joint_motion(
 
     for step in range(n_steps):
         t = step * model.opt.timestep
+        # Smooth sweep: cosine ease-in-out, period=8s.
+        phase = (t % gesture_period) / gesture_period
+        sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
         target = initial_qpos.copy()
-        for jid, (amp, freq) in coordinated_params.items():
+        for jid, (amp, _) in coordinated_params.items():
             qadr = model.jnt_qposadr[jid]
-            target[qadr] = initial_qpos[qadr] + amp * np.sin(2 * np.pi * freq * t)
+            mid = initial_qpos[qadr]
+            target[qadr] = mid + amp * (2 * sweep - 1)
         mujoco.mj_forward(model, data)
         data.qfrc_applied[:] = data.qfrc_bias
         for jid in coordinated_params:
@@ -937,12 +969,15 @@ def record_joint_motion(
             data.qfrc_applied[dadr] += kp * (initial_qpos[qadr] - data.qpos[qadr]) \
                                        - kv * data.qvel[dadr]
         if drivable:
+            # Drive forward with a slow gentle S-curve (left then right).
+            steer = 0.3 * np.sin(2 * np.pi * t / 10.0)
             for jid in wheel_jids:
                 nm = mujoco.mj_id2name(
                     model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
-                side = 1.0 if "_fl" in nm or "_rl" in nm else 0.85
                 dadr = model.jnt_dofadr[jid]
-                data.qfrc_applied[dadr] += wheel_drive_torque * side
+                is_left = "_fl" in nm or "_rl" in nm
+                torque = wheel_drive_torque * (1.0 + (steer if is_left else -steer))
+                data.qfrc_applied[dadr] += torque
             # Upright hold only (no z-hold — let contact + gravity handle height).
             qx, qy = float(data.qpos[4]), float(data.qpos[5])
             data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
