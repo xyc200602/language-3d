@@ -344,21 +344,32 @@ def _launch_viewer(
     mujoco.mj_forward(model, data)
 
     # Physics settle phase: let gravity + contacts reach equilibrium
-    # BEFORE the viewer opens and the PD controller starts. Without this,
-    # the arm parts are in free-fall at t=0 and the PD controller's first
-    # correction is huge → parts "fly" before settling. Run ~200 steps
-    # with gravity compensation only (no PD, no drive) so the model finds
-    # its resting pose.
-    for _settle_step in range(200):
+    # BEFORE the viewer opens. During settle, PD-hold ALL revolute joints
+    # at their initial position (so the arm doesn't droop under gravity
+    # — that droop was the "fly" the user saw). This finds the resting
+    # pose WITH the arm held up, then the controller takes over smoothly.
+    _settle_movable = [
+        jid for jid in range(model.njnt)
+        if model.jnt_type[jid] in (mujoco.mjtJoint.mjJNT_HINGE,
+                                    mujoco.mjtJoint.mjJNT_SLIDE)
+    ]
+    _settle_kp, _settle_kv = 50.0, 5.0
+    _settle_iq = data.qpos.copy()
+    for _settle_step in range(300):
         mujoco.mj_forward(model, data)
-        data.qfrc_applied[:] = data.qfrc_bias  # gravity comp only
+        data.qfrc_applied[:] = data.qfrc_bias
+        for jid in _settle_movable:
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            data.qfrc_applied[dadr] += _settle_kp * (_settle_iq[qadr] - data.qpos[qadr]) \
+                                       - _settle_kv * data.qvel[dadr]
         mujoco.mj_step(model, data)
         if not np.all(np.isfinite(data.qacc)):
-            break  # diverged — skip settle (rare, but don't hang)
+            logger.warning("Settle phase diverged — starting viewer anyway")
+            break
 
     # Build the shared controller AFTER settle so initial_qpos is the
-    # equilibrium pose (not the URDF home), preventing the "fly then
-    # settle" artifact.
+    # equilibrium pose (not the URDF home), preventing jump artifacts.
     controller = _MotionController(model, data, np=np)
 
     max_steps = int(duration_sec / max(model.opt.timestep, 1e-5))
