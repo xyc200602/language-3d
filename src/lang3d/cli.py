@@ -605,6 +605,7 @@ def _run_sim(argv: list[str]) -> None:
             urdf_path=str(urdf),
             mode="validate",
             interactive=True,
+            duration_sec=10.0,
         )
     except ImportError:
         error_console.print(
