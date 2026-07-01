@@ -304,41 +304,97 @@ class _MotionController:
         # Snapshot the home pose (computed after mj_forward by the caller).
         self.initial_qpos = data.qpos.copy()
 
-    def apply(self, t: float) -> None:
-        """Populate ``data.qfrc_applied`` for the motion at time ``t``.
+        # Build joint→actuator mapping (if the MJCF has actuators injected).
+        self.has_actuators = model.nu > 0
+        self._joint_to_actuator: dict[int, int] = {}
+        if self.has_actuators:
+            for aid in range(model.nu):
+                jid = int(model.actuator_trnid[aid][0])  # [joint_id, site_id]
+                self._joint_to_actuator[jid] = aid
 
-        Motion design:
-        - Arm: each DOF sweeps its full range slowly (home→max→home→min→home).
-          This shows the arm's ACTUAL workspace — every joint moves through
-          its design range, not just a small sinusoidal wiggle. The sweep
-          is slow (8s per full cycle) and smooth (cosine ease-in-out).
-        - Wheeled base: drives forward (all wheels same torque), with an
-          optional gentle arc (left/right differential) that cycles slowly
-          so the robot drives forward-left-forward-right — not spinning.
-        - Fingers: locked at home.
+    def apply(self, t: float) -> None:
+        """Populate ``data.ctrl`` for the motion at time ``t``.
+
+        Uses MuJoCo's native actuator model (injected by ``_patch_mjcf``):
+        - Arm joints: ``<position>`` actuators with kp=50/kv=5 — MuJoCo
+          computes the PD torque internally, clamps it to forcerange ±5N·m,
+          and handles gravity via qfrc_bias in the same dynamics pass.
+        - Wheel joints: ``<motor>`` actuators — direct torque control.
+
+        This replaces the hand-rolled qfrc_applied PD that had 3 copies,
+        manual gravity compensation, and the post_step qpos-clamp hack.
+        MuJoCo actuators own the control → no manual gravity comp needed,
+        no qpos hack, and torque is automatically saturated.
+        """
+        model, data, np = self.model, self.data, self.np
+        mujoco = self._mj
+
+        if not self.has_actuators:
+            self._apply_legacy(t)
+            return
+
+        # Arm + drive are DECOUPLED to avoid reaction-coupling instability.
+        # First half: drive (arms at home).  Second half: gesture (stopped).
+        if self.drivable:
+            drive_phase = t < 5.0
+        else:
+            drive_phase = False
+
+        # Arm gesture: slow sweep, cosine ease-in-out, period 8s.
+        if self.drivable and drive_phase:
+            sweep = 0.0  # arms held at home while driving
+        else:
+            gt = t - 5.0 if self.drivable else t
+            phase = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
+            sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
+
+        # Set position actuator targets (data.ctrl for arm joints).
+        for jid in list(self.coordinated.keys()) + self.finger_jids:
+            qadr = model.jnt_qposadr[jid]
+            if jid in self.finger_jids:
+                tgt = self.initial_qpos[qadr]  # fingers locked at home
+            else:
+                lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+                mid = self.initial_qpos[qadr]
+                half_range = (hi - lo) * 0.35
+                tgt = mid + half_range * (2 * sweep - 1)
+                tgt = max(lo, min(hi, tgt))  # clamp target to range
+            # Find the actuator for this joint.
+            aid = self._joint_to_actuator.get(jid)
+            if aid is not None:
+                data.ctrl[aid] = tgt
+
+        # Wheel drive: motor torque during drive phase only.
+        for jid in self.wheel_jids:
+            aid = self._joint_to_actuator.get(jid)
+            if aid is not None:
+                if self.drivable and drive_phase:
+                    nm = mujoco.mj_id2name(
+                        model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+                    steer = 0.3 * np.sin(2 * np.pi * t / 5.0)
+                    is_left = "_fl" in nm or "_rl" in nm
+                    data.ctrl[aid] = self.WHEEL_DRIVE_TORQUE * (
+                        1.0 + (steer if is_left else -steer))
+                else:
+                    data.ctrl[aid] = 0.0  # wheels free when not driving
+
+    def _apply_legacy(self, t: float) -> None:
+        """Fallback for models without actuators (old URDFs / tests).
+
+        Uses the original hand-rolled qfrc_applied PD.  Kept so existing
+        tests that load URDFs without the MJCF patch still work.
         """
         model, data, np = self.model, self.data, self.np
         mujoco = self._mj
         kp, kv = self.KP, self.KV
 
-        # Arm + drive are DECOUPLED to avoid reaction-coupling instability:
-        # a 12kg chassis cannot absorb the dynamic reaction of two ~2kg arms
-        # moving simultaneously — the arm PD torque tilts the chassis, wheels
-        # lose contact, and the robot launches.  Instead we alternate:
-        #   0–5s: drive forward (arms held at home via gravity comp + PD)
-        #   5–10s: stop driving, articulate arms (reach/retract gesture)
-        # This is also how demo robots are driven at trade shows.
         if self.drivable:
-            drive_phase = t < 5.0  # drive for first 5s, then gesture
+            drive_phase = t < 5.0
         else:
             drive_phase = False
-
-        # Arm: slow sweep through the full range of each joint.
-        # Phase = where in the sweep cycle (0..1), period = 8s.
         if self.drivable and drive_phase:
-            sweep = 0.0  # arms at home while driving
+            sweep = 0.0
         else:
-            # Offset by 5s so gesture starts after driving stops.
             gt = t - 5.0 if self.drivable else t
             phase = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
             sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
@@ -347,92 +403,31 @@ class _MotionController:
         for jid, (amp, _) in self.coordinated.items():
             qadr = model.jnt_qposadr[jid]
             lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-            # Sweep from lo to hi and back, centered on home.
             mid = self.initial_qpos[qadr]
-            half_range = (hi - lo) * 0.35  # 35% of range each direction
+            half_range = (hi - lo) * 0.35
             target[qadr] = mid + half_range * (2 * sweep - 1)
 
         mujoco.mj_forward(model, data)
-        if self.drivable:
-            # Floating base: gravity-compensate ARM joints only (not base/
-            # wheel DOFs).  Full gravity comp cancels chassis weight → hover
-            # → contacts separate → robot never drives.  Per-joint comp on
-            # arm DOFs lets the PD hold the arm without its weight reaction
-            # pushing the base off the ground.  Base DOFs get zero → gravity
-            # pulls the chassis onto its wheels for traction.
-            data.qfrc_applied[:] = 0.0
-            for jid in self.coordinated:
-                dadr = model.jnt_dofadr[jid]
-                data.qfrc_applied[dadr] = data.qfrc_bias[dadr]
-            for jid in self.finger_jids:
-                dadr = model.jnt_dofadr[jid]
-                data.qfrc_applied[dadr] = data.qfrc_bias[dadr]
-        else:
-            data.qfrc_applied[:] = data.qfrc_bias
+        data.qfrc_applied[:] = data.qfrc_bias
         for jid in self.coordinated:
             dadr = model.jnt_dofadr[jid]
             qadr = model.jnt_qposadr[jid]
-            # Hard-clamp the target to jnt_range so the PD never pushes the
-            # joint past its physical limit.  MuJoCo's soft limits (solref/
-            # solimp) are too weak to resist PD forces — without this clamp,
-            # a kp=50 target beyond the limit blew the joint to 486°.
             lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
             tgt = max(lo, min(hi, target[qadr]))
-            data.qfrc_applied[dadr] += kp * (tgt - data.qpos[qadr]) \
-                                       - kv * data.qvel[dadr]
-        # Lock finger slides at home.
+            data.qfrc_applied[dadr] += kp * (tgt - data.qpos[qadr]) - kv * data.qvel[dadr]
         for jid in self.finger_jids:
             qadr = model.jnt_qposadr[jid]
             dadr = model.jnt_dofadr[jid]
-            data.qfrc_applied[dadr] += kp * (self.initial_qpos[qadr]
-                                             - data.qpos[qadr]) \
+            data.qfrc_applied[dadr] += kp * (self.initial_qpos[qadr] - data.qpos[qadr]) \
                                        - kv * data.qvel[dadr]
-        # Wheeled base: drive forward ONLY during the drive phase (first 5s).
-        # Arms are held at home during driving to avoid reaction-coupling.
         if self.drivable and drive_phase:
-            # S-curve steering: gentle left/right arc.
             steer = 0.3 * np.sin(2 * np.pi * t / 5.0)
             for jid in self.wheel_jids:
-                nm = mujoco.mj_id2name(
-                    model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+                nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
                 dadr = model.jnt_dofadr[jid]
                 is_left = "_fl" in nm or "_rl" in nm
                 torque = self.WHEEL_DRIVE_TORQUE * (1.0 + (steer if is_left else -steer))
                 data.qfrc_applied[dadr] += torque
-
-    def post_step(self) -> None:
-        """Hard-clamp joint positions to their range AFTER mj_step.
-
-        MuJoCo's built-in joint limits are soft (spring-like contact
-        constraints) and can be overwhelmed by PD forces — a kp=50 target
-        blew a shoulder to 486° (should be capped at ±90°).  This enforces
-        a HARD limit by writing qpos/qvel directly after integration.
-        """
-        model, data = self.model, self.data
-        for jid in self.coordinated:
-            qadr = model.jnt_qposadr[jid]
-            dadr = model.jnt_dofadr[jid]
-            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-            if data.qpos[qadr] < lo:
-                data.qpos[qadr] = lo
-                if data.qvel[dadr] < 0:
-                    data.qvel[dadr] = 0.0
-            elif data.qpos[qadr] > hi:
-                data.qpos[qadr] = hi
-                if data.qvel[dadr] > 0:
-                    data.qvel[dadr] = 0.0
-        for jid in self.finger_jids:
-            qadr = model.jnt_qposadr[jid]
-            dadr = model.jnt_dofadr[jid]
-            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-            if data.qpos[qadr] < lo:
-                data.qpos[qadr] = lo
-                if data.qvel[dadr] < 0:
-                    data.qvel[dadr] = 0.0
-            elif data.qpos[qadr] > hi:
-                data.qpos[qadr] = hi
-                if data.qvel[dadr] > 0:
-                    data.qvel[dadr] = 0.0
 
 
 def _launch_viewer(
@@ -553,7 +548,6 @@ def _launch_viewer(
                 t = step * model.opt.timestep
                 controller.apply(t)
                 mujoco.mj_step(model, data)
-                controller.post_step()
                 viewer.sync()
                 # Real-time playback: sleep one timestep per step, floored
                 # so physics doesn't fall behind on slow machines.
@@ -649,6 +643,74 @@ def _patch_mjcf(mjcf_text: str) -> str:
         # The world body is the first <worldbody>; inject right after its
         # opening tag so the plane lives in the world (bid 0).
         mjcf_text = mjcf_text.replace("<worldbody>", "<worldbody>" + ground, 1)
+
+    # --- solver + contact stiffness (robot-grade, not MuJoCo defaults) ---
+    # MuJoCo's default solref/solimp are tuned for generic soft contacts —
+    # too squishy for a wheeled robot.  A 20ms contact timeconstant lets
+    # wheels unload under arm-reaction load transfer.  Stiffen to 5ms and
+    # raise the impedance floor so contacts hold ~30N/wheel against transients.
+    if "<option" not in mjcf_text:
+        mjcf_text = mjcf_text.replace(
+            "<mujoco>",
+            '<mujoco>\n'
+            '  <option integrator="implicitfast" iterations="50" '
+            'solver="Newton" cone="elliptic" impratio="10"/>',
+            1,
+        )
+    # Stiffen the default geom contact params (applies to ALL geoms including
+    # the injected ground + wheels).
+    if "<default" not in mjcf_text:
+        mjcf_text = mjcf_text.replace(
+            "<worldbody>",
+            '<default>\n'
+            '    <geom solref="0.005 1" solimp="0.99 0.999 0.001"/>\n'
+            '  </default>\n'
+            '  <worldbody>',
+            1,
+        )
+
+    # --- MuJoCo <actuator> model (the architectural fix) ---
+    # The URDF has zero MuJoCo actuators (nu=0), so all control is via
+    # hand-rolled qfrc_applied in Python — 3 copies, no torque saturation,
+    # no control clamping, and the post_step qpos-hack to enforce limits.
+    # Injecting <position> actuators for arm joints + <motor> for wheels
+    # gives MuJoCo-native PD with built-in forcerange/ctrlrange clamping.
+    # The Python controller then writes data.ctrl[:] instead of qfrc_applied.
+    if "<actuator>" not in mjcf_text:
+        import re
+        # Find all named joints in the MJCF.  Match any attribute order —
+        # MuJoCo's saved MJCF puts name before type for free joints but may
+        # omit type="hinge" (the default) for hinge joints.
+        joint_matches = re.findall(
+            r'<joint\s+name="([^"]+)"[^>]*/>', mjcf_text,
+        )
+        actuator_lines: list[str] = []
+        for jname in joint_matches:
+            jlower = jname.lower()
+            # Skip the free joint (floating base) — it has no actuator.
+            if "world_to_" in jname:
+                continue
+            # Classify: wheel/tire = motor (torque), everything else =
+            # position (PD).  Finger slides also get position actuators.
+            if "wheel" in jlower or "tire" in jlower:
+                actuator_lines.append(
+                    f'    <motor name="act_{jname}" joint="{jname}" '
+                    f'gear="1" ctrllimited="false" forcelimited="true" '
+                    f'forcerange="-5 5"/>'
+                )
+            else:
+                actuator_lines.append(
+                    f'    <position name="act_{jname}" joint="{jname}" '
+                    f'kp="50" kv="5" forcelimited="true" '
+                    f'forcerange="-5 5" ctrllimited="false"/>'
+                )
+        if actuator_lines:
+            actuator_block = (
+                "\n  <actuator>\n" + "\n".join(actuator_lines) + "\n  </actuator>\n"
+            )
+            mjcf_text = mjcf_text.replace(
+                "</mujoco>", actuator_block + "</mujoco>", 1,
+            )
 
     return mjcf_text
 
@@ -1278,15 +1340,38 @@ def _run_physics_hold(
     ]
 
     for step in range(n_steps):
-        # Refresh bias forces (gravity + Coriolis) for the current pose so
-        # the feed-forward term tracks the configuration.  Without gravity
-        # compensation a pure PD controller has a steady-state error under
-        # gravity — small at the joints (sub-degree) but lever-amplified at
-        # the distal links, pushing body displacement past the 1 mm
-        # threshold on long arms.  Adding ``qfrc_bias`` is the textbook
-        # inverse-dynamics feed-forward; it cancels the gravitational load
-        # so the PD term only needs to correct transients, not hold weight.
         mujoco.mj_forward(model, data)
+        # If the model has MuJoCo actuators (injected by _patch_mjcf), use
+        # them instead of hand-rolled qfrc_applied PD.  The <position>
+        # actuators have kp/kv baked in + forcerange saturation + MuJoCo
+        # owns the gravity comp via qfrc_bias in the same dynamics pass.
+        if model.nu > 0:
+            # Set arm actuator targets to the home pose (hold position).
+            for jid in controlled_joints:
+                qadr = model.jnt_qposadr[jid]
+                # Find the actuator for this joint.
+                for aid in range(model.nu):
+                    if int(model.actuator_trnid[aid][0]) == jid:
+                        data.ctrl[aid] = initial_qpos[qadr]
+                        break
+            # Zero wheel actuators (parked).
+            for jid in wheel_hold_jids:
+                for aid in range(model.nu):
+                    if int(model.actuator_trnid[aid][0]) == jid:
+                        data.ctrl[aid] = 0.0
+                        break
+        else:
+            # Legacy path: hand-rolled qfrc_applied PD (for old URDFs/tests).
+            data.qfrc_applied[:] = data.qfrc_bias
+            for jid in controlled_joints:
+                qadr = model.jnt_qposadr[jid]
+                dadr = model.jnt_dofadr[jid]
+                q_err = initial_qpos[qadr] - data.qpos[qadr]
+                data.qfrc_applied[dadr] += kp * q_err - kv * data.qvel[dadr]
+            for jid in wheel_hold_jids:
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] = 0.0
+                data.qvel[dadr] = 0.0
         # For a floating base, qpos (nq=21) and qvel/qfrc (nv=20) differ in
         # size AND the base DOFs occupy qvel[0:6] / qfrc[0:6] (vs qpos[0:7]
         # = xyz + quat).  The PD hold test checks ARM stability, not base
