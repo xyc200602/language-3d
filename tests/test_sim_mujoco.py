@@ -204,6 +204,11 @@ needs_mujoco_and_example = pytest.mark.skipif(
     reason="mujoco not installed or example URDF not available",
 )
 
+needs_mujoco = pytest.mark.skipif(
+    not _mujoco_available(),
+    reason="mujoco not installed",
+)
+
 
 @needs_mujoco_and_example
 class TestRealLoad:
@@ -505,4 +510,204 @@ def test_wheeled_base_drives_in_record_motion() -> None:
         f"base did not translate (horiz={horiz*1000:.1f}mm) — "
         f"wheeled base is not driving"
     )
+
+
+# ---------------------------------------------------------------------------
+# Ground-plane + contact-setup tests (AGENTS.md §5 — "能动" verification)
+#
+# These guard the fix for the "robot never drives" root cause: MuJoCo's URDF
+# loader creates no floor, so wheel-ground contact hit nothing (ncon=0) and
+# the chassis free-fell.  _patch_mjcf now injects a ground plane and
+# _setup_wheel_contacts computes a dynamic z-drop from the real wheel-bottom
+# height (instead of a hardcoded -0.001).
+# ---------------------------------------------------------------------------
+
+def _find_wheeled_urdf() -> Path | None:
+    """Locate the most recent wheeled-arm URDF for driving tests.
+
+    Prefers wheeled_arm runs (which have correct X-axis wheel rolling
+    geometry) over older 4wheel_dual_arm runs (which had a wheel-orientation
+    regression — cylinders standing as cans instead of rolling).
+    """
+    import glob
+    # Prefer wheeled_arm (newer, correct wheel orientation).
+    candidates = sorted(glob.glob(
+        "data/runs/wheeled_arm/*/engineering_package/ros2_package/"
+        "*/urdf/*.urdf",
+    ))
+    if not candidates:
+        candidates = sorted(glob.glob(
+            "data/runs/4wheel_dual_arm/*/engineering_package/ros2_package/"
+            "*/urdf/*.urdf",
+        ))
+    # Exclude _flat / temp variants.
+    candidates = [c for c in candidates
+                  if "_flat" not in c and "_float" not in c
+                  and "_mjcf" not in c and "_nconmax" not in c]
+    return Path(candidates[-1]) if candidates else None
+
+
+needs_mujoco_and_wheeled = pytest.mark.skipif(
+    not (_mujoco_available() and _find_wheeled_urdf() is not None),
+    reason="mujoco not installed or no wheeled URDF available",
+)
+
+
+@needs_mujoco
+def test_patch_mjcf_injects_ground_plane() -> None:
+    """_patch_mjcf must add a <geom type="plane"> to the worldbody."""
+    from lang3d.tools.sim_mujoco import _patch_mjcf
+
+    mjcf = '<mujoco><worldbody><body/></worldbody></mujoco>'
+    patched = _patch_mjcf(mjcf)
+    assert 'type="plane"' in patched, "ground plane not injected"
+    assert 'name="ground"' in patched
+    # nconmax must also be present.
+    assert 'nconmax="200"' in patched
+
+
+@needs_mujoco
+def test_patch_mjcf_idempotent() -> None:
+    """Re-patching an MJCF that already has a plane should not duplicate it."""
+    from lang3d.tools.sim_mujoco import _patch_mjcf
+
+    mjcf = '<mujoco><worldbody><geom name="ground" type="plane" size="1 1 0.1"/></worldbody></mujoco>'
+    patched = _patch_mjcf(mjcf)
+    assert patched.count('type="plane"') == 1, "plane duplicated on re-patch"
+
+
+@needs_mujoco_and_wheeled
+def test_load_model_has_ground_plane() -> None:
+    """A loaded wheeled model must contain a plane geom (the injected floor)."""
+    from lang3d.tools.sim_mujoco import _load_model
+    import mujoco
+
+    urdf = _find_wheeled_urdf()
+    load = _load_model(str(urdf), floating_base=True)
+    assert load["ok"], f"load failed: {load['error']}"
+    model = load["model"]
+    # geom type 0 = mjGEOM_PLANE.
+    plane_geoms = [g for g in range(model.ngeom) if model.geom_type[g] == 0]
+    assert len(plane_geoms) >= 1, "no ground plane geom in loaded model"
+    # Cleanup temp files.
+    import os
+    for f in load["temp_files"]:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+@needs_mujoco_and_wheeled
+def test_setup_wheel_contacts_returns_negative_zdrop() -> None:
+    """_setup_wheel_contacts must return a negative z-drop for floating bases.
+
+    A floating-base wheeled robot needs its base dropped so wheels penetrate
+    the ground.  The drop must be computed from the REAL wheel-bottom height,
+    not hardcoded — this guards against the old -0.001 that left ncon=0.
+    """
+    from lang3d.tools.sim_mujoco import _load_model, _setup_wheel_contacts
+    import mujoco
+
+    urdf = _find_wheeled_urdf()
+    load = _load_model(str(urdf), floating_base=True)
+    model = load["model"]
+    data = mujoco.MjData(model)
+    z_drop = _setup_wheel_contacts(model, data)
+    assert z_drop < 0.0, f"z-drop should be negative (got {z_drop})"
+    # After applying the drop + mj_forward, contacts must exist (ncon > 0).
+    data.qpos[2] = z_drop
+    mujoco.mj_forward(model, data)
+    assert data.ncon > 0, (
+        f"no contacts after z-drop={z_drop} — wheels still not touching ground"
+    )
+    import os
+    for f in load["temp_files"]:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+@needs_mujoco_and_wheeled
+def test_wheeled_robot_drives_with_ground_contacts() -> None:
+    """End-to-end driving: the robot must translate >50mm in 3s of drive.
+
+    This is the definitive "能动" test.  Before the ground-plane fix, the
+    robot moved ~10mm (pure gravity creep, ncon=0).  After the fix it drives
+    forward with differential steering.  50mm/3s is conservative for a 12kg
+    robot at 2N·m wheel torque.
+    """
+    from lang3d.tools.sim_mujoco import _load_model, _setup_wheel_contacts, _MotionController
+    import mujoco
+    import numpy as np
+
+    urdf = _find_wheeled_urdf()
+    load = _load_model(str(urdf), floating_base=True)
+    model = load["model"]
+    data = mujoco.MjData(model)
+
+    z_drop = _setup_wheel_contacts(model, data)
+    data.qpos[2] = z_drop
+
+    # Settle phase: PD-hold arm joints so it doesn't whip during the drop.
+    iq = data.qpos.copy()
+    for _ in range(300):
+        mujoco.mj_forward(model, data)
+        data.qfrc_applied[:] = data.qfrc_bias
+        for jid in range(model.njnt):
+            if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_HINGE:
+                qadr = model.jnt_qposadr[jid]
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] += 50.0 * (iq[qadr] - data.qpos[qadr]) \
+                                           - 5.0 * data.qvel[dadr]
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break
+
+    controller = _MotionController(model, data, np=np)
+    assert controller.drivable, "model not detected as drivable"
+    assert len(controller.wheel_jids) >= 2
+
+    init_xy = data.qpos[:2].copy()
+    for step in range(1500):  # ~3s
+        t = step * model.opt.timestep
+        controller.apply(t)
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break
+    final_xy = data.qpos[:2].copy()
+    horiz_mm = np.hypot(final_xy[0] - init_xy[0], final_xy[1] - init_xy[1]) * 1000
+    assert horiz_mm > 50.0, (
+        f"robot only moved {horiz_mm:.1f}mm in 3s — not driving "
+        f"(pre-fix was ~10mm gravity creep)"
+    )
+    import os
+    for f in load["temp_files"]:
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+
+
+def test_contact_setup_not_triplicated() -> None:
+    """The wheel-contact setup must live in ONE helper, not 3 inline copies.
+
+    Guards the deduplication of _launch_viewer / record_motion /
+    record_joint_motion.  If someone re-inlines the geom_contype loop, this
+    test fails — catching the maintenance debt before it returns.
+    """
+    import re
+    src = Path(__file__).parent.parent / "src" / "lang3d" / "tools" / "sim_mujoco.py"
+    text = src.read_text(encoding="utf-8")
+    # The helper itself contains this line once; the 3 old inline copies are
+    # gone.  Count occurrences OUTSIDE the helper definition.
+    matches = re.findall(r"model\.geom_contype\[gid\] = 0", text)
+    # One occurrence is allowed (inside _setup_wheel_contacts).  More means
+    # the duplication returned.
+    assert len(matches) <= 1, (
+        f"geom_contype reset appears {len(matches)} times — contact setup "
+        f"was re-duplicated (should be in _setup_wheel_contacts only)"
+    )
+
 

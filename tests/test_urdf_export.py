@@ -95,6 +95,29 @@ class TestResolveAxis:
         j = Joint("revolute", "a", "b", parent_anchor="front")
         assert _resolve_axis(j) == [0.0, 1.0, 0.0]
 
+    # --- Wheel-axis guard (regression: LLM changed wheel axis to Z) ---
+    def test_wheel_child_axis_z_forced_to_x(self):
+        """A wheel revolute joint with axis Z must be forced to X (rolling)."""
+        j = Joint("revolute", "base", "wheel_fl", axis="z")
+        assert _resolve_axis(j) == [1.0, 0.0, 0.0], (
+            "wheel joint with Z axis must be corrected to X (turntable → roller)"
+        )
+
+    def test_tire_child_axis_z_forced_to_x(self):
+        """A tire revolute joint with axis Z must also be forced to X."""
+        j = Joint("revolute", "base", "tire_fl", axis="z")
+        assert _resolve_axis(j) == [1.0, 0.0, 0.0]
+
+    def test_wheel_child_axis_x_preserved(self):
+        """A wheel joint that already has axis X must be left alone."""
+        j = Joint("revolute", "base", "wheel_fl", axis="x")
+        assert _resolve_axis(j) == [1.0, 0.0, 0.0]
+
+    def test_non_wheel_z_axis_preserved(self):
+        """Non-wheel joints with axis Z (yaw) must NOT be changed."""
+        j = Joint("revolute", "base", "yaw_servo", axis="z")
+        assert _resolve_axis(j) == [0.0, 0.0, 1.0]
+
 
 class TestInferInertia:
     def test_box_inertia(self):

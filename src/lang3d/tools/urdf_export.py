@@ -132,16 +132,37 @@ def _resolve_axis(joint: Joint) -> list[float]:
     # pipeline broadened for Joint string fields (commit on export safety).
     axis = joint.axis or ""
     if axis != "auto" and axis.lower() in _AXIS_MAP:
-        return _AXIS_MAP[axis.lower()]
-    # Infer from parent_anchor
-    anchor = (joint.parent_anchor or "").lower()
-    if anchor in ("top", "bottom"):
-        return [0.0, 0.0, 1.0]
-    elif anchor in ("left", "right"):
-        return [1.0, 0.0, 0.0]
-    elif anchor in ("front", "back"):
-        return [0.0, 1.0, 0.0]
-    return [0.0, 0.0, 1.0]  # default z
+        resolved = _AXIS_MAP[axis.lower()]
+    else:
+        # Infer from parent_anchor
+        anchor = (joint.parent_anchor or "").lower()
+        if anchor in ("top", "bottom"):
+            resolved = [0.0, 0.0, 1.0]
+        elif anchor in ("left", "right"):
+            resolved = [1.0, 0.0, 0.0]
+        elif anchor in ("front", "back"):
+            resolved = [0.0, 1.0, 0.0]
+        else:
+            resolved = [0.0, 0.0, 1.0]  # default z
+
+    # Wheel-axis guard (AGENTS.md §3.2 — regression-prone): a wheel must roll
+    # about the X axle (the project's established convention; see
+    # mobile_base_gen.py).  If the resolved axis is Z the wheel becomes a
+    # turntable that cannot drive forward.  This has regressed before (the
+    # LLM changed wheel axes to "z"); enforce it at export so no upstream
+    # string can produce a non-rolling wheel.
+    child = (joint.child or "").lower()
+    if (child.startswith("wheel_") or child.startswith("tire_")) \
+            and joint.type in ("revolute", "continuous"):
+        if abs(resolved[2]) > 0.5:  # Z-dominant
+            import logging
+            logging.getLogger("lang3d.urdf_export").warning(
+                "wheel joint %s→%s had axis %s (turntable); forcing to X "
+                "(rolling axle). See mobile_base_gen.py convention.",
+                joint.parent, joint.child, resolved,
+            )
+            resolved = [1.0, 0.0, 0.0]
+    return resolved
 
 
 def _infer_inertia(part: Part) -> dict[str, float]:
@@ -653,17 +674,24 @@ class AssemblyToURDF:
         """Auto-detect drive train type and add Gazebo plugins."""
         revolute_count = sum(1 for j in self.assembly.joints if j.type == "revolute")
 
-        # Check if this looks like a differential drive (2 revolute joints on z axis)
-        z_revolute = sum(
-            1 for j in self.assembly.joints
-            if j.type == "revolute" and _resolve_axis(j) == [0.0, 0.0, 1.0]
-        )
+        # Detect a differential drive by looking for ≥2 revolute joints whose
+        # child is a wheel/tire.  We match by NAME (not by axis) because the
+        # project's wheel convention is X-axis rolling (see _resolve_axis guard
+        # + mobile_base_gen.py), whereas the old check looked for Z-axis joints
+        # — which only worked before the wheel-axis correction.
+        def _is_wheel_joint(j: Joint) -> bool:
+            child = (j.child or "").lower()
+            return (
+                j.type == "revolute"
+                and (child.startswith("wheel_") or child.startswith("tire_"))
+            )
 
-        if z_revolute >= 2:
+        wheel_joints_src = [j for j in self.assembly.joints if _is_wheel_joint(j)]
+
+        if len(wheel_joints_src) >= 2:
             # Differential drive
             wheel_joints = [
-                j for j in self._joints if j.type == "revolute"
-                and j.axis == (0.0, 0.0, 1.0)
+                j for j in self._joints if _is_wheel_joint(j)
             ]
             if len(wheel_joints) >= 2:
                 # Derive wheel separation from positions (distance between
