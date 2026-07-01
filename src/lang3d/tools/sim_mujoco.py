@@ -224,7 +224,7 @@ class _MotionController:
     GESTURE_FREQ = 0.15
     # Forward drive torque — enough to visibly translate the chassis.
     # Tuned for a ~12kg dual-arm robot with wheel friction=1.0, kp=50 PD.
-    WHEEL_DRIVE_TORQUE = 2.0
+    WHEEL_DRIVE_TORQUE = 0.5
     # PD gains — low enough to avoid numerical instability on light joints
     # (kp=200 caused NaN at arm_r_pitch_servo_2; kp=50 is stable).
     KP = 50.0
@@ -321,11 +321,27 @@ class _MotionController:
         mujoco = self._mj
         kp, kv = self.KP, self.KV
 
+        # Arm + drive are DECOUPLED to avoid reaction-coupling instability:
+        # a 12kg chassis cannot absorb the dynamic reaction of two ~2kg arms
+        # moving simultaneously — the arm PD torque tilts the chassis, wheels
+        # lose contact, and the robot launches.  Instead we alternate:
+        #   0–5s: drive forward (arms held at home via gravity comp + PD)
+        #   5–10s: stop driving, articulate arms (reach/retract gesture)
+        # This is also how demo robots are driven at trade shows.
+        if self.drivable:
+            drive_phase = t < 5.0  # drive for first 5s, then gesture
+        else:
+            drive_phase = False
+
         # Arm: slow sweep through the full range of each joint.
         # Phase = where in the sweep cycle (0..1), period = 8s.
-        phase = (t % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
-        # Smooth sweep using cosine: 0.5-0.5*cos(2πt/T) goes 0→1→0 smoothly.
-        sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
+        if self.drivable and drive_phase:
+            sweep = 0.0  # arms at home while driving
+        else:
+            # Offset by 5s so gesture starts after driving stops.
+            gt = t - 5.0 if self.drivable else t
+            phase = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
+            sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
 
         target = self.initial_qpos.copy()
         for jid, (amp, _) in self.coordinated.items():
@@ -337,11 +353,32 @@ class _MotionController:
             target[qadr] = mid + half_range * (2 * sweep - 1)
 
         mujoco.mj_forward(model, data)
-        data.qfrc_applied[:] = data.qfrc_bias
+        if self.drivable:
+            # Floating base: gravity-compensate ARM joints only (not base/
+            # wheel DOFs).  Full gravity comp cancels chassis weight → hover
+            # → contacts separate → robot never drives.  Per-joint comp on
+            # arm DOFs lets the PD hold the arm without its weight reaction
+            # pushing the base off the ground.  Base DOFs get zero → gravity
+            # pulls the chassis onto its wheels for traction.
+            data.qfrc_applied[:] = 0.0
+            for jid in self.coordinated:
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] = data.qfrc_bias[dadr]
+            for jid in self.finger_jids:
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] = data.qfrc_bias[dadr]
+        else:
+            data.qfrc_applied[:] = data.qfrc_bias
         for jid in self.coordinated:
             dadr = model.jnt_dofadr[jid]
             qadr = model.jnt_qposadr[jid]
-            data.qfrc_applied[dadr] += kp * (target[qadr] - data.qpos[qadr]) \
+            # Hard-clamp the target to jnt_range so the PD never pushes the
+            # joint past its physical limit.  MuJoCo's soft limits (solref/
+            # solimp) are too weak to resist PD forces — without this clamp,
+            # a kp=50 target beyond the limit blew the joint to 486°.
+            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+            tgt = max(lo, min(hi, target[qadr]))
+            data.qfrc_applied[dadr] += kp * (tgt - data.qpos[qadr]) \
                                        - kv * data.qvel[dadr]
         # Lock finger slides at home.
         for jid in self.finger_jids:
@@ -350,25 +387,52 @@ class _MotionController:
             data.qfrc_applied[dadr] += kp * (self.initial_qpos[qadr]
                                              - data.qpos[qadr]) \
                                        - kv * data.qvel[dadr]
-        # Wheeled base: drive forward with a slow gentle S-curve (left then
-        # right), NOT spinning in place. All wheels get forward torque; a
-        # slowly varying differential adds a gentle arc.
-        if self.drivable:
-            # S-curve steering: cycle every ~10s, amplitude 0.3 (30% torque
-            # difference left vs right → gentle arc, not sharp turn).
-            steer = 0.3 * np.sin(2 * np.pi * t / 10.0)
+        # Wheeled base: drive forward ONLY during the drive phase (first 5s).
+        # Arms are held at home during driving to avoid reaction-coupling.
+        if self.drivable and drive_phase:
+            # S-curve steering: gentle left/right arc.
+            steer = 0.3 * np.sin(2 * np.pi * t / 5.0)
             for jid in self.wheel_jids:
                 nm = mujoco.mj_id2name(
                     model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
                 dadr = model.jnt_dofadr[jid]
-                # Left wheels (_fl, _rl) get base + steer; right get base - steer
                 is_left = "_fl" in nm or "_rl" in nm
                 torque = self.WHEEL_DRIVE_TORQUE * (1.0 + (steer if is_left else -steer))
                 data.qfrc_applied[dadr] += torque
-            # Upright hold only (no z-hold — let contact + gravity handle height).
-            qx, qy = float(data.qpos[4]), float(data.qpos[5])
-            data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
-            data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
+
+    def post_step(self) -> None:
+        """Hard-clamp joint positions to their range AFTER mj_step.
+
+        MuJoCo's built-in joint limits are soft (spring-like contact
+        constraints) and can be overwhelmed by PD forces — a kp=50 target
+        blew a shoulder to 486° (should be capped at ±90°).  This enforces
+        a HARD limit by writing qpos/qvel directly after integration.
+        """
+        model, data = self.model, self.data
+        for jid in self.coordinated:
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+            if data.qpos[qadr] < lo:
+                data.qpos[qadr] = lo
+                if data.qvel[dadr] < 0:
+                    data.qvel[dadr] = 0.0
+            elif data.qpos[qadr] > hi:
+                data.qpos[qadr] = hi
+                if data.qvel[dadr] > 0:
+                    data.qvel[dadr] = 0.0
+        for jid in self.finger_jids:
+            qadr = model.jnt_qposadr[jid]
+            dadr = model.jnt_dofadr[jid]
+            lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
+            if data.qpos[qadr] < lo:
+                data.qpos[qadr] = lo
+                if data.qvel[dadr] < 0:
+                    data.qvel[dadr] = 0.0
+            elif data.qpos[qadr] > hi:
+                data.qpos[qadr] = hi
+                if data.qvel[dadr] > 0:
+                    data.qvel[dadr] = 0.0
 
 
 def _launch_viewer(
@@ -428,11 +492,29 @@ def _launch_viewer(
         if model.jnt_type[jid] in (mujoco.mjtJoint.mjJNT_HINGE,
                                     mujoco.mjtJoint.mjJNT_SLIDE)
     ]
+    # For floating-base robots, gravity-compensate ARM joints only (not the
+    # base/wheel DOFs).  Full gravity comp cancels chassis weight → hover →
+    # contacts separate → wheel drive hits nothing.  Per-joint comp on arm
+    # DOFs lets the PD hold the arm up without the arm's weight reaction
+    # pushing the base off the ground.  Base DOFs get zero → gravity pulls
+    # the chassis onto its wheels.
+    _is_floating = model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
+    _settle_arm_jids = _settle_movable if not _is_floating else [
+        jid for jid in _settle_movable
+        if "wheel" not in (mujoco.mj_id2name(
+            model, mujoco.mjtObj.mjOBJ_JOINT, jid) or "").lower()
+    ]
     _settle_kp, _settle_kv = 50.0, 5.0
     _settle_iq = data.qpos.copy()
     for _settle_step in range(300):
         mujoco.mj_forward(model, data)
-        data.qfrc_applied[:] = data.qfrc_bias
+        if _is_floating:
+            data.qfrc_applied[:] = 0.0
+            for jid in _settle_arm_jids:
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] = data.qfrc_bias[dadr]
+        else:
+            data.qfrc_applied[:] = data.qfrc_bias
         for jid in _settle_movable:
             qadr = model.jnt_qposadr[jid]
             dadr = model.jnt_dofadr[jid]
@@ -471,6 +553,7 @@ def _launch_viewer(
                 t = step * model.opt.timestep
                 controller.apply(t)
                 mujoco.mj_step(model, data)
+                controller.post_step()
                 viewer.sync()
                 # Real-time playback: sleep one timestep per step, floored
                 # so physics doesn't fall behind on slow machines.
