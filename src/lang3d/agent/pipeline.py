@@ -639,6 +639,15 @@ class AssemblyPipeline:
             # under-sized bases for 5dof/7dof long arms (COM -135/-205mm).
             self._stabilize_com_if_needed(solver_ctx)
 
+            # Collision-aware joint range clamping (AGENTS.md §5): narrow each
+            # arm joint's range_deg to its maximal collision-free sub-range so
+            # the arm can NEVER sweep into its own base during simulation.
+            # This runs AFTER solve (needs positions) and BEFORE URDF export
+            # (range_deg → <limit>).  Generalises the dual-arm-only
+            # _configure_collision_aware_dual_arm Phase 2 to ALL arms.  No-op
+            # when FCL is absent (degrades to the numeric sanitizer caps).
+            self._clamp_arm_ranges(ctx)
+
             # Collision check + auto-resolve (non-final rounds only)
             if ctx.round_num < ctx.max_rounds:
                 ctx.assembly, ctx.positions = run_collision_check_and_resolve(
@@ -652,6 +661,28 @@ class AssemblyPipeline:
             ctx.problems_history.append([f"Solver error: {e}"])
             self.solver_agent.log_warning(logger, "stage failed: %s", e)
             return False
+
+    def _clamp_arm_ranges(self, ctx: "PipelineContext") -> None:
+        """Narrow arm joint ranges to collision-free sub-ranges (post-solve).
+
+        Wraps :func:`clamp_assembly_joint_ranges_collision_free` so every arm
+        (single fixed-base, wheeled single-arm, wheeled dual-arm) gets its
+        ``range_deg`` trimmed to what it can actually reach without
+        interpenetrating its own base/links.  This is the single-arm
+        generalisation of the dual-arm-only composition-time clamp.  Silent
+        no-op when FCL is unavailable or the assembly has no revolute joints.
+        """
+        if not ctx.is_arm or not ctx.positions:
+            return
+        try:
+            from .assembly_compose import clamp_assembly_joint_ranges_collision_free
+            n = clamp_assembly_joint_ranges_collision_free(ctx.assembly)
+            if n:
+                self.solver_agent.log(
+                    logger, "collision-aware range clamp: %d joint(s) narrowed", n,
+                )
+        except ImportError:
+            pass  # FCL absent → silent skip (numeric sanitizer caps remain)
 
     def _stabilize_com_if_needed(self, solver_ctx: Any) -> None:
         """Enlarge the base plate if the solved COM falls outside support.
