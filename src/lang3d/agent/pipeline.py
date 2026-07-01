@@ -921,6 +921,64 @@ class AssemblyPipeline:
         ctx.problems_history.append(problems)
         ctx.passed = passed
 
+        # --- Geometric connection-logic check (authoritative, zero false-positive) ---
+        # Validates the joint graph is a buildable parent-before-child tree with
+        # no cycles — a genuine "装配连接要符合实际机器人逻辑" defect catcher.
+        # Unlike check_mating_surfaces (0.1mm face gate, false-positives on
+        # anchor stacking) or check_tolerance_chain (fictional 0.1mm/dim
+        # heuristic), this check has ~zero false positives: it only fails on a
+        # genuinely broken topology where a child's parent isn't in the tree.
+        try:
+            from .assembly_verifier import AssemblyVerifier
+            seq_checks = AssemblyVerifier().check_assembly_sequence(ctx.assembly)
+            infeasible = [c for c in seq_checks if not c.feasible]
+            if infeasible:
+                for c in infeasible:
+                    msg = f"装配顺序错误: {c.notes}"
+                    if msg not in problems:
+                        problems.append(msg)
+                ctx.problems_history[-1] = problems  # refresh
+                ctx.passed = False
+                passed = False
+                self.verifier_agent.log(
+                    logger, "FAILED — %d assembly-sequence errors", len(infeasible),
+                )
+        except Exception as e:
+            self.verifier_agent.log_warning(
+                logger, "assembly-sequence check skipped: %s", e,
+            )
+
+        # --- Motion-collision sweep (advisory) ---
+        # Sweeps each revolute joint through its range, re-solving FK at each
+        # sample, reporting motion-induced self-collisions.  Advisory only:
+        # the constructive _clamp_arm_ranges (run_solver) already narrows ranges
+        # to collision-free subsets, and FCL is often absent (verified=False).
+        # Logged so the run record shows whether kinematic self-collision was
+        # detected, but does NOT override the VLM/geo verdict.
+        try:
+            from .assembly_verifier import AssemblyVerifier
+            motion = AssemblyVerifier().check_motion_collisions(
+                ctx.assembly, ctx.positions,
+            )
+            if motion.verified and not motion.collision_free:
+                msg = (
+                    f"运动碰撞告警: {motion.joints_with_collisions}个关节在运动范围内"
+                    f"发生自碰撞 ({motion.notes})"
+                )
+                if msg not in problems:
+                    problems.append(msg)
+                ctx.problems_history[-1] = problems
+                self.verifier_agent.log_warning(logger, "%s", msg)
+            elif motion.verified and motion.collision_free:
+                self.verifier_agent.log(
+                    logger, "motion-collision sweep: %d joints, collision-free",
+                    motion.joints_checked,
+                )
+        except Exception as e:
+            self.verifier_agent.log_warning(
+                logger, "motion-collision sweep skipped: %s", e,
+            )
+
         if passed:
             self.verifier_agent.log(logger, "PASSED")
         else:
