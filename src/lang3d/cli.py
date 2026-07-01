@@ -302,7 +302,18 @@ def _fmt_dims(d: dict) -> str:
 
 
 def _launch_sim_viewer(session: Any) -> None:
-    """Open the MuJoCo viewer on the current assembly's URDF (best effort)."""
+    """Open the MuJoCo viewer on the current assembly's URDF.
+
+    Reuses ``SimMujocoTool.execute(interactive=True)`` — the same path as
+    the ``lang3d sim <folder>`` subcommand — so the robot gets the full
+    treatment: mesh-path rewriting, ground-plane injection, home-pose
+    injection, settle phase, and coordinated motion via ``_MotionController``.
+
+    Previously this was a bare ``mj_step`` loop with no controller, no
+    ground, and no home pose — the robot just slumped under gravity (the
+    exact "Bug #4" defect the sim_mujoco fixes target).  Now it shares one
+    code path with the CLI subcommand.
+    """
     urdf = session.folder / "engineering_package" / "urdf.xml"
     if not urdf.exists():
         error_console.print(
@@ -310,41 +321,26 @@ def _launch_sim_viewer(session: Any) -> None:
         )
         return
     try:
-        import mujoco  # type: ignore[import-not-found]
-        import mujoco.viewer  # type: ignore[import-not-found]
-        import threading
-        import time as _time
+        import mujoco  # type: ignore[import-not-found]  # noqa: F401
     except ImportError:
         error_console.print(
             "[red]mujoco not installed.[/red]  Run: pip install mujoco"
         )
         return
 
-    console.print(f"[yellow]Launching MuJoCo viewer for {urdf.name}...[/yellow]")
+    console.print(f"[yellow]Opening MuJoCo viewer for:[/yellow] {urdf.name}")
     console.print("[dim](close the viewer window to return)[/dim]")
+    try:
+        from .tools.sim_mujoco import SimMujocoTool
 
-    def _run() -> None:
-        try:
-            model = mujoco.MjModel.from_xml_path(str(urdf))
-            data = mujoco.MjData(model)
-            mujoco.mj_forward(model, data)
-            with mujoco.viewer.launch_passive(model, data) as viewer:
-                # Hold the viewer open until the user closes it
-                step = 0
-                while viewer.is_running() and step < 100000:
-                    mujoco.mj_step(model, data)
-                    viewer.sync()
-                    _time.sleep(0.016)
-                    step += 1
-        except Exception as e:
-            error_console.print(f"[red]Viewer error: {e}[/red]")
-
-    # Run in a thread so the CLI doesn't permanently block if the user
-    # closes the terminal instead of the window.
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-    # Block until the viewer thread finishes (window closed)
-    t.join()
+        SimMujocoTool().execute(
+            urdf_path=str(urdf),
+            mode="validate",
+            interactive=True,
+            duration_sec=15.0,
+        )
+    except Exception as e:
+        error_console.print(f"[red]Viewer error: {e}[/red]")
 
 
 def run_cli() -> None:

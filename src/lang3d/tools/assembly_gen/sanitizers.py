@@ -963,148 +963,6 @@ def _validate_proportions(assembly: Assembly) -> Assembly:
     return assembly
 
 
-def _downstream_link_length(parts: list[Part], joints: list[Joint],
-                            joint_child: str) -> float:
-    """Total horizontal length of links downstream of *joint_child*.
-
-    Walks the kinematic chain from *joint_child* outward (child → grandchild)
-    and sums the ``length`` dimension of every part that looks like an arm
-    link (link / arm / forearm).  This is the arm's reach from this joint —
-    used to compute the geometric pitch limit.
-    """
-    part_by_name = {p.name: p for p in parts}
-    children_of: dict[str, list[str]] = {}
-    for j in joints:
-        children_of.setdefault(j.parent, []).append(j.child)
-
-    total = 0.0
-    visited: set[str] = set()
-    stack = [joint_child]
-    while stack:
-        nm = stack.pop()
-        if nm in visited:
-            continue
-        visited.add(nm)
-        p = part_by_name.get(nm)
-        if p and _is_link_like(nm):
-            total += float(p.dimensions.get("length", 0.0))
-        stack.extend(children_of.get(nm, []))
-    return total
-
-
-def _joint_height_above_base(parts: list[Part], joints: list[Joint],
-                             joint_child: str) -> float:
-    """Estimate the vertical (Z) height of *joint_child*'s axis above the base.
-
-    Sums the ``height`` of every part on the kinematic path from the root
-    (base_plate / base_footprint / chassis) to *joint_child*.  Parts on a
-    front/back anchor (links) contribute 0 to height — only top/bottom-stacked
-    parts (base_plate, servos, yaw_links) build the vertical column.
-    """
-    part_by_name = {p.name: p for p in parts}
-    parent_of: dict[str, str] = {}
-    for j in joints:
-        parent_of[j.child] = j.parent
-
-    # Find root: a part that is never a child.
-    all_children = {j.child for j in joints}
-    roots = [p.name for p in parts if p.name not in all_children]
-    root = roots[0] if roots else (parts[0].name if parts else "")
-
-    # Walk from joint_child up to root, summing heights of vertical-stack parts.
-    height = 0.0
-    nm = joint_child
-    visited: set[str] = set()
-    while nm and nm not in visited and nm != root:
-        visited.add(nm)
-        p = part_by_name.get(nm)
-        if p:
-            h = float(p.dimensions.get("height",
-                      p.dimensions.get("thickness", 0.0)))
-            # Links (horizontal) don't add to the vertical stack.
-            if not _is_link_like(nm):
-                height += h
-        nm = parent_of.get(nm, "")
-    # Add the root's half-height (base plate sits on the ground).
-    rp = part_by_name.get(root)
-    if rp:
-        height += float(rp.dimensions.get("height",
-                      rp.dimensions.get("thickness", 0.0)))
-    return height
-
-
-def _compute_safe_pitch_range(parts: list[Part], joints: list[Joint],
-                              joint_child: str) -> tuple[float, float] | None:
-    """Analytic geometric limit on a pitch joint's range (degrees).
-
-    Returns ``(max_backward, max_forward)`` in degrees, or ``None`` if the
-    geometry can't be determined (caller falls back to numeric caps).
-
-    The arm extends horizontally from the joint.  When the pitch angle
-    increases (positive = fold up/back), the downstream links swing upward
-    then over the top, and the end-effector descends on the back side —
-    eventually passing through the base plate.  The critical limit: the
-    end-effector must stay above the base plate top.
-
-    Given:
-      H = joint axis height above base plate top
-      L = total downstream link length (arm reach from this joint)
-
-    The end-effector Z relative to the joint = -L·sin(θ_eff) where θ_eff is
-    the cumulative pitch (shoulder + elbow + ...).  Downstream pitch joints
-    ADD to the effective angle — a shoulder at +10° with elbow at +33° gives
-    θ_eff = +43° for the forearm.  So the limit for THIS joint must reserve
-    angle for downstream joints that will also fold.
-
-    We compute the worst case: this joint at θ, ALL downstream pitch joints
-    at their own geometric limits, giving the maximum cumulative fold.  Then
-    θ is capped so the cumulative stays below arcsin(H/L).
-    """
-    import math
-    H = _joint_height_above_base(parts, joints, joint_child)
-    L = _downstream_link_length(parts, joints, joint_child)
-    if L <= 0 or H <= 0:
-        return None
-    ratio = min(H / L, 1.0)
-    critical = math.degrees(math.asin(ratio))  # tip reaches base height
-
-    # Reserve angle for downstream pitch joints.  Find all downstream pitch
-    # joints and sum their typical fold (use a conservative 30° each — most
-    # elbows fold ~30-60° in normal operation).
-    downstream_pitch = _count_downstream_pitch_joints(joints, joint_child)
-    reserved = downstream_pitch * 20.0  # 20° per downstream joint (conservative)
-
-    # This joint's limit = critical - reserved, with 20% safety margin.
-    max_forward = 0.8 * (critical - reserved)
-    max_backward = min(60.0, max_forward)
-    # Ensure a usable minimum.
-    max_forward = max(max_forward, 5.0)
-    max_backward = max(max_backward, 5.0)
-    return (max_backward, max_forward)
-
-
-def _count_downstream_pitch_joints(joints: list[Joint], joint_child: str) -> int:
-    """Count revolute pitch (axis=x) joints downstream of *joint_child*."""
-    children_of: dict[str, list[str]] = {}
-    for j in joints:
-        children_of.setdefault(j.parent, []).append(j.child)
-    child_set = {j.child for j in joints}
-    # Walk downstream.
-    count = 0
-    visited: set[str] = set()
-    stack = [joint_child]
-    while stack:
-        nm = stack.pop()
-        if nm in visited:
-            continue
-        visited.add(nm)
-        for j in joints:
-            if j.parent == nm and j.axis == "x" and j.type == "revolute":
-                count += 1
-        stack.extend(children_of.get(nm, []))
-    return count
-
-
 def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     """Inject non-zero default_angles for arm pitch joints that lack them.
 
@@ -1555,18 +1413,22 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     # the chassis or the other arm (穿模). Real robots ship with narrower
     # software limits than the raw servo range.
     #
-    # **Geometric pitch limit (2026-07-01)**: the old fixed caps (±90/±30°)
-    # ignored the arm's actual geometry — a long arm on a short base could
-    # fold past vertical and drive the gripper THROUGH the base plate (Z=-222mm
-    # confirmed at MuJoCo sweep extremes).  Now each pitch joint's cap is
-    # computed analytically from its height above the base and downstream
-    # link length: forward pitch is bounded so the tip cannot descend below
-    # the base plate.  This is physics, not a heuristic.
+    # **Design lesson (2026-07-01)**: a previous attempt used an analytic
+    # geometric limit (arcsin(H/L)) to prevent the arm reaching below the
+    # base plate.  This was WRONG — the arm extends FORWARD (−Y) from the
+    # base, so the gripper reaching low Z is in front of the base (Y=−269mm,
+    # base Y=[−75,75]), NOT inside it.  FCL confirmed 0 collisions across
+    # the FULL range [-90,+90].  The "穿模" the user saw was the arm passing
+    # through the FLOOR (no ground in the static render), not through the
+    # base.  The correct collision authority is the FCL mesh check in the
+    # e2e motion-collision sweep — NOT a Z-height heuristic.  Numeric caps
+    # remain as a coarse sanity bound; the FCL sweep is the real gate.
     #
     # Base yaw (axis=z) is clamped ASYMMETRICALLY: the home angle's sign
     # sets the allowed direction, and the range must not cross 0° (the
     # midline).
-    _ARM_PITCH_BACK_CAP = 30.0  # fallback backward cap (geometric limit preferred)
+    _ARM_PITCH_CAP = 90.0   # forward (downward reach) — generous, FCL gates actual collision
+    _ARM_PITCH_BACK_CAP = 45.0  # backward (folds toward base) — tighter, avoids self-collision
     _ARM_YAW_CAP = 90.0
     for j in revolute_joints:
         if not _is_arm_pitch_joint(j) and j.axis != "z":
@@ -1582,22 +1444,15 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
             else:
                 new_lo, new_hi = max(lo, -_ARM_YAW_CAP), min(hi, 0.0)
         else:
-            # Pitch: geometric limit first, then asymmetric numeric cap.
-            # The geometric limit (max_backward, max_forward) is the angle
-            # at which the downstream links would reach below the base plate.
-            geo = _compute_safe_pitch_range(assembly.parts, assembly.joints, j.child)
-            if geo is not None:
-                cap_back, cap_fwd = geo
-            else:
-                cap_back, cap_fwd = _ARM_PITCH_BACK_CAP, 90.0
-            # The "forward" direction (home sign) gets the full geometric
-            # allowance; the "backward" direction (folds toward base) is
-            # tighter (the backward fold limit, min of geo and numeric).
-            cap_back = min(cap_back, _ARM_PITCH_BACK_CAP)
+            # Pitch: asymmetric numeric cap. Forward (home sign) is generous
+            # (±90°) so the arm can reach down to pick up objects. Backward
+            # (folds toward base, opposite sign) is tighter (±45°) to avoid
+            # the arm folding back into its own servo stack.  The real
+            # collision gate is the FCL motion-collision sweep downstream.
             if home >= 0:
-                new_lo, new_hi = max(lo, -cap_back), min(hi, cap_fwd)
+                new_lo, new_hi = max(lo, -_ARM_PITCH_BACK_CAP), min(hi, _ARM_PITCH_CAP)
             else:
-                new_lo, new_hi = max(lo, -cap_fwd), min(hi, cap_back)
+                new_lo, new_hi = max(lo, -_ARM_PITCH_CAP), min(hi, _ARM_PITCH_BACK_CAP)
         if new_hi - new_lo < 10.0:
             continue  # range already tiny — don't collapse it
         if (new_lo, new_hi) != (lo, hi):
@@ -1607,23 +1462,15 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
                 "self-collision)",
                 j.child, lo, hi, new_lo, new_hi, home,
                 "yaw midline-safe" if j.axis == "z"
-                else "geometric pitch limit",
+                else f"cap ±{_ARM_PITCH_CAP:.0f}° fwd/±{_ARM_PITCH_BACK_CAP:.0f}° back",
             )
             j.range_deg = (new_lo, new_hi)
 
-    # --- Combined pitch verification (2026-07-01) ---
-    # The per-joint geometric limit above doesn't account for joints folding
-    # simultaneously: shoulder + elbow at their individual limits can still
-    # drive the end-effector below the base.  This post-check solves the
-    # assembly at the worst-case combination and, if unsafe, scales ALL
-    # positive pitch limits down until the end-effector clears.
-    _tighten_pitch_for_combined_safety(assembly, injected)
-
     # --- Home-within-range guarantee ---
-    # After all clamping/tightening, every revolute joint's home angle MUST
-    # be inside its range_deg.  If home is outside, MuJoCo's PD controller
-    # yanks the arm to the nearest limit on step 1, causing "fly" artifacts
-    # and physics instability.  Clamp home into range as a final safety net.
+    # After all clamping, every revolute joint's home angle MUST be inside
+    # its range_deg.  If home is outside, MuJoCo's PD controller yanks the
+    # arm to the nearest limit on step 1, causing "fly" artifacts and
+    # physics instability.  Clamp home into range as a final safety net.
     for j in assembly.joints:
         if j.type != "revolute" or not j.range_deg:
             continue
@@ -1640,127 +1487,6 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
             assembly.default_angles[j.child] = hi
 
     return assembly
-
-
-def _tighten_pitch_for_combined_safety(
-    assembly: Assembly, default_angles: dict[str, float],
-) -> None:
-    """Scale down positive pitch limits so the end-effector stays above base.
-
-    The danger is the POSITIVE pitch direction (fold-up-and-over): when all
-    pitch joints reach their positive limits simultaneously, the arm swings
-    over the top and the end-effector descends behind the base, passing
-    through the base plate.  We solve at the worst-case combination (all
-    pitch joints at +limit), and if the end-effector is below the base, we
-    uniformly scale every positive limit toward 0° (straight) by a factor,
-    binary-searching for the largest safe factor.
-    """
-    import logging
-    log = logging.getLogger("lang3d.sanitizers")
-
-    pitch_joints = [
-        j for j in assembly.joints
-        if j.axis == "x" and j.type == "revolute"
-        and not any(j.child.lower().startswith(p) for p in ("wheel_", "tire_", "motor_"))
-    ]
-    if not pitch_joints:
-        return
-
-    base = next(
-        (p for p in assembly.parts
-         if "base" in p.name.lower() and "plate" in p.name.lower()),
-        None,
-    )
-    if base is None:
-        return
-    base_top = float(base.dimensions.get("height",
-                    base.dimensions.get("thickness", 8.0))) / 2.0
-
-    # Save original limits.
-    orig_lo: dict[str, float] = {}
-    orig_hi: dict[str, float] = {}
-    for j in pitch_joints:
-        orig_lo[j.child] = float(j.range_deg[0])
-        orig_hi[j.child] = float(j.range_deg[1])
-
-    def _lowest_ee_z(scale: float) -> float:
-        """Solve with both limits scaled by *scale*, return lowest EE Z.
-
-        We scale BOTH limits toward 0 (straight arm).  At scale=1 the joints
-        use their original ranges; at scale=0 all joints are locked at 0°
-        (straight, safe).  This avoids the min-span guard defeating the
-        tightening (scaling only the positive limit left the negative limit
-        wide, forcing the guard to restore the positive limit).
-        """
-        trial = dict(default_angles)
-        for j in pitch_joints:
-            # Scale the limit FURTHER from home (the dangerous direction).
-            home = float(default_angles.get(j.child, 0.0) or 0.0)
-            hi = orig_hi[j.child]
-            lo = orig_lo[j.child]
-            # Positive (fold-up) direction: scale toward 0.
-            trial[j.child] = hi * scale
-        try:
-            from ..assembly_solver import AssemblySolver
-            trial_asm = Assembly(
-                name=assembly.name, parts=assembly.parts,
-                joints=assembly.joints, default_angles=trial,
-            )
-            pos = AssemblySolver(trial_asm).solve()
-        except Exception:
-            return 9999.0  # solver failed → treat as safe (don't tighten)
-        ee_names = [p.name for p in assembly.parts
-                    if any(k in p.name.lower()
-                           for k in ("gripper", "finger", "effector", "tool"))]
-        if not ee_names:
-            ee_names = [p.name for p in assembly.parts if "wrist" in p.name.lower()]
-        return min(
-            (pos[nm]["position"][2] for nm in ee_names if nm in pos),
-            default=9999.0,
-        )
-
-    # Check current state.
-    z = _lowest_ee_z(1.0)
-    if z >= base_top:
-        return  # already safe
-
-    # Binary search for the largest safe scale factor (0 ≤ scale ≤ 1).
-    lo_s, hi_s = 0.0, 1.0
-    for _ in range(10):
-        mid = (lo_s + hi_s) / 2.0
-        z = _lowest_ee_z(mid)
-        if z >= base_top:
-            lo_s = mid  # safe → try larger
-        else:
-            hi_s = mid  # unsafe → try smaller
-
-    safe_scale = lo_s
-    log.info(
-        "Sanitizer: combined pitch limit scaled positive limits by %.0f%% "
-        "(end-effector was below base at full range)",
-        safe_scale * 100,
-    )
-    for j in pitch_joints:
-        # Scale the positive (fold-up) limit.  Keep the negative limit
-        # unchanged (reach-forward is safe).  If the resulting span is too
-        # small (< 5°), widen the negative limit to compensate — the arm
-        # needs SOME motion range to be useful.
-        new_hi = orig_hi[j.child] * safe_scale
-        lo = orig_lo[j.child]
-        if new_hi - lo < 5.0:
-            # Widen backward to give usable span.
-            lo = new_hi - 5.0
-        # Ensure the home angle is within range (MuJoCo yanks the arm to
-        # range if home is outside — causes "fly" artifacts).  Clamp home
-        # into range and update default_angles so the arm starts safe.
-        home = float(default_angles.get(j.child, 0.0) or 0.0)
-        if home < lo:
-            default_angles[j.child] = lo
-            assembly.default_angles[j.child] = lo
-        elif home > new_hi:
-            default_angles[j.child] = new_hi
-            assembly.default_angles[j.child] = new_hi
-        j.range_deg = (lo, new_hi)
 
 
 def _validate_assembly(assembly: Assembly) -> None:
