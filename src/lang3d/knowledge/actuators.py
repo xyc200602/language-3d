@@ -48,7 +48,8 @@ ACTUATORS: dict[str, Actuator] = {
         weight_g=9, price_cny=5,
         rotation_range=(0, 180), interface="pwm",
         description="微型舵机，适用于轻负载关节和小型机器人",
-        dimensions_mm={"length": 22.2, "width": 11.8, "height": 22.5},
+        # Matches parts_catalog servo_sg90 (body_height=31.0 incl. tabs).
+        dimensions_mm={"length": 22.2, "width": 11.8, "height": 31.0},
         shaft_diameter_mm=4.8,
     ),
     "MG90S": Actuator(
@@ -94,7 +95,8 @@ ACTUATORS: dict[str, Actuator] = {
         weight_g=60, price_cny=35,
         rotation_range=(0, 180), interface="pwm",
         description="20kg 大扭矩数字舵机，适合中负载机械臂",
-        dimensions_mm={"length": 40.0, "width": 20.0, "height": 40.5},
+        # Matches parts_catalog servo_ds3218 (body_height=38.5, fixed=True).
+        dimensions_mm={"length": 40.0, "width": 20.0, "height": 38.5},
         shaft_diameter_mm=6.0,
     ),
     "DS3225": Actuator(

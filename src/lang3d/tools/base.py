@@ -111,7 +111,9 @@ ROLE_TOOL_CATEGORIES: dict[str, list[str] | None] = {
     "verifier": ["vlm", "screen", "file_ops"],
     "verification": ["vlm", "screen", "file_ops"],
     "fixer": ["assembly", "file_ops"],
-    "chassis": ["assembly", "mobile_base", "actuator", "file_ops"],
+    # "mobile_base" is a knowledge module (knowledge/mobile_base_gen.py),
+    # not a tool category — the chassis role uses assembly compose tools.
+    "chassis": ["assembly", "actuator", "file_ops"],
     # Legacy roles — None = use step-type filtering (existing behaviour)
     "modeling": None,
     "vision": None,
