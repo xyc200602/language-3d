@@ -867,12 +867,16 @@ def generate_ops(
                     if op.get("type") == "boolean" and op.get("operation") == "cut":
                         body = op.get("result_name", body)
                         break
-            # NOTE: result.fastener_ops (bolt/nut/washer 3D models) are
-            # intentionally NOT merged into the part STL.  Fasteners span
-            # the joint interface between TWO parts, so positioning them
-            # in part-local coordinates is geometrically incorrect.
-            # Adding them as separate assembly-level parts is the right
-            # architecture (tracked as a separate P0 task).
+            # NOTE: result.fastener_ops (bolt/nut/washer 3D op-dicts) are
+            # intentionally NOT merged into the part STL.  They are part-local
+            # geometry with no world-space position, so placing them here would
+            # be wrong.  Fastener 3D models ARE included in the assembly render
+            # — via the live path: freecad.py:_compute_bolt_hole_world_positions
+            # + _fastener_script_lines / build_assembly_stl_trimesh, which
+            # re-derives world-space bolt positions from joints + solver
+            # placements.  The fastener_ops field here is a legacy accumulator
+            # that is no longer consumed by any downstream code; it remains for
+            # audit/debugging only.
             joint.connection.features_generated = True
 
     # ------------------------------------------------------------------
