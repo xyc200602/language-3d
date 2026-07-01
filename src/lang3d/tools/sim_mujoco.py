@@ -409,22 +409,13 @@ def _launch_viewer(
 
     data = mujoco.MjData(model)
 
-    # Wheel-ground contact setup (same as record_motion/record_joint_motion).
-    if model.ngeom > 10:
-        for gid in range(model.ngeom):
-            model.geom_contype[gid] = 0
-            model.geom_conaffinity[gid] = 0
-        for gid in range(model.ngeom):
-            bid = int(model.geom_bodyid[gid])
-            bname = mujoco.mj_id2name(
-                model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
-            if bid == 0 or "wheel" in bname.lower():
-                model.geom_contype[gid] = 1
-                model.geom_conaffinity[gid] = 1
-                model.geom_friction[gid] = [1.0, 0.005, 0.0001]
-    # Drop z slightly for floating-base so wheels contact the ground.
-    if model.njnt > 0 and model.jnt_type[0] == 0:
-        data.qpos[2] = -0.001
+    # Wheel-ground contact setup (centralised in _setup_wheel_contacts):
+    # enables collision only for the ground plane + wheels, sets wheel
+    # friction, and returns the z-drop needed for the lowest wheel point
+    # to penetrate the ground by 0.5 mm (so contacts actually activate).
+    z_drop = _setup_wheel_contacts(model, data)
+    if z_drop != 0.0:
+        data.qpos[2] = z_drop
     mujoco.mj_forward(model, data)
 
     # Physics settle phase: let gravity + contacts reach equilibrium
@@ -531,6 +522,119 @@ def _make_base_floating(urdf_text: str) -> tuple[str, bool]:
     return urdf_text + inject, True
 
 
+# Wheel-ground friction: tangential 1.0 gives traction; the two tiny
+# numbers are torsional/rolling friction (MuJoCo's 3-component format).
+_WHEEL_FRICTION = (1.0, 0.005, 0.0001)
+
+
+def _patch_mjcf(mjcf_text: str) -> str:
+    """Inject nconmax + a ground plane into a compiled MJCF document.
+
+    MuJoCo's URDF loader does **not** create a floor — the world body has
+    no geom, so wheel-ground contact setup (contype/conaffinity/friction)
+    contacts nothing and the robot never drives (verified: ``ncon==0``,
+    2 s of drive torque → 10 mm of pure-gravity creep).  This patches the
+    MJCF produced by ``mj_saveLastXML`` in two ways:
+
+    1. Raise ``nconmax`` to 200 so dense-mesh assemblies (38 collision
+       geoms on a dual-arm robot) don't crash ``mj_forward`` with
+       "expected at most 8 contacts".
+    2. Add a ``<geom type="plane">`` to the world body so wheels have a
+       ground to push against.
+
+    Both patches are string replacements on the saved MJCF; if either
+    fails the caller keeps the unpatched model (see ``_load_model``).
+    """
+    # --- nconmax ---
+    if "<size" in mjcf_text:
+        if "nconmax" not in mjcf_text:
+            mjcf_text = mjcf_text.replace(
+                "<size", '<size nconmax="200"', 1,
+            )
+    else:
+        mjcf_text = mjcf_text.replace(
+            "<mujoco>", '<mujoco><size nconmax="200"/>', 1,
+        )
+
+    # --- ground plane (only if not already present) ---
+    if 'name="ground"' not in mjcf_text and 'type="plane"' not in mjcf_text:
+        ground = (
+            '\n      <geom name="ground" type="plane" size="5 5 0.1" '
+            'rgba="0.5 0.5 0.5 1" contype="1" conaffinity="1" '
+            f'friction="{" ".join(str(f) for f in _WHEEL_FRICTION)}"/>'
+        )
+        # The world body is the first <worldbody>; inject right after its
+        # opening tag so the plane lives in the world (bid 0).
+        mjcf_text = mjcf_text.replace("<worldbody>", "<worldbody>" + ground, 1)
+
+    return mjcf_text
+
+
+def _setup_wheel_contacts(model: Any, data: Any) -> float:
+    """Configure wheel-ground collision + friction; return the needed z-drop.
+
+    Centralises the contact setup that was previously triplicated across
+    ``_launch_viewer``, ``record_motion`` and ``record_joint_motion``.
+    Walks every geom, enables collision ONLY for the world body's geoms
+    (the ground plane from :func:`_patch_mjcf`) and wheel bodies, sets
+    wheel friction, and returns the z-offset the floating base must be
+    dropped by so the lowest wheel point penetrates the ground by 0.5 mm
+    (guaranteeing contacts activate).  Callers set ``data.qpos[2]`` to
+    this value when the base is floating.
+
+    Returns 0.0 for fixed-base (arm-only) models — there is nothing to
+    drop and no wheels to contact.
+    """
+    import mujoco  # type: ignore[import-not-found]
+
+    # mj_forward populates data.geom_xpos (world-frame geom centres), which
+    # we need to compute the wheel-bottom height for the z-drop.
+    if data is not None:
+        mujoco.mj_forward(model, data)
+
+    # Disable all collisions, then re-enable only world + wheels.
+    for gid in range(model.ngeom):
+        model.geom_contype[gid] = 0
+        model.geom_conaffinity[gid] = 0
+
+    wheel_bottom_z = float("inf")  # lowest wheel point in world frame
+    for gid in range(model.ngeom):
+        bid = int(model.geom_bodyid[gid])
+        bname = mujoco.mj_id2name(
+            model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
+        is_world = bid == 0
+        is_wheel = "wheel" in bname.lower()
+        if is_world or is_wheel:
+            model.geom_contype[gid] = 1
+            model.geom_conaffinity[gid] = 1
+            if is_wheel:
+                model.geom_friction[gid] = list(_WHEEL_FRICTION)
+                # Lowest point of this wheel geom in world frame.
+                # geom_xpos is the world-frame geom centre (populated by
+                # mj_forward); for a cylinder the half-extent along its
+                # spin axis is geom_size[0] (radius).  We take the max of
+                # the first/third size entries conservatively so the drop
+                # never under-estimates (contacts engage sooner, never late).
+                sz = model.geom_size[gid]
+                half_z = float(max(sz[0], sz[2])) if len(sz) >= 3 else float(sz[0])
+                gz = float(data.geom_xpos[gid][2]) if data is not None else 0.0
+                bottom = gz - half_z
+                if bottom < wheel_bottom_z:
+                    wheel_bottom_z = bottom
+
+    # Fixed base (no FREE joint at index 0) → nothing to drop, no driving.
+    is_floating = model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
+    if not is_floating:
+        return 0.0
+    if wheel_bottom_z == float("inf"):
+        return -0.001  # no wheels found — keep legacy tiny drop
+    # Drop the base so the lowest wheel PENETRATES the ground by 1 mm.
+    # MuJoCo's narrow-phase contact needs actual overlap (negative gap) to
+    # register a contact — sitting exactly flush leaves ncon=0 and the
+    # robot free-falls.  1 mm is enough to engage without a visual sink.
+    return -(wheel_bottom_z) - 0.001
+
+
 def _load_model(urdf_path: str, *, floating_base: bool = False) -> dict[str, Any]:
     """Load a URDF into MuJoCo, returning a structured result dict.
 
@@ -614,28 +718,22 @@ def _load_model(urdf_path: str, *, floating_base: bool = False) -> dict[str, Any
 
     # Raise the per-pair contact limit for dense-mesh assemblies (dual-arm
     # robots with 38 STL collision meshes can produce >8 contacts between
-    # two geoms, crashing mj_forward with "expected at most 8").  Recompile
-    # the model as MJCF with nconmax=200 injected into <size>.
+    # two geoms, crashing mj_forward with "expected at most 8") AND inject a
+    # ground plane (MuJoCo's URDF loader creates no floor — without it
+    # wheel-ground contact hits nothing and the robot never drives).
+    # Both patches go through ``_patch_mjcf`` on the saved MJCF.
     try:
         mjcf_fd, mjcf_path = tempfile.mkstemp(
-            suffix=".xml", dir=str(path.parent), prefix="_nconmax_",
+            suffix=".xml", dir=str(path.parent), prefix="_mjcf_",
         )
         os.close(mjcf_fd)
         mujoco.mj_saveLastXML(mjcf_path, model)
         mjcf_text = Path(mjcf_path).read_text("utf-8")
-        if "<size" in mjcf_text:
-            if "nconmax" not in mjcf_text:
-                mjcf_text = mjcf_text.replace(
-                    "<size", '<size nconmax="200"', 1,
-                )
-        else:
-            mjcf_text = mjcf_text.replace(
-                "<mujoco>", '<mujoco><size nconmax="200"/>', 1,
-            )
+        mjcf_text = _patch_mjcf(mjcf_text)
         Path(mjcf_path).write_text(mjcf_text, "utf-8")
         temp_files.append(mjcf_path)
         model = mujoco.MjModel.from_xml_path(mjcf_path)
-        warnings.append("raised nconmax=200 for dense-mesh collisions")
+        warnings.append("patched MJCF: nconmax=200 + ground plane")
     except Exception:
         pass  # keep the original model if MJCF patching fails
 
@@ -808,29 +906,13 @@ def record_motion(
 
     data = mujoco.MjData(model)
 
-    # Disable mesh-mesh collisions to avoid mj_narrowphase maxContact crash.
-    # Complex dual-arm assemblies (38 STL meshes) produce >8 contacts per
-    # pair, exceeding MuJoCo's hard-coded mj_maxContact=8.  Arm-to-arm
-    # avoidance is already handled at composition time; in playback we only
-    # need wheel-ground contact for driving.  contype/conaffinity bitmask:
-    # ground=bit0, wheels=bit1 → only wheel×ground collides.
-    if model.ngeom > 10:
-        for gid in range(model.ngeom):
-            model.geom_contype[gid] = 0
-            model.geom_conaffinity[gid] = 0
-        for gid in range(model.ngeom):
-            bid = int(model.geom_bodyid[gid])
-            bname = mujoco.mj_id2name(
-                model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
-            if bid == 0 or "wheel" in bname.lower():
-                model.geom_contype[gid] = 1
-                model.geom_conaffinity[gid] = 1
-                model.geom_friction[gid] = [1.0, 0.005, 0.0001]
-
-    # For floating-base robots: ensure wheels rest ON the ground for traction.
-    # Drop z slightly so contact is established (URDF z=0 leaves a ~3mm gap).
-    if model.njnt > 0 and model.jnt_type[0] == 0:  # free joint = floating
-        data.qpos[2] = -0.001
+    # Wheel-ground contact setup (centralised; see _setup_wheel_contacts).
+    # Mesh-mesh collisions are disabled — only ground×wheel collides, which
+    # is all driving needs.  Arm self-collision is prevented at generation
+    # time (collision-aware range clamping), not in playback.
+    z_drop = _setup_wheel_contacts(model, data)
+    if z_drop != 0.0:
+        data.qpos[2] = z_drop
     mujoco.mj_forward(model, data)
 
     # Build the shared motion controller (joint classification + coordinated
@@ -926,77 +1008,25 @@ def record_joint_motion(
 
     data = mujoco.MjData(model)
 
-    # Disable mesh-mesh collisions (same as record_motion).
-    # Also set wheel friction + drop z for ground contact.
-    if model.ngeom > 10:
-        for gid in range(model.ngeom):
-            model.geom_contype[gid] = 0
-            model.geom_conaffinity[gid] = 0
-        for gid in range(model.ngeom):
-            bid = int(model.geom_bodyid[gid])
-            bname = mujoco.mj_id2name(
-                model, mujoco.mjtObj.mjOBJ_BODY, bid) or ""
-            if bid == 0 or "wheel" in bname.lower():
-                model.geom_contype[gid] = 1
-                model.geom_conaffinity[gid] = 1
-                model.geom_friction[gid] = [1.0, 0.005, 0.0001]
-    if model.njnt > 0 and model.jnt_type[0] == 0:
-        data.qpos[2] = -0.001
+    # Wheel-ground contact setup (centralised; see _setup_wheel_contacts).
+    z_drop = _setup_wheel_contacts(model, data)
+    if z_drop != 0.0:
+        data.qpos[2] = z_drop
 
     mujoco.mj_forward(model, data)
 
-    # Classify joints and set up coordinated motion (same as record_motion).
+    # Use the shared _MotionController (same gesture + wheel drive as the
+    # interactive viewer and record_motion).  This was previously an inline
+    # re-implementation that drifted out of sync — see AGENTS.md §1.1.
+    controller = _MotionController(model, data, np=np)
     movable = [
         jid for jid in range(model.njnt)
         if model.jnt_type[jid] in (
             mujoco.mjtJoint.mjJNT_HINGE, mujoco.mjtJoint.mjJNT_SLIDE,
         )
     ]
-    has_floating_base = (
-        model.njnt > 0 and model.jnt_type[0] == mujoco.mjtJoint.mjJNT_FREE
-    )
-    wheel_jids = [
-        jid for jid in movable
-        if "wheel" in (mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
-                       or "").lower()
-    ]
-    drivable = has_floating_base and len(wheel_jids) >= 2
-    arm_jids = [jid for jid in movable if jid not in wheel_jids]
+    drivable = controller.drivable
 
-    pitch_jids, yaw_jids, roll_jids, finger_jids = [], [], [], []
-    for jid in arm_jids:
-        jtype = model.jnt_type[jid]
-        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
-        if jtype == mujoco.mjtJoint.mjJNT_SLIDE:
-            finger_jids.append(jid)
-        else:
-            ax = abs(float(model.jnt_axis[jid][0]))
-            ay = abs(float(model.jnt_axis[jid][1]))
-            az = abs(float(model.jnt_axis[jid][2]))
-            if az > 0.5:
-                yaw_jids.append(jid)
-            elif ay > 0.5:
-                roll_jids.append(jid)
-            else:
-                pitch_jids.append(jid)
-
-    # Arm: slow sweep through the full range of each joint (8s cycle).
-    # Shows the arm's ACTUAL workspace — not a small sinusoidal wiggle.
-    gesture_period = 8.0
-    coordinated_params: dict[int, tuple[float, float]] = {}
-    for jid in pitch_jids:
-        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.35, 0.4), 0.0)
-    for jid in yaw_jids:
-        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.35, 0.4), 0.0)
-    for jid in roll_jids:
-        lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
-        coordinated_params[jid] = (min((hi - lo) * 0.35, 0.4), 0.0)
-
-    initial_qpos = data.qpos.copy()
-    kp, kv = 50.0, 5.0  # Low-gain PD (high kp causes numerical instability on light joints)
-    wheel_drive_torque = 2.0  # Forward drive (must overcome PD holding friction)
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
 
@@ -1015,40 +1045,7 @@ def record_joint_motion(
 
     for step in range(n_steps):
         t = step * model.opt.timestep
-        # Smooth sweep: cosine ease-in-out, period=8s.
-        phase = (t % gesture_period) / gesture_period
-        sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
-        target = initial_qpos.copy()
-        for jid, (amp, _) in coordinated_params.items():
-            qadr = model.jnt_qposadr[jid]
-            mid = initial_qpos[qadr]
-            target[qadr] = mid + amp * (2 * sweep - 1)
-        mujoco.mj_forward(model, data)
-        data.qfrc_applied[:] = data.qfrc_bias
-        for jid in coordinated_params:
-            dadr = model.jnt_dofadr[jid]
-            qadr = model.jnt_qposadr[jid]
-            data.qfrc_applied[dadr] += kp * (target[qadr] - data.qpos[qadr]) \
-                                       - kv * data.qvel[dadr]
-        for jid in finger_jids:
-            qadr = model.jnt_qposadr[jid]
-            dadr = model.jnt_dofadr[jid]
-            data.qfrc_applied[dadr] += kp * (initial_qpos[qadr] - data.qpos[qadr]) \
-                                       - kv * data.qvel[dadr]
-        if drivable:
-            # Drive forward with a slow gentle S-curve (left then right).
-            steer = 0.3 * np.sin(2 * np.pi * t / 10.0)
-            for jid in wheel_jids:
-                nm = mujoco.mj_id2name(
-                    model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
-                dadr = model.jnt_dofadr[jid]
-                is_left = "_fl" in nm or "_rl" in nm
-                torque = wheel_drive_torque * (1.0 + (steer if is_left else -steer))
-                data.qfrc_applied[dadr] += torque
-            # Upright hold only (no z-hold — let contact + gravity handle height).
-            qx, qy = float(data.qpos[4]), float(data.qpos[5])
-            data.qfrc_applied[3] += -200.0 * qx - 20.0 * data.qvel[3]
-            data.qfrc_applied[4] += -200.0 * qy - 20.0 * data.qvel[4]
+        controller.apply(t)
         mujoco.mj_step(model, data)
         if not np.all(np.isfinite(data.qacc)):
             break

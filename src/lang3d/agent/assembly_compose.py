@@ -421,16 +421,72 @@ def _configure_collision_aware_dual_arm(
     )
 
     # ---- Phase 2: per-joint soft-limit search ----
-    # For each arm revolute joint, find the largest collision-free sub-range
-    # of its declared range containing the (possibly updated) default angle,
-    # and rewrite range_deg to it.  This is the robot's effective joint limit.
-    revolute_arm_joints = [
-        j for j in joints
-        if j.get("type") == "revolute"
-        and (j.get("child", "").startswith("arm_l_")
-             or j.get("child", "").startswith("arm_r_"))
-    ]
-    for j in revolute_arm_joints:
+    # Delegate to the generic collision-aware range clamper (shared with
+    # the single-arm and post-solver pipeline path).
+    _clamp_joint_ranges_to_collision_free(
+        parts, joints, default_angles,
+        joint_filter=lambda j: (
+            j.get("child", "").startswith("arm_l_")
+            or j.get("child", "").startswith("arm_r_")
+        ),
+    )
+
+
+def _clamp_joint_ranges_to_collision_free(
+    parts: list[dict],
+    joints: list[dict],
+    default_angles: dict[str, float],
+    *,
+    joint_filter=None,
+) -> int:
+    """Rewrite each revolute joint's ``range_deg`` to its collision-free subset.
+
+    For every revolute joint passing *joint_filter* (default: all arm joints,
+    i.e. non-wheel revolute joints), binary-search the maximal collision-free
+    sub-range of its declared ``range_deg`` that contains the joint's home
+    angle, and rewrite ``range_deg`` in place.  This is the
+    mechanical+software limit every shipped robot enforces — a joint whose
+    servo spec says ±180° but which rams its own base at +90° gets a soft
+    limit matching what the arm can actually reach without interpenetration.
+
+    Used by:
+      - ``_configure_collision_aware_dual_arm`` Phase 2 (dual-arm, at compose)
+      - ``AssemblyPipeline.run_solver`` (ALL arms, post-solve pre-export)
+
+    Args:
+        joint_filter: predicate ``(joint_dict) -> bool`` selecting which
+            revolute joints to clamp.  Defaults to all revolute joints whose
+            child is NOT a wheel/tire/motor (i.e. arm joints).
+
+    Returns the number of joints whose range was narrowed.  Silent no-op
+    (returns 0) when FCL is unavailable — clamping is a refinement, not a
+    gate; generation must never fail because an optional dep is missing.
+    """
+    import logging
+    log = logging.getLogger("lang3d.assembly_compose")
+
+    try:
+        from ..tools.mesh_collision import HAS_FCL
+    except ImportError:
+        HAS_FCL = False
+    if not HAS_FCL:
+        log.debug("collision-aware range clamp skipped (python-fcl not installed)")
+        return 0
+
+    if joint_filter is None:
+        # Default: arm joints = revolute, not wheels/tires/motors.
+        def joint_filter(j: dict) -> bool:
+            if j.get("type") != "revolute":
+                return False
+            child = j.get("child", "").lower()
+            return not any(
+                child.startswith(p) for p in ("wheel_", "tire_", "motor_")
+            )
+
+    n_clamped = 0
+    for j in joints:
+        if not joint_filter(j):
+            continue
         child = j["child"]
         lo, hi = j.get("range_deg", [-180.0, 180.0])
         if hi - lo < 1.0:
@@ -449,8 +505,62 @@ def _configure_collision_aware_dual_arm(
             parts, joints, default_angles, child, home, hi, step=+15.0,
             check_fn=_any_collision_count,
         )
-        if (b - a) >= 10.0:  # only narrow if we found a sensible region
+        if (b - a) >= 10.0 and (b - a) < (hi - lo):
+            old = j["range_deg"]
             j["range_deg"] = [round(a, 1), round(b, 1)]
+            n_clamped += 1
+            log.info(
+                "collision-aware range clamp: %s [%.1f, %.1f] → [%.1f, %.1f]",
+                child, old[0], old[1], a, b,
+            )
+    return n_clamped
+
+
+def clamp_assembly_joint_ranges_collision_free(assembly, *, joint_filter=None) -> int:
+    """Pipeline entry point: clamp an ``Assembly`` object's joint ranges in place.
+
+    Thin adapter over :func:`_clamp_joint_ranges_to_collision_free` that converts
+    the typed ``Assembly`` (Part/Joint dataclasses) into the list-of-dicts the
+    compose-path helpers expect, runs the clamp, then writes the narrowed
+    ``range_deg`` back onto the live Joint objects.  This is the single-arm /
+    post-solver analogue of ``_configure_collision_aware_dual_arm`` Phase 2.
+
+    Args:
+        assembly: a ``knowledge.mechanics.Assembly`` with ``.parts`` (Part
+            dataclasses), ``.joints`` (Joint dataclasses), ``.default_angles``.
+        joint_filter: optional predicate on a joint-dict; defaults to all arm
+            revolute joints (non-wheel/tire/motor).
+
+    Returns the number of joints whose range was narrowed.  No-op when FCL is
+    unavailable.
+    """
+    from dataclasses import asdict
+
+    # Convert typed Parts/Joints to plain dicts for the compose-path helpers.
+    parts_d = [asdict(p) for p in assembly.parts]
+    joints_d = []
+    for j in assembly.joints:
+        jd = asdict(j)
+        # range_deg is a tuple in the dataclass; helpers expect a list.
+        if isinstance(jd.get("range_deg"), tuple):
+            jd["range_deg"] = list(jd["range_deg"])
+        # connection is an enum; drop fields the Joint constructor rejects.
+        jd.pop("connection", None)
+        joints_d.append(jd)
+    da = dict(assembly.default_angles)
+
+    n = _clamp_joint_ranges_to_collision_free(
+        parts_d, joints_d, da, joint_filter=joint_filter,
+    )
+
+    # Write narrowed ranges back onto the live Joint objects.
+    if n:
+        by_child = {jd["child"]: jd for jd in joints_d if "range_deg" in jd}
+        for j in assembly.joints:
+            jd = by_child.get(j.child)
+            if jd and jd["range_deg"] != list(j.range_deg):
+                j.range_deg = tuple(jd["range_deg"])
+    return n
 
 
 def _expand_collision_free(

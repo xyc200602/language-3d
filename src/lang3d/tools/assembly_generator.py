@@ -1512,6 +1512,23 @@ def generate_assembly_with_vlm_loop(
                     "Collision check failed in round %d: %s", round_num, _e,
                 )
 
+        # --- Step B.6: Collision-aware joint range clamp ---
+        # Narrow each arm joint's range_deg to its maximal collision-free
+        # sub-range so the arm cannot sweep into its own base during sim.
+        # Mirrors AssemblyPipeline.run_solver's _clamp_arm_ranges.  No-op
+        # when FCL is absent (numeric sanitizer caps remain as fallback).
+        try:
+            from ..agent.assembly_compose import (
+                clamp_assembly_joint_ranges_collision_free,
+            )
+            _n_clamped = clamp_assembly_joint_ranges_collision_free(assembly)
+            if _n_clamped:
+                print(
+                    f"  Collision-aware range clamp: {_n_clamped} joint(s) narrowed"
+                )
+        except ImportError:
+            pass
+
         # --- Step C: Render + VLM check ---
         parts_dicts = [
             {"name": p.name, "category": p.category, "dimensions": p.dimensions}
