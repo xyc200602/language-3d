@@ -338,7 +338,7 @@ def _run_grasp_scenario(
             _hold_arm()
             # Lift bias on shoulder/elbow
             for ajid in arm_jids[:2]:
-                data.qfrc_applied[ajid] -= 1.5
+                data.qfrc_applied[model.jnt_dofadr[ajid]] -= 1.5
 
         mujoco.mj_step(model, data)
 
@@ -412,7 +412,7 @@ def _run_grasp_scenario(
         "phase_a_contacts_max": int(cube_contacts_phase_a),
         "phase_b_contacts_max": int(cube_contacts_phase_b),
         "note": note,
-        "finger_final_qpos": {j["name"]: float(data.qpos[j["jid"]]) for j in slide_joints},
+        "finger_final_qpos": {j["name"]: float(data.qpos[model.jnt_qposadr[j["jid"]]]) for j in slide_joints},
         "finger_close_signs": {j["name"]: finger_close_signs[j["jid"]] for j in slide_joints},
     }
 

@@ -348,6 +348,22 @@ class _MotionController:
             phase = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
             sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
 
+        # Gravity-compensation feed-forward (inverse dynamics).  The
+        # <position> actuator PD (kp=50) alone leaves a steady-state droop
+        # under gravity (= τ_gravity / kp).  Adding qfrc_bias cancels the
+        # gravitational load so the actuator PD only corrects transients.
+        # This mirrors the pattern in _run_physics_hold (line ~1354).
+        mujoco.mj_forward(model, data)
+        if self.drivable:
+            # Floating base: comp arm joints only, leave base DOFs at zero
+            # so gravity pulls the chassis onto its wheels for traction.
+            data.qfrc_applied[:] = 0.0
+            for jid in list(self.coordinated.keys()) + self.finger_jids:
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] = data.qfrc_bias[dadr]
+        else:
+            data.qfrc_applied[:] = data.qfrc_bias
+
         # Set position actuator targets (data.ctrl for arm joints).
         for jid in list(self.coordinated.keys()) + self.finger_jids:
             qadr = model.jnt_qposadr[jid]

@@ -134,7 +134,7 @@ ACTUATORS: dict[str, Actuator] = {
         rotation_range=(0, 0), interface="pwm",
         description="TT 黄色减速电机，低成本轮式机器人首选",
         dimensions_mm={"length": 36.0, "width": 26.0, "height": 20.0},
-        shaft_diameter_mm=3.0,
+        shaft_diameter_mm=3.175,
     ),
     "JGB37_520": Actuator(
         id="JGB37_520", name="JGB37-520 减速电机 (1:30)", category="dc_motor",
