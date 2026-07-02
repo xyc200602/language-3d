@@ -37,6 +37,7 @@ Language-3D Agent：自然语言 → 生产级机器人装配体（STL/STEP/URDF
 - ✅ 重构前先**保证有测试覆盖**，没有测试先补测试。
 - ✅ 拿不准时**问人**（用户/规则），不要凭直觉改关键逻辑。
 - ✅ 涉及物理/运动学/公差的数值，查 `src/lang3d/knowledge/`（`fastener_catalog.py`、`tolerance.py`、`materials.py`）的真实规格，不要编。
+- ✅ **引用论文/外部工作时，每个主张必须交叉验证 ≥2 个独立来源**（如 arXiv 页面 + 会议官网/PMLR/IEEE/Semantic Scholar）。不得仅凭搜索摘要或模型记忆就声称"某论文做了X"或"某系统不具备Y"。读论文原文（至少 Abstract + Method 关键段）确认后再引用。这条规则防止论文写作中的**幻觉引用**。
 
 ---
 

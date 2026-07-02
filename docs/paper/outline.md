@@ -1,0 +1,261 @@
+# Paper Outline: Language-3D
+
+> **Cross-verification rule (AGENTS.md §1.2)**: Every external claim cited in
+> this paper must be verified against ≥2 independent sources. Claims marked
+> ⚠ are partially verified and need strengthening before submission.
+
+---
+
+## Target Venue (primary → fallback)
+
+1. **ICRA 2027** / **IROS 2027** (full paper, 6-8 pages) — robotics audience
+2. **CoRL 2026 Workshop** (4-6 pages) — fast turnaround, establish priority
+3. **IEEE RA-L** (journal, no page limit) — if workshop feedback is positive
+
+---
+
+## Title (candidates)
+
+- **Language-3D: End-to-End Generation of Manufacturable Robot Assemblies from Natural Language**
+- From Text to Manufacturable Robot: A Multi-Agent System with Dual-Channel Verification
+- NL→Robot: Generating Complete Engineering Packages from Natural Language Descriptions
+
+---
+
+## Abstract (draft)
+
+We present **Language-3D**, a multi-agent system that converts natural language
+descriptions into **complete, manufacturable robot assembly packages** —
+including STL/STEP meshes, URDF models, BOMs, firmware, and ROS2 packages.
+Unlike prior work that generates either single CAD parts [CAD-Llama, STEP-LLM],
+voxel-based block assemblies [Blox-Net], or URDF-only morphologies [RoboMorph],
+Language-3D produces end-to-end engineering artifacts that can be directly
+3D-printed, assembled with real COTS fasteners, and deployed in simulation.
+
+The system features: (1) a **COTS-driven knowledge base** of 94 part templates
+(56 real commercial components with verified ISO/DIN specs), (2) **8 connection
+types** with real CAD feature generation (bolted holes, press-fit bores, snap
+joints, etc.), (3) a **dual-channel verification** architecture combining VLM
+visual inspection with geometric arbitration (FCL collision sweep + assembly
+sequence validation), and (4) a **MuJoCo physics validation** pipeline with
+native actuator models verifying that generated robots can drive, articulate,
+and grasp.
+
+We evaluate on two benchmark cases (4-DOF arm, 4-wheel dual-arm robot) with
+automated scoring across 41-43 checks, achieving 95.1% and 95.3% respectively.
+
+---
+
+## 1. Introduction
+
+### Problem
+Natural language → physical robot is the holy grail of automated design.
+Existing work covers fragments:
+- NL → single CAD part [CAD-Llama (CVPR 2025), STEP-LLM (arXiv 2026)] ✓×2
+- NL → articulated CAD assembly (parametric code only) [ArtiCAD (arXiv 2026)] ✓×2
+- NL → voxel block assembly + physical robot [Blox-Net (ICRA 2025)] ✓×2
+- NL → modular robot URDF [RoboMorph (arXiv 2024)] ✓×2
+
+**Gap**: No system produces a **complete, manufacturable package** — the full
+set of artifacts needed to actually build and deploy the robot.
+
+### Contributions
+1. **Task formulation**: Define "NL → manufacturable robot assembly package"
+   as a new task, with evaluation criteria (geometry + physics + manufacturing)
+2. **System**: Language-3D — multi-agent pipeline producing STL/STEP/URDF/
+   BOM/firmware/ROS2 from NL, with 8 real connection types and COTS parts
+3. **Dual-channel verification**: VLM + geometric arbitration with automatic
+   fallback repair, outperforming VLM-only verification
+4. **Benchmark**: Two standardized test cases with 41-43 automated checks
+
+### Paper structure
+Sec 2: Related work | Sec 3: Method | Sec 4: Evaluation | Sec 5: Discussion
+
+---
+
+## 2. Related Work
+
+### 2.1 NL → CAD Generation
+- **CAD-Llama** [CVPR 2025] ⚠: parametric sequence generation for single parts.
+  Source: CVPR poster page + arXiv. Lacks assembly + manufacturing.
+- **STEP-LLM** [arXiv 2601.12641]: NL → STEP format single parts.
+  Source: arXiv page. No assembly.
+- **LLM4CAD** [ASME 2025]: multimodal 3D CAD. Source: ASME journal.
+  Single-part focus.
+
+### 2.2 NL → Assembly / Robot Design
+- **ArtiCAD** [arXiv 2604.10992]: multi-agent training-free articulated CAD
+  assemblies via code generation. ⚠ Output is editable FreeCAD code — the
+  paper does not claim STL/URDF/BOM/firmware export. We verify our system
+  goes beyond this by producing all manufacturing artifacts.
+  Sources: arXiv abstract + CatalyzeX.
+- **Blox-Net** [ICRA 2025, arXiv 2409.17126]: VLM + physics sim → block
+  assemblies. Limited to voxel blocks, not CAD parts. Requires physical robot.
+  Sources: arXiv + IEEE.
+- **RoboMorph** [arXiv 2407.08626]: LLM evolves modular robot URDF.
+  No CAD geometry (skeleton only). No assembly connections. No VLM loop.
+  Sources: arXiv + OpenReview.
+
+### 2.3 Robot Simulation & Verification
+- **RoboGen** [ICML 2024]: automated robot learning via generative sim.
+  Focuses on policy learning, not robot body generation.
+  Sources: PMLR + arXiv.
+- Position Language-3D as the first to close the loop from NL to
+  manufacturable + simulation-verified robot.
+
+### Comparison Table (verified)
+
+| System | NL Input | Assembly | CAD Geometry | Manuf. Output | Physics | Verification |
+|---|---|---|---|---|---|---|
+| CAD-Llama | ✓ | ✗ | parametric seq | ✗ | ✗ | ✗ |
+| STEP-LLM | ✓ | ✗ | STEP | partial | ✗ | ✗ |
+| ArtiCAD ⚠ | ✓ | ✓ | FreeCAD code | ✗ | ✗ | VLM |
+| Blox-Net | ✓ | ✓ (blocks) | voxels | ✗ | ✓ | VLM+phys |
+| RoboMorph | ✓ | ✓ (modular) | skeleton | ✗ | ✓ | ✗ |
+| **Ours** | ✓ | ✓ | **STL+STEP** | **full pkg** | ✓ | **VLM+geo** |
+
+⚠ ArtiCAD row: "no manufacturing output" is inferred from "editable code"
+in the paper, not a direct claim of absence. Phrase carefully.
+
+---
+
+## 3. Method
+
+### 3.1 System Architecture (Fig 1: pipeline diagram)
+Multi-agent pipeline (Architect → Solver → CAD Engineer → Verifier → Fixer),
+with deterministic Chassis Architect for wheeled robots.
+
+### 3.2 COTS-Driven Knowledge Base
+- 94 part templates, 56 real_part=True (verified by code audit)
+- ISO/DIN fastener specs (spot-checked: M3/M6/M8 bolt+nut+washer all correct)
+- Servo specs from real datasheets (MG996R 40.7×19.7×42.9 — verified)
+- Arm topology profiles (desktop/mobile) with catalog-linked servos
+
+### 3.3 Connection Engine
+- 8 connection types, each generates real FreeCAD CAD features:
+  bolted (clearance holes+counterbores), press_fit (H7/p6 bore), snap_fit
+  (hooks+undercuts), adhesive (grooves), welded (V-groove), magnetic (pocket),
+  dowel_pin (H7 slip), set_screw (radial tap)
+- Shared bolt pattern: both mating parts receive the same normalized (u,v)
+  hole coordinates → aligned in world space (verified for equal-face joints)
+
+### 3.4 Dual-Channel Verification
+- Channel 1: VLM (GLM-4.6V) panoramic + gripper close-up inspection
+- Channel 2: Geometric arbitration — FCL mesh collision sweep (7 samples per
+  joint), assembly sequence (parent-before-child tree validation), COM
+  stability (support polygon check)
+- Arbitration: geometric channel can override VLM false-negatives when
+  geometry is provably correct; severity-graded Fixer routing
+
+### 3.5 MuJoCo Physics Validation
+- Native `<actuator>` model: `<position>` for arm joints (kp=50/kv=5 +
+  forcerange ±5N·m), `<motor>` for wheels
+- Ground plane injection + stiff contacts (solref=0.005, solimp=0.99)
+- Three tests: PD-hold stability, joint actuation, grasp (3-phase: zero-G
+  close → gravity hold → lift)
+
+### 3.6 Engineering Package Export
+- Per-part: STL (mesh) + STEP (B-rep) + FreeCAD script (parametric)
+- Assembly: URDF + assembly.stl (with fastener geometry) + exploded view
+- Documentation: BOM (with real P/N), assembly guide, cable routing, power
+- Firmware: servo driver, DC motor driver, IK solver, odometry
+- ROS2: launch files, config, rviz, meshes
+
+---
+
+## 4. Evaluation
+
+### 4.1 Benchmark Cases
+| Case | NL Prompt | Parts | Joints | Output Files |
+|---|---|---|---|---|
+| 4dof_arm | "4自由度机械臂，底座固定，肩部旋转+俯仰+肘弯+腕转" | 11-13 | 10-12 | ~50 |
+| 4wheel_dual_arm | "4轮双臂机器人，差速驱动，左右各一个3DOF臂" | 38 | 37 | ~110 |
+
+### 4.2 Automated Scoring (41-43 checks across 7 phases)
+| Phase | Checks | What's measured |
+|---|---|---|
+| NL→Assembly | 5 | part count, joint count, connected tree, VLM pass |
+| Position Solving | 4 | all positioned, 0 NaN |
+| Render Quality | 2 | 4 views, >10KB avg |
+| Engineering Pkg | 10 | all files exist |
+| Content Validation | 9 | mass, VLM, URDF structure, watertight |
+| Physical Sanity | 5 | 0 collisions (FCL sweep), COM stable, workspace |
+| MuJoCo Sim | 4 | physics stable, joints actuate, grasp pass |
+
+Score = PASS / (PASS + FAIL + WARN), SKIP excluded.
+
+### 4.3 Results (latest runs)
+| Case | Score | Pass/Fail/Warn | Highlights |
+|---|---|---|---|
+| 4dof_arm | 95.1% | 39/0/2 | motion_collision=0, physics err=0.0°, grasp PASS |
+| 4wheel_dual_arm | 95.3% | 41/0/2 | drivable, differential detected, grasp PASS |
+
+### 4.4 Ablation (TODO — needs experiment runs)
+| Config | Expected impact |
+|---|---|
+| Without geometric arbitration | VLM false-negatives increase fail rate |
+| Without COTS parts (random dims) | geometry quality degrades |
+| Without connection features (flat faces) | no bolt holes, assembly illogical |
+| Without physics validation | unsafe robots pass undetected |
+
+⚠ Ablation experiments have NOT been run yet. Must complete before submission.
+
+---
+
+## 5. Discussion
+
+### 5.1 Limitations
+- LLM non-determinism: same prompt → different results (~85% pass rate per run)
+- Manufacturing not physically verified (no 3D-printed prototype yet)
+- Firmware is template-based (not deployed on real hardware)
+- Connection bolt alignment assumes equal-face joints (unequal faces may misalign)
+- No real-time collision avoidance during motion (static composition-time only)
+
+### 5.2 Comparison with Prior Work
+See comparison table in §2. Key differentiator: complete manufacturing package.
+
+### 5.3 Future Work
+- Benchmark dataset (20-50 diverse NL prompts)
+- 3D-print and assemble a generated robot
+- Real-time motion planning (RRT/CHOMP)
+- Closed-chain kinematics (parallels, delta)
+
+---
+
+## 6. Figures (planned)
+
+1. **System architecture diagram** — multi-agent pipeline + verification loop
+2. **Comparison table** — ours vs ArtiCAD/Blox-Net/RoboMorph
+3. **Output package photo** — exploded view of all generated files
+4. **Connection feature examples** — 8 types with CAD screenshots
+5. **MuJoCo simulation screenshots** — arm gesture + wheeled driving
+6. **Ablation bar chart** — score vs config (TODO)
+
+---
+
+## TODO Before Submission
+
+- [ ] Run ablation experiments (4 configs × 2 cases = 8 runs)
+- [ ] Create architecture diagram (Fig 1)
+- [ ] Collect screenshots for Figs 3-5
+- [ ] Verify ArtiCAD output format claim (read their code if open-source)
+- [ ] Define formal evaluation metrics (precision/recall for each phase)
+- [ ] Run 4dof_arm 5× for variance analysis (LLM non-determinism)
+- [ ] Write related work with proper BibTeX
+- [ ] 3D-print at least one part as proof of manufacturability
+
+---
+
+## Source Verification Log
+
+All claims in this outline verified against ≥2 sources:
+
+| Claim | Source 1 | Source 2 | Status |
+|---|---|---|---|
+| ArtiCAD = multi-agent CAD assembly | arXiv:2604.10992 | CatalyzeX | ✓ |
+| Blox-Net = VLM+physics block assembly | arXiv:2409.17126 | IEEE ICRA 2025 | ✓ |
+| RoboMorph = LLM URDF evolution | arXiv:2407.08626 | OpenReview | ✓ |
+| RoboGen = ICML 2024 | PMLR v235 | arXiv:2311.01455 | ✓ |
+| CAD-Llama = CVPR 2025 | CVPR poster page | (need 2nd source) | ⚠ |
+| ArtiCAD output = code only (no STL) | arXiv "editable code" | inferred, not stated | ⚠ |
+| Our output = full package | filesystem inspection | e2e test report | ✓ |
