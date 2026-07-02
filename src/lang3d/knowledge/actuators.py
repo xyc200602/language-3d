@@ -50,7 +50,7 @@ ACTUATORS: dict[str, Actuator] = {
         description="微型舵机，适用于轻负载关节和小型机器人",
         # Matches parts_catalog servo_sg90 (body_height=31.0 incl. tabs).
         dimensions_mm={"length": 22.2, "width": 11.8, "height": 31.0},
-        shaft_diameter_mm=4.8,
+        shaft_diameter_mm=4.6,
     ),
     "MG90S": Actuator(
         id="MG90S", name="Tower Pro MG90S", category="servo",
@@ -97,7 +97,7 @@ ACTUATORS: dict[str, Actuator] = {
         description="20kg 大扭矩数字舵机，适合中负载机械臂",
         # Matches parts_catalog servo_ds3218 (body_height=38.5, fixed=True).
         dimensions_mm={"length": 40.0, "width": 20.0, "height": 38.5},
-        shaft_diameter_mm=6.0,
+        shaft_diameter_mm=5.8,
     ),
     "DS3225": Actuator(
         id="DS3225", name="DS Power DS3225", category="servo",

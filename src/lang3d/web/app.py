@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import mimetypes
 import os
 import subprocess
@@ -20,6 +21,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 app = FastAPI(title="Language-3D Agent Monitor")
+logger = logging.getLogger("lang3d.web")
 
 # Optional API key authentication middleware
 _API_KEY: str | None = os.environ.get("LANG3D_API_KEY")

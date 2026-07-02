@@ -1346,16 +1346,24 @@ def _run_physics_hold(
         # actuators have kp/kv baked in + forcerange saturation + MuJoCo
         # owns the gravity comp via qfrc_bias in the same dynamics pass.
         if model.nu > 0:
+            # Feed-forward gravity compensation (inverse dynamics) so the
+            # <position> actuator's PD only needs to correct transients, not
+            # hold the arm's weight.  This is the standard textbook pattern:
+            # qfrc_applied = qfrc_bias (gravity+Coriolis), then the actuator
+            # PD (kp/kv from the <position> tag) handles the residual error.
+            data.qfrc_applied[:] = data.qfrc_bias
             # Set arm actuator targets to the home pose (hold position).
             for jid in controlled_joints:
                 qadr = model.jnt_qposadr[jid]
-                # Find the actuator for this joint.
                 for aid in range(model.nu):
                     if int(model.actuator_trnid[aid][0]) == jid:
                         data.ctrl[aid] = initial_qpos[qadr]
                         break
             # Zero wheel actuators (parked).
             for jid in wheel_hold_jids:
+                dadr = model.jnt_dofadr[jid]
+                data.qfrc_applied[dadr] = 0.0  # cancel gravity-comp on wheels
+                data.qvel[dadr] = 0.0           # park (brakes on)
                 for aid in range(model.nu):
                     if int(model.actuator_trnid[aid][0]) == jid:
                         data.ctrl[aid] = 0.0
@@ -1379,21 +1387,6 @@ def _run_physics_hold(
         # float freely (gravity-compensated by qfrc_bias).  Indexing by
         # joint id (not raw qpos index) keeps this correct for both fixed
         # and floating bases.
-        data.qfrc_applied[:] = data.qfrc_bias  # gravity-comp feed-forward
-        for jid in controlled_joints:
-            qadr = model.jnt_qposadr[jid]
-            dadr = model.jnt_dofadr[jid]
-            q_err = initial_qpos[qadr] - data.qpos[qadr]
-            data.qfrc_applied[dadr] += kp * q_err - kv * data.qvel[dadr]
-        # Zero out wheel DOF forces AND velocities BEFORE mj_step so wheels
-        # don't accelerate under gravity-comp during the arm-stability hold.
-        # Setting qfrc=0 cancels the gravity-comp push; setting qvel=0
-        # ensures mj_step integrates from rest.  This models the parked-wheel
-        # state (brakes on) for the arm-stability test.
-        for jid in wheel_hold_jids:
-            dadr = model.jnt_dofadr[jid]
-            data.qfrc_applied[dadr] = 0.0
-            data.qvel[dadr] = 0.0
         mujoco.mj_step(model, data)
         # Lock prismatic joints at their initial position (simulates the
         # gripper controller holding the fingers in the home pose).

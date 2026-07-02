@@ -273,7 +273,8 @@ def _run_grasp_scenario(
         if int(model.jnt_type[jid]) == mujoco.mjtJoint.mjJNT_HINGE
         and jid not in slide_jids
     ]
-    initial_arm_qpos = {jid: float(data.qpos[jid]) for jid in arm_jids}
+    # Map joint ids → qpos/qvel/DOF indices (correct for floating-base too).
+    initial_arm_qpos = {jid: float(data.qpos[model.jnt_qposadr[jid]]) for jid in arm_jids}
 
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     phase_a_end = max(1, int(n_steps * 0.15))
@@ -294,13 +295,16 @@ def _run_grasp_scenario(
 
     def _apply_grasp_force() -> None:
         for sjid, sign in finger_close_signs.items():
-            data.qfrc_applied[sjid] = sign * grasp_force_n
-            data.qfrc_applied[sjid] -= 2.0 * data.qvel[sjid]
+            dadr = model.jnt_dofadr[sjid]
+            data.qfrc_applied[dadr] = sign * grasp_force_n
+            data.qfrc_applied[dadr] -= 2.0 * data.qvel[dadr]
 
     def _hold_arm() -> None:
         for ajid in arm_jids:
-            err = initial_arm_qpos[ajid] - data.qpos[ajid]
-            data.qfrc_applied[ajid] = 200.0 * err - 20.0 * data.qvel[ajid]
+            qadr = model.jnt_qposadr[ajid]
+            dadr = model.jnt_dofadr[ajid]
+            err = initial_arm_qpos[ajid] - data.qpos[qadr]
+            data.qfrc_applied[dadr] = 200.0 * err - 20.0 * data.qvel[dadr]
 
     def _count_cube_contacts() -> int:
         if cube_geom_id < 0:
