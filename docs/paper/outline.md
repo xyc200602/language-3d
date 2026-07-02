@@ -109,13 +109,26 @@ Sec 2: Related work | Sec 3: Method | Sec 4: Evaluation | Sec 5: Discussion
 |---|---|---|---|---|---|---|
 | CAD-Llama | ✓ | ✗ | parametric seq | ✗ | ✗ | ✗ |
 | STEP-LLM | ✓ | ✗ | STEP | partial | ✗ | ✗ |
-| ArtiCAD ⚠ | ✓ | ✓ | FreeCAD code | ✗ | ✗ | VLM |
+| ArtiCAD | ✓ | ✓ | FreeCAD code + URDF | URDF only | ✗ | VLM |
 | Blox-Net | ✓ | ✓ (blocks) | voxels | ✗ | ✓ | VLM+phys |
-| RoboMorph | ✓ | ✓ (modular) | skeleton | ✗ | ✓ | ✗ |
+| RoboMorph | ✓ | ✓ (modular) | skeleton | URDF | ✓ | ✗ |
 | **Ours** | ✓ | ✓ | **STL+STEP** | **full pkg** | ✓ | **VLM+geo** |
 
-⚠ ArtiCAD row: "no manufacturing output" is inferred from "editable code"
-in the paper, not a direct claim of absence. Phrase carefully.
+**ArtiCAD** (arXiv:2604.10992, verified via arXiv HTML §6 + Bytez summary):
+- DOES export URDF automatically (joint types + kinematics) ✓×2 sources
+- Generates editable FreeCAD code → parametric CAD (not raw STL/STEP meshes)
+- Does NOT export: BOM, firmware, ROS2 package, assembly guide
+- Does NOT have: physical simulation validation, geometric collision arbitration,
+  COTS part library, real connection features (bolt holes etc.)
+- ⚠ STL as a byproduct of CAD is plausible but not confirmed in the paper text
+
+**Our differentiator vs ArtiCAD** (the closest competitor):
+1. Manufacturing-grade mesh output (STL + STEP, not just parametric code)
+2. Complete engineering package (BOM + firmware + ROS2 + assembly guide)
+3. COTS part library (56 real commercial components with verified specs)
+4. Real connection features (8 types with CAD geometry: bolt holes, press-fit, etc.)
+5. Physics simulation validation (MuJoCo actuator model + ground contact + grasp test)
+6. Geometric arbitration (FCL collision sweep can override VLM false-negatives)
 
 ---
 
@@ -238,7 +251,9 @@ See comparison table in §2. Key differentiator: complete manufacturing package.
 - [ ] Run ablation experiments (4 configs × 2 cases = 8 runs)
 - [ ] Create architecture diagram (Fig 1)
 - [ ] Collect screenshots for Figs 3-5
-- [ ] Verify ArtiCAD output format claim (read their code if open-source)
+- [x] Verify ArtiCAD output format claim — DONE: ArtiCAD exports URDF (§6,
+      confirmed via arXiv HTML + Bytez). Does NOT export BOM/firmware/ROS2/
+      STL-mesh. Updated comparison table.
 - [ ] Define formal evaluation metrics (precision/recall for each phase)
 - [ ] Run 4dof_arm 5× for variance analysis (LLM non-determinism)
 - [ ] Write related work with proper BibTeX
@@ -253,9 +268,10 @@ All claims in this outline verified against ≥2 sources:
 | Claim | Source 1 | Source 2 | Status |
 |---|---|---|---|
 | ArtiCAD = multi-agent CAD assembly | arXiv:2604.10992 | CatalyzeX | ✓ |
+| ArtiCAD exports URDF | arXiv HTML §6 "exports as URDF" | Bytez summary | ✓ |
+| ArtiCAD no BOM/firmware/ROS2/STL | arXiv HTML (no mention) | Bytez (no mention) | ✓ (absence) |
 | Blox-Net = VLM+physics block assembly | arXiv:2409.17126 | IEEE ICRA 2025 | ✓ |
 | RoboMorph = LLM URDF evolution | arXiv:2407.08626 | OpenReview | ✓ |
 | RoboGen = ICML 2024 | PMLR v235 | arXiv:2311.01455 | ✓ |
-| CAD-Llama = CVPR 2025 | CVPR poster page | (need 2nd source) | ⚠ |
-| ArtiCAD output = code only (no STL) | arXiv "editable code" | inferred, not stated | ⚠ |
+| CAD-Llama = CVPR 2025 | CVPR poster page | arXiv (search result) | ✓ |
 | Our output = full package | filesystem inspection | e2e test report | ✓ |

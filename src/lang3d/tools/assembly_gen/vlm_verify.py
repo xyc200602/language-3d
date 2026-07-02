@@ -1109,7 +1109,14 @@ def _vlm_check_assembly(
         passed = (structural_pass_count + (1 if gripper_view_passed else 0)) > total_views / 2
 
     # Geometric pre-validation as safety net AND ground-truth arbitrator.
-    geo_problems = _geometric_prevalidation(parts, positions, joints)
+    # ABLATION: set LANG3D_ABLATION=no_geo to disable geometric arbitration
+    # (for measuring the contribution of this component in ablation studies).
+    import os as _os
+    _ablation = _os.environ.get("LANG3D_ABLATION", "")
+    if "no_geo" in _ablation:
+        geo_problems = []  # skip geometric checks entirely
+    else:
+        geo_problems = _geometric_prevalidation(parts, positions, joints)
 
     # WHEEL FALSE-ALARM FILTER (geometric oracle, runs BEFORE the hard_geo
     # gate). The deterministic compose path produces grounded wheels (Z≈
@@ -1120,10 +1127,12 @@ def _vlm_check_assembly(
     # false-alarm filter and the wheeled-dual-arm e2e dead-loops on wheel
     # false-negatives. Filter from both all_problems (VLM) and geo_problems
     # so neither path keeps the refuted complaint.
-    all_problems = [
-        p for p in all_problems
-        if not _is_wheel_false_alarm(p, parts, positions)
-    ]
+    # ABLATION: skip false-alarm filtering when no_geo mode is active.
+    if "no_geo" not in _ablation:
+        all_problems = [
+            p for p in all_problems
+            if not _is_wheel_false_alarm(p, parts, positions)
+        ]
     geo_problems = [
         p for p in geo_problems
         if not _is_wheel_false_alarm(p, parts, positions)

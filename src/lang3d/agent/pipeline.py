@@ -929,20 +929,24 @@ class AssemblyPipeline:
         # heuristic), this check has ~zero false positives: it only fails on a
         # genuinely broken topology where a child's parent isn't in the tree.
         try:
-            from .assembly_verifier import AssemblyVerifier
-            seq_checks = AssemblyVerifier().check_assembly_sequence(ctx.assembly)
-            infeasible = [c for c in seq_checks if not c.feasible]
-            if infeasible:
-                for c in infeasible:
-                    msg = f"装配顺序错误: {c.notes}"
-                    if msg not in problems:
-                        problems.append(msg)
-                ctx.problems_history[-1] = problems  # refresh
-                ctx.passed = False
-                passed = False
-                self.verifier_agent.log(
-                    logger, "FAILED — %d assembly-sequence errors", len(infeasible),
-                )
+            import os as _os
+            if "no_geo" in _os.environ.get("LANG3D_ABLATION", ""):
+                pass  # ablation: skip geometric sequence check
+            else:
+                from .assembly_verifier import AssemblyVerifier
+                seq_checks = AssemblyVerifier().check_assembly_sequence(ctx.assembly)
+                infeasible = [c for c in seq_checks if not c.feasible]
+                if infeasible:
+                    for c in infeasible:
+                        msg = f"装配顺序错误: {c.notes}"
+                        if msg not in problems:
+                            problems.append(msg)
+                    ctx.problems_history[-1] = problems  # refresh
+                    ctx.passed = False
+                    passed = False
+                    self.verifier_agent.log(
+                        logger, "FAILED — %d assembly-sequence errors", len(infeasible),
+                    )
         except Exception as e:
             self.verifier_agent.log_warning(
                 logger, "assembly-sequence check skipped: %s", e,
