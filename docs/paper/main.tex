@@ -27,7 +27,7 @@
 % ===================================================================
 \begin{abstract}
 % ===================================================================
-We present \textbf{Language-3D}, a multi-agent system that converts natural language descriptions into complete, manufacturable robot assembly packages---including STL/STEP meshes, URDF models, bills of materials (BOM), firmware, and ROS2 packages. Unlike prior work that generates either single CAD parts~\cite{cadllama2025, stepllm2026}, voxel-based block assemblies~\cite{bloxnet2025}, or URDF-only morphologies~\cite{robomorph2024}, Language-3D produces end-to-end engineering artifacts that can be directly 3D-printed, assembled with commercial off-the-shelf (COTS) fasteners, and deployed in simulation.
+We present \textbf{Language-3D}, a multi-agent system that converts natural language descriptions into \emph{engineering packages} for robot assemblies---including STL/STEP meshes, URDF models, bills of materials (BOM), firmware templates, and ROS2 package skeletons. Unlike prior work that generates either single CAD parts~\cite{cadllama2025, stepllm2026}, voxel-based block assemblies~\cite{bloxnet2025}, or URDF-only morphologies~\cite{robomorph2024}, Language-3D produces the full set of artifacts needed for manufacturing and deployment. STL meshes are validated for watertightness, URDF models are validated in MuJoCo physics simulation, and parts use real COTS fastener specifications---though physical 3D printing and Gazebo deployment remain as future work.
 
 The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), and (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp.
 
@@ -47,12 +47,12 @@ Automated robot design from natural language is a long-standing goal at the inte
 
 \textbf{NL~$\to$~robot design}: Blox-Net~\cite{bloxnet2025} combines VLM supervision with physics simulation to generate block-based assemblies, but is limited to voxel primitives and requires a physical robot for iterative reset. RoboMorph~\cite{robomorph2024} uses LLMs to evolve modular robot URDFs, but produces skeleton configurations without CAD geometry, assembly connections, or manufacturing artifacts.
 
-\textbf{The gap}: No existing system produces a \emph{complete, manufacturable package}---the full set of artifacts (STL, STEP, URDF, BOM, firmware, assembly guide, ROS2 package) needed to actually build and deploy a robot. We define this as the \textbf{NL~$\to$~Manufacturable Robot Assembly Package} task.
+\textbf{The gap}: No existing system produces a \emph{complete engineering package}---the full set of artifacts (STL, STEP, URDF, BOM, firmware, assembly guide, ROS2 package) needed to build and deploy a robot. We define this as the \textbf{NL~$\to$~Robot Assembly Engineering Package} task, and note that physical manufacturing verification (3D printing, Gazebo deployment, hardware testing) is an orthogonal validation step that complements but does not replace artifact generation.
 
 \textbf{Contributions.} This paper makes the following contributions:
 \begin{enumerate}
     \item \textbf{Task formulation}: We formalize NL~$\to$~manufacturable robot assembly package as a new task with evaluation criteria spanning geometry, physics, and manufacturing.
-    \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 from NL, with 8 real connection types and a 56-part COTS knowledge base.
+    \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 package structures from NL, with 8 real connection types and a 56-part COTS knowledge base.
     \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
     \item \textbf{Evaluation}: Two benchmark cases with 41--43 automated checks, demonstrating 95\%+ scores with zero-variance reproducibility.
 \end{enumerate}
@@ -162,8 +162,10 @@ Disabling geometric arbitration (\texttt{LANG3D\_ABLATION=no\_geo}) on the wheel
 
 \subsection{Limitations}
 \begin{itemize}
-    \item Manufacturing quality is not physically verified (no 3D-printed prototype yet).
-    \item Firmware is template-generated (not deployed on real hardware).
+    \item Manufacturing quality is not physically verified: no 3D-printed prototype has been built, and no physical assembly has been attempted.
+    \item Firmware is template-generated (servo/IK/motor driver skeletons), not compiled or deployed on real hardware.
+    \item ROS2 packages include correct structure (launch files, \texttt{ros2\_control} config, \texttt{package.xml}, transmissions, Gazebo plugins in URDF) but have \textbf{not been validated in Gazebo simulation}---this is the most significant unverified claim.
+    \item Shared bolt patterns assume equal mating-face extents (unequal faces may misalign).
     \item Shared bolt patterns assume equal mating-face extents (unequal faces may misalign).
     \item No real-time collision avoidance during motion (composition-time clamping only).
     \item Benchmark is limited to two cases; broader evaluation with diverse prompts is needed.
@@ -175,7 +177,7 @@ Language-3D is the first system to produce a \emph{complete manufacturing packag
 % ===================================================================
 \section{Conclusion}
 % ===================================================================
-We presented Language-3D, a system that converts natural language into complete, manufacturable robot assembly packages. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves 95\%+ quality on benchmark cases with deterministic reproducibility. Future work includes physical manufacturing verification, broader benchmark datasets, and real-time motion planning.
+We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves 95\%+ quality on benchmark cases with deterministic reproducibility. The generated URDFs are validated in MuJoCo (not Gazebo), and physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
