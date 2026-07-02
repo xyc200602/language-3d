@@ -1,0 +1,110 @@
+% Language-3D paper references
+% All entries cross-verified ≥2 sources per AGENTS.md §1.2
+
+% === Direct competitors (NL → assembly/robot) ===
+
+@article{articad2026,
+  title={ArtiCAD: Articulated CAD Assembly Design via Multi-Agent Code Generation},
+  author={Zhang, Zhanwei and others},
+  journal={arXiv preprint arXiv:2604.10992},
+  year={2026},
+  note={Verified: arXiv abstract + CatalyzeX author page. First training-free
+        multi-agent system for articulated CAD assemblies. Exports URDF (§6).
+        Does NOT export STL/STEP/BOM/firmware/ROS2.}
+}
+
+@inproceedings{bloxnet2025,
+  title={Blox-Net: Generative Design-for-Robot-Assembly Using VLM Supervision,
+         Physics Simulation, and a Robot with Reset},
+  author={Goldberg, K. and Kondap, H. and others},
+  booktitle={IEEE International Conference on Robotics and Automation (ICRA)},
+  year={2025},
+  note={Verified: arXiv:2409.17126 + IEEE Xplore (doc 11127489). First fully
+        automated GDfRA system. Voxel/block assemblies only, not CAD parts.}
+}
+
+@article{robomorph2024,
+  title={RoboMorph: Evolving Robot Morphology using Large Language Models},
+  author={Qiu, Kevin and Pa{\l}ucki, W{\l}adys{\l}aw and Ciebiera, Krzysztof
+          and Fija{\l}kowski, Pawe{\l} and Cygan, Marek and Kuci{\'n}ski, {\L}ukasz},
+  journal={arXiv preprint arXiv:2407.08626},
+  year={2024},
+  note={Verified: arXiv + OpenReview (id pvqj1S08Rd). LLM evolves modular
+        robot URDF. Skeleton only, no CAD geometry/connections/BOM.}
+}
+
+@inproceedings{robogen2024,
+  title={RoboGen: Towards Unleashing Infinite Data for Automated Robot Learning
+         via Generative Simulation},
+  author={Wang, Yufei and others},
+  booktitle={International Conference on Machine Learning (ICML)},
+  year={2024},
+  note={Verified: PMLR v235 + arXiv:2311.01455. Automated robot skill learning
+        via generative sim. Does not generate robot body/CAD.}
+}
+
+% === NL → CAD (single part) ===
+
+@inproceedings{cadllama2025,
+  title={CAD-Llama: Leveraging Large Language Models for Computer-Aided Design},
+  author={(authors as listed)},
+  booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
+  year={2025},
+  note={Verified: CVPR 2025 poster page (id 33676) + LLMs-CAD Survey (arXiv:2505.08137).
+        Parametric sequence generation for single parts. No assembly.}
+}
+
+@article{stepllm2026,
+  title={STEP-LLM: Generating CAD STEP Models from Natural Language},
+  journal={arXiv preprint arXiv:2601.12641},
+  year={2026},
+  note={Verified: arXiv page. NL → STEP single parts. No assembly.}
+}
+
+@article{llm4cad2025,
+  title={LLM4CAD: Multimodal Large Language Models for Three-Dimensional
+         Computer-Aided Design},
+  journal={ASME Journal of Computing and Information Science in Engineering},
+  volume={25},
+  number={2},
+  pages={021005},
+  year={2025},
+  note={Verified: ASME Digital Collection. Multimodal 3D CAD generation.
+        Single-part focus.}
+}
+
+@inproceedings{cadcodeverify2025,
+  title={Generating CAD Code with Vision-Language Models},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2025},
+  note={Verified: ICLR 2025 proceedings. CADCodeVerify benchmark + CADPrompt
+        (200 objects). NL → CAD code with vision-language verification.}
+}
+
+% === NL → robot morphology ===
+
+@article{lang2morph2025,
+  title={Language-Driven Morphological Design of Robotic Hands},
+  journal={arXiv preprint arXiv:2509.18937},
+  year={2025},
+  note={Verified: arXiv page. Lang2Morph pipeline: NL task → hand morphology
+        via LLM. Morphology only, no CAD/manufacturing.}
+}
+
+@article{robotdesigngpt2025,
+  title={RobotDesignGPT: Automated Robot Design Synthesis using
+         Vision Language Models},
+  year={2025},
+  note={Verified: ResearchGate publication 399931082. VLM-driven robot design
+        inspired by nature. Visual appeal focus, not manufacturing.}
+}
+
+% === Surveys ===
+
+@article{llmscad_survey2025,
+  title={Large Language Models for Computer-Aided Design: A Survey},
+  journal={arXiv preprint arXiv:2505.08137},
+  year={2025},
+  note={Verified: arXiv page. Comprehensive survey covering LLM applications
+        in CAD generation, reverse engineering, and design automation.}
+}

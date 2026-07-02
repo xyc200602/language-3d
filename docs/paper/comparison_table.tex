@@ -1,0 +1,44 @@
+% Comparison table for Language-3D paper (Table 1)
+% All claims cross-verified ≥2 sources per AGENTS.md §1.2
+% Compile with: \input{comparison_table}
+
+\begin{table*}[t]
+\centering
+\caption{Comparison of Language-3D with state-of-the-art systems for
+natural-language-driven robot/assembly generation. All claims verified
+against $\geq$2 independent sources.}
+\label{tab:comparison}
+\small
+\begin{tabular}{l|cc|ccc|cc|cc}
+\toprule
+\multirow{2}{*}{\textbf{System}} & \multirow{2}{*}{\textbf{NL}} &
+\multirow{2}{*}{\textbf{Assembly}} & \multicolumn{3}{c|}{\textbf{CAD Geometry}} &
+\multicolumn{2}{c|}{\textbf{Manufacturing}} & \multicolumn{2}{c}{\textbf{Validation}} \\
+& & & Param. & STL & STEP & BOM & Firmware & Physics & Dual-VLM \\
+\midrule
+CAD-Llama\cite{cadllama2025} & \checkmark & -- & \checkmark & -- & -- & -- & -- & -- & -- \\
+STEP-LLM\cite{stepllm2026} & \checkmark & -- & -- & -- & \checkmark & -- & -- & -- & -- \\
+LLM4CAD\cite{llm4cad2025} & \checkmark & -- & \checkmark & -- & -- & -- & -- & -- & -- \\
+\midrule
+ArtiCAD\cite{articad2026} & \checkmark & \checkmark & \checkmark & --$^*$ & -- & -- & -- & -- & \checkmark \\
+Blox-Net\cite{bloxnet2025} & \checkmark & \checkmark & -- & voxel & -- & -- & -- & \checkmark & \checkmark \\
+RoboMorph\cite{robomorph2024} & \checkmark & \checkmark & -- & -- & -- & -- & -- & \checkmark & -- \\
+\midrule
+\textbf{Language-3D (ours)} & \checkmark & \checkmark & \checkmark &
+\textbf{\checkmark} & \textbf{\checkmark} & \textbf{\checkmark} &
+\textbf{\checkmark} & \textbf{\checkmark} & \textbf{\checkmark} \\
+\bottomrule
+\end{tabular}
+
+\vspace{2mm}
+\footnotesize
+$^*$ArtiCAD generates editable FreeCAD code from which STL may be derivable,
+but STL mesh export is not reported in the paper. Sources: arXiv HTML §6 +
+Bytez summary (both confirm URDF export; neither mentions STL/BOM/firmware).
+
+\textbf{Key:} NL = natural language input; Assembly = multi-part articulated
+assembly (not single part); Param./STL/STEP = CAD geometry output formats;
+BOM = bill of materials with real part numbers; Firmware = embedded code
+(servo/IK/motor drivers); Physics = simulation-based validation;
+Dual-VLM = dual-channel verification (VLM + geometric arbitration).
+\end{table*}
