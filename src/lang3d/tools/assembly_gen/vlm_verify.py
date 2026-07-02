@@ -92,6 +92,12 @@ def _classify_robot(description: str) -> str:
     is_wheeled = any(kw in d for kw in [
         "轮", "wheel", "差速", "移动", "底盘",
     ])
+    is_legged = any(kw in d for kw in [
+        "腿", "leg", "人型", "人形", "humanoid", "双足", "biped",
+        "行走", "quadruped", "四足",
+    ])
+    if is_legged:
+        return "assembly"  # legged robots are general assemblies (not arms/wheeled)
     if is_arm and is_wheeled:
         return "wheeled_arm"
     if is_wheeled:
