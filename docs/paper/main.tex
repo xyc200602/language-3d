@@ -1,0 +1,183 @@
+\documentclass[conference]{IEEEtran}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amssymb}
+\usepackage{xcolor}
+\usepackage[ruled,vlined]{algorithm2e}
+
+% ===================================================================
+% Language-3D: End-to-End Generation of Manufacturable Robot Assemblies
+% from Natural Language
+%
+% All external claims cross-verified >=2 sources (AGENTS.md §1.2)
+% ===================================================================
+
+\title{Language-3D: End-to-End Generation of Manufacturable Robot Assemblies from Natural Language}
+
+\author{
+\IEEEauthorblockN{Anonymous Authors}
+\IEEEauthorblockA{Submitted to ICRA 2027 / CoRL 2026 Workshop}
+}
+
+\begin{document}
+
+\maketitle
+
+% ===================================================================
+\begin{abstract}
+% ===================================================================
+We present \textbf{Language-3D}, a multi-agent system that converts natural language descriptions into complete, manufacturable robot assembly packages---including STL/STEP meshes, URDF models, bills of materials (BOM), firmware, and ROS2 packages. Unlike prior work that generates either single CAD parts~\cite{cadllama2025, stepllm2026}, voxel-based block assemblies~\cite{bloxnet2025}, or URDF-only morphologies~\cite{robomorph2024}, Language-3D produces end-to-end engineering artifacts that can be directly 3D-printed, assembled with commercial off-the-shelf (COTS) fasteners, and deployed in simulation.
+
+The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), and (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp.
+
+We evaluate on two benchmark cases (a 4-DOF fixed-base arm and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks, achieving 95.1\% and 95.3\% respectively, with zero-variance reproducibility over three repeated runs.
+\end{abstract}
+
+% ===================================================================
+\section{Introduction}
+\label{sec:intro}
+% ===================================================================
+
+Automated robot design from natural language is a long-standing goal at the intersection of AI, CAD, and robotics. Recent advances in large language models (LLMs) and vision-language models (VLMs) have enabled systems that translate textual descriptions into 3D geometry, articulated assemblies, or robot morphologies. However, existing work covers only fragments of the full design-to-manufacture pipeline:
+
+\textbf{NL~$\to$~single CAD part}: CAD-Llama~\cite{cadllama2025} generates parametric construction sequences, and STEP-LLM~\cite{stepllm2026} produces STEP-format models. Both focus on single parts without assembly structure.
+
+\textbf{NL~$\to$~CAD assembly}: ArtiCAD~\cite{articad2026} is the first training-free multi-agent system for articulated CAD assemblies, outputting editable FreeCAD code and URDF files. However, it does not produce manufacturing-grade meshes (STL/STEP), bills of materials, firmware, or ROS2 packages, nor does it include physical simulation validation or real COTS part specifications.
+
+\textbf{NL~$\to$~robot design}: Blox-Net~\cite{bloxnet2025} combines VLM supervision with physics simulation to generate block-based assemblies, but is limited to voxel primitives and requires a physical robot for iterative reset. RoboMorph~\cite{robomorph2024} uses LLMs to evolve modular robot URDFs, but produces skeleton configurations without CAD geometry, assembly connections, or manufacturing artifacts.
+
+\textbf{The gap}: No existing system produces a \emph{complete, manufacturable package}---the full set of artifacts (STL, STEP, URDF, BOM, firmware, assembly guide, ROS2 package) needed to actually build and deploy a robot. We define this as the \textbf{NL~$\to$~Manufacturable Robot Assembly Package} task.
+
+\textbf{Contributions.} This paper makes the following contributions:
+\begin{enumerate}
+    \item \textbf{Task formulation}: We formalize NL~$\to$~manufacturable robot assembly package as a new task with evaluation criteria spanning geometry, physics, and manufacturing.
+    \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 from NL, with 8 real connection types and a 56-part COTS knowledge base.
+    \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
+    \item \textbf{Evaluation}: Two benchmark cases with 41--43 automated checks, demonstrating 95\%+ scores with zero-variance reproducibility.
+\end{enumerate}
+
+% ===================================================================
+\section{Related Work}
+\label{sec:related}
+% ===================================================================
+
+\subsection{NL-Driven CAD Generation}
+CAD-Llama~\cite{cadllama2025} (CVPR 2025) uses LLMs to generate parametric CAD construction sequences for single parts. STEP-LLM~\cite{stepllm2026} extends this to industry-standard STEP format. LLM4CAD~\cite{llm4cad2025} explores multimodal approaches. CADCodeVerify~\cite{cadcodeverify2025} (ICLR 2025) introduces a benchmark with vision-language verification. All focus on single-part geometry, not multi-part articulated assemblies.
+
+\subsection{NL-Driven Assembly and Robot Design}
+ArtiCAD~\cite{articad2026} is the closest prior work: a training-free multi-agent system generating editable, articulated CAD assemblies via code generation. It exports URDF files (confirmed in~\cite{articad2026}, §6) but does not produce STL/STEP meshes, BOMs, firmware, or ROS2 packages, and lacks physical simulation validation. Blox-Net~\cite{bloxnet2025} (ICRA 2025) combines VLM supervision with physics simulation for generative design-for-robot-assembly, but is limited to voxel blocks. RoboMorph~\cite{robomorph2024} evolves modular robot URDFs via LLM, producing morphology configurations without CAD geometry or assembly connections. RoboGen~\cite{robogen2024} (ICML 2024) focuses on automated skill learning via generative simulation, not robot body generation.
+
+Table~\ref{tab:comparison} summarizes the comparison.
+
+\input{comparison_table}
+
+% ===================================================================
+\section{Method}
+\label{sec:method}
+% ===================================================================
+
+\subsection{System Architecture}
+Figure~\ref{fig:architecture} shows the Language-3D pipeline. Natural language input is processed by a multi-agent chain: \textbf{Architect} (LLM generates assembly JSON), \textbf{Solver} (computes 3D positions via anchor constraints + FCL collision-aware range clamping), \textbf{CAD Engineer} (FreeCAD generates per-part STL/STEP meshes with connection features), and a dual-channel \textbf{Verifier} (VLM + geometric arbitration). A \textbf{Fixer} routes failures back to the appropriate upstream stage with severity-graded classification. Verified assemblies are exported as complete engineering packages.
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{fig1_architecture.pdf}
+\caption{Language-3D system architecture. NL input flows through the multi-agent pipeline (Architect $\to$ Solver $\to$ CAD Engineer), verified by dual channels (VLM + geometric arbitration), with a Fixer feedback loop. Output is a complete engineering package validated in MuJoCo physics simulation.}
+\label{fig:architecture}
+\end{figure*}
+
+\subsection{COTS-Driven Knowledge Base}
+The knowledge base contains 94 part templates, of which 56 are real commercial components (\texttt{real\_part=True}) with verified specifications: TowerPro MG996R servos (40.7$\times$19.7$\times$42.9\,mm), JX DS3218 (20\,kg-cm), SG90 micro servos, NEMA17/23 steppers, ISO/DIN fasteners (M3--M8 bolts, nuts, washers with verified head diameters, pitches, and clearance hole specs), and miniature bearings (608, 623, 625). Arm link lengths and base dimensions are profile-scaled (desktop vs.\ mobile) but servos are always sourced from the catalog---never invented or rescaled.
+
+\subsection{Connection Engine}
+Eight connection types generate real CAD features via FreeCAD operation dictionaries:
+\begin{itemize}
+    \item \textbf{Bolted}: ISO 273 clearance holes + DIN 912 counterbores, with shared bolt patterns ensuring alignment across mating parts.
+    \item \textbf{Press-fit}: H7/p6 interference bore with shoulder (ISO 286 tolerance).
+    \item \textbf{Snap-fit}: Cantilever hooks with undercuts.
+    \item \textbf{Adhesive}: Bonding grooves with controlled gap.
+    \item \textbf{Welded}: V-groove bevel preparation (butt) or no-prep (fillet).
+    \item \textbf{Magnetic}, \textbf{Dowel-pin} (H7 slip-fit), \textbf{Set-screw} (radial threaded hole).
+\end{itemize}
+
+\subsection{Dual-Channel Verification}
+\textbf{Channel 1 (VLM)}: GLM-4.6V inspects panoramic renders (iso/front/top/right) for structural integrity, plus a dedicated gripper close-up for finger geometry.
+
+\textbf{Channel 2 (Geometric Arbitration)}: A deterministic geometric oracle runs FCL mesh-based collision detection (7 samples per joint across its range), assembly-sequence validation (parent-before-child tree feasibility), and center-of-mass stability (support polygon check). When the VLM reports a false negative on geometrically valid output (e.g., ``wheels above ground'' on grounded wheels), the geometric oracle overrides the rejection, preventing wasteful regeneration loops.
+
+\subsection{MuJoCo Physics Validation}
+The system injects a native MuJoCo \texttt{<actuator>} model (replacing hand-rolled PD control): \texttt{<position>} actuators with kp=50/kv=5 and \texttt{forcerange}=$\pm$5\,N$\cdot$m for arm joints, \texttt{<motor>} actuators for wheels. A ground plane and stiff contacts (\texttt{solref}=0.005, \texttt{solimp}=0.99) are injected via MJCF patching. Three physics tests verify the generated robot: (1)~PD-hold stability (joint angle error $<$\,1$^\circ$), (2)~joint actuation ($\geq$\,4 actuated DOFs), and (3)~three-phase grasp (zero-G close $\to$ gravity hold $\to$ lift).
+
+\begin{figure*}[t]
+\centering
+\includegraphics[width=\textwidth]{fig2_robots.pdf}
+\caption{Generated robots. (a)~4-DOF arm render, (b)~4-DOF arm in MuJoCo simulation performing a reach gesture, (c)~4-wheel dual-arm robot render, (d)~dual-arm robot driving in MuJoCo simulation.}
+\label{fig:robots}
+\end{figure*}
+
+% ===================================================================
+\section{Evaluation}
+\label{sec:eval}
+% ===================================================================
+
+\subsection{Benchmark Cases}
+We evaluate on two representative cases:
+\begin{itemize}
+    \item \textbf{4dof\_arm}: ``Design a 4-DOF robot arm, fixed base, with shoulder rotation, shoulder pitch, elbow pitch, and wrist roll joints, with a parallel-jaw gripper.''
+    \item \textbf{4wheel\_dual\_arm}: ``Design a 4-wheel dual-arm robot with differential drive, two 3-DOF arms mounted on the chassis.''
+\end{itemize}
+
+\subsection{Scoring}
+Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assembly (part count, joint count, connected tree, VLM pass), Position Solving (all positioned, 0 NaN), Render Quality ($\geq$4 views), Engineering Package (all files exist), Content Validation (mass, VLM, URDF structure, watertight meshes), Physical Sanity (0 FCL collisions, COM stability, workspace), and MuJoCo Simulation (physics stability, joint actuation, grasp). Score = PASS / (PASS + FAIL + WARN).
+
+\subsection{Results}
+\begin{table}[h]
+\centering
+\caption{Benchmark results.}
+\label{tab:results}
+\small
+\begin{tabular}{l|cccc}
+\toprule
+\textbf{Case} & \textbf{Score} & \textbf{Pass/Fail/Warn} & \textbf{Physics} & \textbf{Grasp} \\
+\midrule
+4dof\_arm & 95.1\% & 39/0/2 & err=0.0$^\circ$ & PASS \\
+4wheel\_dual\_arm & 95.3\% & 41/0/2 & err=0.0$^\circ$ & PASS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Both cases achieve $>$\,95\% with zero failures. Physics validation confirms zero-error stability (PD-hold), collision-free motion sweeps, and successful grasping.
+
+\subsection{Reproducibility}
+Three repeated runs of the 4dof\_arm case (identical prompt) yielded scores of 95.1\%, 95.1\%, 95.1\% (mean=95.1\%, $\sigma$=0.0\%), demonstrating full determinism for structured-JSON assembly generation.
+
+\subsection{Ablation: Geometric Arbitration}
+Disabling geometric arbitration (\texttt{LANG3D\_ABLATION=no\_geo}) on the wheeled dual-arm case produced identical scores (95.3\%, 2 runs), confirming that on clean deterministic-compose output the geometric channel does not change the final score. Its value lies in \emph{preventing VLM false-negative dead-loops}---when the VLM incorrectly rejects valid geometry, the geometric oracle overrides the rejection, avoiding wasteful regeneration cycles.
+
+% ===================================================================
+\section{Discussion}
+\label{sec:discussion}
+% ===================================================================
+
+\subsection{Limitations}
+\begin{itemize}
+    \item Manufacturing quality is not physically verified (no 3D-printed prototype yet).
+    \item Firmware is template-generated (not deployed on real hardware).
+    \item Shared bolt patterns assume equal mating-face extents (unequal faces may misalign).
+    \item No real-time collision avoidance during motion (composition-time clamping only).
+    \item Benchmark is limited to two cases; broader evaluation with diverse prompts is needed.
+\end{itemize}
+
+\subsection{Comparison with Prior Work}
+Language-3D is the first system to produce a \emph{complete manufacturing package} from natural language (Table~\ref{tab:comparison}). The closest competitor, ArtiCAD~\cite{articad2026}, outputs editable CAD code and URDF but not STL/STEP meshes, BOMs, firmware, or ROS2 packages. Blox-Net~\cite{bloxnet2025} operates on voxel blocks rather than CAD parts. RoboMorph~\cite{robomorph2024} generates skeleton URDFs without geometry.
+
+% ===================================================================
+\section{Conclusion}
+% ===================================================================
+We presented Language-3D, a system that converts natural language into complete, manufacturable robot assembly packages. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves 95\%+ quality on benchmark cases with deterministic reproducibility. Future work includes physical manufacturing verification, broader benchmark datasets, and real-time motion planning.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
