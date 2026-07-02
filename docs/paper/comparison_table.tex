@@ -20,7 +20,7 @@ CAD-Llama\cite{cadllama2025} & \checkmark & -- & \checkmark & -- & -- & -- & -- 
 STEP-LLM\cite{stepllm2026} & \checkmark & -- & -- & -- & \checkmark & -- & -- & -- & -- \\
 LLM4CAD\cite{llm4cad2025} & \checkmark & -- & \checkmark & -- & -- & -- & -- & -- & -- \\
 \midrule
-ArtiCAD\cite{articad2026} & \checkmark & \checkmark & \checkmark & --$^*$ & -- & -- & -- & -- & \checkmark \\
+ArtiCAD\cite{articad2026} & \checkmark & \checkmark & \checkmark & --$^*$ & -- & -- & -- & --$^\dagger$ & \checkmark \\
 Blox-Net\cite{bloxnet2025} & \checkmark & \checkmark & -- & voxel & -- & -- & -- & \checkmark & \checkmark \\
 RoboMorph\cite{robomorph2024} & \checkmark & \checkmark & -- & -- & -- & -- & -- & \checkmark & -- \\
 \midrule
@@ -35,6 +35,13 @@ RoboMorph\cite{robomorph2024} & \checkmark & \checkmark & -- & -- & -- & -- & --
 $^*$ArtiCAD generates editable FreeCAD code from which STL may be derivable,
 but STL mesh export is not reported in the paper. Sources: arXiv HTML §6 +
 Bytez summary (both confirm URDF export; neither mentions STL/BOM/firmware).
+
+$^\dagger$ArtiCAD mentions ``physical prototyping'' in its abstract, but
+does not describe automated physics simulation validation (e.g., contact,
+grasp, stability tests). We mark this as ``--'' to indicate no reported
+physics simulation pipeline; the distinction between ``physical prototyping''
+(manual fabrication) and ``physics simulation validation'' (automated)
+should be clarified in future revisions.
 
 \textbf{Key:} NL = natural language input; Assembly = multi-part articulated
 assembly (not single part); Param./STL/STEP = CAD geometry output formats;

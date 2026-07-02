@@ -66,7 +66,7 @@ Automated robot design from natural language is a long-standing goal at the inte
 CAD-Llama~\cite{cadllama2025} (CVPR 2025) uses LLMs to generate parametric CAD construction sequences for single parts. STEP-LLM~\cite{stepllm2026} extends this to industry-standard STEP format. LLM4CAD~\cite{llm4cad2025} explores multimodal approaches. CADCodeVerify~\cite{cadcodeverify2025} (ICLR 2025) introduces a benchmark with vision-language verification. All focus on single-part geometry, not multi-part articulated assemblies.
 
 \subsection{NL-Driven Assembly and Robot Design}
-ArtiCAD~\cite{articad2026} is the closest prior work: a training-free multi-agent system generating editable, articulated CAD assemblies via code generation. It exports URDF files (confirmed in~\cite{articad2026}, §6) but does not produce STL/STEP meshes, BOMs, firmware, or ROS2 packages, and lacks physical simulation validation. Blox-Net~\cite{bloxnet2025} (ICRA 2025) combines VLM supervision with physics simulation for generative design-for-robot-assembly, but is limited to voxel blocks. RoboMorph~\cite{robomorph2024} evolves modular robot URDFs via LLM, producing morphology configurations without CAD geometry or assembly connections. RoboGen~\cite{robogen2024} (ICML 2024) focuses on automated skill learning via generative simulation, not robot body generation.
+ArtiCAD~\cite{articad2026} is the closest prior work: a training-free multi-agent system generating editable, articulated CAD assemblies via code generation. It exports URDF files (confirmed in~\cite{articad2026}, §6) but does not produce STL/STEP meshes, BOMs, firmware, or ROS2 packages, and lacks physical simulation validation. Concurrently, Embodied CAD~\cite{embodiedcad2026} argues that LLM-generated CAD code requires solver-grounded reasoning for industrial reliability---a principle aligned with our deterministic Solver stage. Blox-Net~\cite{bloxnet2025} (ICRA 2025) combines VLM supervision with physics simulation for generative design-for-robot-assembly, but is limited to voxel blocks. RoboMorph~\cite{robomorph2024} evolves modular robot URDFs via LLM, producing morphology configurations without CAD geometry or assembly connections. RoboGen~\cite{robogen2024} (ICML 2024) focuses on automated skill learning via generative simulation, not robot body generation.
 
 Table~\ref{tab:comparison} summarizes the comparison.
 
@@ -150,10 +150,10 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 Both cases achieve $>$\,95\% with zero failures. Physics validation confirms zero-error stability (PD-hold), collision-free motion sweeps, and successful grasping.
 
 \subsection{Reproducibility}
-Three repeated runs of the 4dof\_arm case (identical prompt) yielded scores of 95.1\%, 95.1\%, 95.1\% (mean=95.1\%, $\sigma$=0.0\%), demonstrating full determinism for structured-JSON assembly generation.
+Three repeated runs of the 4dof\_arm case (identical prompt) yielded identical scores of 95.1\% ($\sigma$=0.0\%). While $n$=3 is insufficient to claim full determinism, it indicates high stability for structured-JSON assembly generation. Note that VLM verification can occasionally reject valid assemblies (approximately 1 in 5 runs in prior observations), which would manifest as a lower score on some runs—a limitation we acknowledge.
 
 \subsection{Ablation: Geometric Arbitration}
-Disabling geometric arbitration (\texttt{LANG3D\_ABLATION=no\_geo}) on the wheeled dual-arm case produced identical scores (95.3\%, 2 runs), confirming that on clean deterministic-compose output the geometric channel does not change the final score. Its value lies in \emph{preventing VLM false-negative dead-loops}---when the VLM incorrectly rejects valid geometry, the geometric oracle overrides the rejection, avoiding wasteful regeneration cycles.
+Disabling geometric arbitration (\texttt{LANG3D\_ABLATION=no\_geo}) on the wheeled dual-arm case produced identical scores (95.3\%), because this case uses a deterministic compose path that produces geometry the VLM accepts on the first round. The geometric channel's value manifests in \emph{VLM-loop efficiency} rather than final score: when the VLM produces false-negative rejections (observed in approximately 1 in 5 runs on non-deterministic prompts), the geometric oracle overrides them, avoiding wasteful regeneration cycles. Quantifying this as a false-rejection rate across diverse prompts is left as future work.
 
 \subsection{Manufacturability Verification}
 All 12 STL parts of the 4dof\_arm case were verified for FDM printability: 100\% are watertight meshes with minimum wall thickness $\geq$\,0.8\,mm, 11/12 (92\%) fit within a standard 220$\times$220\,mm print bed (base\_plate at 150$\times$320\,mm requires a larger bed or splitting), total material is 791\,g PLA ($\approx$1 roll), with an estimated print time of $\sim$6 hours. Physical 3D printing remains as future work.
@@ -169,9 +169,9 @@ All 12 STL parts of the 4dof\_arm case were verified for FDM printability: 100\%
     \item Firmware is template-generated (servo/IK/motor driver skeletons), not compiled or deployed on real hardware.
     \item ROS2 packages include correct structure (launch files, \texttt{ros2\_control} config, \texttt{package.xml}, transmissions, Gazebo plugins in URDF) but have \textbf{not been validated in Gazebo simulation}---this is the most significant unverified claim.
     \item Shared bolt patterns assume equal mating-face extents (unequal faces may misalign).
-    \item Shared bolt patterns assume equal mating-face extents (unequal faces may misalign).
     \item No real-time collision avoidance during motion (composition-time clamping only).
-    \item Benchmark is limited to two cases; broader evaluation with diverse prompts is needed.
+    \item No self-evolving experience store: unlike ArtiCAD~\cite{articad2026}, which accumulates design knowledge across tasks, Language-3D generates each assembly from scratch. Adding retrieval-augmented generation from past runs is a natural extension.
+    \item Benchmark is limited; broader evaluation with diverse prompts and external benchmarks (e.g., MUSE, CADPrompt) is needed.
 \end{itemize}
 
 \subsection{Comparison with Prior Work}
