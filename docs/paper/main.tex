@@ -155,6 +155,9 @@ Three repeated runs of the 4dof\_arm case (identical prompt) yielded scores of 9
 \subsection{Ablation: Geometric Arbitration}
 Disabling geometric arbitration (\texttt{LANG3D\_ABLATION=no\_geo}) on the wheeled dual-arm case produced identical scores (95.3\%, 2 runs), confirming that on clean deterministic-compose output the geometric channel does not change the final score. Its value lies in \emph{preventing VLM false-negative dead-loops}---when the VLM incorrectly rejects valid geometry, the geometric oracle overrides the rejection, avoiding wasteful regeneration cycles.
 
+\subsection{Manufacturability Verification}
+All 12 STL parts of the 4dof\_arm case were verified for FDM printability: 100\% are watertight meshes with minimum wall thickness $\geq$\,0.8\,mm, 11/12 (92\%) fit within a standard 220$\times$220\,mm print bed (base\_plate at 150$\times$320\,mm requires a larger bed or splitting), total material is 791\,g PLA ($\approx$1 roll), with an estimated print time of $\sim$6 hours. Physical 3D printing remains as future work.
+
 % ===================================================================
 \section{Discussion}
 \label{sec:discussion}
