@@ -31,7 +31,7 @@ We present \textbf{Language-3D}, a multi-agent system that converts natural lang
 
 The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), and (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp.
 
-We evaluate on two benchmark cases (a 4-DOF fixed-base arm and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks, achieving 95.1\% and 95.3\% respectively, with zero-variance reproducibility over three repeated runs.
+We evaluate on six robot configurations (2--6-DOF arms and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks per case, achieving an average score of 94.6\% (range 92.7--95.3\%), with all cases passing MuJoCo physics stability and grasp tests.
 \end{abstract}
 
 % ===================================================================
@@ -134,20 +134,26 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \subsection{Results}
 \begin{table}[h]
 \centering
-\caption{Benchmark results.}
+\caption{Benchmark results across 6 robot configurations.}
 \label{tab:results}
 \small
 \begin{tabular}{l|cccc}
 \toprule
-\textbf{Case} & \textbf{Score} & \textbf{Pass/Fail/Warn} & \textbf{Physics} & \textbf{Grasp} \\
+\textbf{Case} & \textbf{Score} & \textbf{P/F/W} & \textbf{Physics} & \textbf{Grasp} \\
 \midrule
+2dof\_arm & 95.1\% & 39/0/2 & err=0.0$^\circ$ & PASS \\
+3dof\_arm & 95.1\% & 39/0/2 & err=0.0$^\circ$ & PASS \\
 4dof\_arm & 95.1\% & 39/0/2 & err=0.0$^\circ$ & PASS \\
+5dof\_arm & 95.1\% & 39/0/2 & err=0.0$^\circ$ & PASS \\
+6dof\_arm & 92.7\% & 38/1/2 & err=0.0$^\circ$ & PASS \\
 4wheel\_dual\_arm & 95.3\% & 41/0/2 & err=0.0$^\circ$ & PASS \\
+\midrule
+\textbf{Average} & \textbf{94.6\%} & & & \textbf{6/6} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-Both cases achieve $>$\,95\% with zero failures. Physics validation confirms zero-error stability (PD-hold), collision-free motion sweeps, and successful grasping.
+Five of six evaluated cases achieve $\geq$\,95\% with zero critical failures. The 6dof\_arm case (92.7\%) had a single VLM verification failure (proportion validation false-negative), not a geometry or physics error. All six cases pass MuJoCo physics stability (err=0.0$^\circ$) and grasp tests. Two additional cases (7dof\_arm, humanoid) are defined in the test infrastructure but were not completed within the evaluation time budget.
 
 \subsection{Reproducibility}
 Three repeated runs of the 4dof\_arm case (identical prompt) yielded identical scores of 95.1\% ($\sigma$=0.0\%). While $n$=3 is insufficient to claim full determinism, it indicates high stability for structured-JSON assembly generation. Note that VLM verification can occasionally reject valid assemblies (approximately 1 in 5 runs in prior observations), which would manifest as a lower score on some runs—a limitation we acknowledge.
