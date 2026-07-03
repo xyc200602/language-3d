@@ -22,14 +22,11 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Shared paths from app.py
-# _get_data_root() — deferred to avoid circular import
-_DATA_ROOT = None
+# Helpers resolved dynamically from app.py each call (keeps @patch live
+# in tests; avoids the caching bug that broke test_async_convert).
 def _get_data_root():
-    global _DATA_ROOT
-    if _DATA_ROOT is None:
-        from ..app import DATA_ROOT
-        _DATA_ROOT = DATA_ROOT
-    return _DATA_ROOT
+    from ...app import DATA_ROOT
+    return DATA_ROOT
 
 
 # Module-level cache for design calculations (avoids repeated solve).
