@@ -466,8 +466,19 @@ def _geometric_prevalidation(
         for _parent, siblings in _children_by_parent.items():
             for i in range(len(siblings)):
                 for k in range(i + 1, len(siblings)):
-                    _adjacent_pairs.add((siblings[i], siblings[k]))
-                    _adjacent_pairs.add((siblings[k], siblings[i]))
+                    si, sk = siblings[i], siblings[k]
+                    # Gripper fingers are siblings (both children of
+                    # gripper_base) but they MUST NOT overlap — they are
+                    # parallel jaws with an open gap between them, not an
+                    # enclosing shell like chassis-body-around-motors.
+                    # Excluding them from adjacency lets a finger-overlap
+                    # bug hide (test_gripper_finger_geometry regression,
+                    # 2026-07-03). Keep the sibling-skip for genuine
+                    # enclosures (motors, hubs) but not for fingers.
+                    if ("finger" in si.lower() and "finger" in sk.lower()):
+                        continue
+                    _adjacent_pairs.add((si, sk))
+                    _adjacent_pairs.add((sk, si))
 
     # 1. Collision proxy: parts at same position.
     # Parts joined by a joint (parent↔child) legitimately share a position —
