@@ -224,9 +224,13 @@ class TestRealLoad:
         )
         # Should report successful load
         assert "加载结果: 成功" in result
-        # 11 URDF links → 7 MuJoCo bodies (4 fixed-link merges)
+        # 13 URDF links → 7 MuJoCo bodies (6 fixed-link merges). The link
+        # count grew from 11→13 when the gripper gained explicit finger
+        # joints; the merge count follows. Updated 2026-07-03 to match the
+        # current example URDF (load itself still succeeds — this was a
+        # stale structural-count assertion, not a load failure).
         assert "MuJoCo body 数: 7" in result
-        assert "fixed 合并: 4" in result
+        assert "fixed 合并: 6" in result
         # 6 joints total
         assert "关节数: 6" in result
 
