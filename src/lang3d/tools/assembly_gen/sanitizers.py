@@ -1430,7 +1430,57 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
     _ARM_PITCH_CAP = 90.0   # forward (downward reach) — generous, FCL gates actual collision
     _ARM_PITCH_BACK_CAP = 45.0  # backward (folds toward base) — tighter, avoids self-collision
     _ARM_YAW_CAP = 90.0
+
+    # --- Humanoid-topology detection ---
+    # A humanoid (pelvis + leg chain + arm chain) has a fundamentally
+    # different self-collision structure than a fixed-base arm: the arm's
+    # shoulder swings through an arc that intersects the wide pelvis and
+    # the leg chain, which does not exist on a fixed base. The generic
+    # ±90° forward pitch cap (calibrated on fixed-base arms) lets the
+    # humanoid shoulder reach +90° where the upper arm clips into the
+    # pelvis/hip — observed on humanoid_2leg_2arm (3 motion-collision
+    # failures on left/right shoulder_pitch). Detect the topology and
+    # apply a tighter forward cap so the arm cannot swing into the body.
+    # This is a topology-aware cap, not a model patch: it keys on the
+    # PRESENCE of a pelvis + leg chain (the structural cause), not on
+    # the joint name.
+    part_names = {p.name.lower() for p in assembly.parts}
+    has_pelvis = any("pelvis" in n or "hip" in n for n in part_names)
+    has_leg_chain = any(
+        "thigh" in n or "shin" in n or "knee" in n for n in part_names
+    )
+    is_humanoid_topology = has_pelvis and has_leg_chain
+    # Humanoid shoulder can fold back (negative pitch, arm down) but the
+    # forward (positive) extreme must clear the pelvis: cap at +60° so the
+    # upper arm stays lateral rather than swinging down into the hips.
+    _HUMANOID_PITCH_FWD_CAP = 60.0
+    # A wrist-roll joint near the end-effector rarely needs ±180°; full
+    # rotation lets the gripper cable/housing clip the forearm. Cap at
+    # ±120° (a generous tool-roll range that still clears the forearm).
+    _WRIST_ROLL_CAP = 120.0
+
     for j in revolute_joints:
+        # --- Wrist-roll clamp (topology-independent) ---
+        # Apply BEFORE the arm-pitch/yaw branch so axis=y wrist joints are
+        # bounded even though they're skipped by _is_arm_pitch_joint.
+        if (
+            j.type == "revolute"
+            and j.axis == "y"
+            and j.range_deg
+            and ("wrist" in j.child.lower() or "roll" in j.child.lower())
+        ):
+            lo, hi = float(j.range_deg[0]), float(j.range_deg[1])
+            new_lo = max(lo, -_WRIST_ROLL_CAP)
+            new_hi = min(hi, _WRIST_ROLL_CAP)
+            if new_hi - new_lo >= 10.0 and (new_lo, new_hi) != (lo, hi):
+                logger.info(
+                    "Sanitizer: clamped wrist-roll '%s' [%.0f, %.0f] → "
+                    "[%.0f, %.0f] (avoid forearm self-collision at ±180°)",
+                    j.child, lo, hi, new_lo, new_hi,
+                )
+                j.range_deg = (new_lo, new_hi)
+            continue  # wrist-roll handled; don't also run pitch/yaw logic
+
         if not _is_arm_pitch_joint(j) and j.axis != "z":
             continue
         if not j.range_deg:
@@ -1449,20 +1499,32 @@ def _ensure_arm_default_angles(assembly: Assembly) -> Assembly:
             # (folds toward base, opposite sign) is tighter (±45°) to avoid
             # the arm folding back into its own servo stack.  The real
             # collision gate is the FCL motion-collision sweep downstream.
+            #
+            # Humanoid override: on a humanoid torso+pelvis, the forward
+            # pitch extreme sweeps the upper arm through the hip/pelvis
+            # volume (a self-collision absent on fixed-base arms). Tighten
+            # the forward cap so the arm stays lateral to the body.
+            fwd_cap = (
+                _HUMANOID_PITCH_FWD_CAP if is_humanoid_topology
+                else _ARM_PITCH_CAP
+            )
             if home >= 0:
-                new_lo, new_hi = max(lo, -_ARM_PITCH_BACK_CAP), min(hi, _ARM_PITCH_CAP)
+                new_lo, new_hi = max(lo, -_ARM_PITCH_BACK_CAP), min(hi, fwd_cap)
             else:
-                new_lo, new_hi = max(lo, -_ARM_PITCH_CAP), min(hi, _ARM_PITCH_BACK_CAP)
+                new_lo, new_hi = max(lo, -fwd_cap), min(hi, _ARM_PITCH_BACK_CAP)
         if new_hi - new_lo < 10.0:
             continue  # range already tiny — don't collapse it
         if (new_lo, new_hi) != (lo, hi):
+            topology_note = (
+                "humanoid fwd-cap" if (is_humanoid_topology and j.axis != "z")
+                else "yaw midline-safe" if j.axis == "z"
+                else f"cap ±{_ARM_PITCH_CAP:.0f}° fwd/±{_ARM_PITCH_BACK_CAP:.0f}° back"
+            )
             logger.info(
                 "Sanitizer: clamped arm joint '%s' range [%.0f, %.0f] → "
                 "[%.0f, %.0f] (home %.0f, %s, avoid workspace-extreme "
                 "self-collision)",
-                j.child, lo, hi, new_lo, new_hi, home,
-                "yaw midline-safe" if j.axis == "z"
-                else f"cap ±{_ARM_PITCH_CAP:.0f}° fwd/±{_ARM_PITCH_BACK_CAP:.0f}° back",
+                j.child, lo, hi, new_lo, new_hi, home, topology_note,
             )
             j.range_deg = (new_lo, new_hi)
 
