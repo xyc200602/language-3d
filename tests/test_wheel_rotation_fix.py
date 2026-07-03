@@ -118,40 +118,70 @@ class TestCylinderBaseOrientation:
 # ---------------------------------------------------------------------------
 
 class TestWheelRotationInSolver:
-    def test_wheel_on_y_axis_has_nonzero_rotation(self):
-        """Wheels on revolute (axis=y, child_anchor=center) must NOT have identity rotation."""
+    def test_wheel_on_y_axis_has_identity_solver_rotation(self):
+        """Wheels on revolute (axis=y) must have IDENTITY rotation from the
+        solver, because the cylinder orientation is now baked into the STL
+        geometry by part_feature_engine (orient_axis="x" for wheels).
+
+        HISTORICALLY (pre-2026-06) the solver applied R_x(±90°) here as a
+        post-processing visual step. That was REMOVED because part_feature_engine
+        sets orient_axis, baking the correct orientation into the STL itself —
+        applying a second rotation in the solver would DOUBLE-ROTATE the wheel
+        (correct X + R_x(90°) → 磨盘/turntable). See
+        ``_visual_rotation_for_part`` in assembly_solver.py.
+
+        This test was updated 2026-07-03: the old assertion (rot[3] != 0,
+        i.e. non-identity) was testing the removed post-processing behaviour.
+        The correct current behaviour is identity solver rotation + STL-baked
+        orientation, verified by ``test_wheel_stl_orient_axis`` below.
+        """
         asm = _make_4wheel_robot()
         solver = AssemblySolver(asm)
         placements = solver.solve()
 
         for wheel_name in ("wheel_fl", "wheel_fr"):
             rot = placements[wheel_name]["rotation"]
-            # Identity rotation is [0,0,1,0] — angle must be non-zero
-            assert rot[3] != 0.0, (
-                f"{wheel_name} has identity rotation [0,0,1,0] — "
-                "cylinder not oriented correctly"
+            # Identity in axis-angle-deg format is [0,0,1,0] (any axis, 0°).
+            assert rot[3] == 0.0, (
+                f"{wheel_name} solver rotation {rot} is non-identity — "
+                "the visual post-processing was removed; rotation is baked "
+                "into the STL via orient_axis. A non-zero angle here would "
+                "double-rotate the wheel."
             )
 
-    def test_wheel_rotation_is_around_x_for_y_joint(self):
-        """For axis=y joint, the rotation should be around X (±90°)."""
-        asm = _make_4wheel_robot()
-        solver = AssemblySolver(asm)
-        placements = solver.solve()
+    def test_wheel_stl_orient_axis_is_baked(self):
+        """part_feature_engine must bake orient_axis='x' into wheel STL ops.
 
-        for wheel_name in ("wheel_fl", "wheel_fr"):
-            rot = placements[wheel_name]["rotation"]
-            ax, ay, az, angle = rot
-            # Primary axis should be X
-            assert abs(ax) > 0.9, (
-                f"{wheel_name} rotation axis ({ax},{ay},{az}) "
-                f"not primarily X — expected R_x(±90°)"
-            )
-            assert abs(abs(angle) - 90.0) < 1.0, (
-                f"{wheel_name} angle={angle:.1f}°, expected ≈±90°"
-            )
+        This is the CURRENT mechanism for wheel orientation (replacing the
+        old solver-side post-processing). Verifies the contract documented in
+        ``_visual_rotation_for_part``: the STL is built along X for wheels,
+        so the solver stays at identity.
+        """
+        from lang3d.tools.part_feature_engine import generate_ops
+        from lang3d.knowledge.mechanics import Part
 
-    def test_four_wheels_all_have_rotation(self):
-        """All 4 wheels in a full 4-wheel robot should have rotation."""
+        wheel = Part(
+            name="wheel_fl", category="wheel", description="",
+            dimensions={"diameter": 60, "height": 20},
+        )
+        ops = generate_ops(wheel)
+        # The body op should carry orient_axis="x" for a wheel (name starts
+        # with "wheel_"). The op type varies (cylinder, cylinder_with_hole,
+        # etc.) — match by orient_axis presence.
+        cyl_ops = [
+            o for o in ops
+            if isinstance(o, dict) and "orient_axis" in o
+        ]
+        assert cyl_ops, f"no op with orient_axis in wheel feature: {ops}"
+        assert cyl_ops[0].get("orient_axis") == "x", (
+            f"wheel cylinder op must set orient_axis='x' (got "
+            f"{cyl_ops[0].get('orient_axis')!r}) — this is what lets the "
+            "solver stay at identity rotation without double-rotating"
+        )
+
+    def test_four_wheels_all_have_identity_rotation(self):
+        """All 4 wheels in a full 4-wheel robot should have identity solver
+        rotation (orientation baked into STL, not applied by solver)."""
         parts = [
             Part(name="base_plate", category="structural", description="",
                  material="Aluminum", dimensions={"length": 300, "width": 200, "height": 5}),
@@ -180,7 +210,12 @@ class TestWheelRotationInSolver:
 
         for corner in ("fl", "fr", "rl", "rr"):
             rot = placements[f"wheel_{corner}"]["rotation"]
-            assert rot[3] != 0.0, f"wheel_{corner} has no rotation"
+            # Identity (orientation baked into STL, not solver) — see
+            # test_wheel_on_y_axis_has_identity_solver_rotation for rationale.
+            assert rot[3] == 0.0, (
+                f"wheel_{corner} solver rotation {rot} should be identity "
+                "(orientation is STL-baked)"
+            )
 
     def test_box_child_on_center_no_extra_rotation(self):
         """Non-cylindrical parts should NOT get the cylinder orientation."""

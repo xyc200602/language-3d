@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 import threading as _threading
 import time as _time
 from dataclasses import dataclass, field
 from typing import Any, Callable
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
