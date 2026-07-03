@@ -54,7 +54,7 @@ Automated robot design from natural language is a long-standing goal at the inte
     \item \textbf{Task formulation}: We formalize NL~$\to$~manufacturable robot assembly package as a new task with evaluation criteria spanning geometry, physics, and manufacturing.
     \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 package structures from NL, with 8 real connection types and a 56-part COTS knowledge base.
     \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
-    \item \textbf{Evaluation}: Two benchmark cases with 41--43 automated checks, demonstrating 95\%+ scores with zero-variance reproducibility.
+    \item \textbf{Evaluation}: Seven benchmark cases with 41--43 automated checks, achieving 94.4\% average with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
 \end{enumerate}
 
 % ===================================================================
@@ -106,6 +106,9 @@ Eight connection types generate real CAD features via FreeCAD operation dictiona
 
 \textbf{Channel 2 (Geometric Arbitration)}: A deterministic geometric oracle runs FCL mesh-based collision detection (7 samples per joint across its range), assembly-sequence validation (parent-before-child tree feasibility), and center-of-mass stability (support polygon check). When the VLM reports a false negative on geometrically valid output (e.g., ``wheels above ground'' on grounded wheels), the geometric oracle overrides the rejection, preventing wasteful regeneration loops.
 
+\subsection{Self-Evolving Experience Store}
+Following ArtiCAD's~\cite{articad2026} observation that accumulated design knowledge improves future generations, Language-3D maintains an experience store of past verified-good assemblies cases. The store implements a \emph{retrieve-before} / \emph{store-after} pattern: before the Architect generates a new assembly, the store is queried for similar past cases (matched by robot category, keyword overlap, and DOF proximity), and the retrieved cases are injected as additional few-shot precedent; after the pipeline verifies an assembly, its distilled record (DOF, joint-type histogram, converged default angles) is appended for future retrieval. Retrieval is lexical (weighted scoring mirroring the existing template-search API), not embedding-based, because the project's LLM backend exposes no embedding endpoint---this is less semantically expressive than ArtiCAD's FAISS partitioning but runs with no external dependency. The store is successes-only (failed assemblies are never stored) and prunes least-retrieved entries past a per-category cap. On a fresh checkout the store is empty, so generation falls back to the parametric examples and the prompt is byte-identical to the pre-store baseline.
+
 \subsection{MuJoCo Physics Validation}
 The system injects a native MuJoCo \texttt{<actuator>} model (replacing hand-rolled PD control): \texttt{<position>} actuators with kp=50/kv=5 and \texttt{forcerange}=$\pm$5\,N$\cdot$m for arm joints, \texttt{<motor>} actuators for wheels. A ground plane and stiff contacts (\texttt{solref}=0.005, \texttt{solimp}=0.99) are injected via MJCF patching. Three physics tests verify the generated robot: (1)~PD-hold stability (joint angle error $<$\,1$^\circ$), (2)~joint actuation ($\geq$\,4 actuated DOFs), and (3)~three-phase grasp (zero-G close $\to$ gravity hold $\to$ lift).
 
@@ -122,10 +125,11 @@ The system injects a native MuJoCo \texttt{<actuator>} model (replacing hand-rol
 % ===================================================================
 
 \subsection{Benchmark Cases}
-We evaluate on two representative cases:
+We evaluate on seven robot configurations spanning 2--7 degrees of freedom plus a mobile dual-arm platform, and an eighth humanoid topology that tests generalization beyond fixed-base arms:
 \begin{itemize}
-    \item \textbf{4dof\_arm}: ``Design a 4-DOF robot arm, fixed base, with shoulder rotation, shoulder pitch, elbow pitch, and wrist roll joints, with a parallel-jaw gripper.''
+    \item \textbf{2dof--7dof\_arm}: Six fixed-base arms with increasing kinematic complexity, each ``with a parallel-jaw gripper''.
     \item \textbf{4wheel\_dual\_arm}: ``Design a 4-wheel dual-arm robot with differential drive, two 3-DOF arms mounted on the chassis.''
+    \item \textbf{humanoid\_2leg\_2arm}: ``2 legs 2 arms humanoid robot, each leg has 3 joints, each arm has 3 DOF, camera on top''---a legged topology that stresses the arm-oriented range clamping and VLM classification (reported separately as it does not fit the fixed-base benchmark profile).
 \end{itemize}
 
 \subsection{Scoring}
@@ -187,7 +191,7 @@ Language-3D is the first system to produce a \emph{complete manufacturing packag
 % ===================================================================
 \section{Conclusion}
 % ===================================================================
-We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves 95\%+ quality on benchmark cases with deterministic reproducibility. The generated URDFs are validated in MuJoCo (not Gazebo), and physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
+We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves 94.4\% average quality across seven benchmark cases, with the deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproducing run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in MuJoCo (not Gazebo), and physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
