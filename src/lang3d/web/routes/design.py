@@ -28,8 +28,43 @@ def _get_data_root():
     global _DATA_ROOT
     if _DATA_ROOT is None:
         from ..app import DATA_ROOT
-        _DATA_ROOT = _get_data_root()
+        _DATA_ROOT = DATA_ROOT
     return _DATA_ROOT
+
+
+# Module-level cache for design calculations (avoids repeated solve).
+# MOVED here from slicing.py on 2026-07-03: this helper + cache were
+# stranded in slicing.py during the P1-1 God-Module split, but ONLY
+# design.py calls _get_default_robot_data (3 call sites). The mis-
+# placement caused a NameError on every /api/design/* endpoint
+# (test_web_complex_robot, 8 failures). Slicing.py never used it.
+_design_cache: dict[str, Any] = {}
+
+
+def _get_default_robot_data() -> dict[str, Any]:
+    """Build and cache the default complex_robot assembly data."""
+    if "robot" in _design_cache:
+        return _design_cache["robot"]
+
+    from ...tools.export_package import build_complex_robot, _build_subsystems
+    from ...tools.assembly_solver import AssemblySolver
+    from ...knowledge.mechanics import compute_assembly_mass
+
+    assembly = build_complex_robot()
+    solver = AssemblySolver(assembly)
+    positions = solver.solve()
+    mass_result = compute_assembly_mass(assembly)
+    subsystems = _build_subsystems(assembly, positions)
+
+    data = {
+        "assembly": assembly,
+        "positions": positions,
+        "mass_result": mass_result,
+        "subsystems": subsystems,
+    }
+    _design_cache["robot"] = data
+    return data
+
 
 @router.get("/api/design/hierarchy")
 async def api_design_hierarchy() -> JSONResponse:
@@ -109,7 +144,7 @@ async def api_design_stability() -> JSONResponse:
         positions = data["positions"]
         mass_result = data["mass_result"]
 
-        from ..tools.stability import (
+        from ...tools.stability import (
             compute_support_polygon,
             compute_static_stability,
             check_tip_over_risk,
@@ -155,7 +190,7 @@ async def api_design_stability() -> JSONResponse:
 async def api_design_power_budget() -> JSONResponse:
     """Return power budget analysis for the complex robot design."""
     try:
-        from ..tools.power_budget import PowerBudgetCalculator
+        from ...tools.power_budget import PowerBudgetCalculator
 
         calc = PowerBudgetCalculator("MobileRobotDualArm")
         calc.add_motor("Drive Motor", "TT_MOTOR", duty_cycle=0.5, quantity=4)

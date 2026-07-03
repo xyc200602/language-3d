@@ -38,7 +38,7 @@ async def api_parts_catalog(
 ) -> JSONResponse:
     """List/search part templates in the catalog."""
     try:
-        from ..knowledge.parts_catalog import (
+        from ...knowledge.parts_catalog import (
             CATEGORY_TREE,
             get_all_templates,
             search_parts,
@@ -96,7 +96,7 @@ async def api_parts_catalog(
 async def api_parts_template(part_id: str) -> JSONResponse:
     """Get detailed info for a single part template."""
     try:
-        from ..knowledge.parts_catalog import get_template
+        from ...knowledge.parts_catalog import get_template
     except ImportError:
         raise HTTPException(status_code=503, detail="Part library not available")
 
@@ -145,7 +145,7 @@ async def api_parts_generate(payload: dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=400, detail="Missing 'part_id'")
 
     try:
-        from ..knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
+        from ...knowledge.parts_catalog import get_template, resolve_parameters, format_fc_script
     except ImportError:
         raise HTTPException(status_code=503, detail="Part library not available")
 
@@ -207,7 +207,7 @@ if _export_list:
     # Also try the FreeCAD tool's finder
     if not fc_python:
         try:
-            from ..tools.freecad import _find_freecad_python
+            from ...tools.freecad import _find_freecad_python
             fc_python = _find_freecad_python()
         except Exception as e:  # FreeCAD not installed — optional dep
             logger.debug("FreeCAD python not found: %s", e)
@@ -262,7 +262,7 @@ if _export_list:
 async def api_parts_generated() -> JSONResponse:
     """List all generated/imported parts with file existence checks."""
     try:
-        from ..tools.part_library import _get_parts_store
+        from ...tools.part_library import _get_parts_store
     except ImportError:
         raise HTTPException(status_code=503, detail="Part library not available")
 
@@ -281,7 +281,7 @@ async def api_parts_generated() -> JSONResponse:
 async def api_parts_generated_delete(name: str) -> JSONResponse:
     """Delete a generated part record by name."""
     try:
-        from ..tools.part_library import _get_parts_store
+        from ...tools.part_library import _get_parts_store
     except ImportError:
         raise HTTPException(status_code=503, detail="Part library not available")
 
@@ -308,7 +308,7 @@ async def api_parts_analyze(payload: dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=404, detail="File not found or access denied")
 
     try:
-        from ..tools.part_library import _run_print_analysis
+        from ...tools.part_library import _run_print_analysis
         result_str = _run_print_analysis(str(resolved), orientation)
     except ImportError:
         raise HTTPException(status_code=503, detail="Part library not available")
@@ -361,7 +361,7 @@ async def api_parts_assemble(payload: dict[str, Any]) -> JSONResponse:
         })
 
     try:
-        from ..tools.part_library import PartAssembleTool
+        from ...tools.part_library import PartAssembleTool
     except ImportError:
         raise HTTPException(status_code=503, detail="Part library not available")
 

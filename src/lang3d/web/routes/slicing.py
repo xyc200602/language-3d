@@ -46,7 +46,7 @@ async def api_slice(payload: dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=404, detail="STL file not found or access denied")
 
     try:
-        from ..tools.slicing import SliceModelTool
+        from ...tools.slicing import SliceModelTool
     except ImportError:
         raise HTTPException(status_code=503, detail="Slicing tools not available")
 
@@ -87,7 +87,7 @@ async def api_slice_analyze(payload: dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=404, detail="G-code file not found or access denied")
 
     try:
-        from ..tools.slicing import SliceAnalyzeTool
+        from ...tools.slicing import SliceAnalyzeTool
     except ImportError:
         raise HTTPException(status_code=503, detail="Slicing tools not available")
 
@@ -117,7 +117,7 @@ async def api_slice_layers(payload: dict[str, Any]) -> JSONResponse:
         raise HTTPException(status_code=404, detail="G-code file not found or access denied")
 
     try:
-        from ..tools.slicing import SlicePreviewLayersTool
+        from ...tools.slicing import SlicePreviewLayersTool
     except ImportError:
         raise HTTPException(status_code=503, detail="Slicing tools not available")
 
@@ -138,32 +138,4 @@ async def api_slice_layers(payload: dict[str, Any]) -> JSONResponse:
 # ---------------------------------------------------------------------------
 # Routes: complex robot design (Task 58)
 # ---------------------------------------------------------------------------
-
-# Module-level cache for design calculations (avoids repeated solve).
-_design_cache: dict[str, Any] = {}
-
-
-def _get_default_robot_data() -> dict[str, Any]:
-    """Build and cache the default complex_robot assembly data."""
-    if "robot" in _design_cache:
-        return _design_cache["robot"]
-
-    from ..tools.export_package import build_complex_robot, _build_subsystems
-    from ..tools.assembly_solver import AssemblySolver
-    from ..knowledge.mechanics import compute_assembly_mass
-
-    assembly = build_complex_robot()
-    solver = AssemblySolver(assembly)
-    positions = solver.solve()
-    mass_result = compute_assembly_mass(assembly)
-    subsystems = _build_subsystems(assembly, positions)
-
-    data = {
-        "assembly": assembly,
-        "positions": positions,
-        "mass_result": mass_result,
-        "subsystems": subsystems,
-    }
-    _design_cache["robot"] = data
-    return data
 
