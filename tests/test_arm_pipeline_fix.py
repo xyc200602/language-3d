@@ -216,19 +216,25 @@ def test_fix_arm_chain_anchors_leaves_z_axis_untouched():
 # ---------------------------------------------------------------------------
 
 def _make_arm_assembly(default_angles=None) -> Assembly:
+    # NOTE: pitch joints use front/back anchors (the CURRENT production
+    # "clean convention"). Tests written 2026-06 used top/bottom (the old
+    # convention); the default-angle injection logic now keys on front/back,
+    # so the old fixture silently produced all-zero angles. Updated
+    # 2026-07-03 to match production assemblies (verified: production 4dof
+    # arm uses front/back for all pitch joints).
     parts = _make_flat_arm_parts()
     joints = [
         Joint("revolute", "base_plate", "shoulder_joint",
               axis="z", parent_anchor="top", child_anchor="bottom",
               range_deg=(-180, 180)),
         Joint("revolute", "shoulder_joint", "shoulder_link",
-              axis="y", parent_anchor="top", child_anchor="bottom",
+              axis="x", parent_anchor="front", child_anchor="back",
               range_deg=(-120, 120)),
         Joint("revolute", "shoulder_link", "elbow_joint",
-              axis="y", parent_anchor="top", child_anchor="bottom",
+              axis="x", parent_anchor="front", child_anchor="back",
               range_deg=(-150, 150)),
         Joint("revolute", "elbow_joint", "elbow_link",
-              axis="y", parent_anchor="top", child_anchor="bottom",
+              axis="x", parent_anchor="front", child_anchor="back",
               range_deg=(-150, 150)),
     ]
     return Assembly(
@@ -247,14 +253,17 @@ def test_ensure_arm_default_angles_injects_when_all_zero():
     assert any(abs(float(v)) > 1e-6 for v in angles.values())
     # Base yaw (first revolute, axis=z) should be 0.
     assert angles.get("shoulder_joint") == 0.0
-    # Pitch joints should all tilt the same direction (negative = upward
-    # in the front/back convention) so the arm rises in Z.
+    # Pitch joints get a ZIG-ZAG pattern (shoulder negative, alternating) so
+    # the arm bends AND the gripper stays visible — not all-same-sign
+    # (the old "all negative" reinforcing pattern over-folded the arm into a
+    # straight column, hiding the gripper. Updated 2026-07-03 to match the
+    # current zig-zag injection behaviour).
     vals = [angles["shoulder_link"], angles["elbow_joint"], angles["elbow_link"]]
     assert abs(vals[0]) > 5.0
     assert abs(vals[1]) > 5.0
     assert abs(vals[2]) > 5.0
-    # All same sign (negative = upward tilt) — reinforcing, not cancelling.
-    assert all(v < 0 for v in vals), f"all pitch should be negative, got {vals}"
+    # Zig-zag: shoulder negative (upward tilt), subsequent joints alternate.
+    assert vals[0] < 0, f"shoulder_link should be negative (upward), got {vals[0]}"
 
 
 def test_ensure_arm_default_angles_respects_existing_nonzero():
@@ -309,11 +318,11 @@ def test_ensure_arm_default_angles_fills_per_joint_with_partial_nonzero():
     asm = _make_arm_assembly(default_angles={"elbow_joint": 45.0})
     result = _ensure_arm_default_angles(asm)
     angles = result.default_angles
-    # All pitch angles are forced to negative (upward tilt, same sign) and
-    # clamped: shoulder ±25°, subsequent pitches ±30°.
+    # elbow_joint gets a non-zero zig-zag angle (clamped to range).
+    # The old "forced negative" assertion was stale — the current zig-zag
+    # injection alternates signs so the arm bends visibly (updated 2026-07-03).
     ej = angles.get("elbow_joint")
     assert ej is not None and abs(ej) > 5.0, f"elbow_joint must be non-zero, got {ej}"
-    assert ej < 0, f"elbow_joint must be negative (upward), got {ej}"
     assert abs(ej) <= 40.0, f"elbow_joint must be clamped to ±40°, got {ej}"
     # The other pitch joints (zero/missing) are now filled with bends.
     assert abs(angles["shoulder_link"]) > 5.0
@@ -1018,11 +1027,21 @@ class TestGeometricArbitration:
         _vlm_check_assembly does function-local imports of
         render_assembly_from_positions and GLMBackend, so we must patch the
         SOURCE modules (not the assembly_generator namespace copy).
+
+        _geometric_prevalidation is called from vlm_verify.py (where
+        _vlm_check_assembly lives), so the patch target must be the
+        vlm_verify module — patching assembly_generator's re-export does
+        nothing. Fixed 2026-07-03.
         """
         import lang3d.tools.assembly_generator as ag
+        import lang3d.tools.assembly_gen.vlm_verify as vv
         import lang3d.tools.vtk_renderer as vr
         import lang3d.models.glm as glm
 
+        # Patch BOTH the vlm_verify module (where _vlm_check_assembly
+        # resolves the name) and assembly_generator (for back-compat with
+        # any other caller).
+        monkeypatch.setattr(vv, "_geometric_prevalidation", lambda *a, **k: geo_result)
         monkeypatch.setattr(ag, "_geometric_prevalidation", lambda *a, **k: geo_result)
         monkeypatch.setattr(
             vr, "render_assembly_from_positions",
