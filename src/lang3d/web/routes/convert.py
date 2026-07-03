@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -23,20 +24,41 @@ router = APIRouter()
 
 # Deferred imports from app.py (avoid circular dependency: app.py includes
 # this router at module level). Resolved on first use.
+# NOTE: _find_freecad MUST be fetched through here too (not called as a
+# bare global) — it's defined in app.py, and resolving it via this helper
+# ensures tests that @patch("lang3d.web.app._find_freecad") take effect
+# regardless of import order. Previously convert.py called _find_freecad()
+# as an undefined name, which NameError'd under certain import orders
+# (fixed 2026-07-03, test_async_convert pollution).
 _app_helpers = None
 def _get_app_helpers():
-    global _app_helpers
-    if _app_helpers is None:
-        from ..app import DATA_ROOT, _workspace_root, _resolve_safe
-        _app_helpers = (DATA_ROOT, _workspace_root, _resolve_safe)
-    return _app_helpers
+    """Re-resolve helpers from app.py each call.
+
+    Caching the tuple (the original design) broke test patching: once any
+    earlier test populated the cache, @patch("lang3d.web.app._resolve_safe")
+    in a later test had no effect because convert.py held the original
+    reference. Re-importing each call keeps patching live. The cost is
+    negligible (one dict lookup per request).
+    """
+    from ..app import DATA_ROOT, _workspace_root, _resolve_safe
+    return (DATA_ROOT, _workspace_root, _resolve_safe)
+
+
+def _freecad():
+    """Resolve FreeCAD path via the (patchable) app helper.
+
+    Re-imports _find_freecad each call so @patch("lang3d.web.app._find_freecad")
+    in tests takes effect even after _get_app_helpers cached its tuple.
+    """
+    from ..app import _find_freecad
+    return _find_freecad()
 
 @router.get("/api/convert-step")
 async def api_convert_step(path: str = Query(...)) -> JSONResponse:
     """Convert a STEP file to STL using FreeCAD (server-side). Returns the
     relative path of the generated STL within the workspace, so the client
     can load it via /api/file."""
-    freecad = _find_freecad()
+    freecad = _freecad()
     if freecad is None:
         raise HTTPException(status_code=503, detail="FreeCAD not available on server")
     ws = _get_app_helpers()[1]()
@@ -100,7 +122,7 @@ async def api_convert_fcstd(path: str = Query(...)) -> JSONResponse:
     """Convert a FreeCAD .FCStd document to STL using FreeCADCmd (server-side).
     Merges all visible solid objects (Part::Feature, PartDesign::Body, etc.)
     into a single mesh. Returns the relative path of the generated STL."""
-    freecad = _find_freecad()
+    freecad = _freecad()
     if freecad is None:
         raise HTTPException(status_code=503, detail="FreeCAD not available on server")
     ws = _get_app_helpers()[1]()
@@ -184,7 +206,7 @@ _convert_queue: dict[str, dict[str, Any]] = {}
 
 def _run_conversion(job_id: str, src_path: Path, output_path: Path, src_ext: str) -> None:
     """Execute FreeCAD conversion in a background thread."""
-    freecad = _find_freecad()
+    freecad = _freecad()
     if freecad is None:
         with _convert_lock:
             _convert_queue[job_id]["status"] = "failed"
@@ -288,7 +310,7 @@ async def api_convert_async(path: str = Query(...), format: str = Query("stl")) 
     if ext not in {".step", ".stp", ".fcstd"}:
         raise HTTPException(status_code=400, detail=f"Unsupported source format: {ext}")
 
-    freecad = _find_freecad()
+    freecad = _freecad()
     if freecad is None:
         raise HTTPException(status_code=503, detail="FreeCAD not available on server")
 
@@ -310,10 +332,10 @@ async def api_convert_async(path: str = Query(...), format: str = Query("stl")) 
 
     job_id = str(uuid.uuid4())[:8]
     with _convert_lock:
-        _convert_queue[job_id] = {"status": "pending", "created_at": _time.time()}
+        _convert_queue[job_id] = {"status": "pending", "created_at": time.time()}
         # Cleanup old entries (keep last 100)
         if len(_convert_queue) > 100:
-            now = _time.time()
+            now = time.time()
             old_keys = [
                 k for k, v in _convert_queue.items()
                 if v.get("status") in ("done", "failed") and now - v.get("created_at", 0) > 3600
