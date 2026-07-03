@@ -379,6 +379,12 @@ class AssemblyPipeline:
                     from ..tools.assembly_generator import (
                         ASSEMBLY_GEN_SYSTEM_PROMPT,
                     )
+                    # Retrieve-before: pull similar verified-good cases from
+                    # the experience store and inject as extra few-shot
+                    # precedent. Empty when the store is empty or disabled —
+                    # no behaviour change for first-time prompts. See
+                    # :mod:`lang3d.experience` and external-audit H2.
+                    few_shot_block = self._retrieve_experience_block()
                     ctx.assembly = generate_assembly_from_nl(
                         description=ctx.description,
                         api_key=ctx.api_key,
@@ -388,6 +394,7 @@ class AssemblyPipeline:
                         system_prompt=self.architect_agent.system_prompt(
                             ASSEMBLY_GEN_SYSTEM_PROMPT
                         ),
+                        few_shot_extras=few_shot_block,
                     )
             else:
                 # Check if the previous round FAILED validation (meaning
@@ -1247,6 +1254,17 @@ class AssemblyPipeline:
         # Write loop summary
         self._write_summary()
 
+        # Store-after: if the assembly passed verification, record it as a
+        # verified-good case for future prompts to retrieve. Failures are NOT
+        # stored (successes-only memory — avoids poisoning retrieval with
+        # failure modes). Errors here are non-fatal: a failed write must not
+        # crash a passing run. See :mod:`lang3d.experience` (audit H2).
+        if ctx.passed:
+            try:
+                self._record_experience()
+            except Exception as e:
+                logger.warning("experience store: record failed (%s)", e)
+
         # Stage 6: Export (always, even on failure — for debugging)
         self.run_export()
 
@@ -1291,3 +1309,99 @@ class AssemblyPipeline:
                 json.dump(summary, f, indent=2, ensure_ascii=False)
         except Exception as e:
             logger.warning("Failed to write vlm_loop_summary.json: %s", e)
+
+    # ------------------------------------------------------------------
+    # Experience store integration (retrieve-before / store-after)
+    # ------------------------------------------------------------------
+
+    def _retrieve_experience_block(self) -> str:
+        """Retrieve similar verified-good cases and format as a few-shot block.
+
+        Returns an empty string when:
+        * the experience store is empty (first run, or feature disabled), or
+        * no stored case clears the minimum similarity score.
+
+        Empty-string return is important: ``generate_assembly_from_nl`` skips
+        the injection when the block is empty, so the prompt is byte-identical
+        to the pre-store behaviour and existing e2e baselines are unaffected.
+        """
+        from ..experience import get_store
+        from ..tools.assembly_gen.vlm_verify import _classify_robot
+
+        try:
+            store = get_store()
+            category = _classify_robot(self.ctx.description)
+            cases = store.retrieve(self.ctx.description, category, k=2)
+        except Exception as e:
+            # Retrieval must never block generation — log and proceed without.
+            logger.warning("experience store: retrieve failed (%s)", e)
+            return ""
+
+        if not cases:
+            return ""
+
+        # Format as additional few-shot precedent. The LLM already gets
+        # parametric examples; these are *learned* cases that actually passed
+        # the full pipeline (CAD + VLM + physics). Keep the block compact —
+        # only the fields that constrain generation topology & angles.
+        lines = [
+            "以下是从历史成功案例中检索到的相似已验证装配（仅供拓扑/角度参考，"
+            "尺寸仍按本次需求）："
+        ]
+        for i, c in enumerate(cases, 1):
+            angles = ", ".join(f'"{k}":{v:.0f}' for k, v in c.default_angles.items())
+            joints = ", ".join(f"{t}:{n}" for t, n in c.joint_types.items())
+            lines.append(
+                f"  案例{i}：{c.description}（{c.dof}自由度，{c.robot_category}）"
+                f" | 关节[{joints}] | 默认角度{{{angles}}}"
+            )
+        logger.info(
+            "experience store: retrieved %d case(s) for '%s'",
+            len(cases), self.ctx.description[:40],
+        )
+        return "\n".join(lines)
+
+    def _record_experience(self) -> None:
+        """Record the current verified-good case into the experience store.
+
+        Called from :meth:`run` only when ``ctx.passed`` is True. Distils the
+        full assembly into a compact :class:`CaseRecord` — the heavy geometry
+        stays on disk under ``data/runs/<case>/`` and is referenced by
+        ``run_dir``.
+        """
+        from ..experience import CaseRecord, get_store
+        from ..tools.assembly_gen.vlm_verify import _classify_robot
+
+        ctx = self.ctx
+        if ctx.assembly is None:
+            return  # nothing to record (defensive — passed implies non-None)
+
+        # Build joint-type histogram from the assembly's joints.
+        joint_hist: dict[str, int] = {}
+        movable = 0
+        for j in ctx.assembly.joints:
+            joint_hist[j.type] = joint_hist.get(j.type, 0) + 1
+            if j.type != "fixed":
+                movable += 1
+
+        # run_dir: prefer the pipeline output_dir if it's under data/runs/,
+        # else fall back to a generic placeholder.
+        out_dir = getattr(ctx, "output_dir", "") or ""
+        if "data" in out_dir:
+            run_dir = out_dir.replace("\\", "/")
+        else:
+            run_dir = "data/runs/"
+
+        record = CaseRecord(
+            description=ctx.description,
+            robot_category=_classify_robot(ctx.description),
+            dof=movable,
+            assembly_name=ctx.assembly.name,
+            part_count=len(ctx.assembly.parts),
+            joint_types=joint_hist,
+            default_angles=dict(ctx.assembly.default_angles or {}),
+            rounds_taken=ctx.round_num,
+            run_dir=run_dir,
+        )
+        get_store().record(record)
+

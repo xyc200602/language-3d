@@ -457,6 +457,7 @@ def generate_assembly_from_nl(
     model: str = "GLM-5.2",
     temperature: float = 0.3,
     system_prompt: str | None = None,
+    few_shot_extras: str = "",
 ) -> Assembly:
     """Generate an Assembly from natural language description using LLM.
 
@@ -473,6 +474,12 @@ def generate_assembly_from_nl(
             (``StageAgent.system_prompt(ASSEMBLY_GEN_SYSTEM_PROMPT)``) so the
             role identity reaches the model on the *first* generation round
             too, not only on repair rounds (see ``_regenerate_with_feedback``).
+        few_shot_extras: Optional pre-formatted block of *retrieved* past
+            verified-good cases, supplied by the experience store
+            (:mod:`lang3d.experience`). When non-empty, it is appended to the
+            user prompt as additional few-shot precedent. Empty by default —
+            callers that don't use the experience store see no behaviour
+            change.
 
     Returns:
         Assembly object with parts and joints.
@@ -635,6 +642,14 @@ def generate_assembly_from_nl(
         user_prompt += (
             f"\n参考示例（4轮差速底盘）：\n{EXAMPLE_4W_ROBOT}\n"
         )
+
+    # Experience-store injection (retrieve-before). The pipeline passes a
+    # pre-formatted block of past *verified-good* cases for similar prompts;
+    # these act as additional few-shot precedent on top of the parametric
+    # examples above. Skipped when empty (no experience yet, or the store is
+    # disabled) so the prompt is byte-identical to the pre-store behaviour.
+    if few_shot_extras:
+        user_prompt += f"\n{few_shot_extras}\n"
 
     response = backend.chat(
         messages=[Message(role="user", content=user_prompt)],
