@@ -224,7 +224,7 @@ class ConnectionMethod:
     kinematic Joint type which describes the resulting DOF.
     """
 
-    type: str  # "bolted" | "press_fit" | "snap_fit" | "adhesive" | "welded" | "magnetic"
+    type: str  # "bolted" | "press_fit" | "snap_fit" | "adhesive" | "welded" | "magnetic" | "dowel_pin" | "set_screw"
 
     # --- Bolted connection ---
     bolt_size: str = "M3"                  # e.g. "M3", "M4", "M5", "M6"

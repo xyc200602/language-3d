@@ -2,7 +2,7 @@
 
 Validates the core value proposition: natural language → production-grade robot
 assembly folder.  Each test case goes through the full
-``generate_assembly_with_vlm_loop()`` pipeline and validates output across 6
+``generate_assembly_with_vlm_loop()`` pipeline and validates output across 7
 phases.  Only Phase 1 (NL→Assembly) and Phase 4 (engineering package files)
 fail the test; all other phases produce warnings.
 
