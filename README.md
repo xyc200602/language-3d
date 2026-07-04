@@ -180,6 +180,10 @@ assembly = generate_assembly_from_nl("4自由度机械臂，带夹爪")
 | **VLM Gripper / VLM 夹爪** | Dedicated close-up view — two finger prongs + gap | Sole authority for gripper question |
 | **MuJoCo Physics / 物理仿真** | PD-hold stability + joint actuation + ground-plane driving (floating-base differential drive) + grasp | Must pass for URDF export |
 
+### Self-Evolving Experience Store / 自演化经验库
+
+A retrieve-before / store-after memory of verified-good assemblies (`experience/store.py`). Before generation, the Architect retrieves similar past cases (lexical scoring: keyword 3×, robot-category 5×, DOF proximity 2×); after verification passes, the case is stored for future retrieval. **Successes only** (failed assemblies never stored); per-category cap with popularity-based pruning. The store starts empty on a fresh checkout (generation falls back to parametric examples — no behaviour change until cases accumulate).
+
 ---
 
 ## Tool System / 工具系统
@@ -255,6 +259,8 @@ language-3d/
 │   │   ├── urdf_export.py         # URDF (inertial frame-correct)
 │   │   ├── sim_mujoco.py          # MuJoCo physics (prismatic joint clamping)
 │   │   └── ...
+│   ├── experience/                # Self-evolving experience store (audit H2)
+│   │   └── store.py               # Retrieve-before / store-after (lexical, successes-only)
 │   ├── knowledge/                 # Domain Knowledge
 │   │   ├── parts_catalog.py       # COTS part templates + lookup functions
 │   │   ├── _catalog_entries.py    # PART_CATALOG dict entries (94 templates)
