@@ -117,5 +117,10 @@ class Verifier:
             # No clear indicators — fail-safe
             return False, content
         except Exception as e:
-            logger.warning("LLM verification failed (assuming pass): %s", e)
-            return True, f"LLM verification unavailable, assumed pass: {e}"
+            # Fail-closed (AGENTS.md §1.1: never silently assume pass on
+            # error). Previously this returned True on exception, which
+            # would let a network blip pass a bad step. The pipeline's
+            # production path uses assembly_verifier.py (not this method),
+            # but any caller of verify_step() deserves a safe default.
+            logger.warning("LLM verification failed (assuming FAIL): %s", e)
+            return False, f"LLM verification unavailable, assumed FAIL: {e}"

@@ -85,9 +85,15 @@ class TestHierarchicalPlanSerialization:
 
 
 class TestVerifierLLMError:
-    """Verifier should default to pass when LLM verification fails."""
+    """Verifier should fail-closed when LLM verification errors (AGENTS.md §1.1).
 
-    def test_llm_failure_defaults_to_pass(self):
+    Previously this defaulted to PASS on exception (a landmine: a network
+    blip would pass a bad step). Changed 2026-07-04 to fail-closed —
+    consistency with the existing 'no clear indicators → fail-safe' branch
+    at line 117 of verifier.py.
+    """
+
+    def test_llm_failure_defaults_to_fail(self):
         from lang3d.agent.verifier import Verifier
 
         router = MagicMock()
@@ -99,8 +105,11 @@ class TestVerifierLLMError:
             verification="验证结果正确",
         )
         success, msg = verifier.verify_step(step, "some result")
-        assert success is True
-        assert "unavailable" in msg.lower() or "assumed pass" in msg.lower()
+        assert success is False, (
+            "LLM verification error must default to FAIL (fail-closed), "
+            "not pass — otherwise a network blip silently approves bad output"
+        )
+        assert "unavailable" in msg.lower() or "fail" in msg.lower()
 
 
 class TestReflectorExceptionHandling:

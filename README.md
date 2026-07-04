@@ -164,7 +164,7 @@ assembly = generate_assembly_from_nl("4自由度机械臂，带夹爪")
 | Stage / 阶段 | Module / 模块 | Description / 描述 |
 |---|---|---|
 | 1. Architect / 架构 | `assembly_generator.py` + `pipeline.py` | GLM-5.2 generates assembly JSON from prompt |
-| 2. Sanitize / 清洗 | `assembly_gen/sanitizers.py` | Fix anchors, grippers, proportions, angles, base sizing, **geometric pitch-range limit** (analytic arcsin(H/L) + combined worst-case verification) |
+| 2. Sanitize / 清洗 | `assembly_gen/sanitizers.py` | Fix anchors, grippers, proportions, angles, base sizing, **numeric pitch/yaw caps** (topology-aware: humanoid shoulder 60°, fixed-base 90°, wrist-roll ±120°) + FCL endpoint validation |
 | 3. Solve / 求解 | `assembly_solver.py` + `assembly_compose.py` | Compute 3D positions, then **collision-aware range clamp** (FCL sweep narrows range_deg to collision-free subset for all arms) |
 | 4. CAD Generate / CAD 生成 | `part_feature_engine.py` | FreeCAD scripts → STL meshes (axis-correct bolt holes) |
 | 5. Render / 渲染 | `vtk_renderer.py` | VTK offscreen multi-view + crop-to-content + clipping fix |
