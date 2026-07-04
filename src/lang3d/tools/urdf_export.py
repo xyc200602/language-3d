@@ -851,26 +851,27 @@ class AssemblyToURDF:
                 mimic_el.set("multiplier", f"{joint.mimic_multiplier:.1f}")
                 mimic_el.set("offset", f"{joint.mimic_offset:.4f}")
 
-        # Transmissions for actuated joints (ros2_control / Gazebo).
-        # Each revolute/prismatic joint gets a SimpleTransmission so
-        # gazebo_ros2_control can apply effort commands.
-        for joint in self._joints:
-            if joint.type not in ("revolute", "prismatic"):
-                continue
-            trans_el = ET.SubElement(root, "transmission")
-            trans_el.set("name", f"{joint.name}_trans")
-            type_el = ET.SubElement(trans_el, "type")
-            type_el.text = "transmission_interface/SimpleTransmission"
-            joint_ref = ET.SubElement(trans_el, "joint", name=joint.name)
-            hw_el = ET.SubElement(joint_ref, "hardwareInterface")
-            hw_el.text = "hardware_interface/EffortJointInterface"
-            actuator_el = ET.SubElement(
-                trans_el, "actuator", name=f"{joint.name}_motor",
-            )
-            act_hw_el = ET.SubElement(actuator_el, "hardwareInterface")
-            act_hw_el.text = "hardware_interface/EffortJointInterface"
-            mech_el = ET.SubElement(actuator_el, "mechanicalReduction")
-            mech_el.text = "1"
+        # ros2_control hardware interface declaration (ROS2 standard).
+        # Replaces the old <transmission> + <hardwareInterface> format
+        # (which was ROS1/Gazebo-Classic and incompatible with
+        # gazebo_ros2_control). The gazebo_ros2_control plugin REQUIRES
+        # a <ros2_control> tag with the GazeboSystem hardware plugin and
+        # per-joint command/state interfaces matching ros2_control.yaml.
+        actuated = [j for j in self._joints if j.type in ("revolute", "prismatic")]
+        if actuated:
+            r2c = ET.SubElement(root, "ros2_control")
+            r2c.set("name", "GazeboSystem")
+            r2c.set("type", "system")
+            hw_el = ET.SubElement(r2c, "hardware")
+            hw_plugin = ET.SubElement(hw_el, "plugin")
+            hw_plugin.text = "gazebo_ros2_control/GazeboSystem"
+            for joint in actuated:
+                j_el = ET.SubElement(r2c, "joint", name=joint.name)
+                cmd = ET.SubElement(j_el, "command_interface")
+                cmd.set("name", "position")
+                for si in ("position", "velocity"):
+                    st = ET.SubElement(j_el, "state_interface")
+                    st.set("name", si)
 
         # Gazebo ros2_control plugin for simulation actuation
         gazebo_ctrl = ET.SubElement(root, "gazebo")
