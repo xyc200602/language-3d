@@ -505,6 +505,26 @@ def _clamp_joint_ranges_to_collision_free(
             parts, joints, default_angles, child, home, hi, step=+15.0,
             check_fn=_any_collision_count,
         )
+        # ENDPOINT VALIDATION: the expand-from-home search checks angles at
+        # 15° intervals from home, but the motion-collision sweep samples
+        # the FINAL range uniformly (7 points incl. both endpoints). The
+        # original lo/hi extremes (far from home) were never re-checked by
+        # the clamper — if the LLM specified a colliding extreme (e.g.
+        # shoulder at -90°), it survived into the output range and the
+        # sweep then caught it (the most common motion_collision_sweep
+        # failure). Verify the endpoints a and b are themselves collision-
+        # free; if not, walk them inward until they are.
+        check_fn = _any_collision_count
+        while a < home:
+            trial = dict(default_angles); trial[child] = a
+            if check_fn(parts, joints, trial) == 0:
+                break
+            a += 15.0  # walk toward home until clear
+        while b > home:
+            trial = dict(default_angles); trial[child] = b
+            if check_fn(parts, joints, trial) == 0:
+                break
+            b -= 15.0  # walk toward home until clear
         if (b - a) >= 10.0 and (b - a) < (hi - lo):
             old = j["range_deg"]
             j["range_deg"] = [round(a, 1), round(b, 1)]
