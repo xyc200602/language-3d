@@ -74,6 +74,9 @@ data/*_run*.log
 # Generated output directories (regenerable, large)
 data/e2e_results/
 data/e2e_production_output/
+# Stray e2e report JSONs (run artifacts that land in data/ root; the
+# canonical location is data/runs/<case>/<ts>/e2e_report.json)
+data/e2e_*_report.json
 data/dual_arm_robot_export/
 data/debug_*/
 data/test_*/
