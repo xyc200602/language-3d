@@ -100,3 +100,10 @@ data/archive_pre_refactor/
 docs/progress_report_20260621.html
 data/debug/
 data/archive_incomplete_runs/
+
+# LaTeX build artifacts (keep main.pdf, ignore intermediates)
+docs/paper/main.aux
+docs/paper/main.bbl
+docs/paper/main.blg
+docs/paper/main.log
+docs/paper/main.out
