@@ -101,6 +101,13 @@ Eight connection types generate real CAD features via FreeCAD operation dictiona
     \item \textbf{Magnetic}, \textbf{Dowel-pin} (H7 slip-fit), \textbf{Set-screw} (radial threaded hole).
 \end{itemize}
 
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.85\columnwidth]{figures/fig3_connections.pdf}
+\caption{Eight connection types with real CAD features. Each generates geometry-specific boolean operations (clearance holes, interference bores, snap hooks, etc.).}
+\label{fig:connections}
+\end{figure}
+
 \subsection{Dual-Channel Verification}
 \textbf{Channel 1 (VLM)}: GLM-4.6V inspects panoramic renders (iso/front/top/right) for structural integrity, plus a dedicated gripper close-up for finger geometry.
 
@@ -133,7 +140,14 @@ We evaluate on seven robot configurations spanning 2--7 degrees of freedom plus 
 \end{itemize}
 
 \subsection{Scoring}
-Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assembly (part count, joint count, connected tree, VLM pass), Position Solving (all positioned, 0 NaN), Render Quality ($\geq$4 views), Engineering Package (all files exist), Content Validation (mass, VLM, URDF structure, watertight meshes), Physical Sanity (0 FCL collisions, COM stability, workspace), and MuJoCo Simulation (physics stability, joint actuation, grasp). Score = PASS / (PASS + FAIL + WARN).
+Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assembly (part count, joint count, connected tree, VLM pass), Position Solving (all positioned, 0 NaN), Render Quality ($\geq$4 views), Engineering Package (all files exist), Content Validation (mass, VLM, URDF structure, watertight meshes), Physical Sanity (0 FCL collisions, COM stability, workspace), and MuJoCo Simulation (physics stability, joint actuation, grasp). Score = PASS / (PASS + FAIL + WARN). Figure~\ref{fig:package} shows the output file tree of a generated engineering package.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\columnwidth]{figures/fig4_package.pdf}
+\caption{Output engineering package structure: STL/STEP meshes, URDF, BOM, assembly guide, firmware templates, and ROS2 package with launch files and ros2\_control config.}
+\label{fig:package}
+\end{figure}
 
 \subsection{Results}
 \begin{table}[h]
