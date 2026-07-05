@@ -833,8 +833,9 @@ _PREVIEWABLE_EXTS = {".stl", ".obj"}
 
 def _find_freecad() -> str | None:
     """Locate FreeCADCmd executable for server-side conversions (STEP → STL)."""
+    import os
     candidates = [
-        "C:/Users/xyc/AppData/Local/Programs/FreeCAD 1.1/bin/freecadcmd.exe",
+        os.path.expanduser("~/AppData/Local/Programs/FreeCAD 1.1/bin/freecadcmd.exe"),
         "C:/Program Files/FreeCAD 1.1/bin/freecadcmd.exe",
         "C:/Program Files/FreeCAD 1.0/bin/freecadcmd.exe",
         "C:/Program Files/FreeCAD/bin/freecadcmd.exe",
