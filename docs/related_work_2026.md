@@ -23,7 +23,7 @@
 |---|---|
 | **目标** | 自然语言 → 多零件机器人装配体（机械臂/夹爪/轮式/足式）+ 完整工程包 |
 | **架构** | Orchestrator + Planner + SubAgent×N + AssemblyVerifier + Reflector（5 智能体） |
-| **LLM/VLM** | GLM-5.1（推理）+ GLM-4V（4 层路由视觉验证） |
+| **LLM/VLM** | GLM-5.2（推理）+ GLM-4.6V（4 层路由视觉验证） |
 | **CAD 后端** | FreeCAD 1.1 子进程 + Python 脚本（23 个建模工具） |
 | **求解器** | BFS 树遍历 + 6 面 anchor + Rodrigues 旋转（1066 行） |
 | **双通道验证** | 代码侧（mesh_stats、碰撞、水密性）+ 视觉侧（VLM cad_verify） |
