@@ -173,8 +173,10 @@ class TestFingerSpreadCorrection:
         right.offset = (3.0, right.offset[1], 0.0)  # 2026-06-22 axis convention change
 
         # Sanity check: they DO intersect before correction.
+        # Check 5 reports "are only Xmm apart" (distance-based), not "overlap"
+        # (which was the old FCL collision message, now skipped for fingers).
         pre_problems = _solve_and_validate(asm)
-        assert any("finger" in p.lower() and "overlap" in p.lower()
+        assert any("finger" in p.lower() and ("overlap" in p.lower() or "apart" in p.lower())
                    for p in pre_problems), "test setup: fingers should intersect"
 
         # Apply the finger_spread correction the same way the verifier does.

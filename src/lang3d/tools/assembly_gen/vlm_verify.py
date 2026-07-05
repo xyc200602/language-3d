@@ -463,22 +463,28 @@ def _geometric_prevalidation(
                     _adjacent_pairs.add((gp, gc))
                     _adjacent_pairs.add((gc, gp))
         # Siblings: same parent (e.g. chassis_body & motor_* on base_plate).
+        # We build TWO adjacency sets:
+        #   _adjacent_pairs — used by the same-position check (Check 1).
+        #     Finger pairs ARE included here: two fingers at the exact same
+        #     position is always a bug.
+        #   _collision_skip_pairs — used by the AABB→FCL collision pipeline
+        #     (Check 6).  Finger pairs are ALSO in here: FCL builds an
+        #     axis-aligned box mesh from (length, width, height) and rotates
+        #     it, which over-approximates a 60mm-long finger rotated 30° into
+        #     a 59mm half-extent — larger than the 56.8mm centre gap between
+        #     correctly-placed fingers.  This produces false-positive
+        #     collisions on every dual-arm run.  Finger overlap is already
+        #     covered by the dedicated gap check (Check 5, >= 25mm), so the
+        #     FCL collision pipeline would only add false positives here.
+        _collision_skip_pairs: set[tuple[str, str]] = set()
         for _parent, siblings in _children_by_parent.items():
             for i in range(len(siblings)):
                 for k in range(i + 1, len(siblings)):
                     si, sk = siblings[i], siblings[k]
-                    # Gripper fingers are siblings (both children of
-                    # gripper_base) but they MUST NOT overlap — they are
-                    # parallel jaws with an open gap between them, not an
-                    # enclosing shell like chassis-body-around-motors.
-                    # Excluding them from adjacency lets a finger-overlap
-                    # bug hide (test_gripper_finger_geometry regression,
-                    # 2026-07-03). Keep the sibling-skip for genuine
-                    # enclosures (motors, hubs) but not for fingers.
-                    if ("finger" in si.lower() and "finger" in sk.lower()):
-                        continue
                     _adjacent_pairs.add((si, sk))
                     _adjacent_pairs.add((sk, si))
+                    _collision_skip_pairs.add((si, sk))
+                    _collision_skip_pairs.add((sk, si))
 
     # 1. Collision proxy: parts at same position.
     # Parts joined by a joint (parent↔child) legitimately share a position —
@@ -560,18 +566,23 @@ def _geometric_prevalidation(
                     f"signs (zig-zag) so the elbow bends back toward horizontal."
                 )
 
-    # 5. Gripper finger visibility: if the assembly describes an arm with
-    # gripper fingers, verify that (a) there are >= 2 finger parts, and
-    # (b) the solved finger positions are separated by >= 25mm so they read
-    # as distinct opposing prongs rather than a fused block.  This is a
-    # deterministic safety net for the VLM, which tends to rationalise a
-    # non-visible gripper as "physically plausible".
+    # 5. Gripper finger visibility: if the assembly has gripper fingers,
+    # verify that (a) there are >= 2 finger parts, and (b) the solved finger
+    # positions are separated by >= 25mm so they read as distinct opposing
+    # prongs rather than a fused block.  This is a deterministic safety net
+    # for the VLM, which tends to rationalise a non-visible gripper as
+    # "physically plausible".
+    #
+    # This check runs REGARDLESS of is_arm — even a gripper-only fixture
+    # (test_gripper_finger_geometry) needs finger-overlap detection. The
+    # finger-gap distance check is the AUTHORITATIVE finger-overlap detector;
+    # the AABB→FCL pipeline (Check 6) skips finger pairs because FCL's box
+    # mesh over-approximates rotated slender fingers (false positives).
     finger_names = [n for n in positions if "finger" in n.lower()]
-    is_arm = len(arm_names) >= 4
-    if is_arm:
+    if finger_names:
         if len(finger_names) < 2:
             problems.append(
-                "Arm is missing a functional gripper: fewer than 2 finger "
+                "Assembly is missing a functional gripper: fewer than 2 finger "
                 "parts found. Add 'gripper_finger_left' and "
                 "'gripper_finger_right' parts at the end of the arm."
             )
@@ -693,7 +704,7 @@ def _geometric_prevalidation(
             continue
         for j_idx in range(i + 1, len(_pos_list)):
             nb = _pos_list[j_idx][0]
-            if (na, nb) in _adjacent_pairs:
+            if (na, nb) in _collision_skip_pairs:
                 continue
             # Skip container↔internal: a structural shell (chassis_body, etc.)
             # intentionally encloses internal parts, so their AABB overlap is
