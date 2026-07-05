@@ -23,7 +23,7 @@
 
 Language-3D Agent is an AI system that understands natural language descriptions of mechanical assemblies, generates functional-prototype 3D models (STL/STEP via boolean geometry), exports complete engineering packages (URDF, BOM, assembly guide, firmware), and verifies results through **dual-channel inspection** — code-side geometric checks and vision-side AI analysis, with **geometric arbitration** that overrules VLM false-negatives when the geometry is provably correct.
 
-The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer classifies VLM failures by severity (HARD geometry defects vs SOFT framing nitpicks) and routes each failure back to the specific upstream stage that needs re-running — a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration, while a soft VLM framing complaint on a deterministic compose output is retained rather than triggering a corrupting LLM regeneration. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard; pipeline errors propagate (fail-loud) rather than silently falling back to the legacy loop.
+The system uses a **multi-expert agent pipeline** (Architect → Solver → CAD Engineer → Verifier → Fixer) where each stage is an independent specialist with its own system prompt and tool whitelist. The Fixer classifies VLM failures by type (structural defects like collisions vs. framing nitpicks like "arm too horizontal") and routes each failure back to the specific upstream stage that needs re-running — a solver-classified collision re-runs only solver→cad→verifier, skipping an unnecessary Architect regeneration, while a soft VLM framing complaint on a deterministic compose output is retained rather than triggering a corrupting LLM regeneration. The pipeline is the **production path** for the CLI (`lang3d`) and the web dashboard; pipeline errors propagate (fail-loud) rather than silently falling back to the legacy loop.
 
 **中文**
 
@@ -67,7 +67,14 @@ Language-3D Agent 是一个 AI 系统，能够理解自然语言描述的机械�
 ### Installation / 安装
 
 ```bash
+# Core install (LLM + CAD + web dashboard) / 核心安装
 pip install -e .
+
+# With collision detection + physics simulation / 含碰撞检测 + 物理仿真
+pip install -e ".[collision,sim]"
+
+# With all dev dependencies / 含开发依赖
+pip install -e ".[collision,sim,dev]"
 
 # Configure / 配置
 cp .env.example .env
@@ -340,7 +347,7 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 - [x] Tool whitelisting per role (ROLE_TOOL_CATEGORIES)
 - [x] AssemblyPipeline is the production path (pipeline errors propagate; legacy loop is opt-in via LANG3D_LEGACY_FALLBACK)
 - [x] Architect persona injected on round 1 (not only on repair rounds)
-- [x] Selective Fixer routing with severity grading (HARD defects trigger fix; SOFT VLM complaints on deterministic output are retained, not regenerated)
+- [x] Selective Fixer routing by failure type (structural defects trigger fix; framing complaints on deterministic output are retained, not regenerated)
 - [x] Deterministic dual-arm generation (chassis expert tools, no LLM for topology)
 - [x] Geometric arbitration (Check 7 connectivity + false-alarm filtering)
 - [x] Split VLM verification (structural panoramic + gripper close-up)
