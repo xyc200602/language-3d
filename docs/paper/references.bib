@@ -63,7 +63,47 @@
   title={STEP-LLM: Generating CAD STEP Models from Natural Language},
   journal={arXiv preprint arXiv:2601.12641},
   year={2026},
-  note={Verified: arXiv page. NL → STEP single parts. No assembly.}
+  note={Verified: arXiv abstract page + arXiv PDF listing (arXiv:2601.12641).
+        NL → STEP single parts. No assembly.}
+}
+
+@inproceedings{urdanything2025,
+  title={URDF-Anything: Constructing Articulated Objects with 3D
+         Multimodal Language Model},
+  booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
+  year={2025},
+  note={Verified: arXiv:2511.00940 + NeurIPS 2025 poster page
+        (neurips.cc/virtual/2025/poster/116776) + OpenReview PDF.
+        End-to-end point-cloud+text → articulated URDF via 3D multimodal
+        LLM. Closest direct competitor for NL-conditioned URDF generation,
+        but requires visual input (point cloud) of an existing object;
+        Language-3D generates from NL alone without observing the object.
+        Does not produce STL/BOM/firmware.}
+}
+
+@inproceedings{autourdf2025,
+  title={AutoURDF: Unsupervised Robot Modeling from Point Cloud Frames
+         Using Cluster Registration},
+  booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition
+             (CVPR)},
+  year={2025},
+  note={Verified: arXiv:2412.05507 + CVPR 2025 Open Access
+        (openaccess.thecvf.com/.../Lin_AutoURDF...). Unsupervised URDF
+        reconstruction from point-cloud time-series of an existing robot.
+        No language input; reverse-engineering, not generation. Adjacent
+        work on URDF auto-construction.}
+}
+
+@inproceedings{scenethesis2026,
+  title={Scenethesis: A Language and Vision Agentic Framework for 3D
+         Scene Generation},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2026},
+  note={Verified: arXiv:2505.02836 + ICLR 2026 virtual poster
+        (iclr.cc/virtual/2026/poster/10009362) + NVIDIA Research project
+        page. Text → physically plausible 3D interactive SCENES (room/furniture
+        layouts), not robot assemblies or URDF/STL. Adjacent work on
+        physically-grounded 3D generation.}
 }
 
 @article{llm4cad2025,

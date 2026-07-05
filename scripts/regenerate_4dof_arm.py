@@ -1,4 +1,16 @@
-"""Regenerate the 4dof_arm example end-to-end with the fixed pipeline.
+"""DIAGNOSTIC ONLY — DO NOT CITE AS BENCHMARK EVIDENCE.
+
+This script regenerates the 4dof_arm example using a hand-written assembly
++ pre-existing STLs, bypassing the LLM generation and VLM verification loop
+(verification_status="PASSED" is injected). It exists to verify that the
+export/URDF/MuJoCo pipeline fixes work together on known-good geometry.
+
+It is NOT a benchmark run — it does not exercise the NL→assembly→VLM loop
+that the e2e production test validates. Benchmark scores in the paper come
+exclusively from tests/test_e2e_production.py, which runs the full pipeline.
+
+Usage:
+    python scripts/regenerate_4dof_arm.py
 
 Verifies that all three pipeline fixes work together:
   1. URDF mesh tags have scale="0.001 0.001 0.001" (mm→m)
