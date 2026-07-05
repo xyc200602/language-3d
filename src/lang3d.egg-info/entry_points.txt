@@ -1,2 +1,0 @@
-[console_scripts]
-lang3d = lang3d.cli:main

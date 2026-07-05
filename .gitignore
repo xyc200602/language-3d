@@ -107,3 +107,10 @@ docs/paper/main.bbl
 docs/paper/main.blg
 docs/paper/main.log
 docs/paper/main.out
+
+# Binary artifacts in data/projects/ (regenerable, large)
+data/projects/**/*.step
+data/projects/**/*.stp
+data/collision_e2e_report.json
+data/dual_arm_wheeled_robot_report.json
+src/*.egg-info/
