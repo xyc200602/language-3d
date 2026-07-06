@@ -200,7 +200,7 @@ def test_tool_invalid_urdf_reports_parse_error(tmp_path: Path) -> None:
 # ----------------------------------------------------------------------------
 
 needs_mujoco_and_example = pytest.mark.skipif(
-    not (_mujoco_available() and _EXAMPLE_URDF.exists()),
+    not (_mujoco_available() and _EXAMPLE_URDF is not None and _EXAMPLE_URDF.exists()),
     reason="mujoco not installed or example URDF not available",
 )
 

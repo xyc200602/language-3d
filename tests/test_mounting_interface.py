@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.lang3d.knowledge.parts_catalog import (
+from lang3d.knowledge.parts_catalog import (
     BoltHole,
     AlignmentFeature,
     MountingInterface,
@@ -12,8 +12,8 @@ from src.lang3d.knowledge.parts_catalog import (
     get_mounting_interface,
     get_template,
 )
-from src.lang3d.knowledge.mechanics import ConnectionMethod, Part
-from src.lang3d.tools.connection_features import ConnectionFeatureEngine
+from lang3d.knowledge.mechanics import ConnectionMethod, Part
+from lang3d.tools.connection_features import ConnectionFeatureEngine
 
 
 # =====================================================================

@@ -9,18 +9,24 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
 from lang3d.tools.base import ToolRegistry
-from lang3d.tools.gui_action import (
-    GUIClickTool,
-    GUIDragTool,
-    GUIHotkeyTool,
-    GUIMousePosTool,
-    GUIPressKeyTool,
-    GUIScreenshotTool,
-    GUIScrollTool,
-    GUITypeTool,
-    register_gui_action_tools,
-)
+
+try:
+    from lang3d.tools.gui_action import (
+        GUIClickTool,
+        GUIDragTool,
+        GUIHotkeyTool,
+        GUIMousePosTool,
+        GUIPressKeyTool,
+        GUIScreenshotTool,
+        GUIScrollTool,
+        GUITypeTool,
+        register_gui_action_tools,
+    )
+except ImportError:
+    pytest.skip("pyautogui not installed — skipping gui_action tests", allow_module_level=True)
 
 
 def test_gui_action_tool_registration():

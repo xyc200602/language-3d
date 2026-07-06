@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.lang3d.knowledge.parts_catalog import (
+from lang3d.knowledge.parts_catalog import (
     CATEGORY_TREE,
     PART_CATALOG,
     PartTemplate,

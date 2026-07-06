@@ -2,7 +2,7 @@
 
 import pytest
 
-from src.lang3d.knowledge.parts_catalog import (
+from lang3d.knowledge.parts_catalog import (
     CATEGORY_TREE,
     DIN_6885_SQUARE_KEYS,
     STANDARD_KEY_LENGTHS,

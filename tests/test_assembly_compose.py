@@ -370,7 +370,7 @@ class TestProportionGuard:
         """Functional parts (servos) must be IDENTICAL across profiles — the
         profile only changes structural link/base sizes, never real COTS servos.
         This pins AGENTS.md §1.2: no rescaling functional parts."""
-        from src.lang3d.knowledge.arm_topology import _servo_spec
+        from lang3d.knowledge.arm_topology import _servo_spec
         # The servo specs are module-level constants shared by both profiles.
         # A mobile arm's shoulder servo == a desktop arm's shoulder servo.
         mobile = json.loads(build_arm_example(4, profile="mobile"))

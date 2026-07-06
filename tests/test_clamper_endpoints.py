@@ -28,7 +28,7 @@ class TestClamperEndpointValidation:
         Constructs a minimal parts/joints setup where the lo endpoint is
         colliding but home is not, and verifies the clamper walks lo inward.
         """
-        from src.lang3d.agent.assembly_compose import (
+        from lang3d.agent.assembly_compose import (
             _clamp_joint_ranges_to_collision_free,
             _any_collision_count,
         )
@@ -61,7 +61,7 @@ class TestClamperEndpointValidation:
 
         # Test _expand_collision_free: from home=0, expand toward lo=-90.
         # Should stop at -60 (first colliding step).
-        from src.lang3d.agent.assembly_compose import _expand_collision_free
+        from lang3d.agent.assembly_compose import _expand_collision_free
         a = _expand_collision_free(
             parts, joints, default_angles, "arm", 0.0, -90.0, step=-15.0,
             check_fn=mock_check,
@@ -82,7 +82,7 @@ class TestClamperEndpointValidation:
         This simulates the real failure: clamper expands from home and
         keeps the LLM's far extreme unchecked. The endpoint walk fixes it.
         """
-        from src.lang3d.agent.assembly_compose import _expand_collision_free
+        from lang3d.agent.assembly_compose import _expand_collision_free
 
         parts = [{"name": "p", "category": "s", "dimensions": {"length": 10, "width": 10, "height": 10}}]
         joints = [{"type": "revolute", "parent": "p", "child": "arm", "range_deg": [-90, 90]}]
