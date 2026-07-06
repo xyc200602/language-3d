@@ -45,7 +45,7 @@ jobs:
           pip install vtk
 
       - name: Install xvfb for headless VTK rendering
-        run: sudo apt-get install -y xvfb libgl1-mesa-glx libxrender1 libxcb-xinerama0
+        run: sudo apt-get update -qq && sudo apt-get install -y xvfb libgl1 libxrender1 libxcb-xinerama0 libegl1 libglx-mesa0
 
       - name: Run unit + integration tests (no e2e/api/gui)
         env:
