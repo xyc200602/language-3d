@@ -108,6 +108,10 @@ _INTEGRATION_KEYWORDS = (
     "fc_batch",
     "freecad-script",
     "MeshCollisionChecker",
+    "vtk_renderer",
+    "render_assembly",
+    "render_to_file",
+    "assembly_visual_verifier",
 )
 
 

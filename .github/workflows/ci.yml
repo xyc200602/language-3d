@@ -44,13 +44,16 @@ jobs:
           # headless wheel so no display is needed.
           pip install vtk
 
+      - name: Install xvfb for headless VTK rendering
+        run: sudo apt-get install -y xvfb libgl1-mesa-glx libxrender1 libxcb-xinerama0
+
       - name: Run unit + integration tests (no e2e/api/gui)
         env:
           # Ensure tests that check for a key skip cleanly instead of
           # reading a stale local .env.
           GLM_API_KEY: ""
         run: |
-          pytest tests/ \
+          xvfb-run -a pytest tests/ \
             -m "not e2e and not api and not gui" \
             --maxfail=10 \
             -q \
