@@ -446,6 +446,7 @@ class TestGraspRealLoad:
 # ---------------------------------------------------------------------------
 
 
+@needs_mujoco_and_example
 def test_record_motion_returns_frame_series() -> None:
     """record_motion produces one frame per (duration * fps) timestep.
 
