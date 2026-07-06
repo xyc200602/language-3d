@@ -462,29 +462,26 @@ def _geometric_prevalidation(
                 for gc in _children_by_parent.get(mid, []):
                     _adjacent_pairs.add((gp, gc))
                     _adjacent_pairs.add((gc, gp))
-        # Siblings: same parent (e.g. chassis_body & motor_* on base_plate).
-        # We build TWO adjacency sets:
-        #   _adjacent_pairs — used by the same-position check (Check 1).
-        #     Finger pairs ARE included here: two fingers at the exact same
-        #     position is always a bug.
-        #   _collision_skip_pairs — used by the AABB→FCL collision pipeline
-        #     (Check 6).  Finger pairs are ALSO in here: FCL builds an
-        #     axis-aligned box mesh from (length, width, height) and rotates
-        #     it, which over-approximates a 60mm-long finger rotated 30° into
-        #     a 59mm half-extent — larger than the 56.8mm centre gap between
-        #     correctly-placed fingers.  This produces false-positive
-        #     collisions on every dual-arm run.  Finger overlap is already
-        #     covered by the dedicated gap check (Check 5, >= 25mm), so the
-        #     FCL collision pipeline would only add false positives here.
-        _collision_skip_pairs: set[tuple[str, str]] = set()
-        for _parent, siblings in _children_by_parent.items():
-            for i in range(len(siblings)):
-                for k in range(i + 1, len(siblings)):
-                    si, sk = siblings[i], siblings[k]
-                    _adjacent_pairs.add((si, sk))
-                    _adjacent_pairs.add((sk, si))
-                    _collision_skip_pairs.add((si, sk))
-                    _collision_skip_pairs.add((sk, si))
+    # Collision-skip pairs: separate from _adjacent_pairs so that the
+    # AABB→FCL pipeline can skip finger pairs (FCL box-mesh false positives)
+    # while the same-position check still catches co-located fingers.
+    # Collision-skip pairs: separate from _adjacent_pairs so that the
+    # AABB→FCL pipeline can skip finger pairs (FCL box-mesh false positives)
+    # while the same-position check still catches co-located fingers.
+    _collision_skip_pairs: set[tuple[str, str]] = set()
+
+    # Build sibling adjacency for collision-skip (same parent = enclosed
+    # or co-mounted parts like motors on a chassis, whose AABB overlap is
+    # intentional).  _adjacent_pairs is built above (parent-child + 2-hop);
+    # _collision_skip_pairs adds siblings for the FCL pipeline.
+    for _parent, siblings in _children_by_parent.items():
+        for i in range(len(siblings)):
+            for k in range(i + 1, len(siblings)):
+                si, sk = siblings[i], siblings[k]
+                _adjacent_pairs.add((si, sk))
+                _adjacent_pairs.add((sk, si))
+                _collision_skip_pairs.add((si, sk))
+                _collision_skip_pairs.add((sk, si))
 
     # 1. Collision proxy: parts at same position.
     # Parts joined by a joint (parent↔child) legitimately share a position —
@@ -579,7 +576,12 @@ def _geometric_prevalidation(
     # the AABB→FCL pipeline (Check 6) skips finger pairs because FCL's box
     # mesh over-approximates rotated slender fingers (false positives).
     finger_names = [n for n in positions if "finger" in n.lower()]
-    if finger_names:
+    # Check 5 runs when EITHER we have fingers (check gap) OR we have an
+    # arm-like assembly (check for MISSING fingers). The latter catches
+    # assemblies that have arm links + a gripper_base but forgot fingers.
+    is_arm_like = len(arm_names) >= 4 or any(
+        "gripper" in n.lower() for n in positions)
+    if finger_names or is_arm_like:
         if len(finger_names) < 2:
             problems.append(
                 "Assembly is missing a functional gripper: fewer than 2 finger "
