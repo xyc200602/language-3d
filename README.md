@@ -364,10 +364,10 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 - [x] Collision-aware bolt-hole alignment across mating parts (shared ConnectionInterface)
 - [x] Wheeled dual-arm proportion coupling (mobile profile + chassis-matched arm scale)
 - [x] Real COTS servos wired into arm generator (MG996R/DS3218/SG90 sourced from parts_catalog)
-- [x] **Kinematic safety**: analytic pitch-range limit (arcsin(H/L) geometric bound) + combined worst-case verification — arm cannot sweep through its own base during motion (fixes interpenetration at generation time, not just detection)
+- [x] **Kinematic safety**: numeric pitch/yaw caps (topology-aware: humanoid shoulder 60°, fixed-base 90°, wrist-roll ±120°) + FCL endpoint validation — arm cannot sweep through its own base during motion
 - [x] **Collision-aware range clamp for all arms** (generalised from dual-arm-only; FCL sweep narrows range_deg in run_solver before URDF export)
 - [x] **Contact-setup deduplication** (centralised `_setup_wheel_contacts` replaces 3 inline copies; dynamic z-drop from real wheel-bottom height)
-- [ ] URDF `<transmission>` + `ros2_control` for Gazebo actuation
+- [x] URDF `<ros2_control>` tag for Gazebo actuation (GazeboSystem hardware plugin + ros2_control.yaml; validated: check_urdf + colcon build + robot_state_publisher + gzserver spawn)
 - [ ] Closed-chain kinematic solver
 - [ ] FEA structural analysis (CalculiX)
 - [x] Grasp simulation (sim_grasp three-phase, dual-gripper support)
