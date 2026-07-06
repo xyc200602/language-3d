@@ -832,6 +832,16 @@ class AssemblyToURDF:
             axis_el = ET.SubElement(joint_el, "axis")
             axis_el.set("xyz", " ".join(f"{v:.1f}" for v in joint.axis))
 
+            # Annotate connection method on fixed joints so downstream
+            # consumers (BOM, assembly guide, manufacturing) can distinguish
+            # bolted vs welded vs snap-fit. Without this, all fixed joints
+            # produce byte-identical URDF regardless of connection type.
+            if joint.type == "fixed" and hasattr(joint, 'connection') and joint.connection:
+                conn_type = getattr(joint.connection, 'type', None)
+                if conn_type:
+                    conn_el = ET.SubElement(joint_el, "connection")
+                    conn_el.set("type", conn_type)
+
             if joint.type in ("revolute", "prismatic"):
                 # URDF spec order: dynamics before limit. Typical hobby-servo
                 # joint values; downstream can override via actuator catalog.

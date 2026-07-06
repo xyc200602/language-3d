@@ -534,7 +534,7 @@ class ConnectionFeatureEngine:
 
             offset = face_length * t
 
-            # Snap hook (rectangular beam with undercut)
+            # Snap hook (rectangular beam with undercut) — ADDITIVE feature
             hook_name = f"{part.name}_snap_{i}"
             ops.append({
                 "type": "make_box",
@@ -542,6 +542,7 @@ class ConnectionFeatureEngine:
                 "width": hook_width,
                 "height": hook_thickness,
                 "name": hook_name,
+                "boolean_op": "fuse",  # hook protrudes outward from the body
             })
 
             # Position on anchor face edge
@@ -554,7 +555,7 @@ class ConnectionFeatureEngine:
                 "dx": hx, "dy": hy, "dz": hz,
             })
 
-            # Undercut (small box subtracted from hook tip)
+            # Undercut (small box subtracted from hook tip) — SUBTRACTIVE
             uc_name = f"{part.name}_snap_uc_{i}"
             ops.append({
                 "type": "make_box",
@@ -562,6 +563,7 @@ class ConnectionFeatureEngine:
                 "width": hook_width + 0.5,
                 "height": undercut,
                 "name": uc_name,
+                "boolean_op": "cut",  # undercut is carved out of the hook
             })
             uc_x, uc_y, uc_z = self._snap_undercut_position(
                 anchor, d, thickness, offset, hook_length, hook_thickness,
@@ -1663,35 +1665,41 @@ def merge_connection_ops(
     before_export = base_ops[:export_idx]
     after_export = base_ops[export_idx:]
 
-    # Extract feature object names from connection_ops
-    feature_names = []
+    # Extract feature object names from connection_ops.
+    # Each feature op may carry a "boolean_op" key: "cut" (subtractive,
+    # e.g. holes/slots) or "fuse" (additive, e.g. snap-fit hooks).
+    # Default is "cut" for backward compat with existing hole/bore ops.
+    feature_ops: list[tuple[str, str]] = []  # (name, boolean_op)
     create_ops = []
     for op in connection_ops:
         if op.get("type") in ("make_box", "make_cylinder", "cylinder_with_hole"):
             name = op.get("name", "")
+            bop = op.get("boolean_op", "cut")  # default subtractive
             if name:
-                feature_names.append(name)
+                feature_ops.append((name, bop))
             create_ops.append(op)
         elif op.get("type") == "move":
             create_ops.append(op)
 
-    # Merge: base_before + connection creates + boolean cuts + export
+    # Merge: base_before + connection creates + boolean ops + export
     merged = list(before_export)
     merged.extend(create_ops)
 
-    # Boolean cut each feature from the body
-    for fname in feature_names:
-        cut_name = f"{fname}_cut_result"
+    # Apply boolean operation per feature: cut for holes/slots, fuse for
+    # additive features like snap-fit hooks.
+    current_body = body_name
+    for fname, bop in feature_ops:
+        result_name = f"{fname}_{bop}_result"
         merged.append({
             "type": "boolean",
-            "operation": "cut",
-            "object1": body_name,
+            "operation": bop,  # "cut" or "fuse"
+            "object1": current_body,
             "object2": fname,
-            "result_name": cut_name,
+            "result_name": result_name,
         })
-        merged.append({"type": "delete_object", "object": body_name})
+        merged.append({"type": "delete_object", "object": current_body})
         merged.append({"type": "delete_object", "object": fname})
-        body_name = cut_name
+        current_body = result_name
 
     merged.extend(after_export)
     return merged

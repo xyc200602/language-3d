@@ -240,7 +240,7 @@ language-3d/
 │   │   ├── sub_agent.py           # Expert roles (Architect/Solver/CAD/Verifier/Fixer)
 │   │   ├── orchestrator.py        # DAG-based wave-parallel orchestration
 │   │   ├── core.py                # Agent main entry + dispatch
-│   │   ├── planner.py             # Task decomposition (flat/DAG/hierarchical)
+│   │   ├── planner.py             # Task decomposition (flat/hierarchical)
 │   │   ├── executor.py            # Step execution + auto-fix loop
 │   │   ├── verifier.py            # Dual-channel verification
 │   │   ├── modifier.py            # Targeted modification engine
