@@ -197,6 +197,8 @@ A retrieve-before / store-after memory of verified-good assemblies (`experience/
 
 55 tool modules organized into 9 categories. Each expert agent sees only its whitelisted tools (`ROLE_TOOL_CATEGORIES`):
 
+> **Note:** Tool whitelist enforcement is active in the `OrchestratorAgent` path. The production `AssemblyPipeline` path calls domain functions directly (not through the tool registry), so the whitelist is advisory there.
+
 | Category / 类别 | Tools | Key Modules / 关键模块 |
 |---|---|---|
 | FreeCAD Modeling / 建模 | 23 | `freecad.py` — box, cylinder, boolean, fillet, export |
