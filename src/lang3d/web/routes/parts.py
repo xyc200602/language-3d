@@ -25,19 +25,19 @@ router = APIRouter()
 # Helpers resolved dynamically from app.py each call (keeps @patch live
 # in tests; avoids the caching bug that broke test_async_convert).
 def _get_data_root():
-    from ...app import DATA_ROOT
+    from ..app import DATA_ROOT
     return DATA_ROOT
 
 def _workspace_root():
-    from ...app import _workspace_root as _wr
+    from ..app import _workspace_root as _wr
     return _wr()
 
 def _resolve_safe(path, ws):
-    from ...app import _resolve_safe as _rs
+    from ..app import _resolve_safe as _rs
     return _rs(path, ws)
 
 def _find_freecad():
-    from ...app import _find_freecad as _ff
+    from ..app import _find_freecad as _ff
     return _ff()
 
 @router.get("/api/parts/catalog")

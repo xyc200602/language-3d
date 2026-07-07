@@ -25,7 +25,7 @@ router = APIRouter()
 # Helpers resolved dynamically from app.py each call (keeps @patch live
 # in tests; avoids the caching bug that broke test_async_convert).
 def _get_data_root():
-    from ...app import DATA_ROOT
+    from ..app import DATA_ROOT
     return DATA_ROOT
 
 

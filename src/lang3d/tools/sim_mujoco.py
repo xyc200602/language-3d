@@ -895,8 +895,12 @@ def _load_model(urdf_path: str, *, floating_base: bool = False) -> dict[str, Any
         temp_files.append(mjcf_path)
         model = mujoco.MjModel.from_xml_path(mjcf_path)
         warnings.append("patched MJCF: nconmax=200 + ground plane")
-    except Exception:
-        pass  # keep the original model if MJCF patching fails
+    except Exception as e:
+        # MJCF patching failed (ground plane / actuator injection). Keep
+        # the original model but WARN — silently passing would hide a
+        # broken patch that leaves the robot undrivable (AGENTS.md §1.1).
+        logger.warning("MJCF patching failed, using unpatched model: %s", e)
+        warnings.append(f"WARNING: MJCF patch failed ({e}) — robot may lack ground plane/actuators")
 
     return {
         "ok": True,

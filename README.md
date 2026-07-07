@@ -299,7 +299,7 @@ language-3d/
 
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
-| Unit + Integration / 单元 + 集成 | 2,360+ | 5 pre-existing failures (wheel-rotation/gripper/message-bus/geometric-arbitration, registered in AGENTS.md §6.3) |
+| Unit + Integration / 单元 + 集成 | 2,360+ | 0 known failures (5 pre-existing failures fixed 2026-07-03, see AGENTS.md §6.3) |
 | E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
 | E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
 | Expert Roles / 专家角色 | 27 | 27 PASS |

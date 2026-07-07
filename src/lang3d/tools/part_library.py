@@ -852,7 +852,7 @@ for _o in _import_doc_{idx}.Objects:
         try:
             _shapes_{idx}.append(_o.Shape)
         except Exception as _e:
-            logger.debug("FreeCAD shape extraction failed for a part (script: %s", _e)
+            print(f"WARN: shape extraction failed for {name}: {_e}")
 if _shapes_{idx}:
     _compound_{idx} = Part.makeCompound(_shapes_{idx}) if len(_shapes_{idx}) > 1 else _shapes_{idx}[0]
     rot_{idx} = FreeCAD.Rotation(FreeCAD.Vector({rax}, {ray}, {raz}), {rangle})
