@@ -282,7 +282,7 @@ language-3d/
 │   │       ├── slicing.py         # G-code slicing
 │   │       └── design.py          # Design hierarchy, stability, power
 │   └── config.py                  # Configuration
-├── tests/                         # 2,300+ tests
+├── tests/                         # 4,200+ tests
 │   ├── test_e2e_production.py     # E2E pipeline (4dof_arm + 4wheel_dual_arm)
 │   ├── test_expert_roles.py       # Expert agent role + tool whitelist tests
 │   └── ...
@@ -368,7 +368,7 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 - [x] **Collision-aware range clamp for all arms** (generalised from dual-arm-only; FCL sweep narrows range_deg in run_solver before URDF export)
 - [x] **Contact-setup deduplication** (centralised `_setup_wheel_contacts` replaces 3 inline copies; dynamic z-drop from real wheel-bottom height)
 - [x] URDF `<ros2_control>` tag for Gazebo actuation (GazeboSystem hardware plugin + ros2_control.yaml; validated: check_urdf + colcon build + robot_state_publisher + gzserver spawn)
-- [ ] Closed-chain kinematic solver
+- [x] Closed-chain kinematic solver (ClosedChainSolver: FD-Jacobian + Newton-Raphson, assembly_solver.py:1347)
 - [ ] FEA structural analysis (CalculiX)
 - [x] Grasp simulation (sim_grasp three-phase, dual-gripper support)
 - [x] Dual-arm collision avoidance (static collision-aware pose configurator + workspace-safe joint limits; NOT real-time motion planning)

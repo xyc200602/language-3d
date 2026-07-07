@@ -114,3 +114,4 @@ data/projects/**/*.stp
 data/collision_e2e_report.json
 data/dual_arm_wheeled_robot_report.json
 src/*.egg-info/
+.pytest_cache/
