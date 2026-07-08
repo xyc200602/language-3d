@@ -33,7 +33,7 @@ We present \textbf{Language-3D}, a multi-agent system that converts natural lang
 
 The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp, and (5)~a self-evolving experience store that retrieves verified-good past cases to prime new generations (lexical retrieval; successes only).
 
-We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks per case. Beyond a self-designed structural pass-rate (modal 94.4\%), we report continuous physics-grounded metrics: COM stability margins (62--145\,mm), workspace extents (308--803\,mm), zero severe mesh collisions across 18--426 checked pairs, 100\% STL watertightness, and 0.0$^\circ$ PD-hold tracking error. All cases pass MuJoCo physics stability; 6/7 pass static grasp. We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
+We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks per case. Beyond a self-designed structural pass-rate (modal 94.4\%), we report continuous physics-grounded metrics: COM stability margins (33--145\,mm), workspace extents (199--859\,mm), zero severe mesh collisions across 12--426 checked pairs, 100\% STL watertightness, and 0.0$^\circ$ PD-hold tracking error. All cases pass MuJoCo physics stability; 6/7 pass static grasp. We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
 \end{abstract}
 
 % ===================================================================
@@ -196,22 +196,22 @@ Table~\ref{tab:results} reports the self-designed rubric as a structural pass-ra
 \textbf{Case} & \textbf{COM\,margin} & \textbf{Workspace} & \textbf{FCL\,pairs} & \textbf{Triangles} & \textbf{PD-hold} & \textbf{Actuated} & \textbf{Watertight} \\
  & (mm) & (mm) & (0/severe) & count & error ($^\circ$) & DOFs & ratio \\
 \midrule
-2dof\_arm & 75.0 & 308 & 0/18 & 111{,}592 & 0.0 & 4 & 9/9 \\
-3dof\_arm & 75.0 & 451 & 0/25 & 107{,}892 & 0.0 & 5 & 10/10 \\
+2dof\_arm & 75.0 & 199 & 0/12 & 102{,}704 & 0.0 & 4 & 8/8 \\
+3dof\_arm & 75.0 & 475 & 0/25 & 112{,}912 & 0.0 & 5 & 10/10 \\
 4dof\_arm & 66.8 & 676 & 0/52 & 125{,}882 & 0.0 & 6 & 13/13 \\
-5dof\_arm & 61.8 & 509 & 0/42 & 117{,}814 & 0.0 & 7 & 12/12 \\
-6dof\_arm & 64.9 & 725 & 0/63 & 117{,}832 & 0.0 & 7 & 14/14 \\
+5dof\_arm & 75.0 & 719 & 0/63 & 139{,}844 & 0.0 & 7 & 14/14 \\
+6dof\_arm & 33.3 & 859 & 0/69 & 154{,}782 & 0.0 & 6 & 15/15 \\
 7dof\_arm & 80.0 & 803 & 0/88 & 128{,}364 & 0.0 & 9 & 16/16 \\
 4wheel\_dual\_arm & 145.0 & 413 & 0/426 & 287{,}958 & 0.0 & 14 & 38/38 \\
 \midrule
-\textbf{Mean} & \textbf{81.2} & \textbf{555} & \textbf{0} & \textbf{142{,}476} & \textbf{0.0} & \textbf{7.4} & \textbf{100\%} \\
+\textbf{Mean} & \textbf{78.6} & \textbf{592} & \textbf{0} & \textbf{150{,}349} & \textbf{0.0} & \textbf{7.3} & \textbf{100\%} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
 \footnotesize COM\,margin = signed distance from ground-projected COM to nearest support-polygon edge (higher = more stable; negative = tips over). Workspace = bounding-box max edge. FCL\,pairs = severe penetrations ($>$5\,mm) / total pairs checked. PD-hold error = worst joint deviation under gravity-compensated PD control.
 \end{table*}
 
-The continuous metrics reveal information the binary rubric hides. The COM stability margin ranges from 61.8\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---a 2.3$\times$ difference that the rubric collapses to ``PASS'' for both. The workspace extent scales meaningfully from 308\,mm (2dof) to 803\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio, demonstrating geometric validity at scale. The humanoid case (Table~\ref{tab:results}, excluded from average) has a COM margin of only 0.8\,mm---quantitatively explaining its 12$^\circ$ PD-hold settling error and confirming it is at the edge of bipedal stability.
+The continuous metrics reveal information the binary rubric hides. The COM stability margin ranges from 33.3\,mm (6dof, marginal) to 145\,mm (wheeled, robust)---a 4.3$\times$ difference that the rubric collapses to ``PASS'' for both (6dof fails on actuation, not stability). The workspace extent scales from 199\,mm (2dof) to 859\,mm (6dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 12--426 checked pairs and 100\% watertight STL ratio, demonstrating geometric validity at scale. The humanoid case (Table~\ref{tab:results}, excluded from average) has a COM margin of only 0.8\,mm---quantitatively explaining its 12$^\circ$ PD-hold settling error and confirming it is at the edge of bipedal stability.
 
 \subsection{Reproducibility}
 Across 50 runs of the 4dof\_arm case (identical prompt) under the current codebase, the score distribution is bimodal: the majority ($\sim$70\%) achieve 95.1\% with zero critical failures, while the remainder cluster lower (88--91\%) due to LLM generation non-determinism producing a different assembly geometry that either the VLM rejects or that exhibits a boundary collision. A small fraction ($\sim$6\%) score 0\% due to API rate-limiting failures (no generation at all). Excluding API failures, the median score is 95.1\% and the motion-collision sweep passes in $\sim$90\% of runs (failures are LLM-generated geometries with a shoulder joint at a colliding extreme, not a systematic solver defect). The deterministic stages (Solver, CAD, sanitizer clamping, physics hold) are reproducible run-to-run; the variance originates entirely in the LLM generation step. Table~\ref{tab:results} reports the modal (best-case) score for each case---we are transparent that this is the achievable ceiling, not the across-run mean.
