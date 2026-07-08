@@ -944,7 +944,7 @@ class JacobianIKSolver:
 class DualArmMode(str, enum.Enum):
     """Mode for dual-arm IK solving."""
     INDEPENDENT = "independent"   # Solve each arm separately
-    COORDINATED = "coordinated"   # Solve with collision avoidance
+    COORDINATED = "coordinated"   # Solve + flag collision (EE-distance heuristic, not avoidance)
     MASTER_SLAVE = "master_slave" # Arm2 follows Arm1 with fixed offset
 
 
@@ -1054,7 +1054,12 @@ def solve_dual_arm_ik(
 
 
 class DualArmIKTool(Tool):
-    """Solve dual-arm inverse kinematics with collision avoidance."""
+    """Solve dual-arm inverse kinematics with collision detection.
+
+    Note: the COORDINATED mode flags collisions via a 50mm end-effector
+    distance heuristic — it does NOT replan around them (no RRT/CHOMP).
+    Real-time motion avoidance is out of scope; see README §roadmap.
+    """
 
     name = "dual_arm_ik"
     description = (

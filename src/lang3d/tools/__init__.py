@@ -42,7 +42,10 @@ _TOOL_MODULES: list[dict[str, Any]] = [
     {"module": "fc_menu", "fn": "register_fc_menu_tools", "special": "fc_menu"},
 
     # --- CAD backends ---
-    {"module": "solidworks", "fn": "register_solidworks_tools"},
+    # NOTE: SolidWorks backend (register_solidworks_tools) is not yet implemented;
+    # the module src/lang3d/tools/solidworks.py does not exist. Kept out of the
+    # registry to avoid a noisy ImportError on every startup. Keyword scaffolding
+    # remains in tools/base.py (ROLE_TOOL_CATEGORIES / classifier) for future use.
     {"module": "freecad", "fn": "register_freecad_tools"},
 
     # --- Simulation & analysis ---
