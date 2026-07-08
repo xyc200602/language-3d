@@ -22,22 +22,26 @@ logger = logging.getLogger(__name__)
 # Deferred import to avoid circular dependency.
 import lang3d.tools.sim_mujoco as _sm
 
+# Attribute guards set None defaults so a missing symbol degrades to a
+# clean NameError-free skip (checked at call sites) rather than an
+# unbound local later. If sim_mujoco genuinely lacks these, the grasp
+# pipeline will report "not available" instead of crashing mid-physics.
 try:
     _load_model = _sm._load_model
 except AttributeError:
-    pass
+    _load_model = None
 try:
     _mujoco_available = _sm._mujoco_available
 except AttributeError:
-    pass
+    _mujoco_available = None
 try:
     _rewrite_mesh_paths = _sm._rewrite_mesh_paths
 except AttributeError:
-    pass
+    _rewrite_mesh_paths = None
 try:
     _stabilize_model = _sm._stabilize_model
 except AttributeError:
-    pass
+    _stabilize_model = None
 
 def _find_slide_joints(model: Any) -> list[dict[str, Any]]:
     """Find all SLIDE joints in the model.
@@ -503,7 +507,7 @@ class SimGraspTool(Tool):
         duration_sec: float = 4.0,
         **kwargs: Any,
     ) -> str:
-        if not _mujoco_available():
+        if _mujoco_available is None or not _mujoco_available():
             return "Error: mujoco package not installed. Run: pip install mujoco"
         if not urdf_path or not Path(urdf_path).exists():
             return f"Error: URDF not found: {urdf_path}"

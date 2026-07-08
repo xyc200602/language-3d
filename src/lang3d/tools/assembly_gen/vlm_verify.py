@@ -1115,7 +1115,10 @@ def _vlm_check_assembly(
                     if p and p not in all_problems:
                         all_problems.append(p)
             except (json.JSONDecodeError, ValueError):
-                pass
+                # Verdict (view_passed) was set above from substring match,
+                # so this only means the problems list stays empty. Log so
+                # empty problems are traceable during debugging.
+                logger.debug("VLM response not JSON-parseable for %s, problems list empty", view_path)
             # Route the verdict by responsibility.
             if is_closeup:
                 gripper_view_passed = view_passed

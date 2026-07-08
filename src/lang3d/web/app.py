@@ -365,7 +365,9 @@ def broadcast_state() -> None:
             loop = asyncio.get_running_loop()
             asyncio.ensure_future(broadcast_state_async())
         except RuntimeError:
-            pass
+            # No running event loop — state update silently dropped.
+            # Log so stale UI state is traceable (AGENTS.md §1.1).
+            logger.debug("broadcast_state: no running event loop, update dropped")
 
 
 # ---------------------------------------------------------------------------

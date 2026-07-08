@@ -15,6 +15,10 @@ Added 2026-06-22 as part of the multi-agent Step 2 (pipeline split).
 
 from __future__ import annotations
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Stage 1: Architect
 from ..tools.assembly_generator import (
     generate_assembly_from_nl,
@@ -54,7 +58,10 @@ def run_collision_check_and_resolve(assembly, positions):
     except ImportError:
         pass  # trimesh/python-fcl not installed
     except Exception:
-        pass  # Non-fatal — collision check is advisory
+        # Non-fatal — collision check is advisory, but log so resolver
+        # bugs (severe-list building, resolver internals) are traceable
+        # rather than silently returning inputs unchanged (AGENTS.md §1.1).
+        logger.debug("advisory collision check failed", exc_info=True)
     return assembly, positions
 
 
