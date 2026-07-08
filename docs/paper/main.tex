@@ -17,8 +17,9 @@
 
 \author{
 \IEEEauthorblockN{Youcheng Xiong}
-\IEEEauthorblockA{University of Macau\\
-\texttt{dc42857@um.edu.mo}
+\IEEEauthorblockA{Future Laboratory, Tsinghua University\\
+Beijing, China\\
+\texttt{xyc@tsinghua.edu.cn}
 }
 }
 
@@ -33,7 +34,7 @@ We present \textbf{Language-3D}, a multi-agent system that converts natural lang
 
 The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp, and (5)~a self-evolving experience store that retrieves verified-good past cases to prime new generations (lexical retrieval; successes only).
 
-We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks per case, achieving an average score of 94.4\% (range 92.7--95.3\%), with all cases passing MuJoCo physics stability (0.0$^\circ$ error) and 6/7 passing the grasp test.
+We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks per case. The system achieves a modal (best-case) score of 94.4\% (range 92.7--95.3\%), with all cases passing MuJoCo physics stability (0.0$^\circ$ error) and 6/7 passing the grasp test. We are transparent that this is a self-designed rubric (no external benchmark exists for this task formulation) and that the across-run mean is lower ($\sim$85\%) due to LLM non-determinism.
 \end{abstract}
 
 % ===================================================================
@@ -56,7 +57,7 @@ Automated robot design from natural language is a long-standing goal at the inte
     \item \textbf{Task formulation}: We formalize NL~$\to$~manufacturable robot assembly package as a new task with evaluation criteria spanning geometry, physics, and manufacturing.
     \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 package structures from NL, with 8 real connection types and a 56-part COTS knowledge base.
     \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
-    \item \textbf{Evaluation}: Seven benchmark cases with 41--43 automated checks, achieving 94.4\% average with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
+    \item \textbf{Evaluation}: Seven benchmark cases with 41--43 self-designed automated checks (modal score 94.4\%; no external benchmark exists for this task), with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
 \end{enumerate}
 
 % ===================================================================
@@ -80,6 +81,9 @@ Table~\ref{tab:comparison} summarizes the comparison.
 % ===================================================================
 
 \subsection{System Architecture}
+The core design principle is \emph{determinism where it matters, intelligence where it helps}: the LLM handles open-ended generation (assembly topology, part selection) while deterministic stages (Solver, CAD, sanitizers, physics) handle geometry and validation, ensuring that output is reproducible and physically grounded. This separation also bounds the variance: a failed LLM generation can be re-run without re-deriving physics or connection geometry.
+
+Figure~\ref{fig:architecture} shows the pipeline. Natural language input is processed by a multi-agent chain: \textbf{Architect} (GLM-5.2 generates assembly JSON, primed by retrieved past cases), \textbf{Solver} (computes 3D positions via anchor constraints + FCL collision-aware range clamping), \textbf{CAD Engineer} (FreeCAD 1.1 generates per-part STL/STEP meshes with connection features), and a dual-channel \textbf{Verifier} (GLM-4.6V + geometric arbitration). A \textbf{Fixer} routes failures back to the appropriate upstream stage by failure type. Verified assemblies are recorded into a self-evolving experience store for future retrieval and exported as complete engineering packages.
 Figure~\ref{fig:architecture} shows the Language-3D pipeline. Natural language input is processed by a multi-agent chain: \textbf{Architect} (GLM-5.2 generates assembly JSON, primed by retrieved past cases), \textbf{Solver} (computes 3D positions via anchor constraints + FCL collision-aware range clamping), \textbf{CAD Engineer} (FreeCAD 1.1 generates per-part STL/STEP meshes with connection features), and a dual-channel \textbf{Verifier} (GLM-4.6V + geometric arbitration). A \textbf{Fixer} routes failures back to the appropriate upstream stage by failure type. Verified assemblies are recorded into a self-evolving experience store for future retrieval and exported as complete engineering packages.
 
 \begin{figure*}[t]
@@ -102,6 +106,7 @@ Eight connection types generate real CAD features via FreeCAD operation dictiona
     \item \textbf{Welded}: V-groove bevel preparation (butt) or no-prep (fillet).
     \item \textbf{Magnetic}, \textbf{Dowel-pin} (H7 slip-fit), \textbf{Set-screw} (radial threaded hole).
 \end{itemize}
+Connection selection is physics-aware: a sanitizer assigns methods by part category (e.g., bearings always use press-fit, never bolted; sensors and foot pads use adhesive bonding; servos use M2 threaded holes). The LLM may also specify methods directly. All eight types have functional geometry generators, though in practice bolted and press-fit dominate because most robot joints are structural or bearing-mounted.
 
 \begin{figure}[h]
 \centering
@@ -141,8 +146,11 @@ We evaluate on seven robot configurations spanning 2--7 degrees of freedom plus 
     \item \textbf{humanoid\_2leg\_2arm}: ``2 legs 2 arms humanoid robot, each leg has 3 joints, each arm has 3 DOF, camera on top''---a legged topology that stresses the arm-oriented range clamping and VLM classification (reported separately as it does not fit the fixed-base benchmark profile).
 \end{itemize}
 
-\subsection{Scoring}
-Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assembly (part count, joint count, connected tree, VLM pass), Position Solving (all positioned, 0 NaN), Render Quality ($\geq$4 views), Engineering Package (all files exist), Content Validation (mass, VLM, URDF structure, watertight meshes), Physical Sanity (0 FCL collisions, COM stability, workspace), and MuJoCo Simulation (physics stability, joint actuation, grasp). Score = PASS / (PASS + FAIL + WARN). Figure~\ref{fig:package} shows the output file tree of a generated engineering package.
+\subsection{Scoring Protocol}
+\label{sec:scoring}
+Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assembly (part count, joint count, connected tree, VLM pass), Position Solving (all positioned, 0 NaN), Render Quality ($\geq$4 views), Engineering Package (all files exist), Content Validation (mass, VLM, URDF structure, watertight meshes), Physical Sanity (0 FCL collisions, COM stability, workspace), and MuJoCo Simulation (physics stability, joint actuation, grasp). Score = PASS / (PASS + FAIL + WARN). Critical checks (collision, COM stability, MuJoCo physics, grasp) fail the case outright rather than degrading to a warning.
+
+\textbf{Evaluation validity.} We are explicit about three limitations of this protocol. \emph{First}, the checks are self-designed: they verify that the pipeline produces structurally and physically plausible output, not that the output is optimal or matches a reference design. The 94.4\% figure should be read as ``fraction of design-intent checks passed,'' not as an absolute quality grade. \emph{Second}, there is no external benchmark for the NL$\to$robot-package task; the closest (MUSE~\cite{muse2026}, Text2CAD-Bench) targets a different formulation (structured design-spec$\to$STEP), precluding direct score comparison. \emph{Third}, the modal score in Table~\ref{tab:results} is the achievable ceiling; the across-run distribution (\S Reproducibility) shows the mean is lower ($\sim$85\% excluding API failures) due to LLM non-determinism.
 
 \begin{figure}[h]
 \centering
@@ -215,7 +223,7 @@ Language-3D is the first system to produce a \emph{complete manufacturing packag
 % ===================================================================
 \section{Conclusion}
 % ===================================================================
-We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves 94.4\% average quality across seven benchmark cases, with the deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproducing run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
+We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves a modal score of 94.4\% (mean $\sim$85\% excluding API failures) across seven benchmark cases under a self-designed rubric, with the deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproducing run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
