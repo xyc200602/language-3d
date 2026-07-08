@@ -32,7 +32,10 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from lang3d.knowledge.mechanics import Assembly, Joint, Part
-from lang3d.tools.assembly_gen.sanitizers import _ensure_arm_default_angles
+from lang3d.tools.assembly_gen.sanitizers import (
+    _ensure_arm_default_angles,
+    apply_default_connection_methods,
+)
 
 
 def _box(name: str, l: float, w: float, h: float) -> Part:
@@ -228,3 +231,83 @@ def test_humanoid_home_angles_within_range():
             f"{j.child} home={home} outside range [{lo}, {hi}] — "
             f"MuJoCo will fly on step 1"
         )
+
+
+# ---------------------------------------------------------------------------
+# Adhesive connection triggers (sensor + foot)
+# ---------------------------------------------------------------------------
+
+
+def _assembly_with_adhesive_parts() -> Assembly:
+    """A minimal assembly with a sensor (camera) and a foot pad.
+
+    Mirrors the humanoid_2leg_2arm topology where these connection
+    methods should fire: camera_module (category=sensor) bonded to a
+    torso bracket, and left_foot bonded to an ankle.
+    """
+    return Assembly(
+        name="adhesive_test",
+        parts=[
+            Part("torso_link", "structural", "torso",
+                 dimensions=dict(length=60, width=40, height=200)),
+            Part("camera_module", "sensor", "camera",
+                 dimensions=dict(length=30, width=30, height=20)),
+            Part("ankle_link", "structural", "ankle",
+                 dimensions=dict(length=40, width=30, height=30)),
+            Part("left_foot", "structural", "foot pad",
+                 dimensions=dict(length=100, width=60, height=10)),
+            Part("base_bracket", "structural", "bracket",
+                 dimensions=dict(length=50, width=50, height=8)),
+        ],
+        joints=[
+            # Sensor → should be adhesive
+            Joint("fixed", "torso_link", "camera_module",
+                  parent_anchor="front", child_anchor="back"),
+            # Foot pad → should be adhesive
+            Joint("fixed", "ankle_link", "left_foot",
+                  parent_anchor="bottom", child_anchor="top"),
+            # Normal structural → should stay bolted
+            Joint("fixed", "base_bracket", "torso_link",
+                  parent_anchor="top", child_anchor="bottom"),
+        ],
+        default_angles={},
+    )
+
+
+@pytest.mark.unit
+class TestAdhesiveConnectionTriggers:
+    def test_sensor_joint_gets_adhesive(self):
+        """A sensor (category=sensor) on a fixed joint should default to
+        adhesive, not bolted — sensors bond to brackets in real robotics."""
+        asm = _assembly_with_adhesive_parts()
+        apply_default_connection_methods(asm.joints, parts=asm.parts)
+        cam_joint = next(j for j in asm.joints if j.child == "camera_module")
+        assert cam_joint.connection is not None, "sensor joint has no connection"
+        assert cam_joint.connection.type == "adhesive", (
+            f"sensor joint type={cam_joint.connection.type} — should be adhesive"
+        )
+        assert cam_joint.connection.adhesive_type == "epoxy"
+
+    def test_foot_joint_gets_adhesive(self):
+        """A foot pad (name contains 'foot') on a fixed joint should default
+        to adhesive — rubber/TPU pads bond to plates (cf. ANYmal B)."""
+        asm = _assembly_with_adhesive_parts()
+        apply_default_connection_methods(asm.joints, parts=asm.parts)
+        foot_joint = next(j for j in asm.joints if j.child == "left_foot")
+        assert foot_joint.connection is not None, "foot joint has no connection"
+        assert foot_joint.connection.type == "adhesive", (
+            f"foot joint type={foot_joint.connection.type} — should be adhesive"
+        )
+
+    def test_structural_joint_stays_bolted(self):
+        """A plain structural fixed joint (not sensor/foot) must still
+        get bolted — the adhesive rules must not over-trigger."""
+        asm = _assembly_with_adhesive_parts()
+        apply_default_connection_methods(asm.joints, parts=asm.parts)
+        struct_joint = next(j for j in asm.joints if j.child == "torso_link")
+        assert struct_joint.connection is not None
+        assert struct_joint.connection.type == "bolted", (
+            f"structural joint type={struct_joint.connection.type} — "
+            f"adhesive rule over-triggered"
+        )
+

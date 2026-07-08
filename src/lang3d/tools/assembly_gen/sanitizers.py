@@ -36,6 +36,10 @@ def apply_default_connection_methods(joints: list, parts: list | None = None) ->
 
     - **Bearing** parent or child (any joint type) → ``press_fit`` H7/js6.
       Bearings are never bolted; they press into housings.
+    - **Sensor** child (category=sensor, fixed joint) → ``adhesive`` (epoxy
+      bond). Cameras/IMUs/LiDARs bond to brackets, not bolted through PCBs.
+    - **Foot** child (name contains "foot", fixed joint) → ``adhesive``
+      (epoxy bond). Rubber/TPU foot pads bond to plates (cf. ANYmal B).
     - **Servo** child (name contains "servo", e.g. SG90) → ``bolted M2×2``
       with ``hole_type="threaded_hole"`` — SG90 servos have tapped holes
       for self-tapping M2 screws, not through holes.
@@ -81,6 +85,38 @@ def apply_default_connection_methods(joints: list, parts: list | None = None) ->
                 )
                 logger.debug(
                     "Defaulted joint %s->%s to press_fit (bearing seat)",
+                    joint.parent, joint.child,
+                )
+                continue
+
+        # Adhesive bonds (not bolted): sensors and foot pads.
+        # These connection methods have working geometry generators
+        # (connection_features.py) but were never triggered by the default
+        # rule set, leaving snap_fit/adhesive as dead dispatch entries.
+        if joint.type == "fixed":
+            if child_cat == "sensor":
+                # Cameras/IMUs/LiDARs bond to brackets with epoxy or
+                # double-sided tape in real robotics — bolting through a
+                # PCB or sensor housing is not standard practice.
+                joint.connection = ConnectionMethod(
+                    type="adhesive", adhesive_type="epoxy",
+                    bond_area_mm2=0.0,  # computed by geometry generator
+                )
+                logger.debug(
+                    "Defaulted sensor joint %s->%s to adhesive (epoxy bond)",
+                    joint.parent, joint.child,
+                )
+                continue
+            if "foot" in joint.child.lower():
+                # Rubber/TPU foot pads bond to metal/carbon plates
+                # (e.g. ANYmal B foot-shell bonding — assembly_patterns.py
+                # RobotAssemblyProfile declares "adhesive": 4 for feet).
+                joint.connection = ConnectionMethod(
+                    type="adhesive", adhesive_type="epoxy",
+                    bond_area_mm2=0.0,
+                )
+                logger.debug(
+                    "Defaulted foot-pad joint %s->%s to adhesive (epoxy bond)",
                     joint.parent, joint.child,
                 )
                 continue
