@@ -60,6 +60,14 @@ jobs:
             --no-header \
             -p no:cacheprovider
 
+      - name: Paper consistency gate
+        # Catches silent numerical drift in the paper (case counts, scores,
+        # claim consistency) so edits to main.tex can't introduce
+        # inconsistencies that slip past review. Fast (pure regex, no deps).
+        run: |
+          python scripts/check_paper_consistency.py
+          python scripts/check_paper_refs.py
+
       - name: Upload test artifacts on failure
         if: failure()
         uses: actions/upload-artifact@v4

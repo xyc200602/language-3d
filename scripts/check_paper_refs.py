@@ -30,5 +30,8 @@ for f in figs:
 tables = re.findall(r"\\input\{([^}]+)\}", tex)
 print(f"\nIncluded files: {tables}")
 for t in tables:
-    p = PAPER_DIR / t
-    print(f"  {t}: {'OK' if p.exists() else 'MISSING'}")
+    # \input{foo} may resolve to foo.tex or foo (LaTeX tries foo.tex first).
+    p_tex = PAPER_DIR / f"{t}.tex"
+    p_bare = PAPER_DIR / t
+    status = "OK" if (p_tex.exists() or p_bare.exists()) else "MISSING"
+    print(f"  {t}: {status}")
