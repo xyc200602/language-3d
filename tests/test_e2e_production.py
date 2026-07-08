@@ -152,18 +152,28 @@ def _check(
     detail: str = "",
     *,
     critical: bool = False,
+    metrics: dict | None = None,
 ) -> bool:
-    """Record a check result and return *condition*."""
+    """Record a check result and return *condition*.
+
+    ``metrics`` carries the structured numeric values behind a check (e.g. the
+    COM margin in mm, the raw PD-hold droop in degrees).  It is persisted into
+    ``e2e_report.json`` so downstream consumers (the composite quality score,
+    the paper-consistency gate) read authoritative fields instead of
+    regex-parsing the free-text ``detail`` string.  Omit it for checks whose
+    result is purely boolean; the report key is absent rather than ``null``.
+    """
     status = PASS if condition else FAIL
-    checks.append(
-        {
-            "phase": phase,
-            "step": step,
-            "status": status,
-            "detail": detail,
-            "critical": critical,
-        }
-    )
+    record: dict = {
+        "phase": phase,
+        "step": step,
+        "status": status,
+        "detail": detail,
+        "critical": critical,
+    }
+    if metrics is not None:
+        record["metrics"] = metrics
+    checks.append(record)
     icon = "PASS" if status == PASS else "FAIL"
     tag = " (CRITICAL)" if critical else ""
     print(f"  [{icon}{tag}] {step}: {detail}")
@@ -204,6 +214,28 @@ def _joints_form_tree(assembly: Any) -> bool:
         queue.extend(adj.get(node, set()) - visited)
 
     return visited == part_names
+
+
+def _support_polygon_diameter(polygon_xy: list) -> float:
+    """Diameter (mm) of the support polygon = max pairwise vertex distance.
+
+    A physically meaningful stance normaliser for the COM-margin robustness
+    score: a robot whose ground-contact points span a wide polygon is harder
+    to tip than one on a narrow base, independent of how large its base
+    *part* happens to be (the prior footprint heuristic used the base_plate
+    XY extent, which penalised e.g. 7dof for having a large cosmetic skirt
+    that is not a real contact point).  Returns 0.0 if fewer than 2 vertices.
+    """
+    if not polygon_xy or len(polygon_xy) < 2:
+        return 0.0
+    diam = 0.0
+    n = len(polygon_xy)
+    for i in range(n):
+        x1, y1 = float(polygon_xy[i][0]), float(polygon_xy[i][1])
+        for j in range(i + 1, n):
+            x2, y2 = float(polygon_xy[j][0]), float(polygon_xy[j][1])
+            diam = max(diam, math.hypot(x2 - x1, y2 - y1))
+    return diam
 
 
 def _has_category_parts(assembly: Any, keywords: list[str]) -> bool:
@@ -876,6 +908,10 @@ def _phase6_physical_sanity(
             f"{collision_result.pairs_checked if collision_result else 0} ({dt:.2f}s)"
             + (f" — pairs: {', '.join(p.name_a + '<->' + p.name_b for p in severe[:3])}" if severe else ""),
             critical=True,
+            metrics={
+                "severe_count": len(severe),
+                "pairs_checked": collision_result.pairs_checked if collision_result else 0,
+            },
         )
     except ImportError:
         _skip(checks, phase, "collision_detection", "python-fcl/trimesh not installed")
@@ -916,6 +952,10 @@ def _phase6_physical_sanity(
             + (f" ({', '.join(colliding)})" if colliding else "")
             + (" — collision-free" if not colliding else " — 穿模 detected"),
             critical=True,
+            metrics={
+                "joints_checked": motion_result.joints_checked,
+                "colliding_count": len(colliding),
+            },
         )
     except ImportError as exc:
         _skip(
@@ -944,6 +984,21 @@ def _phase6_physical_sanity(
             f"COM within support polygon: {com_ok} "
             f"({com_result.notes or 'n/a'})",
             critical=True,
+            metrics={
+                "com_margin_mm": float(com_result.margin_mm),
+                "inside_support_polygon": bool(com_result.inside_support_polygon),
+                "com_x_mm": float(com_result.center_of_mass_mm[0]),
+                "com_y_mm": float(com_result.center_of_mass_mm[1]),
+                "com_z_mm": float(com_result.center_of_mass_mm[2]),
+                "total_mass_kg": float(com_result.total_mass_kg),
+                # Real stance diameter (max pairwise ground-contact distance),
+                # not the base_part XY extent.  The composite s_robust
+                # normalises COM margin by this, so the score reflects actual
+                # tipping resistance rather than cosmetic base size.
+                "support_polygon_diameter_mm": _support_polygon_diameter(
+                    com_result.support_polygon_xy
+                ),
+            },
         )
     except Exception as exc:
         # Verifier crash is a critical FAIL — previously _warn masked it,
@@ -1069,6 +1124,7 @@ def _phase7_mujoco_simulation(
     export_dir: str,
     min_joints: int,
     assembly: Any = None,
+    case: dict | None = None,
 ) -> None:
     """Load the URDF into MuJoCo and verify physics + joint actuation.
 
@@ -1134,6 +1190,11 @@ def _phase7_mujoco_simulation(
         import re as _re
         physics_stable: bool | None = None
         physics_detail = ""
+        # Structured physics metrics (stabilized, raw_droop_deg, etc.) parsed
+        # from the report's embedded JSON.  Persisted into the e2e report so
+        # the composite score gates on the real droop, not the gravity-
+        # compensated number (which is ~0° by construction — see §sim-limits).
+        physics_metrics: dict | None = None
         # Extract the last JSON block from the report
         _json_blocks = _re.findall(r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", report_text)
         for _blk in reversed(_json_blocks):
@@ -1149,6 +1210,15 @@ def _phase7_mujoco_simulation(
                             f"raw_droop={_ph.get('raw_droop_deg', '?')}deg, "
                             f"disp={_ph.get('max_body_displacement_mm', '?')}mm"
                         )
+                        physics_metrics = {
+                            "stabilized": physics_stable,
+                            "pd_err_deg": float(_ph.get("max_qpos_error_deg", 0.0)),
+                            # raw_droop_deg = PD-hold WITHOUT gravity comp — the
+                            # real steady-state droop.  This is the honest
+                            # design-quality signal the composite gates on.
+                            "raw_droop_deg": float(_ph.get("raw_droop_deg", 0.0)),
+                            "disp_mm": float(_ph.get("max_body_displacement_mm", 0.0)),
+                        }
                         break
             except (_json.JSONDecodeError, ValueError):
                 continue
@@ -1174,6 +1244,7 @@ def _phase7_mujoco_simulation(
             f"PD-hold physics stable ({physics_detail})" if physics_ok else
             f"Physics unstable ({physics_detail}): {report_text[:200]}",
             critical=True,
+            metrics=physics_metrics,
         )
 
         # Count actuated joints
@@ -1187,25 +1258,60 @@ def _phase7_mujoco_simulation(
             actuated >= min_joints,
             f"Actuated joints: {actuated} (min {min_joints})",
             critical=True,
+            metrics={"actuated_joints": int(actuated), "min_expected": int(min_joints)},
         )
 
-        # sim_grasp: if the assembly has a gripper (2 SLIDE finger joints),
+        # sim_grasp: if the assembly has a gripper (finger prismatic joints),
         # run the three-phase grasp test (zero-g close → gravity hold →
         # lift) and require grasp_ok.  AGENTS.md §5.1: "带夹爪的装配体必须
         # sim_grasp, 不做不许标完成".  Previously this requirement had ZERO
         # e2e coverage — a robot with broken gripper STLs still scored
         # 92% PASS because no check ever exercised the grasp.  Now the
         # "能抓东西" project expectation is actually verified.
-        has_gripper = any(
+        #
+        # Gripper detection is intentionally broad: the LLM may name a
+        # finger joint without the substring "finger" (e.g. "left_jaw",
+        # "grip_slide"), and the finger prongs may be modelled as parts
+        # named with "gripper"/"jaw"/"claw" rather than "finger".  We detect
+        # a gripper if EITHER (a) a prismatic joint touches a finger-like
+        # body OR (b) a part whose name suggests a gripper element exists.
+        _GRIPPER_PART_HINTS = ("finger", "gripper", "jaw", "claw", "grip")
+        _finger_joint = any(
             getattr(j, "type", "") == "prismatic"
-            and any("finger" in c.lower() for c in (j.child, j.parent))
+            and any(
+                any(h in c.lower() for h in _GRIPPER_PART_HINTS)
+                for c in (j.child, j.parent)
+            )
             for j in assembly.joints
         )
+        _finger_part = any(
+            any(h in (p.name or "").lower() or h in (p.category or "").lower()
+                for h in _GRIPPER_PART_HINTS)
+            for p in assembly.parts
+        )
+        has_gripper = _finger_joint or _finger_part
+
+        # Anti-inflation guard (AGENTS.md §1.1): if this case is expected to
+        # have a gripper ("带夹爪" in every benchmark prompt, expect_arms=True)
+        # but we failed to detect one, that is a CRITICAL FAIL, not a SKIP.
+        # The prior SKIP path silently excluded grasp from the denominator,
+        # so a run that skipped grasp scored *higher* than one that honestly
+        # ran it — exactly the "用 mock/stub 让测试看起来通过" anti-pattern.
+        expect_gripper = bool((case or {}).get("expect_arms"))
         if not has_gripper:
-            _skip(
-                checks, phase, "sim_grasp",
-                "No gripper (no finger prismatic joints) — grasp test N/A",
-            )
+            if expect_gripper:
+                _check(
+                    checks, phase, "sim_grasp", False,
+                    "Expected a gripper (case has arms) but no finger/gripper "
+                    "joint or part detected — grasp could not be verified.",
+                    critical=True,
+                    metrics={"grasp_ok": False, "reason": "gripper_not_detected"},
+                )
+            else:
+                _skip(
+                    checks, phase, "sim_grasp",
+                    "No gripper (no finger prismatic joints) — grasp test N/A",
+                )
         else:
             try:
                 from lang3d.tools.sim_mujoco import SimGraspTool
@@ -1228,16 +1334,47 @@ def _phase7_mujoco_simulation(
                      if "静态抓取" in ln or "总体结论" in ln),
                     grasp_report[:120],
                 )
+                # Parse the lift physics from the embedded JSON block so the
+                # composite score can use a continuous grasp capability
+                # (lift height / target) rather than a best-of-N 0/1.  The
+                # prior design let a flaky gripper (6dof: 1 of 5 runs PASS)
+                # score a full grasp mark by reporting only the best run.
+                #
+                # Multi-gripper robots (4wheel dual-arm) emit one JSON block
+                # per gripper; a greedy ``\{.*\}`` match would span all of
+                # them and fail to parse.  Find every brace-balanced block and
+                # take the last one carrying lift_c_m (the aggregate verdict).
+                grasp_metrics: dict = {"grasp_ok": bool(grasp_ok)}
+                for _blk in _re.findall(
+                    r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", grasp_report
+                ):
+                    try:
+                        _gd = _json.loads(_blk)
+                    except (_json.JSONDecodeError, ValueError):
+                        continue
+                    if isinstance(_gd, dict) and "lift_c_m" in _gd:
+                        lift_mm = float(_gd.get("lift_c_m", 0.0)) * 1000.0
+                        lift_tgt_mm = float(_gd.get("lift_target_m", 0.03)) * 1000.0
+                        grasp_metrics.update({
+                            "lifted": bool(_gd.get("lifted", False)),
+                            "lift_mm": lift_mm,
+                            "lift_target_mm": lift_tgt_mm,
+                            "lift_ratio": (lift_mm / lift_tgt_mm) if lift_tgt_mm > 0 else 0.0,
+                            "slip_mm": float(_gd.get("slip_b_m", 0.0)) * 1000.0,
+                        })
+                        break
                 _check(
                     checks, phase, "sim_grasp", grasp_ok,
                     f"Grasp test: {'cube held against gravity' if grasp_ok else 'FAILED'}"
                     f" — {verdict_line.strip()[:100]}",
                     critical=True,
+                    metrics=grasp_metrics,
                 )
             except Exception as exc:
                 _check(
                     checks, phase, "sim_grasp", False,
                     f"Grasp test error: {exc}", critical=True,
+                    metrics={"grasp_ok": False, "reason": "exception"},
                 )
     except Exception as exc:
         _check(
@@ -1313,7 +1450,7 @@ def run_e2e_case(case: dict) -> dict:
 
     # Phase 7: MuJoCo Simulation (added 2026-06-18)
     print(f"\n--- Phase 7: MuJoCo Simulation ---")
-    _phase7_mujoco_simulation(checks, export_dir or "", case["min_joints"], assembly)
+    _phase7_mujoco_simulation(checks, export_dir or "", case["min_joints"], assembly, case)
 
     # Compute score and save report
     score = _compute_score(checks)
