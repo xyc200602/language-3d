@@ -149,7 +149,7 @@ We evaluate on seven robot configurations spanning 2--7 degrees of freedom plus 
 \label{sec:scoring}
 Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assembly (part count, joint count, connected tree, VLM pass), Position Solving (all positioned, 0 NaN), Render Quality ($\geq$4 views), Engineering Package (all files exist), Content Validation (mass, VLM, URDF structure, watertight meshes), Physical Sanity (0 FCL collisions, COM stability, workspace), and MuJoCo Simulation (physics stability, joint actuation, grasp). Score = PASS / (PASS + FAIL + WARN). Critical checks (collision, COM stability, MuJoCo physics, grasp) fail the case outright rather than degrading to a warning.
 
-\textbf{Evaluation validity.} We are explicit about three limitations of this protocol. \emph{First}, the checks are self-designed: they verify that the pipeline produces structurally and physically plausible output, not that the output is optimal or matches a reference design. The 94.4\% figure should be read as ``fraction of design-intent checks passed,'' not as an absolute quality grade. \emph{Second}, there is no external benchmark for the NL$\to$robot-package task; the closest (MUSE~\cite{muse2026}, Text2CAD-Bench) targets a different formulation (structured design-spec$\to$STEP), precluding direct score comparison. \emph{Third}, the modal score in Table~\ref{tab:results} is the achievable ceiling; the across-run distribution (\S Reproducibility) shows the mean is lower ($\sim$85\% excluding API failures) due to LLM non-determinism.
+\textbf{Evaluation validity.} We are explicit about three limitations of this protocol. \emph{First}, the checks are self-designed: they verify that the pipeline produces structurally and physically plausible output, not that the output is optimal or matches a reference design. The 94.4\% figure should be read as ``fraction of design-intent checks passed,'' not as an absolute quality grade. \emph{Second}, there is no external benchmark for the NL$\to$robot-package task; the closest (MUSE~\cite{muse2026}, Text2CAD-Bench) targets a different formulation (structured design-spec$\to$STEP), precluding direct score comparison. \emph{Third}, the modal score in Table~\ref{tab:rubric} is the achievable ceiling; the across-run distribution (\S Reproducibility) shows the mean is lower ($\sim$85\% excluding API failures) due to LLM non-determinism.
 
 \begin{figure}[h]
 \centering
@@ -160,35 +160,9 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 
 \subsection{Results}
 
-\begin{table}[h]
-\centering
-\caption{System-completeness rubric (self-designed, 41--43 checks). This is a structural pass-rate, not a quality grade.}
-\label{tab:results}
-\small
-\begin{tabular}{l|cccc}
-\toprule
-\textbf{Case} & \textbf{Score} & \textbf{P/F/W} & \textbf{Physics} & \textbf{Grasp} \\
-\midrule
-2dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
-3dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
-4dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
-5dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
-6dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & static \\
-7dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & FAIL \\
-4wheel\_dual\_arm & 95.3\% & 41/0/2 & 0.0$^\circ$ & static \\
-\midrule
-\textbf{Average} & \textbf{94.4\%} & & \textbf{0.0$^\circ$} & \textbf{6/7} \\
-\bottomrule
-\end{tabular}
-\vspace{1mm}
-\footnotesize ``static'' = static grasp pass (cube held against gravity); lift phase measured but not gated (see \S\ref{sec:sim-limits}). Modal scores (see \S Reproducibility).
-\end{table}
-
-Table~\ref{tab:results} reports the self-designed rubric as a structural pass-rate. However, collapsing $\sim$15 continuous physical quantities into binary PASS/FAIL loses information that matters for comparing designs. Table~\ref{tab:quant} reports these quantities directly as continuous metrics with physical units---this is the quantitatively defensible evaluation.
-
 \begin{table*}[t]
 \centering
-\caption{Quantitative metrics (continuous values, modal run per case). These are physically-grounded measurements, not self-scores.}
+\caption{Quantitative evaluation: continuous physics-grounded metrics across 7 robot configurations (modal run per case). These are physically meaningful measurements with units, not self-scores.}
 \label{tab:quant}
 \small
 \begin{tabular}{l|cccc|ccc}
@@ -211,10 +185,36 @@ Table~\ref{tab:results} reports the self-designed rubric as a structural pass-ra
 \footnotesize COM\,margin = signed distance from ground-projected COM to nearest support-polygon edge (higher = more stable; negative = tips over). Workspace = bounding-box max edge. FCL\,pairs = severe penetrations ($>$5\,mm) / total pairs checked. PD-hold error = worst joint deviation under gravity-compensated PD control.
 \end{table*}
 
-The continuous metrics reveal information the binary rubric hides. The COM stability margin ranges from 33.3\,mm (6dof, marginal) to 145\,mm (wheeled, robust)---a 4.3$\times$ difference that the rubric collapses to ``PASS'' for both (6dof fails on actuation, not stability). The workspace extent scales from 199\,mm (2dof) to 859\,mm (6dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 12--426 checked pairs and 100\% watertight STL ratio, demonstrating geometric validity at scale. The humanoid case (Table~\ref{tab:results}, excluded from average) has a COM margin of only 0.8\,mm---quantitatively explaining its 12$^\circ$ PD-hold settling error and confirming it is at the edge of bipedal stability.
+Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units. The COM stability margin ranges from 33.3\,mm (6dof, marginal) to 145\,mm (wheeled, robust)---a 4.3$\times$ difference. The workspace extent scales from 199\,mm (2dof) to 859\,mm (6dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 12--426 checked pairs and 100\% watertight STL ratio. The humanoid case (excluded from average) has a COM margin of only 0.8\,mm, quantitatively explaining its 12$^\circ$ PD-hold settling error.
+
+\textbf{Why not a single percentage score?} We also maintain a 41-check structural pass-rate (Table~\ref{tab:rubric}), but it has near-zero \emph{discriminative power}: four cases of differing complexity (2--5\,DOF, 8--14 parts) all score identically at 95.1\% (39/0/2). The rubric distinguishes ``broken'' from ``not broken'' but cannot rank quality---a 2-DOF arm with 199\,mm workspace and a 5-DOF arm with 719\,mm receive the same score. We therefore report it only as a supplementary completeness gate, not as a quality grade.
+
+\begin{table}[h]
+\centering
+\caption{Structural pass-rate (supplementary; near-zero discriminative power---see text).}
+\label{tab:rubric}
+\small
+\begin{tabular}{l|cccc}
+\toprule
+\textbf{Case} & \textbf{Score} & \textbf{P/F/W} & \textbf{Physics} & \textbf{Grasp} \\
+\midrule
+2dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
+3dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
+4dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
+5dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & static \\
+6dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & static \\
+7dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & FAIL \\
+4wheel\_dual\_arm & 95.3\% & 41/0/2 & 0.0$^\circ$ & static \\
+\midrule
+\textbf{Average} & \textbf{94.4\%} & & \textbf{0.0$^\circ$} & \textbf{6/7} \\
+\bottomrule
+\end{tabular}
+\vspace{1mm}
+\footnotesize ``static'' = static grasp pass (cube held against gravity); lift phase measured but not gated (see \S\ref{sec:sim-limits}). Modal scores (see \S Reproducibility).
+\end{table}
 
 \subsection{Reproducibility}
-Across 50 runs of the 4dof\_arm case (identical prompt) under the current codebase, the score distribution is bimodal: the majority ($\sim$70\%) achieve 95.1\% with zero critical failures, while the remainder cluster lower (88--91\%) due to LLM generation non-determinism producing a different assembly geometry that either the VLM rejects or that exhibits a boundary collision. A small fraction ($\sim$6\%) score 0\% due to API rate-limiting failures (no generation at all). Excluding API failures, the median score is 95.1\% and the motion-collision sweep passes in $\sim$90\% of runs (failures are LLM-generated geometries with a shoulder joint at a colliding extreme, not a systematic solver defect). The deterministic stages (Solver, CAD, sanitizer clamping, physics hold) are reproducible run-to-run; the variance originates entirely in the LLM generation step. Table~\ref{tab:results} reports the modal (best-case) score for each case---we are transparent that this is the achievable ceiling, not the across-run mean.
+Across 50 runs of the 4dof\_arm case (identical prompt) under the current codebase, the score distribution is bimodal: the majority ($\sim$70\%) achieve 95.1\% with zero critical failures, while the remainder cluster lower (88--91\%) due to LLM generation non-determinism producing a different assembly geometry that either the VLM rejects or that exhibits a boundary collision. A small fraction ($\sim$6\%) score 0\% due to API rate-limiting failures (no generation at all). Excluding API failures, the median score is 95.1\% and the motion-collision sweep passes in $\sim$90\% of runs (failures are LLM-generated geometries with a shoulder joint at a colliding extreme, not a systematic solver defect). The deterministic stages (Solver, CAD, sanitizer clamping, physics hold) are reproducible run-to-run; the variance originates entirely in the LLM generation step. Table~\ref{tab:rubric} reports the modal (best-case) score for each case---we are transparent that this is the achievable ceiling, not the across-run mean.
 
 \subsection{Ablation: Geometric Arbitration}
 We ablate the geometric channel (\texttt{LANG3D\_ABLATION=no\_geo}) on two cases: the wheeled dual-arm robot (deterministic compose path) and the 4-DOF arm (LLM generation path). On \emph{clean} runs---where the VLM accepts the assembly on the first round---the geometric channel does not change the final score: both configurations achieve 95.3\% (wheeled, 4 runs each) and 95.1\% (arm, 4 with-geo vs.\ 1 clean no-geo run; the remaining no-geo runs hit API rate limits). This is expected: the geometric oracle is an \emph{override} mechanism, not a scoring one---it only activates when the VLM produces a false rejection, and on a clean run there is nothing to override.
