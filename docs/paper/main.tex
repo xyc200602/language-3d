@@ -18,8 +18,7 @@
 \author{
 \IEEEauthorblockN{Youcheng Xiong}
 \IEEEauthorblockA{Future Laboratory, Tsinghua University\\
-Beijing, China\\
-\texttt{xyc@tsinghua.edu.cn}
+Beijing, China
 }
 }
 
@@ -34,7 +33,7 @@ We present \textbf{Language-3D}, a multi-agent system that converts natural lang
 
 The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp, and (5)~a self-evolving experience store that retrieves verified-good past cases to prime new generations (lexical retrieval; successes only).
 
-We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks per case. The system achieves a modal (best-case) score of 94.4\% (range 92.7--95.3\%), with all cases passing MuJoCo physics stability (0.0$^\circ$ error) and 6/7 passing the grasp test. We are transparent that this is a self-designed rubric (no external benchmark exists for this task formulation) and that the across-run mean is lower ($\sim$85\%) due to LLM non-determinism.
+We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with automated scoring across 41--43 checks per case. Beyond a self-designed structural pass-rate (modal 94.4\%), we report continuous physics-grounded metrics: COM stability margins (62--145\,mm), workspace extents (308--803\,mm), zero severe mesh collisions across 18--426 checked pairs, 100\% STL watertightness, and 0.0$^\circ$ PD-hold tracking error. All cases pass MuJoCo physics stability; 6/7 pass static grasp. We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
 \end{abstract}
 
 % ===================================================================
@@ -160,31 +159,59 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \end{figure}
 
 \subsection{Results}
+
 \begin{table}[h]
 \centering
-\caption{Benchmark results across 7 robot configurations.}
+\caption{System-completeness rubric (self-designed, 41--43 checks). This is a structural pass-rate, not a quality grade.}
 \label{tab:results}
 \small
 \begin{tabular}{l|cccc}
 \toprule
 \textbf{Case} & \textbf{Score} & \textbf{P/F/W} & \textbf{Physics} & \textbf{Grasp} \\
 \midrule
-2dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & PASS \\
-3dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & PASS \\
-4dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & PASS \\
-5dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & PASS \\
-6dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & PASS \\
+2dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
+3dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
+4dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
+5dof\_arm & 95.1\% & 39/0/2 & 0.0$^\circ$ & static \\
+6dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & static \\
 7dof\_arm & 92.7\% & 38/1/2 & 0.0$^\circ$ & FAIL \\
-4wheel\_dual\_arm & 95.3\% & 41/0/2 & 0.0$^\circ$ & PASS \\
+4wheel\_dual\_arm & 95.3\% & 41/0/2 & 0.0$^\circ$ & static \\
 \midrule
 \textbf{Average} & \textbf{94.4\%} & & \textbf{0.0$^\circ$} & \textbf{6/7} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
-\footnotesize Scores are the \emph{modal} (best-case) result per case over repeated runs. See \S Reproducibility for the across-run distribution; LLM non-determinism causes occasional lower scores.
+\footnotesize ``static'' = static grasp pass (cube held against gravity); lift phase measured but not gated (see \S\ref{sec:sim-limits}). Modal scores (see \S Reproducibility).
 \end{table}
 
-Five of seven evaluated cases achieve $\geq$\,95\% with zero critical failures. The 6dof and 7dof arm cases (92.7\%) each have a single failure: 6dof from VLM proportion validation (false-negative), 7dof from the grasp test (the 7-DOF arm's longer reach makes the cube lift unstable). All seven cases pass MuJoCo physics stability (err=0.0$^\circ$). An eighth case (humanoid\_2leg\_2arm) generates a 34-part assembly scoring 90.2\%; an earlier version (87.8\%) failed on three arm motion collisions (shoulder swinging into the pelvis, wrist-roll clipping the forearm) and VLM mis-classification of legs as wheels---both since addressed by topology-aware shoulder-pitch clamping (the humanoid forward cap is tightened from 90$^\circ$ to 60$^\circ$ when a pelvis + leg chain is detected, and wrist-roll is clamped to $\pm$120$^\circ$) and legged-topology VLM classification. After these fixes, the motion-collision sweep reports 0 collisions across all 12 revolute joints (verified by e2e regression). Remaining humanoid limitations are bipedal physics stability (the COM margin is only 0.8\,mm within the support polygon, yielding 12$^\circ$ of settling error under gravity) and the grasp test; the case is therefore reported as a partial-success topology rather than included in the seven-case average.
+Table~\ref{tab:results} reports the self-designed rubric as a structural pass-rate. However, collapsing $\sim$15 continuous physical quantities into binary PASS/FAIL loses information that matters for comparing designs. Table~\ref{tab:quant} reports these quantities directly as continuous metrics with physical units---this is the quantitatively defensible evaluation.
+
+\begin{table*}[t]
+\centering
+\caption{Quantitative metrics (continuous values, modal run per case). These are physically-grounded measurements, not self-scores.}
+\label{tab:quant}
+\small
+\begin{tabular}{l|cccc|ccc}
+\toprule
+\textbf{Case} & \textbf{COM\,margin} & \textbf{Workspace} & \textbf{FCL\,pairs} & \textbf{Triangles} & \textbf{PD-hold} & \textbf{Actuated} & \textbf{Watertight} \\
+ & (mm) & (mm) & (0/severe) & count & error ($^\circ$) & DOFs & ratio \\
+\midrule
+2dof\_arm & 75.0 & 308 & 0/18 & 111{,}592 & 0.0 & 4 & 9/9 \\
+3dof\_arm & 75.0 & 451 & 0/25 & 107{,}892 & 0.0 & 5 & 10/10 \\
+4dof\_arm & 66.8 & 676 & 0/52 & 125{,}882 & 0.0 & 6 & 13/13 \\
+5dof\_arm & 61.8 & 509 & 0/42 & 117{,}814 & 0.0 & 7 & 12/12 \\
+6dof\_arm & 64.9 & 725 & 0/63 & 117{,}832 & 0.0 & 7 & 14/14 \\
+7dof\_arm & 80.0 & 803 & 0/88 & 128{,}364 & 0.0 & 9 & 16/16 \\
+4wheel\_dual\_arm & 145.0 & 413 & 0/426 & 287{,}958 & 0.0 & 14 & 38/38 \\
+\midrule
+\textbf{Mean} & \textbf{81.2} & \textbf{555} & \textbf{0} & \textbf{142{,}476} & \textbf{0.0} & \textbf{7.4} & \textbf{100\%} \\
+\bottomrule
+\end{tabular}
+\vspace{1mm}
+\footnotesize COM\,margin = signed distance from ground-projected COM to nearest support-polygon edge (higher = more stable; negative = tips over). Workspace = bounding-box max edge. FCL\,pairs = severe penetrations ($>$5\,mm) / total pairs checked. PD-hold error = worst joint deviation under gravity-compensated PD control.
+\end{table*}
+
+The continuous metrics reveal information the binary rubric hides. The COM stability margin ranges from 61.8\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---a 2.3$\times$ difference that the rubric collapses to ``PASS'' for both. The workspace extent scales meaningfully from 308\,mm (2dof) to 803\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio, demonstrating geometric validity at scale. The humanoid case (Table~\ref{tab:results}, excluded from average) has a COM margin of only 0.8\,mm---quantitatively explaining its 12$^\circ$ PD-hold settling error and confirming it is at the edge of bipedal stability.
 
 \subsection{Reproducibility}
 Across 50 runs of the 4dof\_arm case (identical prompt) under the current codebase, the score distribution is bimodal: the majority ($\sim$70\%) achieve 95.1\% with zero critical failures, while the remainder cluster lower (88--91\%) due to LLM generation non-determinism producing a different assembly geometry that either the VLM rejects or that exhibits a boundary collision. A small fraction ($\sim$6\%) score 0\% due to API rate-limiting failures (no generation at all). Excluding API failures, the median score is 95.1\% and the motion-collision sweep passes in $\sim$90\% of runs (failures are LLM-generated geometries with a shoulder joint at a colliding extreme, not a systematic solver defect). The deterministic stages (Solver, CAD, sanitizer clamping, physics hold) are reproducible run-to-run; the variance originates entirely in the LLM generation step. Table~\ref{tab:results} reports the modal (best-case) score for each case---we are transparent that this is the achievable ceiling, not the across-run mean.
@@ -193,6 +220,14 @@ Across 50 runs of the 4dof\_arm case (identical prompt) under the current codeba
 We ablate the geometric channel (\texttt{LANG3D\_ABLATION=no\_geo}) on two cases: the wheeled dual-arm robot (deterministic compose path) and the 4-DOF arm (LLM generation path). On \emph{clean} runs---where the VLM accepts the assembly on the first round---the geometric channel does not change the final score: both configurations achieve 95.3\% (wheeled, 4 runs each) and 95.1\% (arm, 4 with-geo vs.\ 1 clean no-geo run; the remaining no-geo runs hit API rate limits). This is expected: the geometric oracle is an \emph{override} mechanism, not a scoring one---it only activates when the VLM produces a false rejection, and on a clean run there is nothing to override.
 
 The channel's value is therefore measured in \emph{loop efficiency}, not score. Across 152 historical pipeline runs, 68\% PASS on round 1 (VLM immediately correct), while 32\% require multi-round Fixer regeneration---often triggered by VLM false-negatives (e.g., ``wheels above ground'' on grounded wheels, ``arm pointing down'' on a forward-extending arm). When the geometric oracle confirms such geometry is valid, it overrides the false rejection, keeping the run on a single round. Without the oracle (no\_geo), these false-rejections would force a regeneration cycle that either wastes time (if the regenerated assembly also passes) or fails the case entirely (if regeneration drifts to worse geometry). We report this honestly: the geometric channel is a stability mechanism against VLM unreliability, not a quality booster on already-correct output.
+
+\subsection{Scope of Simulation Validation}
+\label{sec:sim-limits}
+We are explicit about two limitations of the physics validation that a reader may over-interpret.
+
+\textbf{Grasp test covers static hold, not dynamic lift.} The three-phase grasp test (zero-G close $\to$ gravity hold $\to$ lift) gates pass/fail on the first two phases only. The lift phase (Phase C) is measured but not gated: across all benchmark runs, the cube drops 1.6--7.3\,mm during lift because the fixed-bias lift torque rotates the arm, changing the gripper's gravity orientation without trajectory compensation. The system reports this as ``static grasp PASS'' (cube held against gravity), which we believe is a meaningful capability---but it is not the same as reliably picking up and transporting an object. A trajectory-planning controller would be needed for dynamic lift, which is out of scope for the artifact-generation pipeline.
+
+\textbf{Collision checking is per-joint static, not trajectory-level.} The motion-collision sweep samples each revolute joint independently (5--7 static poses per joint, all other joints at home) and checks FCL mesh penetration. This detects self-collisions at reachable extreme poses and is used to narrow joint ranges before export. However, it cannot detect collisions that arise during \emph{coordinated multi-joint motion} (e.g., both arms sweeping toward each other simultaneously), because joints are never moved together. There is no trajectory planner (RRT/CHOMP/A*) in the system. The ``0 collisions'' result in Table~\ref{tab:quant} means ``0 collisions at individually-sampled static poses,'' not ``the robot can execute arbitrary collision-free trajectories.'' Real-time motion planning is future work.
 
 \subsection{Manufacturability Verification}
 All 12 STL parts of the 4dof\_arm case are verified for mesh watertightness by an automated check (100\% pass). The wall-thickness ($\geq$\,0.8\,mm), bed-fit (11/12 fit a standard 220$\times$220\,mm bed; base\_plate at 150$\times$320\,mm requires a larger bed), material (791\,g PLA), and print-time ($\sim$6\,h) figures are offline measurements from a representative run, not automated pipeline outputs. Physical 3D printing remains as future work.
@@ -208,7 +243,7 @@ All 12 STL parts of the 4dof\_arm case are verified for mesh watertightness by a
     \item Firmware is template-generated (servo/IK/motor driver skeletons), not compiled or deployed on real hardware.
     \item ROS2 packages include correct structure (launch files, \texttt{ros2\_control} config with the standard \texttt{<ros2\_control>} tag and \texttt{GazeboSystem} hardware plugin, \texttt{package.xml}, Gazebo plugins in URDF). The generated URDF was validated end-to-end in ROS2 Humble + Gazebo Classic 11.10: \texttt{check\_urdf} parses it successfully, \texttt{colcon build} compiles the package, \texttt{robot\_state\_publisher} loads all kinematic segments, and \texttt{gzserver} spawns the robot. However, full closed-loop controller activation (joint trajectory execution) and RViz visualization with a display have not been demonstrated.
     \item Shared bolt patterns assume equal mating-face extents (unequal faces may misalign).
-    \item No real-time collision avoidance during motion (composition-time clamping only).
+    \item No real-time collision avoidance during motion (per-joint static sampling only; see \S\ref{sec:sim-limits}).
     \item The IK solver may not converge for all kinematic configurations (legacy limitation); the system relies on the deterministic open-chain Solver (anchor constraints + face alignment) for exported link positions, not on IK. A closed-chain Newton-Raphson solver exists for loop detection/convergence analysis, but its results are reported as warnings and do not yet rewrite the exported positions.
     \item The system depends on a single LLM vendor (GLM/Zhipu AI). Approximately 6\% of benchmark runs scored 0\% due to API rate-limiting failures---no generation at all. This is an infrastructure dependency, not a system-quality issue, but it limits reproducibility under heavy API load.
     \item CAD generation depends on a FreeCAD subprocess bridge; while robust in practice, the bridge has historically introduced regressions from FreeCAD script-template edge cases (documented in the project's engineering log).

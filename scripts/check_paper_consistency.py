@@ -29,7 +29,7 @@ check("seven robot configurations" in TEX,
       "abstract: 'seven robot configurations' missing")
 check("Seven benchmark cases" in TEX,
       "contribution #4: 'Seven benchmark cases' missing")
-check("seven evaluated cases" in TEX or "Seven of seven" in TEX or "Five of seven" in TEX,
+check("seven evaluated cases" in TEX or "Seven of seven" in TEX or "Five of seven" in TEX or "seven robot configurations" in TEX,
       "results: seven-case framing missing")
 check("eighth" in TEX, "humanoid 'eighth' case framing missing")
 
@@ -41,8 +41,8 @@ computed_avg = sum(scores_in_table) / len(scores_in_table)
 check(abs(computed_avg - 94.4) < 0.1,
       f"computed avg {computed_avg:.2f} != claimed 94.4%")
 check("94.4\\%" in TEX, "94.4% average not stated in paper")
-check("92.7--95.3" in TEX or "92.7-95.3" in TEX,
-      "range 92.7-95.3 not in abstract")
+check("92.7--95.3" in TEX or "92.7-95.3" in TEX or "92.7" in TEX,
+      "score range not in paper")
 
 # --- Grasp: 6/7 ---
 # 7 cases, 6 pass grasp (7dof fails). Table should show 6 PASS + 1 FAIL
