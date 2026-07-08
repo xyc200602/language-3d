@@ -1,4 +1,33 @@
-"""OrchestratorAgent - multi-agent orchestration with wave-based parallel execution."""
+"""OrchestratorAgent / PhasedOrchestrator — multi-agent DAG parallel execution.
+
+ARCHITECTURE STATUS (experimental)
+----------------------------------
+This module is the project's multi-agent parallel-orchestration layer. It is
+**orthogonal** to :class:`~lang3d.agent.pipeline.AssemblyPipeline`:
+
+* ``AssemblyPipeline`` is the **production assembly-generation path** — a
+  deterministic, serial five-stage flow (Architect → Solver → CAD → Verifier
+  → Fixer) that every CLI / web / e2e assembly task runs through. It owns
+  real assembly quality verification (VLM + geometric arbitration +
+  motion-collision sweep).
+* This module is a **generic LLM-tool parallel executor** — it decomposes a
+  task into a DAG, runs independent SubAgents in wave-parallel, and collects
+  results. It does **not** generate or verify assemblies.
+
+The two are deliberately separate: AssemblyPipeline's stages are a sequential
+pipeline (each needs the previous stage's output), not parallelisable tasks.
+This orchestrator is kept as the project's only parallel-execution
+infrastructure, but it has **not been validated end-to-end** — all e2e tests
+run through AssemblyPipeline, and this module is covered only by mock unit
+tests. Its DAG wave-parallel algorithm (``dag.py`` Kahn topological sort +
+``asyncio.gather`` waves) is real and correct, but its production value for
+robot-assembly tasks is unconfirmed.
+
+Assembly verification was previously run here against a hardcoded
+``ROBOTIC_ARM_ASSEMBLY`` teaching fixture, which did not reflect the user's
+actual task and was misleading; it has been removed (real verification lives
+in AssemblyPipeline).
+"""
 
 from __future__ import annotations
 
@@ -147,11 +176,17 @@ class OrchestratorAgent:
             if self._on_dag_update and self._dag:
                 self._on_dag_update(self._dag.to_dict())
 
-        # Phase 4: Assembly verification
+        # NOTE: Assembly verification is intentionally NOT performed here.
+        # The prior code ran a placeholder verification against a hardcoded
+        # ROBOTIC_ARM_ASSEMBLY constant (a 3-DOF teaching fixture), which did
+        # not reflect the user's actual task and was misleading. Real
+        # assembly quality verification is the responsibility of
+        # AssemblyPipeline (see pipeline.py run_verifier: VLM + geometric
+        # arbitration + motion-collision). This orchestrator is a generic
+        # LLM-tool parallel-execution layer, orthogonal to the deterministic
+        # assembly pipeline; it has no access to the generated Assembly
+        # object (DAG node results carry file paths, not structured parts).
         verification_report = ""
-        assembly = self._try_get_assembly(task)
-        if assembly and self._dag:
-            verification_report = self._run_assembly_verification(assembly)
 
         # Build final result
         completed = sum(
@@ -334,56 +369,6 @@ class OrchestratorAgent:
                     "success": result.success,
                 }
         return context
-
-    def _try_get_assembly(self, task: str) -> Assembly | None:
-        """Try to find a matching assembly definition for the task."""
-        task_lower = task.lower()
-        if "机械臂" in task_lower or "robotic arm" in task_lower:
-            from ..knowledge.mechanics import ROBOTIC_ARM_ASSEMBLY
-            return ROBOTIC_ARM_ASSEMBLY
-        return None
-
-    def _run_assembly_verification(self, assembly: Assembly) -> str:
-        """Run assembly verification and return the report."""
-        if self._on_thinking:
-            self._on_thinking("正在进行装配验证...")
-
-        # Collect parts results from sub-agents
-        parts_results: dict[str, dict[str, Any]] = {}
-        if self._dag:
-            for node in self._dag.nodes.values():
-                step_desc = node.step.description.lower()
-                for part in assembly.parts:
-                    if part.name in step_desc or part.name.replace("_", " ") in step_desc:
-                        result = self._results.get(node.step.id)
-                        if result:
-                            parts_results[part.name] = {
-                                "artifacts": result.artifacts,
-                                "result": result.result,
-                                "success": result.success,
-                            }
-
-        # F4: solve positions and pass them to the verifier so that
-        # collision detection and mating-surface checks actually run.
-        # Without placements the verifier skipped both and reported an
-        # unconditionally safe result (the "always-pass" problem).
-        placements = None
-        try:
-            from ..tools.assembly_solver import AssemblySolver
-            solver = AssemblySolver(assembly)
-            placements = solver.solve()
-        except Exception as exc:
-            # Solver may fail on malformed assemblies; verification should
-            # still proceed (and report the missing-placement gap).
-            import logging
-            logging.getLogger(__name__).warning(
-                "Assembly solver failed during verification: %s", exc,
-            )
-
-        result = self.verifier.verify_assembly(
-            assembly, self.workspace, parts_results, placements=placements,
-        )
-        return AssemblyVerifier.generate_assembly_report(result)
 
     def _cleanup_agents_for_step(self, step_id: str) -> None:
         """Remove agents for a completed step (keep results for later waves)."""

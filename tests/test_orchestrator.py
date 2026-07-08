@@ -121,17 +121,23 @@ class TestSpawnSubAgent:
         assert sub.role.value == "general"
 
 
-class TestTryGetAssembly:
-    def test_robotic_arm(self):
-        orch = _make_orchestrator()
-        assembly = orch._try_get_assembly("设计一个3自由度机械臂")
-        assert assembly is not None
-        assert assembly.name == "3-DOF Robotic Arm"
+class TestNoPlaceholderAssemblyVerification:
+    """The orchestrator must NOT carry placeholder assembly verification.
 
-    def test_no_match(self):
+    The prior design ran a fake verification against a hardcoded
+    ROBOTIC_ARM_ASSEMBLY teaching fixture for any task containing "机械臂",
+    which did not reflect the user's actual task and was misleading. Real
+    assembly verification lives in AssemblyPipeline. These tests guard
+    against the placeholder creeping back in.
+    """
+
+    def test_no_try_get_assembly_method(self):
         orch = _make_orchestrator()
-        assembly = orch._try_get_assembly("写一个Python脚本")
-        assert assembly is None
+        assert not hasattr(orch, "_try_get_assembly")
+
+    def test_no_run_assembly_verification_method(self):
+        orch = _make_orchestrator()
+        assert not hasattr(orch, "_run_assembly_verification")
 
 
 class TestRunTask:

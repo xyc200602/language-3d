@@ -250,6 +250,7 @@ class Agent:
         self._on_thinking: Callable[[str], None] | None = None
         self._on_plan_update: Callable[[Any], None] | None = None
         self._on_step_update: Callable[[PlanStep], None] | None = None
+        self._on_dag_update: Callable[[Any], None] | None = None
 
     def on_tool_call(self, callback: Callable[[str, dict], None]) -> None:
         self._on_tool_call = callback
@@ -266,6 +267,14 @@ class Agent:
     def on_step_update(self, callback: Callable[[PlanStep], None]) -> None:
         self._on_step_update = callback
 
+    def on_dag_update(self, callback: Callable[[Any], None]) -> None:
+        """Register a callback for DAG wave-progress updates.
+
+        Wired by the web panel so the DAG visualization receives the
+        orchestrator's ``_dag.to_dict()`` snapshots as each wave completes.
+        """
+        self._on_dag_update = callback
+
     def connect_web_panel(self) -> None:
         """Connect agent callbacks to the web monitoring panel."""
         try:
@@ -275,11 +284,13 @@ class Agent:
                 add_vlm_result,
                 set_thinking,
                 update_agent_state,
+                update_dag,
             )
 
             self.on_tool_call(lambda name, args: web_add_tool_call(name, args))
             self.on_tool_result(lambda name, result: self._web_on_result(name, result, add_vlm_result))
             self.on_thinking(lambda text: set_thinking(text))
+            self.on_dag_update(lambda dag: update_dag(dag))
             self._web_connected = True
         except ImportError:
             pass
@@ -388,14 +399,24 @@ class Agent:
         """Determine if a task needs hierarchical (subsystem-level) planning.
 
         Triggers when the task description matches complex robot patterns
-        (multiple subsystems, wheels, dual arms, etc.).
+        (multiple subsystems, wheels, dual arms, etc.). Dispatches to
+        :class:`~lang3d.agent.orchestrator.PhasedOrchestrator`, which is
+        experimental and orthogonal to the production AssemblyPipeline —
+        see the orchestrator module docstring.
         """
         from .planner import COMPLEX_ROBOT_KEYWORDS
         task_lower = task.lower()
         return any(kw in task_lower for kw in COMPLEX_ROBOT_KEYWORDS)
 
     def _should_orchestrate(self, task: str, plan: Plan) -> bool:
-        """Heuristic: orchestrate when >= 4 steps with >= 3 modeling steps."""
+        """Heuristic: orchestrate when >= 4 steps with >= 3 modeling steps.
+
+        This dispatches to :class:`~lang3d.agent.orchestrator.OrchestratorAgent`,
+        the experimental generic LLM-tool parallel executor. It is **orthogonal**
+        to AssemblyPipeline (the production assembly path) — see the
+        orchestrator module docstring. Assembly generation/verification is not
+        performed by the orchestrator; that remains AssemblyPipeline's job.
+        """
         if len(plan.steps) < 4:
             return False
         if not self.config.agent.orchestrator.enable_parallel:
@@ -440,6 +461,11 @@ class Agent:
             orchestrator.on_tool_call(self._on_tool_call)
         if self._on_tool_result:
             orchestrator.on_tool_result(self._on_tool_result)
+        # DAG wave-progress: connect so the web DAG visualization receives
+        # snapshots as each parallel wave completes (the prior code declared
+        # the callback but never wired it, leaving the DAG view dead).
+        if self._on_dag_update and hasattr(orchestrator, "on_dag_update"):
+            orchestrator.on_dag_update(self._on_dag_update)
 
     def _broadcast_plan(self) -> None:
         """Push the current plan (if any) to the web panel as JSON."""
