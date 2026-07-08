@@ -195,16 +195,16 @@ A retrieve-before / store-after memory of verified-good assemblies (`experience/
 
 ## Tool System / 工具系统
 
-55 tool modules organized into 9 categories. Each expert agent sees only its whitelisted tools (`ROLE_TOOL_CATEGORIES`):
+56 tool modules organized into 9 categories. Each expert role has a tool whitelist (`ROLE_TOOL_CATEGORIES`); in the executor path this is enforced, in the AssemblyPipeline path it is advisory (stages call domain functions directly):
 
 > **Note:** Tool whitelist enforcement is active in the `OrchestratorAgent` path. The production `AssemblyPipeline` path calls domain functions directly (not through the tool registry), so the whitelist is advisory there.
 
 | Category / 类别 | Tools | Key Modules / 关键模块 |
 |---|---|---|
-| FreeCAD Modeling / 建模 | 23 | `freecad.py` — box, cylinder, boolean, fillet, export |
+| FreeCAD Modeling / 建模 | 24 | `freecad.py` — box, cylinder, boolean, fillet, export |
 | File Operations / 文件 | 6 | `file_ops.py` — read, write, edit, search, glob |
 | GUI Automation / GUI 自动化 | 8 | `gui_action.py` — click, type, hotkey, drag, scroll |
-| VLM Vision / 视觉 | 4 | `vlm.py` — analyze, verify, screen capture |
+| VLM Vision / 视觉 | 5 | `vlm.py` — analyze, verify, screen capture, locate |
 | Assembly / 装配 | 10+ | `assembly_generator.py`, `assembly_solver.py`, `pipeline.py` |
 | CAD Features / CAD 特征 | 3+ | `part_feature_engine.py`, `connection_features.py` |
 | Export / 导出 | 2+ | `export_package.py`, `urdf_export.py`, `bom_gen.py` |
@@ -248,12 +248,12 @@ language-3d/
 │   │   ├── modifier.py            # Targeted modification engine
 │   │   ├── fix_strategy.py        # Failure classification + convergence detection
 │   │   ├── dag.py                 # Task DAG with cycle detection
-│   │   ├── message_bus.py         # Inter-agent pub/sub messaging
+│   │   ├── message_bus.py         # Inter-agent event log (publish side wired; no subscribers yet)
 │   │   └── ...
 │   ├── models/                    # LLM/VLM Backends
 │   │   ├── glm.py                 # GLM-5.2 (text) + GLM-4.6V (vision)
 │   │   └── router.py              # 4-level vision model tiers (fast/standard/detailed/maximum; default: detailed)
-│   ├── tools/                     # 55 tool modules
+│   ├── tools/                     # 56 tool modules
 │   │   ├── assembly_generator.py  # NL → assembly JSON + VLM loop (main loop)
 │   │   ├── assembly_gen/          # Extracted sub-modules (P1-1 split)
 │   │   │   ├── sanitizers.py      # Post-generation correction (anchors, angles, limits)
@@ -299,9 +299,9 @@ language-3d/
 
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
-| Unit + Integration / 单元 + 集成 | 2,360+ | 0 known failures (5 pre-existing failures fixed 2026-07-03, see AGENTS.md §6.3) |
-| E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
-| E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
+| Unit + Integration / 单元 + 集成 | 4,200+ | 0 known failures (6 pre-existing failures fixed 2026-07-03 ~ 07-08, see AGENTS.md §6.3) |
+| E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (mode of 56 runs, mean 92.7%; 0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
+| E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (mode of 42 runs, mean 93.0%; 0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
 | Expert Roles / 专家角色 | 27 | 27 PASS |
 
 > **Note / 注意**: E2E tests require `GLM_API_KEY` + FreeCAD — without them they are skipped. Scores are **per-case** results (not a multi-case average). Scoring = PASS/(PASS+FAIL+WARN); SKIP (missing optional dep) is excluded from the denominator, and critical checks (collision, COM stability, MuJoCo physics, grasp) FAIL rather than downgrade to warning. The 4dof_arm score varies slightly run-to-run due to LLM non-determinism; the wheeled dual-arm is deterministic (compose path).
@@ -331,7 +331,7 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 ## Roadmap / 路线图
 
 ### Phase 1 — Foundation / 基础 (Completed)
-- [x] FreeCAD subprocess bridge (23 tools)
+- [x] FreeCAD subprocess bridge (24 tools)
 - [x] VLM visual verification (4-level model tiers, default: detailed)
 - [x] GUI automation (PyAutoGUI, 8 tools)
 - [x] Dual verification pipeline
@@ -339,14 +339,14 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 ### Phase 2 — Assembly Generation / 装配体生成 (Completed)
 - [x] NL → assembly JSON (GLM-5.2 + VLM feedback loop)
 - [x] Assembly solver (anchor constraints)
-- [x] Connection engine (bolted, press_fit, snap_fit, adhesive, welded, magnetic)
+- [x] Connection engine (bolted, press_fit, snap_fit, adhesive, welded, magnetic, dowel_pin, set_screw)
 - [x] Part feature engine (axis-correct bolt holes, water-tight fingers)
 - [x] VTK offscreen rendering (crop-to-content, clipping fix)
 - [x] Engineering package (STL, URDF, BOM, assembly guide, firmware)
 
 ### Phase 3 — Multi-Agent Architecture / 多智能体架构 (Completed)
 - [x] Expert agent roles (Architect/Solver/CAD/Verifier/Fixer/Chassis)
-- [x] Tool whitelisting per role (ROLE_TOOL_CATEGORIES)
+- [~] Tool whitelisting per role (ROLE_TOOL_CATEGORIES — defined + registry-scoped + tested; production AssemblyPipeline calls domain functions directly, so the whitelist is advisory, not an enforced guard. The executor path enforces it.)
 - [x] AssemblyPipeline is the production path (pipeline errors propagate; legacy loop is opt-in via LANG3D_LEGACY_FALLBACK)
 - [x] Architect persona injected on round 1 (not only on repair rounds)
 - [x] Selective Fixer routing by failure type (structural defects trigger fix; framing complaints on deterministic output are retained, not regenerated)
@@ -368,7 +368,7 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 - [x] **Collision-aware range clamp for all arms** (generalised from dual-arm-only; FCL sweep narrows range_deg in run_solver before URDF export)
 - [x] **Contact-setup deduplication** (centralised `_setup_wheel_contacts` replaces 3 inline copies; dynamic z-drop from real wheel-bottom height)
 - [x] URDF `<ros2_control>` tag for Gazebo actuation (GazeboSystem hardware plugin + ros2_control.yaml; validated: check_urdf + colcon build + robot_state_publisher + gzserver spawn)
-- [x] Closed-chain kinematic solver (ClosedChainSolver: FD-Jacobian + Newton-Raphson, assembly_solver.py:1347)
+- [~] Closed-chain kinematic solver (ClosedChainSolver: FD-Jacobian + Newton-Raphson, assembly_solver.py:1347) — solver runs and reports convergence, but loop positions do not yet flow back into exported URDF (open-chain DFS positions used; convergence surfaced as design warning only)
 - [ ] FEA structural analysis (CalculiX)
 - [x] Grasp simulation (sim_grasp three-phase, dual-gripper support)
 - [x] Dual-arm collision avoidance (static collision-aware pose configurator + workspace-safe joint limits; NOT real-time motion planning)

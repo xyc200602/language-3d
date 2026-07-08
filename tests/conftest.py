@@ -119,8 +119,8 @@ def _classify_test_file(path: Path) -> set[str]:
     """Return the set of markers a test file should have.
 
     Reads the source text once per file and applies keyword heuristics.
-    The result is cached in a module-level dict so collection of 3.9k
-    tests doesn't re-read the same 134 files.
+    The result is cached in a module-level dict so collection of ~4.2k
+    tests doesn't re-read the same ~150 files.
     """
     cache = _classify_test_file._cache  # type: ignore[attr-defined]
     key = str(path)
@@ -168,7 +168,7 @@ def pytest_collection_modifyitems(
 ) -> None:
     """Auto-mark each collected test based on its file's content.
 
-    Runs after collection, before execution.  Cheap: 134 files read once,
+    Runs after collection, before execution.  Cheap: ~150 files read once,
     results cached.  Adds 1+ markers to every test item.
 
     Also auto-skips integration tests that need FreeCAD when FreeCAD is
