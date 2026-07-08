@@ -105,7 +105,7 @@ Eight connection types generate real CAD features via FreeCAD operation dictiona
     \item \textbf{Welded}: V-groove bevel preparation (butt) or no-prep (fillet).
     \item \textbf{Magnetic}, \textbf{Dowel-pin} (H7 slip-fit), \textbf{Set-screw} (radial threaded hole).
 \end{itemize}
-Connection selection is physics-aware: a sanitizer assigns methods by part category (e.g., bearings always use press-fit, never bolted; sensors and foot pads use adhesive bonding; servos use M2 threaded holes). The LLM may also specify methods directly. All eight types have functional geometry generators, though in practice bolted and press-fit dominate because most robot joints are structural or bearing-mounted.
+Connection selection is physics-aware: when the LLM omits a connection method, a sanitizer assigns one by part category (e.g., bearings $\to$ press-fit, never bolted; sensors and foot pads $\to$ adhesive bonding; servos $\to$ M2 threaded holes). When the LLM specifies a method explicitly, it is respected. All eight types have functional geometry generators, though in practice bolted and press-fit dominate because most robot joints are structural or bearing-mounted and the LLM tends to default to bolted.
 
 \begin{figure}[h]
 \centering
