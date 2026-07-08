@@ -175,8 +175,8 @@ ROBOT_PROFILES: dict[str, RobotAssemblyProfile] = {
         key_dimensions={
             "reach_mm": 400,       # ~400mm effective reach
             "base_width_mm": 140,
-            "weight_kg": 2.5,
-            "payload_kg": 0.3,     # ~300g nominal payload
+            "weight_kg": 5.5,      # official spec (source-robotics.github.io + electromaker.io)
+            "payload_kg": 1.0,     # 1kg max payload (official)
         },
         actuators_used=["NEMA17-42BYGH"] * 6,
         notes="High-performance 3D-printed 6-DOF desktop arm, designed to be similar "
