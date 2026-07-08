@@ -1146,6 +1146,7 @@ def _phase7_mujoco_simulation(
                         physics_detail = (
                             f"stabilized={physics_stable}, "
                             f"err={_ph.get('max_qpos_error_deg', '?')}deg, "
+                            f"raw_droop={_ph.get('raw_droop_deg', '?')}deg, "
                             f"disp={_ph.get('max_body_displacement_mm', '?')}mm"
                         )
                         break

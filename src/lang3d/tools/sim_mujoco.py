@@ -1466,8 +1466,47 @@ def _run_physics_hold(
 
     stabilized = (not unstable) and (not huge_value) and final_err_deg < 1.0 and max_disp_mm < 1.0
 
+    # --- Raw PD-hold (no gravity compensation) ---
+    # The gravity-compensated hold above trivially yields ~0° error because
+    # qfrc_bias cancels the gravitational load. To expose the *real*
+    # steady-state droop — which is a genuine design-quality signal (stiff
+    # arms droop less) — run the same PD hold WITHOUT qfrc_bias feed-forward.
+    raw_err_deg = 0.0
+    if not unstable and not huge_value:
+        raw_data = mujoco.MjData(model)
+        mujoco.mj_forward(model, raw_data)
+        raw_initial = raw_data.qpos.copy()
+        for step in range(n_steps):
+            mujoco.mj_forward(model, raw_data)
+            # PD WITHOUT gravity comp — just kp*(target-current) - kv*vel
+            for jid in controlled_joints:
+                qadr = model.jnt_qposadr[jid]
+                dadr = model.jnt_dofadr[jid]
+                raw_data.qfrc_applied[dadr] = (
+                    kp * (raw_initial[qadr] - raw_data.qpos[qadr])
+                    - kv * raw_data.qvel[dadr]
+                )
+            for jid in slide_joints:
+                qadr = model.jnt_qposadr[jid]
+                dadr = model.jnt_dofadr[jid]
+                raw_data.qpos[qadr] = raw_initial[qadr]
+                raw_data.qvel[dadr] = 0.0
+            for jid in wheel_hold_jids:
+                dadr = model.jnt_dofadr[jid]
+                raw_data.qvel[dadr] = 0.0
+            mujoco.mj_step(model, raw_data)
+            if not np.all(np.isfinite(raw_data.qacc)):
+                break
+        raw_errs = []
+        for jid in controlled_joints:
+            if model.jnt_type[jid] != mujoco.mjtJoint.mjJNT_HINGE:
+                continue
+            qadr = model.jnt_qposadr[jid]
+            raw_errs.append(abs(np.degrees(raw_initial[qadr] - raw_data.qpos[qadr])))
+        raw_err_deg = max(raw_errs) if raw_errs else 0.0
+
     if stabilized:
-        note = "PD-hold pass"
+        note = f"PD-hold pass (raw droop without grav-comp: {raw_err_deg:.2f}°)"
     else:
         flags = []
         if unstable:
@@ -1482,6 +1521,7 @@ def _run_physics_hold(
     return {
         "stabilized": bool(stabilized),
         "max_qpos_error_deg": float(final_err_deg),
+        "raw_droop_deg": float(raw_err_deg),
         "max_body_displacement_mm": float(max_disp_mm),
         "timesteps": int(n_steps),
         "unstable": bool(unstable),
@@ -1825,7 +1865,9 @@ class SimMujocoTool(Tool):
                 lines.append(f"--- 物理稳定性 (PD hold, {physics['timesteps']} steps) ---")
                 status = "PASS" if physics["stabilized"] else "FAIL"
                 lines.append(f"  状态: {status}")
-                lines.append(f"  最大关节角误差: {physics['max_qpos_error_deg']:.3f}° (阈值 1°)")
+                lines.append(f"  最大关节角误差: {physics['max_qpos_error_deg']:.3f}° (阈值 1°, grav-comp)")
+                raw_droop = physics.get("raw_droop_deg", 0.0)
+                lines.append(f"  真实下垂(无重力补偿): {raw_droop:.3f}°")
                 lines.append(f"  最大 body 位移: {physics['max_body_displacement_mm']:.3f}mm (阈值 1mm)")
                 if physics["unstable"]:
                     lines.append("  WARN: 数值不稳定 (NaN/Inf in QACC) — see notes")
