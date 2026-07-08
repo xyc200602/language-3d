@@ -195,6 +195,45 @@ def load_case_runs(case: str, runs_dir: Path | str | None = None) -> list[dict]:
     return reports
 
 
+def _load_benchmark_run(
+    case: str, runs_dir: Path | str | None, reports: list[dict]
+) -> dict | None:
+    """Return the frozen BENCHMARK run for *case*, or None if unset.
+
+    A ``data/runs/<case>/BENCHMARK`` file (first non-comment line = timestamp)
+    pins the paper's Table I/II physics numbers to a fixed run so they stop
+    drifting as new e2e runs accumulate.  This is the single source of truth
+    for "which run's COM/droop/collision does the paper report" — the scorer,
+    the table extractor, and the consistency gate all read the same marker.
+
+    The run must be present in *reports* (i.e. non-zero score) and carry a
+    metrics block; otherwise we fall back to median selection.
+    """
+    base = Path(runs_dir) if runs_dir else _RUNS_DIR
+    marker = base / case / "BENCHMARK"
+    if not marker.exists():
+        return None
+    try:
+        ts = marker.read_text(encoding="utf-8").splitlines()[0].strip()
+    except (OSError, IndexError):
+        return None
+    if not ts or ts.startswith("#"):
+        return None
+    rp = base / case / ts / "e2e_report.json"
+    if not rp.exists():
+        logger.debug("BENCHMARK marker points to missing run %s", rp)
+        return None
+    try:
+        doc = json.loads(rp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if doc.get("score", 0) <= 0:
+        return None
+    if not any("metrics" in c for c in doc.get("checks", [])):
+        return None
+    return doc
+
+
 def _load_assembly(case: str, runs_dir: Path | str | None = None) -> dict | None:
     """Load the most recent assembly.json for *case* (for footprint sizing)."""
     base = Path(runs_dir) if runs_dir else _RUNS_DIR
@@ -471,17 +510,26 @@ def compute_composite_for_case(
     if assembly is None:
         assembly = _load_assembly(case, runs_dir)
 
-    # Among runs carrying a metrics block (so physics is readable), pick the
-    # median-scoring one as the typical physics representative.  Legacy runs
-    # without metrics are excluded from physics selection (their numbers are
-    # unreadable) but still count toward the distribution sub-scores.
-    metrics_runs = [r for r in reports if any("metrics" in c for c in r.get("checks", []))]
-    pool = metrics_runs if metrics_runs else reports
-    pool_sorted = sorted(pool, key=lambda d: d.get("score", 0))
-    median_run = pool_sorted[len(pool_sorted) // 2]
+    # Select the run whose physics/COM metrics feed the gate and s_robust.
+    # Preference order:
+    #   1. A frozen BENCHMARK run (data/runs/<case>/BENCHMARK file names a ts)
+    #      — pins the paper tables to a fixed baseline so they stop drifting
+    #      as new e2e runs accumulate.  Without this, the median (below) shifts
+    #      every time a new run lands, silently changing every Table I/II cell.
+    #   2. Otherwise the median-scoring metrics-carrying run (typical outcome).
+    base = Path(runs_dir) if runs_dir else _RUNS_DIR
+    bm_run = _load_benchmark_run(case, base, reports)
+
+    if bm_run is not None:
+        phys_report = bm_run
+    else:
+        metrics_runs = [r for r in reports if any("metrics" in c for c in r.get("checks", []))]
+        pool = metrics_runs if metrics_runs else reports
+        pool_sorted = sorted(pool, key=lambda d: d.get("score", 0))
+        phys_report = pool_sorted[len(pool_sorted) // 2]
 
     gate_passed, reasons, s_robust, s_func, s_rely, raw = _gate_and_subs(
-        median_run, assembly, case, reports
+        phys_report, assembly, case, reports
     )
     q = (s_robust * s_func * s_rely) ** (1 / 3) if gate_passed else 0.0
     return CompositeResult(

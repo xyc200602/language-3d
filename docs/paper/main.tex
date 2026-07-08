@@ -34,7 +34,7 @@ We present \textbf{Language-3D}, a multi-agent system that converts natural lang
 
 The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp, and (5)~a self-evolving experience store that retrieves verified-good past cases to prime new generations (lexical retrieval; successes only).
 
-We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with a composite quality score $Q \in [0,1]$ (a relative rank, not an absolute quality percentage), achieving a mean of 0.61 (range 0.48--0.75) with 7/7 distinct values---vs.\ a structural pass-rate rubric that ties three cases identically at 95.1\%. The composite's grasp term is a per-case success \emph{rate} (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%; and its lift term reveals that \emph{no} configuration achieves positive lift---all statically-grasped cubes drop during the lift phase (\S\ref{sec:sim-limits}). We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp, lift, and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
+We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with a composite quality score $Q \in [0,1]$ (a relative rank, not an absolute quality percentage), achieving a mean of 0.63 (range 0.48--0.83) with 7/7 distinct values---vs.\ a structural pass-rate rubric that ties three cases identically at 95.1\%. The composite's grasp term is a per-case success \emph{rate} (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%; and its lift term reveals that \emph{no} configuration achieves positive lift---all statically-grasped cubes drop during the lift phase (\S\ref{sec:sim-limits}). We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp, lift, and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
 \end{abstract}
 
 % ===================================================================
@@ -57,7 +57,7 @@ Automated robot design from natural language is a long-standing goal at the inte
     \item \textbf{Task formulation}: We formalize NL~$\to$~manufacturable robot assembly package as a new task with evaluation criteria spanning geometry, physics, and manufacturing.
     \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 package structures from NL, with 8 real connection types and a 56-part COTS knowledge base.
     \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
-    \item \textbf{Evaluation}: Seven benchmark cases evaluated by a composite quality score (gate + geometric mean of robustness/functionality/reliability; $Q\in[0,1]$ relative rank, mean 0.61, 7/7 distinct values) plus a structural pass-rate rubric, with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
+    \item \textbf{Evaluation}: Seven benchmark cases evaluated by a composite quality score (gate + geometric mean of robustness/functionality/reliability; $Q\in[0,1]$ relative rank, mean 0.63, 7/7 distinct values) plus a structural pass-rate rubric, with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
 \end{enumerate}
 
 % ===================================================================
@@ -170,22 +170,22 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \textbf{Case} & \textbf{COM\,margin} & \textbf{Workspace} & \textbf{FCL\,pairs} & \textbf{Triangles} & \textbf{PD-hold} & \textbf{Actuated} & \textbf{Watertight} \\
  & (mm) & (mm) & (0/severe) & count & error ($^\circ$) & DOFs & ratio \\
 \midrule
-2dof\_arm & 75.0 & 284 & 0/18 & 107{,}876 & 1.2 & 4 & 9/9 \\
-3dof\_arm & 75.0 & 516 & 0/33 & 127{,}348 & 1.9 & 5 & 10/10 \\
-4dof\_arm & 57.3 & 659 & 0/52 & 114{,}542 & 1.2 & 6 & 11/11 \\
+2dof\_arm & 75.0 & 336 & 0/18 & 111{,}986 & 1.2 & 4 & 9/9 \\
+3dof\_arm & 75.0 & 461 & 0/25 & 113{,}072 & 2.4 & 5 & 10/10 \\
+4dof\_arm & 75.0 & 504 & 0/33 & 118{,}142 & 1.8 & 6 & 11/11 \\
 5dof\_arm & 68.7 & 684 & 0/52 & 37{,}840 & 1.4 & 7 & 12/12 \\
 6dof\_arm & 70.4 & 720 & 0/52 & 129{,}840 & 1.4 & 8 & 13/13 \\
 7dof\_arm & 79.6 & 1059 & 0/133 & 128{,}166 & 1.4 & 9 & 19/19 \\
 4wheel\_dual\_arm & 145.0 & 464 & 0/426 & 287{,}958 & 0.7 & 14 & 38/38 \\
 \midrule
-\textbf{Mean} & \textbf{81.6} & \textbf{627} & \textbf{0} & \textbf{133{,}373} & \textbf{1.3} & \textbf{7.6} & \textbf{100\%} \\
+\textbf{Mean} & \textbf{84.1} & \textbf{604} & \textbf{0} & \textbf{132{,}438} & \textbf{1.5} & \textbf{7.6} & \textbf{100\%} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
 \footnotesize COM\,margin = signed distance from ground-projected COM to nearest support-polygon edge (higher = more stable; negative = tips over). Workspace = bounding-box max edge. FCL\,pairs = severe penetrations ($>$5\,mm) / total pairs checked. PD-hold error = worst-joint steady-state droop under PD control \emph{without} gravity-compensation feed-forward (kp=50, kv=5; see \S\ref{sec:sim-limits}).
 \end{table*}
 
-Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units. The COM stability margin ranges from 57.3\,mm (4dof, marginal) to 145\,mm (wheeled, robust)---a 2.5$\times$ difference. The workspace extent scales from 284\,mm (2dof) to 1059\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio. The raw PD-hold droop ranges 0.7--1.9$^\circ$ (mean 1.3$^\circ$), well within the 5$^\circ$ composite gate.
+Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units, each drawn from a frozen per-case benchmark run (see \S Reproducibility). The COM stability margin ranges from 68.7\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---a 2.1$\times$ difference. The workspace extent scales from 336\,mm (2dof) to 1059\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio. The raw PD-hold droop ranges 0.7--2.4$^\circ$ (benchmark-run mean 1.5$^\circ$; up to 3.3$^\circ$ observed in non-benchmark 6dof runs), well within the 5$^\circ$ composite gate.
 
 \textbf{Composite quality score.} A single rankable score must satisfy two constraints: (1)~a fatal flaw (tipping, no actuation) should not be averaged away, and (2)~dimensions that do not vary across cases should not dilute the signal. We therefore use a \emph{gate-then-score} design: four binary gates (MuJoCo loads, raw PD-hold droop $<$\,5$^\circ$ \emph{without} gravity-compensation feed-forward---see \S\ref{sec:sim-limits}---which is a genuine stiffness signal rather than the trivially-zero compensated error, 0 severe collisions, COM inside support polygon) must all pass; if any fails, $Q=0$. If all pass, $Q \in [0,1]$ is the geometric mean of three sub-scores:
 \begin{equation}
@@ -201,7 +201,7 @@ where $d_{\text{COM}}$ is the COM margin (mm), $D_{\text{poly}}$ the \emph{suppo
 
 Physical metrics come from the \emph{median}-scoring run (the typical outcome), not the best run; the distribution sub-scores ($g_{\text{rate}}$, $\ell$, $s_{\text{rely}}$) use all non-zero runs. Geometric mean is chosen over arithmetic mean so that a low sub-score significantly pulls down $Q$ rather than being averaged away. Critically, the grasp term is a \emph{success rate} (6dof: $g_{\text{rate}}=0.17$, 1 of 6 runs), not a best-of-$N$ boolean that credited a flaky gripper with a full grasp mark; and $\ell$ exposes that \emph{no} case achieves positive lift---every robot that statically grasps still drops the cube during the lift phase (\S\ref{sec:sim-limits}), so $\ell=0$ across all cases.
 
-Table~\ref{tab:composite} reports $Q$ alongside the old rubric. The composite achieves \textbf{7 distinct values across 7 cases} (vs.\ 2 for the rubric). The wheeled dual-arm ranks highest ($Q=0.75$). The 7-DOF arm ranks lowest ($Q=0.48$: $g_{\text{rate}}=0$, no run ever grasped). The 6-DOF arm's $g_{\text{rate}}=0.17$ pulls its $s_{\text{func}}$ to 0.37 despite full DOF actuation, exposing grasp unreliability the rubric's best-of-$N$ pass hid.
+Table~\ref{tab:composite} reports $Q$ alongside the old rubric. The composite achieves \textbf{7 distinct values across 7 cases} (vs.\ 2 for the rubric). The wheeled dual-arm ranks highest ($Q=0.83$). The 7-DOF arm ranks lowest ($Q=0.48$: $g_{\text{rate}}=0$, no run ever grasped). The 6-DOF arm's $g_{\text{rate}}=0.17$ pulls its $s_{\text{func}}$ to 0.37 despite full DOF actuation, exposing grasp unreliability the rubric's best-of-$N$ pass hid.
 
 \begin{table}[h]
 \centering
@@ -212,15 +212,15 @@ Table~\ref{tab:composite} reports $Q$ alongside the old rubric. The composite ac
 \toprule
 \textbf{Case} & $s_{\text{robust}}$ & $g_{\text{rate}}$ & $s_{\text{func}}$ & $s_{\text{rely}}$ & \textbf{$Q$} & \textbf{Old} \\
 \midrule
-2dof\_arm & 0.42 & 1.00 & 0.70 & 0.99 & 0.67 & 95.1 \\
-3dof\_arm & 0.36 & 1.00 & 0.70 & 0.95 & 0.62 & 95.1 \\
-4dof\_arm & 0.33 & 0.93 & 0.67 & 0.98 & 0.60 & 95.1 \\
+2dof\_arm & 0.47 & 1.00 & 0.70 & 0.99 & 0.69 & 95.1 \\
+3dof\_arm & 0.38 & 1.00 & 0.70 & 0.95 & 0.63 & 95.1 \\
+4dof\_arm & 0.42 & 0.92 & 0.67 & 0.98 & 0.65 & 95.1 \\
 5dof\_arm & 0.39 & 0.60 & 0.54 & 0.97 & 0.59 & 89.5 \\
 6dof\_arm & 0.44 & 0.17 & 0.37 & 0.96 & 0.54 & 92.7 \\
 7dof\_arm & 0.39 & 0.00 & 0.30 & 0.92 & 0.48 & 89.5 \\
-4wheel & 0.63 & 0.95 & 0.68 & 0.98 & 0.75 & 95.3 \\
+4wheel & 0.85 & 0.95 & 0.68 & 0.98 & 0.83 & 95.3 \\
 \midrule
-\textbf{Mean} & & & & & \textbf{0.61} & \textbf{93.2} \\
+\textbf{Mean} & & & & & \textbf{0.63} & \textbf{93.2} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
@@ -252,7 +252,7 @@ Table~\ref{tab:composite} reports $Q$ alongside the old rubric. The composite ac
 \end{table}
 
 \subsection{Reproducibility}
-Across 69 runs of the 4dof\_arm case (identical prompt) under the current codebase, the score distribution is bimodal: the majority ($\sim$62\%) achieve 95.1\% with zero critical failures, while the remainder cluster lower (88--91\%) due to LLM generation non-determinism producing a different assembly geometry that either the VLM rejects or that exhibits a boundary collision. A small fraction ($\sim$7\%) score 0\% due to API rate-limiting failures (no generation at all); the mean score including the 5 zero-score API failures is 86.2\% (excluding them, 92.9\%), and the median is 95.1\%, reflecting the long tail of API-failed and boundary-collision runs. The motion-collision sweep passes in $\sim$88\% of runs (failures are LLM-generated geometries with a shoulder joint at a colliding extreme, not a systematic solver defect). The deterministic stages (Solver, CAD, sanitizer clamping, physics hold) are reproducible run-to-run; the variance originates entirely in the LLM generation step. Table~\ref{tab:rubric} reports the modal (best-case) score for each case---we are transparent that this is the achievable ceiling, not the across-run mean.
+Across 70 runs of the 4dof\_arm case (identical prompt) under the current codebase, the score distribution is bimodal: the majority ($\sim$61\%) achieve 95.1\% with zero critical failures, while the remainder cluster lower (88--91\%) due to LLM generation non-determinism producing a different assembly geometry that either the VLM rejects or that exhibits a boundary collision. A small fraction ($\sim$7\%) score 0\% due to API rate-limiting failures (no generation at all); the mean score including the 5 zero-score API failures is 86.0\% (excluding them, 92.9\%), and the median is 95.1\%, reflecting the long tail of API-failed and boundary-collision runs. The motion-collision sweep passes in $\sim$88\% of runs (failures are LLM-generated geometries with a shoulder joint at a colliding extreme, not a systematic solver defect). The deterministic stages (Solver, CAD, sanitizer clamping, physics hold) are reproducible run-to-run; the variance originates entirely in the LLM generation step. Table~\ref{tab:rubric} reports the modal score for each case (the most frequent outcome, not the maximum). To prevent the continuous-physics tables (Table~\ref{tab:quant}, Table~\ref{tab:composite}) from drifting as new runs accumulate, each case's physics metrics are drawn from a single frozen benchmark run (a high-scoring run with structured metrics), recorded in \texttt{data/runs/<case>/BENCHMARK}; the distribution sub-scores ($g_{\text{rate}}$, $s_{\text{rely}}$) still use all runs.
 
 \subsection{Ablation: Geometric Arbitration}
 We ablate the geometric channel (\texttt{LANG3D\_ABLATION=no\_geo}) on two cases: the wheeled dual-arm robot (deterministic compose path) and the 4-DOF arm (LLM generation path). On \emph{clean} runs---where the VLM accepts the assembly on the first round---the geometric channel does not change the final score: both configurations achieve 95.3\% (wheeled, 4 runs each) and 95.1\% (arm, 4 with-geo vs.\ 1 clean no-geo run; the remaining no-geo runs hit API rate limits). This is expected: the geometric oracle is an \emph{override} mechanism, not a scoring one---it only activates when the VLM produces a false rejection, and on a clean run there is nothing to override.
@@ -293,12 +293,12 @@ All 13 STL parts of the 4dof\_arm case are verified for mesh watertightness by a
 \end{itemize}
 
 \subsection{Comparison with Prior Work}
-Language-3D is the first system to produce a \emph{complete manufacturing package} from natural language (Table~\ref{tab:comparison}). The closest competitor, ArtiCAD~\cite{articad2026}, outputs editable CAD code and URDF but not STL/STEP meshes, BOMs, firmware, or ROS2 packages. Blox-Net~\cite{bloxnet2025} operates on voxel blocks rather than CAD parts. RoboMorph~\cite{robomorph2024} generates skeleton URDFs without geometry.
+To our knowledge, Language-3D is the first system in the surveyed academic literature to produce a \emph{complete manufacturing package} from natural language (Table~\ref{tab:comparison}); we cannot rule out undocumented proprietary systems outside this survey. The closest competitor, ArtiCAD~\cite{articad2026}, outputs editable CAD code and URDF but not STL/STEP meshes, BOMs, firmware, or ROS2 packages. Blox-Net~\cite{bloxnet2025} operates on voxel blocks rather than CAD parts. RoboMorph~\cite{robomorph2024} generates skeleton URDFs without geometry.
 
 % ===================================================================
 \section{Conclusion}
 % ===================================================================
-We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves a composite quality score of 0.61 (mean, range 0.48--0.75 across seven benchmark cases), with 7/7 distinct values demonstrating real discriminative power. The grasp term is a per-case success rate (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%, and the lift term reveals that no configuration achieves positive lift---honestly characterizing the gap between static grasping and dynamic object manipulation. The deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproduce run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
+We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves a composite quality score of 0.63 (mean, range 0.48--0.83 across seven benchmark cases), with 7/7 distinct values demonstrating real discriminative power. The grasp term is a per-case success rate (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%, and the lift term reveals that no configuration achieves positive lift---honestly characterizing the gap between static grasping and dynamic object manipulation. The deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproduce run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}

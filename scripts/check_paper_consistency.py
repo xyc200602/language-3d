@@ -94,33 +94,44 @@ if _composite_ok:
         max_q = max(r.q for r in results)
         n_distinct = len(set(q_vals.values()))
 
-        # Abstract / Conclusion / Intro claim: mean 0.61, range 0.48-0.75, 7/7
-        check(abs(mean_q - 0.61) < 0.03,
-              f"composite mean Q = {mean_q:.2f}, paper says 0.61")
-        check(abs(min_q - 0.48) < 0.03,
-              f"composite min Q = {min_q:.2f} ({min(r.q for r in results).__class__}), paper says 0.48")
-        check(abs(max_q - 0.75) < 0.03,
-              f"composite max Q = {max_q:.2f}, paper says 0.75")
+        # Abstract / Conclusion / Intro claim: mean 0.63, range 0.48-0.83, 7/7.
+        # Tight tolerance (0.015) — Q values are deterministic given the frozen
+        # BENCHMARK runs, so any drift indicates a stale table or a broken
+        # benchmark marker, not measurement noise.
+        check(abs(mean_q - 0.63) < 0.015,
+              f"composite mean Q = {mean_q:.3f}, paper says 0.63")
+        check(abs(min_q - 0.48) < 0.015,
+              f"composite min Q = {min_q:.3f}, paper says 0.48")
+        check(abs(max_q - 0.83) < 0.015,
+              f"composite max Q = {max_q:.3f}, paper says 0.83")
         check(n_distinct == 7,
               f"composite distinct = {n_distinct}/7, paper says 7/7")
 
-        # Per-case Q in Table II (tab:composite). Restrict the search to the
-        # tab:composite block so we don't accidentally match Table I (tab:quant)
-        # rows, which have a different column layout.
+        # Per-case Q in Table II (tab:composite). Parse by splitting each data
+        # row on '&' and taking the Q column (6th), rather than a fragile
+        # anchored regex that mis-counts columns. Tight tolerance (0.015) since
+        # the benchmark runs are frozen.
         _comp_block = TEX.split("tab:composite")[1].split("\\end{table}")[0] if "tab:composite" in TEX else ""
         _table_q = {}
-        for case in CASE_ORDER:
-            label = "4wheel\\_dual\\_arm" if case == "4wheel_dual_arm" else case + "\\_arm" if not case.endswith("arm") else case
-            # The composite table row: Case & s_robust & g_rate & s_func & s_rely & Q & Old
-            m = re.search(re.escape(label) + r"_?arm?\s*&\s*([\d.]+)\s*&\s*[\d.]+\s*&\s*[\d.]+\s*&\s*[\d.]+\s*&\s*([\d.]+)", _comp_block)
-            if not m:
-                # try the 4wheel short label
-                m = re.search(r"4wheel\s*&\s*([\d.]+)\s*&\s*[\d.]+\s*&\s*[\d.]+\s*&\s*[\d.]+\s*&\s*([\d.]+)", _comp_block)
-            if m:
-                _table_q[case] = float(m.group(2))  # group 2 = Q column
+        for line in _comp_block.splitlines():
+            s = line.strip()
+            if not s or s.startswith("\\") or "&" not in s:
+                continue
+            cells = [c.strip() for c in s.split("&")]
+            if len(cells) < 6:
+                continue
+            case_label = cells[0].replace("\\_", "_").rstrip()
+            for case in CASE_ORDER:
+                short = "4wheel" if case == "4wheel_dual_arm" else case
+                if case_label.startswith(short):
+                    try:
+                        _table_q[case] = float(cells[5])  # 6th col = Q
+                    except ValueError:
+                        pass
+                    break
         for case, real_q in q_vals.items():
             paper_q = _table_q.get(case)
-            if paper_q is not None and abs(paper_q - real_q) > 0.02:
+            if paper_q is not None and abs(paper_q - real_q) > 0.015:
                 check(False,
                       f"Table II Q for {case}: paper={paper_q}, recomputed={real_q}")
 
