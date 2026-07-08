@@ -1,17 +1,22 @@
 """Composite quality score Q for a Language-3D assembly run.
 
-A single number that summarises how *good* a generated robot is across three
-dimensions that actually vary between cases:
+A relative rank in ``[0, 1]`` that summarises how *good* a generated robot is
+compared to the other benchmark cases — **not** an absolute quality
+percentage (no external benchmark exists to anchor what "100% good" means for
+the NL→robot-package task, so presenting it as a percentage would be false
+precision). Three sub-scores capture the dimensions that actually vary:
 
-1. **Robustness** — does it stand up?  (COM margin normalised by footprint)
-2. **Functionality** — can it do what arms do?  (grasp + DOF completeness)
-3. **Reliability** — does it work every time?  (fraction of repeated runs
-   that score >= 80%)
+1. **Robustness** — does it stand up?  (COM margin normalised by the real
+   support-polygon diameter, not a cosmetic base-part size)
+2. **Functionality** — can it do what arms do?  (grasp success *rate* across
+   runs, not best-of-N; plus lift quality and DOF completeness)
+3. **Reliability** — does it work every time?  (mean e2e score across runs,
+   normalised by the 95.1% theoretical ceiling)
 
-``Q = 100 * (s_robust * s_func * s_rely) ** (1/3)`` if every gate passes,
+``Q = (s_robust * s_func * s_rely) ** (1/3)`` if every gate passes,
 else ``Q = 0``.  The geometric mean (rather than arithmetic) is chosen so a
 low sub-score significantly pulls Q down — a robot that tips over (s_robust
-~0) should not average out to "86% good".
+~0) should not average out to a middling rank.
 
 Gates (binary, all must pass or Q collapses to 0):
 

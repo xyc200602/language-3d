@@ -432,7 +432,6 @@ class Agent:
 
     def _run_with_orchestration(self, task: str, plan: Plan) -> str:
         """Delegate to OrchestratorAgent for multi-agent parallel execution."""
-        from .assembly_verifier import AssemblyVerifier
         from .orchestrator import OrchestratorAgent
 
         orchestrator = OrchestratorAgent(
@@ -440,7 +439,6 @@ class Agent:
             router=self.router,
             tools=self.tools,
             planner=self.planner,
-            verifier=AssemblyVerifier(),
             reflector=self.reflector,
             workspace=self.config.agent.workspace,
             max_parallel=self.config.agent.orchestrator.max_parallel_agents,

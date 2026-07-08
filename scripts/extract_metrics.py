@@ -98,16 +98,18 @@ print("QUANTITATIVE METRICS EXTRACTION (continuous values behind the self-score)
 print("=" * 90)
 
 for case in sorted(cases):
-    # Use the latest passing run
+    # Use the median-scoring run (the typical outcome), matching the paper's
+    # Table I caption ("median-scoring run per case"). Prefer runs that carry
+    # a structured metrics block; fall back to all non-zero runs.
     runs = sorted(cases[case], key=lambda x: x[0])
-    # find latest with score > 0
-    best = None
-    for ts, d in reversed(runs):
-        if d.get("score", 0) > 0:
-            best = d
-            break
-    if not best:
+    nonzero = [(ts, d) for ts, d in runs if d.get("score", 0) > 0]
+    if not nonzero:
         continue
+    metrics_runs = [(ts, d) for ts, d in nonzero
+                    if any("metrics" in c for c in d.get("checks", []))]
+    pool = metrics_runs if metrics_runs else nonzero
+    pool.sort(key=lambda pair: pair[1].get("score", 0))
+    best = pool[len(pool) // 2][1]  # median-scoring run
     checks = best.get("checks", [])
     score = best.get("score", 0)
 

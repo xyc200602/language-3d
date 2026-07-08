@@ -300,8 +300,8 @@ language-3d/
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
 | Unit + Integration / 单元 + 集成 | 4,200+ | 0 known failures (6 pre-existing failures fixed 2026-07-03 ~ 07-08, see AGENTS.md §6.3) |
-| E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (mode of 67 runs, mean 86.0%; 0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
-| E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (mode of 47 runs, mean 93.2%; 0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
+| E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (mode of 69 runs, mean 86.2%; 0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
+| E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (mode of 49 runs, mean 93.3%; 0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
 | Expert Roles / 专家角色 | 27 | 27 PASS |
 
 > **Note / 注意**: E2E tests require `GLM_API_KEY` + FreeCAD — without them they are skipped. Scores are **per-case** results (not a multi-case average). Scoring = PASS/(PASS+FAIL+WARN); SKIP (missing optional dep) is excluded from the denominator, and critical checks (collision, COM stability, MuJoCo physics, grasp) FAIL rather than downgrade to warning. The 4dof_arm score varies slightly run-to-run due to LLM non-determinism; the wheeled dual-arm is deterministic (compose path).

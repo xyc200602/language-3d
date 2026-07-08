@@ -39,7 +39,6 @@ from typing import Any, Callable
 from ..knowledge.mechanics import Assembly
 from ..models.router import ModelRouter
 from ..tools.base import ToolRegistry
-from .assembly_verifier import AssemblyVerifier, AssemblyVerificationResult
 from .dag import TaskDAG
 from .message_bus import AgentMessage, MessageBus
 from .shared_registry import SharedToolRegistry
@@ -60,7 +59,6 @@ class OrchestratorAgent:
         router: ModelRouter,
         tools: ToolRegistry,
         planner: Planner,
-        verifier: AssemblyVerifier | None = None,
         reflector: Reflector | None = None,
         workspace: str | None = None,
         max_parallel: int = 3,
@@ -70,7 +68,6 @@ class OrchestratorAgent:
         self.router = router
         self.tools = SharedToolRegistry(tools)
         self.planner = planner
-        self.verifier = verifier or AssemblyVerifier()
         self.reflector = reflector or Reflector(router)
         self.workspace = workspace or "."
         self.max_parallel = max_parallel
@@ -426,7 +423,6 @@ class PhasedOrchestrator(OrchestratorAgent):
         tools: ToolRegistry,
         planner: Planner,
         hierarchical_plan: HierarchicalPlan,
-        verifier: AssemblyVerifier | None = None,
         reflector: Reflector | None = None,
         workspace: str | None = None,
         max_parallel: int = 6,
@@ -437,7 +433,6 @@ class PhasedOrchestrator(OrchestratorAgent):
             router=router,
             tools=tools,
             planner=planner,
-            verifier=verifier,
             reflector=reflector,
             workspace=workspace,
             max_parallel=max_parallel,
