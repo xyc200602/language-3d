@@ -171,15 +171,15 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \textbf{Case} & \textbf{COM\,margin} & \textbf{Workspace} & \textbf{FCL\,pairs} & \textbf{Triangles} & \textbf{PD-hold} & \textbf{Actuated} & \textbf{Watertight} \\
  & (mm) & (mm) & (0/severe) & count & error ($^\circ$) & DOFs & ratio \\
 \midrule
-2dof\_arm & 75.0 & 199 & 0/12 & 102{,}704 & 5.6 & 4 & 8/8 \\
-3dof\_arm & 75.0 & 475 & 0/25 & 112{,}912 & 5.8 & 5 & 10/10 \\
-4dof\_arm & 66.8 & 676 & 0/52 & 125{,}882 & 2.4 & 6 & 13/13 \\
-5dof\_arm & 75.0 & 719 & 0/63 & 139{,}844 & 5.5 & 7 & 14/14 \\
-6dof\_arm & 33.3 & 859 & 0/69 & 154{,}782 & 6.9 & 6 & 15/15 \\
-7dof\_arm & 80.0 & 803 & 0/88 & 128{,}364 & 5.4 & 9 & 16/16 \\
-4wheel\_dual\_arm & 145.0 & 413 & 0/426 & 287{,}958 & 4.4 & 14 & 38/38 \\
+2dof\_arm & 75.0 & 199 & 0/12 & 102{,}704 & 1.2 & 4 & 8/8 \\
+3dof\_arm & 75.0 & 475 & 0/25 & 112{,}912 & 1.1 & 5 & 10/10 \\
+4dof\_arm & 66.8 & 676 & 0/52 & 125{,}882 & 1.2 & 6 & 13/13 \\
+5dof\_arm & 75.0 & 719 & 0/63 & 139{,}844 & 1.2 & 7 & 14/14 \\
+6dof\_arm & 33.3 & 859 & 0/69 & 154{,}782 & 3.3 & 6 & 15/15 \\
+7dof\_arm & 80.0 & 803 & 0/88 & 128{,}364 & 2.0 & 9 & 16/16 \\
+4wheel\_dual\_arm & 145.0 & 413 & 0/426 & 287{,}958 & 0.7 & 14 & 38/38 \\
 \midrule
-\textbf{Mean} & \textbf{78.6} & \textbf{592} & \textbf{0} & \textbf{150{,}349} & \textbf{5.1} & \textbf{7.3} & \textbf{100\%} \\
+\textbf{Mean} & \textbf{78.6} & \textbf{592} & \textbf{0} & \textbf{150{,}349} & \textbf{1.5} & \textbf{7.3} & \textbf{100\%} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
@@ -235,15 +235,15 @@ Table~\ref{tab:composite} reports $Q \times 100$ alongside the old rubric. The c
 \toprule
 \textbf{Case} & \textbf{Score} & \textbf{P/F/W} & \textbf{Physics} & \textbf{Grasp} \\
 \midrule
-2dof\_arm & 95.1\% & 39/0/2 & 5.6$^\circ$ & static \\
-3dof\_arm & 95.1\% & 39/0/2 & 5.8$^\circ$ & static \\
-4dof\_arm & 95.1\% & 39/0/2 & 2.4$^\circ$ & static \\
-5dof\_arm & 92.7\% & 38/1/2 & 5.5$^\circ$ & static \\
-6dof\_arm & 92.7\% & 38/1/2 & 6.9$^\circ$ & static \\
-7dof\_arm & 92.7\% & 38/1/2 & 5.4$^\circ$ & FAIL \\
-4wheel\_dual\_arm & 95.3\% & 41/0/2 & 4.4$^\circ$ & static \\
+2dof\_arm & 95.1\% & 39/0/2 & 1.2$^\circ$ & static \\
+3dof\_arm & 95.1\% & 39/0/2 & 1.1$^\circ$ & static \\
+4dof\_arm & 95.1\% & 39/0/2 & 1.2$^\circ$ & static \\
+5dof\_arm & 92.7\% & 38/1/2 & 1.2$^\circ$ & static \\
+6dof\_arm & 92.7\% & 38/1/2 & 3.3$^\circ$ & static \\
+7dof\_arm & 92.7\% & 38/1/2 & 2.0$^\circ$ & FAIL \\
+4wheel\_dual\_arm & 95.3\% & 41/0/2 & 0.7$^\circ$ & static \\
 \midrule
-\textbf{Average} & \textbf{94.4\%} & & \textbf{5.1$^\circ$} & \textbf{6/7} \\
+\textbf{Average} & \textbf{94.4\%} & & \textbf{1.5$^\circ$} & \textbf{6/7} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
@@ -262,7 +262,7 @@ The channel's value is therefore measured in \emph{loop efficiency}, not score. 
 \label{sec:sim-limits}
 We are explicit about three limitations of the physics validation that a reader may over-interpret.
 
-\textbf{PD-hold error reported without gravity-compensation feed-forward.} The pipeline's internal test uses inverse-dynamics gravity compensation (\texttt{qfrc\_applied = qfrc\_bias}) plus a PD controller, which trivially yields $\sim$0$^\circ$ error because the gravitational load is fully cancelled. We consider this misleading and instead report in Table~\ref{tab:quant} the \emph{raw} PD-hold error without gravity compensation (kp=50, kv=5, no feed-forward), which reveals a steady-state droop of 2.4--6.9$^\circ$---the arm sags under its own weight because the hobby servo torque budget (simulated as $\pm$5\,N$\cdot$m) is insufficient for perfect holding. This is a real design-quality signal: 6dof droops 6.9$^\circ$ (worst), while 4dof droops only 2.4$^\circ$ (best), reflecting differences in arm geometry and lever arms. A production controller would add gravity compensation, but the raw error characterizes the mechanical design's inherent stiffness.
+\textbf{PD-hold error reported without gravity-compensation feed-forward.} The pipeline's internal stability gate uses inverse-dynamics gravity compensation (\texttt{qfrc\_applied = qfrc\_bias}) plus a PD controller, which trivially yields $\sim$0$^\circ$ error because the gravitational load is fully cancelled. We consider this misleading and additionally report in Table~\ref{tab:quant} the \emph{raw} PD-hold droop measured \emph{without} gravity compensation (kp scaled by robot mass, kv=5, no feed-forward, 1.5\,s settle). The raw droop ranges from 0.7$^\circ$ (4wheel, low-slung arms) to 3.3$^\circ$ (6dof, longest lever arm)---the arm sags under its own weight because the hobby-servo torque budget ($\pm$5\,N$\cdot$m) is insufficient for perfect holding. This is a genuine design-quality signal that the gravity-compensated gate completely masks. A production controller would add gravity compensation, but the raw error characterizes the mechanical design's inherent stiffness.
 
 \textbf{Grasp test covers static hold, not dynamic lift.} The three-phase grasp test (zero-G close $\to$ gravity hold $\to$ lift) gates pass/fail on the first two phases only. The lift phase (Phase C) is measured but not gated: across all benchmark runs, the cube drops 1.6--7.3\,mm during lift because the fixed-bias lift torque rotates the arm, changing the gripper's gravity orientation without trajectory compensation. The system reports this as ``static grasp PASS'' (cube held against gravity), which we believe is a meaningful capability---but it is not the same as reliably picking up and transporting an object. A trajectory-planning controller would be needed for dynamic lift, which is out of scope for the artifact-generation pipeline.
 
