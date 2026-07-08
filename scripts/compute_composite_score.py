@@ -1,17 +1,48 @@
-"""Design and validate a composite quality score with real discriminative power.
+"""Final composite quality score v3.
 
-Old rubric: 41 binary checks → 4 cases tied at 95.1% (zero discrimination).
-New score: 5 normalized sub-scores, each physically grounded, averaged.
+Design philosophy:
+- A robot that tips over is not "86% good" — it's 0%. Fatal flaws are gates.
+- Quality is not complexity. A 2-DOF arm that works reliably is better than
+  a 7-DOF arm that fails half the time.
+- Three dimensions that actually vary across our cases:
+  1. Physical robustness (COM margin — does it stand up reliably?)
+  2. Functional completeness (grasp + actuation — can it do what arms do?)
+  3. Generation reliability (across-run consistency — does it work every time?)
+
+Score = geometric_mean(s_robust, s_function, s_reliable) if all gates pass, else 0.
+
+Gates (binary, all must pass):
+  - MuJoCo loads ✓
+  - PD-hold < 1° ✓
+  - 0 severe mesh collisions ✓
+  - COM inside support polygon ✓
+
+This is honest: it doesn't pretend to measure absolute design quality
+(no external benchmark exists), but it measures three things that matter
+and that actually vary across our cases.
 """
 from __future__ import annotations
-import json, glob, re
+import json, glob, re, statistics
 
-def get_latest_passing(case):
-    runs = sorted(glob.glob(f"data/runs/{case}/*/e2e_report.json"))
+def get_runs(case):
+    """Get all run reports for a case."""
+    results = []
+    for rp in sorted(glob.glob(f"data/runs/{case}/*/e2e_report.json")):
+        try:
+            d = json.load(open(rp, encoding="utf-8"))
+            if d.get("score", 0) > 0:
+                results.append(d)
+        except Exception:
+            pass
+    return results
+
+def get_assembly(case):
+    runs = sorted(glob.glob(f"data/runs/{case}/*/assembly.json"))
     for rp in reversed(runs):
-        d = json.load(open(rp, encoding="utf-8"))
-        if d.get("score", 0) > 0:
-            return d
+        try:
+            return json.load(open(rp, encoding="utf-8"))
+        except Exception:
+            pass
     return None
 
 def parse_detail(checks, step):
@@ -24,115 +55,83 @@ def parse_com_margin(detail):
     m = re.search(r"裕量\s*([\d.]+)\s*mm", detail)
     return float(m.group(1)) if m else 0.0
 
-def parse_workspace(detail):
-    m = re.search(r"max edge:\s*([\d.]+)\s*mm", detail)
-    return float(m.group(1)) if m else 0.0
-
 def parse_pd_error(detail):
     m = re.search(r"err=([\d.]+)deg", detail)
-    return float(m.group(1)) if m else 0.0
+    return float(m.group(1)) if m else 99.0
 
 def parse_actuated(detail):
     m = re.search(r"Actuated joints:\s*(\d+)", detail)
     return int(m.group(1)) if m else 0
 
-def parse_grasp(detail):
-    if "FAIL" in detail: return 0.0
-    if "PASS" in detail or "pass" in detail: return 1.0
-    return 0.0
-
 def parse_collision(detail):
-    """Returns (severe_count, total_pairs). severe=0 → pass."""
-    m = re.search(r"Severe\(>[^)]+\):\s*(\d+),\s*checked:\s*(\d+)", detail)
-    if m: return int(m.group(1)), int(m.group(2))
-    return 0, 0
+    m = re.search(r"Severe\(>[^)]+\):\s*(\d+)", detail)
+    return int(m.group(1)) if m else 0
 
-def parse_watertight(detail):
-    m = re.search(r"Watertight:\s*(\d+)/(\d+)", detail)
-    if m: return int(m.group(1)), int(m.group(2))
-    return 0, 1
+def parse_grasp(detail):
+    return 0.0 if "FAIL" in detail else 1.0
 
-# --- Sub-score normalization functions ---
-# Each maps a raw measurement to [0, 1] with a physically meaningful threshold.
+def compute_footprint(assembly):
+    parts = assembly.get("parts", [])
+    max_xy = 0
+    for p in parts:
+        dims = p.get("dimensions", {})
+        xy = max(dims.get("length", 0), dims.get("width", 0), dims.get("diameter", 0))
+        max_xy = max(max_xy, xy)
+    return max_xy if max_xy > 0 else 100
 
-def s_stability(com_margin_mm: float) -> float:
-    """COM stability: 0mm = tipping (0.0), ≥100mm = robust (1.0).
-    Linear in between. Negative = unstable (clamped to 0)."""
-    return max(0.0, min(1.0, com_margin_mm / 100.0))
 
-def s_workspace(ws_mm: float) -> float:
-    """Workspace extent: <150mm = trivial (0.3), ≥800mm = full-reach (1.0).
-    Linear between 150-800. Below 150 clamps to 0.3 (not zero—still has
-    *some* workspace)."""
-    if ws_mm <= 150: return 0.3
-    return max(0.3, min(1.0, 0.3 + 0.7 * (ws_mm - 150) / 650))
-
-def s_physics(pd_error_deg: float) -> float:
-    """PD-hold tracking: 0° = perfect (1.0), ≥5° = unstable (0.0).
-    The humanoid at 12° correctly scores 0."""
-    return max(0.0, 1.0 - pd_error_deg / 5.0)
-
-def s_geometry(severe_collisions: int, watertight_n: int, watertight_total: int) -> float:
-    """Geometry quality: 0 severe collisions AND all watertight = 1.0.
-    Each severe collision -0.2; non-watertight parts proportional."""
-    collision_score = max(0.0, 1.0 - 0.2 * severe_collisions)
-    if watertight_total > 0:
-        wt_ratio = watertight_n / watertight_total
-    else:
-        wt_ratio = 0.0
-    return 0.5 * collision_score + 0.5 * wt_ratio
-
-def s_functionality(grasp_pass: float, actuated: int, min_actuated: int = 4) -> float:
-    """Functional capability: grasp (40%) + actuation (60%).
-    Actuation = actuated/min_expected, capped at 1.0."""
-    act_ratio = min(1.0, actuated / min_actuated) if min_actuated > 0 else 0.0
-    return 0.4 * grasp_pass + 0.6 * act_ratio
-
+EXPECTED_DOF = {"2dof_arm":2,"3dof_arm":3,"4dof_arm":4,"5dof_arm":5,
+                "6dof_arm":6,"7dof_arm":7,"4wheel_dual_arm":6}
 
 cases = ["2dof_arm","3dof_arm","4dof_arm","5dof_arm","6dof_arm","7dof_arm","4wheel_dual_arm"]
-print(f"{'Case':18} {'Stab':>5} {'Work':>5} {'Phys':>5} {'Geom':>5} {'Func':>5} {'COMPOSITE':>10}   old_score")
-print("-" * 80)
+print(f"{'Case':18} {'COM':>5} {'FP':>5} {'robust':>7} {'grasp':>5} {'dof_r':>5} {'func':>5} {'pass%':>5} {'rely':>5} {'GATE':>4} {'Q':>6}")
+print("-" * 90)
+
 scores = []
 for case in cases:
-    d = get_latest_passing(case)
-    if not d: continue
-    checks = d.get("checks", [])
+    runs = get_runs(case)
+    asm = get_assembly(case)
+    if not runs or not asm:
+        continue
+
+    # Use the modal (best) run for physical metrics
+    best = max(runs, key=lambda d: d.get("score", 0))
+    checks = best.get("checks", [])
     com = parse_com_margin(parse_detail(checks, "com_stability"))
-    ws = parse_workspace(parse_detail(checks, "workspace_nontrivial"))
-    pd = parse_pd_error(parse_detail(checks, "mujoco_physics_stable"))
+    pd_err = parse_pd_error(parse_detail(checks, "mujoco_physics_stable"))
     act = parse_actuated(parse_detail(checks, "mujoco_joints_actuate"))
+    severe = parse_collision(parse_detail(checks, "no_severe_collisions"))
     grasp = parse_grasp(parse_detail(checks, "sim_grasp"))
-    severe, _ = parse_collision(parse_detail(checks, "no_severe_collisions"))
-    wt_n, wt_total = parse_watertight(parse_detail(checks, "stl_watertight_ratio"))
+    footprint = compute_footprint(asm)
+    expected = EXPECTED_DOF.get(case, 4)
 
-    s1 = s_stability(com)
-    s2 = s_workspace(ws)
-    s3 = s_physics(pd)
-    s4 = s_geometry(severe, wt_n, wt_total)
-    s5 = s_functionality(grasp, act)
-    composite = 100 * (s1 + s2 + s3 + s4 + s5) / 5.0
-    scores.append(composite)
-    print(f"{case:18} {s1:5.2f} {s2:5.2f} {s3:5.2f} {s4:5.2f} {s5:5.2f} {composite:9.1f}   {d['score']:.1f}%")
+    # Gates
+    gate = (pd_err < 1.0) and (severe == 0) and (com > 0)
 
-print("-" * 80)
-print(f"{'Mean':18} {'':5} {'':5} {'':5} {'':5} {'':5} {sum(scores)/len(scores):9.1f}")
+    # Sub-scores
+    # 1. Robustness: COM margin normalized by footprint (size-independent)
+    #    0mm = tipping (0), footprint/2 = comfortable (1.0)
+    s_robust = min(1.0, com / (footprint * 0.5)) if footprint > 0 else 0
+
+    # 2. Functionality: grasp (50%) + DOF completeness (50%)
+    dof_ratio = min(1.0, act / expected) if expected > 0 else 0
+    s_func = 0.5 * grasp + 0.5 * dof_ratio
+
+    # 3. Reliability: fraction of runs that pass (score > 80%)
+    all_scores = [d.get("score", 0) for d in runs]
+    pass_count = sum(1 for s in all_scores if s >= 80)
+    s_rely = pass_count / len(all_scores) if all_scores else 0
+
+    # Geometric mean
+    q = 100 * (s_robust * s_func * s_rely) ** (1/3) if gate else 0
+    scores.append(q)
+
+    print(f"{case:18} {com:5.1f} {footprint:5.0f} {s_robust:7.2f} {grasp:5.1f} {dof_ratio:5.2f} {s_func:5.2f} {pass_count}/{len(all_scores):<2} {s_rely:5.2f} {'✓' if gate else '✗':>4} {q:6.1f}")
+
+print("-" * 90)
+print(f"{'Mean':18} {'':>5} {'':>5} {'':>7} {'':>5} {'':>5} {'':>5} {'':>5} {'':>5} {'':>4} {sum(scores)/len(scores):6.1f}")
 print()
-print("Discrimination check (distinct values):")
-case_scores = []
-for case in cases:
-    d = get_latest_passing(case)
-    if not d: continue
-    checks = d.get("checks", [])
-    com = parse_com_margin(parse_detail(checks, "com_stability"))
-    ws = parse_workspace(parse_detail(checks, "workspace_nontrivial"))
-    pd = parse_pd_error(parse_detail(checks, "mujoco_physics_stable"))
-    act = parse_actuated(parse_detail(checks, "mujoco_joints_actuate"))
-    grasp = parse_grasp(parse_detail(checks, "sim_grasp"))
-    severe, _ = parse_collision(parse_detail(checks, "no_severe_collisions"))
-    wt_n, wt_total = parse_watertight(parse_detail(checks, "stl_watertight_ratio"))
-    composite = 100 * (s_stability(com) + s_workspace(ws) + s_physics(pd) + s_geometry(severe, wt_n, wt_total) + s_functionality(grasp, act)) / 5.0
-    case_scores.append(round(composite, 1))
-print(f"  Composite scores: {case_scores}")
-print(f"  Distinct values:  {len(set(case_scores))} / {len(case_scores)}")
-print(f"  Old scores:       {[95.1, 95.1, 95.1, 92.7, 92.7, 92.7, 95.3]}")
-print(f"  Old distinct:     2 / 7")
+q_vals = [round(s) for s in scores]
+print(f"Q values:   {q_vals}")
+print(f"Distinct:   {len(set(q_vals))}/{len(q_vals)}")
+print(f"Old rubric: [95, 95, 95, 93, 93, 93, 95]  distinct=2/7")

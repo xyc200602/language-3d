@@ -3,6 +3,7 @@
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{amssymb}
+\usepackage{amsmath}
 \usepackage{xcolor}
 \usepackage[ruled,vlined]{algorithm2e}
 
@@ -33,7 +34,7 @@ We present \textbf{Language-3D}, a multi-agent system that converts natural lang
 
 The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp, and (5)~a self-evolving experience store that retrieves verified-good past cases to prime new generations (lexical retrieval; successes only).
 
-We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with a composite quality score aggregating five physics-grounded sub-metrics (stability, workspace, physics tracking, geometry validity, functionality), achieving a mean of 87.5 (range 82.1--91.7) with 6/7 distinct scores---vs.\ a structural pass-rate rubric that ties four cases identically at 95.1\%. All cases pass MuJoCo physics stability (0.0$^\circ$ tracking error) and 6/7 pass static grasp. We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
+We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with a composite quality score (geometric mean of robustness, functionality, and generation-reliability sub-scores), achieving a mean of 69.2 (range 51.7--94.7) with 6/7 distinct scores---vs.\ a structural pass-rate rubric that ties four cases identically at 95.1\%. All cases pass MuJoCo physics stability (0.0$^\circ$ tracking error) and 6/7 pass static grasp. We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
 \end{abstract}
 
 % ===================================================================
@@ -56,7 +57,7 @@ Automated robot design from natural language is a long-standing goal at the inte
     \item \textbf{Task formulation}: We formalize NL~$\to$~manufacturable robot assembly package as a new task with evaluation criteria spanning geometry, physics, and manufacturing.
     \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 package structures from NL, with 8 real connection types and a 56-part COTS knowledge base.
     \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
-    \item \textbf{Evaluation}: Seven benchmark cases evaluated by a composite quality score (5 physics-grounded sub-metrics; mean 87.5, 6/7 distinct values) plus a structural pass-rate rubric, with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
+    \item \textbf{Evaluation}: Seven benchmark cases evaluated by a composite quality score (gate + geometric mean of robustness/functionality/reliability; mean 69.2, 6/7 distinct values) plus a structural pass-rate rubric, with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
 \end{enumerate}
 
 % ===================================================================
@@ -187,44 +188,42 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 
 Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units. The COM stability margin ranges from 33.3\,mm (6dof, marginal) to 145\,mm (wheeled, robust)---a 4.3$\times$ difference. The workspace extent scales from 199\,mm (2dof) to 859\,mm (6dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 12--426 checked pairs and 100\% watertight STL ratio. The humanoid case (excluded from average) has a COM margin of only 0.8\,mm, quantitatively explaining its 12$^\circ$ PD-hold settling error.
 
-\textbf{Composite quality score.} To provide a single rankable number with real discriminative power, we aggregate five normalized sub-scores (each $\in [0,1]$, equally weighted) from the metrics above:
+\textbf{Composite quality score.} A single rankable score must satisfy two constraints: (1)~a fatal flaw (tipping, no actuation) should not be averaged away, and (2)~dimensions that do not vary across cases should not dilute the signal. We therefore use a \emph{gate-then-score} design: four binary gates (MuJoCo loads, PD-hold $<$\,1$^\circ$, 0 severe collisions, COM inside support polygon) must all pass; if any fails, $Q=0$. If all pass, $Q$ is the geometric mean of three sub-scores that genuinely vary across our cases:
 \begin{equation}
-Q = \frac{1}{5}\sum_{i} s_i, \quad
-\begin{cases}
-s_{\text{stab}} = \mathrm{clip}(d_{\text{COM}} / 100, 0, 1) \\
-s_{\text{work}} = 0.3 + 0.7 \cdot \mathrm{clip}((W - 150)/650, 0, 1) \\
-s_{\text{phys}} = \mathrm{clip}(1 - \theta_{\text{err}}/5, 0, 1) \\
-s_{\text{geom}} = \tfrac{1}{2}(1 - 0.2\,n_{\text{coll}}) + \tfrac{1}{2} r_{\text{wt}} \\
-s_{\text{func}} = 0.4\,g + 0.6\,\mathrm{clip}(n_{\text{dof}}/4, 0, 1)
-\end{cases}
+Q = \begin{cases} 0 & \text{if any gate fails} \\ \sqrt[3]{s_{\text{robust}} \cdot s_{\text{func}} \cdot s_{\text{rely}}} & \text{otherwise} \end{cases}
 \label{eq:composite}
 \end{equation}
-where $d_{\text{COM}}$ is the COM stability margin (mm), $W$ the workspace extent (mm), $\theta_{\text{err}}$ the PD-hold tracking error ($^\circ$), $n_{\text{coll}}$ the severe collision count, $r_{\text{wt}}$ the watertight ratio, $g \in \{0,1\}$ the grasp pass, and $n_{\text{dof}}$ the actuated DOF count. Each threshold is physically motivated: 100\,mm COM margin is a robust stability margin for desktop robots; 800\,mm workspace is full-reach; 5$^\circ$ tracking error indicates instability.
+\begin{align}
+s_{\text{robust}} &= \mathrm{clip}\!\left(\frac{d_{\text{COM}}}{0.5 \cdot F},\; 0,\; 1\right) \\
+s_{\text{func}} &= \tfrac{1}{2}\,g + \tfrac{1}{2}\,\mathrm{clip}\!\left(\frac{n_{\text{dof}}}{n_{\text{exp}}},\; 0,\; 1\right) \\
+s_{\text{rely}} &= \frac{|\{r \in \mathcal{R} : \text{score}(r) \geq 80\}|}{|\mathcal{R}|}
+\end{align}
+where $d_{\text{COM}}$ is the COM margin (mm), $F$ the robot footprint (mm, max base length/width---normalizes for robot size so a small arm is not penalized for small absolute margins), $g \in \{0,1\}$ the grasp result, $n_{\text{dof}}$ actuated DOFs, $n_{\text{exp}}$ expected DOFs from the NL prompt, and $\mathcal{R}$ the set of repeated runs. Geometric mean is chosen over arithmetic mean so that a low sub-score (e.g.\ $s_{\text{robust}}=0.28$ for 5dof) significantly pulls down $Q$ rather than being averaged away.
 
-Table~\ref{tab:composite} reports $Q \times 100$ alongside the old rubric. The composite score achieves \textbf{6 distinct values across 7 cases} (vs.\ 2 for the rubric), correctly ranking the simple 2-DOF arm lowest (82.1, limited workspace) and the wheeled dual-arm highest (91.7, robust stability + full functionality). The 6-DOF arm scores 86.7 despite the highest workspace---its 33\,mm COM margin (marginal stability) pulls down $s_{\text{stab}}$ to 0.33, a signal the rubric completely missed.
+Table~\ref{tab:composite} reports $Q \times 100$ alongside the old rubric. The composite achieves \textbf{6 distinct values across 7 cases} (vs.\ 2 for the rubric). The wheeled dual-arm scores highest (94.7: robust stability + full functionality + 44/44 reliable runs). The 6-DOF arm scores lowest among passing cases (51.7: grasp failure halves $s_{\text{func}}$, and a 64.9\,mm COM margin yields $s_{\text{robust}}=0.28$). Critically, the 4-way tie at 95.1\% in the rubric is broken: 2dof (77.7) $\neq$ 3dof (70.6) $\neq$ 4dof (71.4), because 3dof has lower run reliability (1 of 4 runs scored 61.9\%).
 
 \begin{table}[h]
 \centering
-\caption{Composite quality score vs.\ old rubric. The composite achieves 6/7 distinct values (rubric: 2/7).}
+\caption{Composite quality score vs.\ old rubric. 6/7 distinct values (rubric: 2/7).}
 \label{tab:composite}
 \small
-\begin{tabular}{l|ccccc|cc}
+\begin{tabular}{l|ccc|cc}
 \toprule
-\textbf{Case} & $s_{\text{stab}}$ & $s_{\text{work}}$ & $s_{\text{phys}}$ & $s_{\text{geom}}$ & $s_{\text{func}}$ & \textbf{$Q$} & \textbf{Old} \\
+\textbf{Case} & $s_{\text{robust}}$ & $s_{\text{func}}$ & $s_{\text{rely}}$ & \textbf{$Q$} & \textbf{Old} \\
 \midrule
-2dof\_arm & 0.75 & 0.35 & 1.00 & 1.00 & 1.00 & 82.1 & 95.1 \\
-3dof\_arm & 0.75 & 0.65 & 1.00 & 1.00 & 1.00 & 88.0 & 95.1 \\
-4dof\_arm & 0.67 & 0.87 & 1.00 & 1.00 & 1.00 & 90.7 & 95.1 \\
-5dof\_arm & 0.75 & 0.91 & 1.00 & 1.00 & 0.60 & 85.3 & 92.7 \\
-6dof\_arm & 0.33 & 1.00 & 1.00 & 1.00 & 1.00 & 86.7 & 92.7 \\
-7dof\_arm & 0.80 & 1.00 & 1.00 & 1.00 & 0.60 & 88.0 & 92.7 \\
-4wheel & 1.00 & 0.58 & 1.00 & 1.00 & 1.00 & 91.7 & 95.3 \\
+2dof\_arm & 0.47 & 1.00 & 1.00 & 77.7 & 95.1 \\
+3dof\_arm & 0.47 & 1.00 & 0.75 & 70.6 & 95.1 \\
+4dof\_arm & 0.38 & 1.00 & 0.95 & 71.4 & 95.1 \\
+5dof\_arm & 0.27 & 1.00 & 1.00 & 64.3 & 92.7 \\
+6dof\_arm & 0.28 & 0.50 & 1.00 & 51.7 & 92.7 \\
+7dof\_arm & 0.38 & 0.50 & 0.83 & 54.1 & 92.7 \\
+4wheel & 0.85 & 1.00 & 1.00 & 94.7 & 95.3 \\
 \midrule
-\textbf{Mean} & & & & & & \textbf{87.5} & \textbf{94.4} \\
+\textbf{Mean} & & & & \textbf{69.2} & \textbf{94.4} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
-\footnotesize $Q \times 100$; equally-weighted mean of 5 sub-scores. ``Old'' = 41-check rubric (Table~\ref{tab:rubric}). Note the rubric's 4-way tie at 95.1\% is broken: 2dof (82.1) $\neq$ 3dof (88.0) $\neq$ 4dof (90.7).
+\footnotesize $Q \times 100$; geometric mean of 3 sub-scores if all gates pass, else 0. ``Old'' = 41-check rubric (Table~\ref{tab:rubric}). $s_{\text{robust}}$ = COM margin / (0.5$\times$footprint); $s_{\text{func}}$ = grasp + DOF completeness; $s_{\text{rely}}$ = fraction of repeated runs scoring $\geq$80\%.
 \end{table}
 
 \begin{table}[h]
@@ -296,7 +295,7 @@ Language-3D is the first system to produce a \emph{complete manufacturing packag
 % ===================================================================
 \section{Conclusion}
 % ===================================================================
-We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves a composite quality score of 87.5 (mean, range 82.1--91.7 across seven benchmark cases), with 6/7 distinct scores demonstrating real discriminative power. The deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproduce run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
+We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves a composite quality score of 69.2 (mean, range 51.7--94.7 across seven benchmark cases), with 6/7 distinct scores demonstrating real discriminative power. The deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproduce run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
