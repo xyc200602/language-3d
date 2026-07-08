@@ -142,6 +142,53 @@ def test_passed_run_records_to_experience_store(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
+def test_dof_excludes_prismatic_finger_joints(tmp_path: Path) -> None:
+    """DOF must count only revolute joints, not prismatic gripper fingers.
+
+    A user saying "4自由度机械臂" means 4 articulated rotation axes. The prior
+    code counted all non-fixed joints, so a 4-revolute arm + 2 prismatic
+    finger slides was stored as dof=6 — breaking DOF-proximity retrieval
+    (query_dof=4 never matched case.dof=6, not even the ±1 near bonus).
+    Prismatic info is preserved in joint_types; it just must not inflate dof.
+    """
+    from lang3d.agent.pipeline import PipelineContext
+    from lang3d.experience.store import reset_store_for_tests
+    from lang3d.knowledge.mechanics import Assembly, Part, Joint
+
+    store = reset_store_for_tests(tmp_path / "exp")
+
+    # 4-revolute arm + 2 prismatic fingers + 1 fixed = the real 4dof_arm shape
+    parts = [Part(name=f"p{i}", category="structure", description="x",
+                  dimensions={"length": 10, "width": 10, "height": 10})
+             for i in range(7)]
+    joints = [
+        Joint(type="revolute", parent="p0", child="p1", range_deg=[-90, 90], axis="z"),
+        Joint(type="revolute", parent="p1", child="p2", range_deg=[-90, 90], axis="y"),
+        Joint(type="revolute", parent="p2", child="p3", range_deg=[-90, 90], axis="y"),
+        Joint(type="revolute", parent="p3", child="p4", range_deg=[-180, 180], axis="z"),
+        Joint(type="prismatic", parent="p4", child="p5", range_deg=[0, 30], axis="y"),
+        Joint(type="prismatic", parent="p4", child="p6", range_deg=[0, 30], axis="y"),
+        Joint(type="fixed", parent="p0", child="p0", range_deg=[0, 0], axis="z"),
+    ]
+    assembly = Assembly(name="4dof_with_gripper", parts=parts, joints=joints,
+                        description="4自由度机械臂", default_angles={})
+
+    ctx = PipelineContext(description="4自由度机械臂", max_rounds=3)
+    ctx.is_arm = True
+    ctx.output_dir = str(tmp_path / "run")
+    pipe = _make_fake_pipeline(ctx, verifier_passes=True, assembly=assembly)
+    pipe.run()
+
+    cases = store.all_cases()
+    assert len(cases) == 1
+    # dof == 4 (revolute only), NOT 6 (which would include the 2 finger slides)
+    assert cases[0].dof == 4
+    # prismatic joints are still recorded in the histogram
+    assert cases[0].joint_types.get("prismatic") == 2
+    assert cases[0].joint_types.get("revolute") == 4
+
+
+@pytest.mark.unit
 def test_failed_run_does_not_record(tmp_path: Path) -> None:
     """A failing run must NOT poison the store with failure cases."""
     from lang3d.agent.pipeline import PipelineContext

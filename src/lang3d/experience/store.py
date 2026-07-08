@@ -77,7 +77,16 @@ class CaseRecord:
     — one of ``fixed_arm`` / ``wheeled`` / ``wheeled_arm`` / ``assembly``."""
 
     dof: int
-    """Degrees of freedom (count of non-fixed joints). 0 for pure assemblies."""
+    """Degrees of freedom — count of revolute (articulated rotation) joints.
+
+    This matches the user's mental model of "an N-DOF arm": the rotation axes
+    a person counts when they say "4自由度机械臂". Prismatic joints (gripper
+    finger slides) are excluded because they are end-effector mechanism, not
+    arm articulation — counting them inflated DOF and broke DOF-proximity
+    retrieval (every stored arm was off by its finger count). Prismatic and
+    fixed joint counts are still available in :attr:`joint_types`.  0 for
+    pure assemblies with no revolute joints.
+    """
 
     assembly_name: str
     """The ``Assembly.name`` produced (e.g. ``"4dof_robotic_arm"``)."""

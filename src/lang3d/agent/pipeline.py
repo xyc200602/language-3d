@@ -1381,7 +1381,15 @@ class AssemblyPipeline:
         movable = 0
         for j in ctx.assembly.joints:
             joint_hist[j.type] = joint_hist.get(j.type, 0) + 1
-            if j.type != "fixed":
+            # DOF counts only revolute joints — this is the user's mental model
+            # of "an N-DOF arm" (articulated rotation axes), and matches what
+            # _extract_query_dof pulls from "N自由度" in a prompt. Counting
+            # prismatic joints (gripper fingers) here inflated every stored
+            # case's DOF by the finger count (e.g. a 4-DOF arm + 2 finger
+            # slides was stored as dof=6), so DOF-proximity retrieval never
+            # hit an exact match. Prismatic info is still preserved in the
+            # joint_types histogram above.
+            if j.type == "revolute":
                 movable += 1
 
         # run_dir: prefer the pipeline output_dir if it's under data/runs/,
