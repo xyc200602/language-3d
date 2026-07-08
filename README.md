@@ -8,7 +8,7 @@
 [![Python 3.12](https://img.shields.io/badge/Python-3.12-blue.svg)](https://python.org)
 [![FreeCAD 1.1](https://img.shields.io/badge/FreeCAD-1.1-green.svg)](https://freecad.org)
 [![GLM-5.2](https://img.shields.io/badge/LLM-GLM--5.2-orange.svg)](https://open.bigmodel.cn)
-[![E2E Score](https://img.shields.io/badge/E2E-~95%25-brightgreen.svg)](#test-results)
+[![E2E Checks](https://img.shields.io/badge/E2E_checks-95%25_pass-brightgreen.svg)](#test-results)
 
 *LLM Reasoning + VLM Visual Perception + CAD Automation + Geometric Arbitration*
 *LLM 推理 + VLM 视觉感知 + CAD 自动化 + 几何仲裁*
@@ -185,7 +185,7 @@ assembly = generate_assembly_from_nl("4自由度机械臂，带夹爪")
 | **Geometric / 几何仲裁** | Check 1-7: collision, connectivity (BFS), COM, finger gap, arm pose | **Ground truth** — overrules VLM when geometry is correct |
 | **VLM Structural / VLM 结构** | Panoramic views (iso/front/top/right) — structural integrity only | Advisory (geometry arbitrates) |
 | **VLM Gripper / VLM 夹爪** | Dedicated close-up view — two finger prongs + gap | Sole authority for gripper question |
-| **MuJoCo Physics / 物理仿真** | PD-hold stability + joint actuation + ground-plane driving (floating-base differential drive) + grasp | Must pass for URDF export |
+| **MuJoCo Physics / 物理仿真** | PD-hold stability + joint actuation + ground-plane driving (floating-base differential drive) + grasp (scored as a per-case success rate + lift height, not best-of-N) | Must pass for URDF export |
 
 ### Self-Evolving Experience Store / 自演化经验库
 
@@ -300,8 +300,8 @@ language-3d/
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
 | Unit + Integration / 单元 + 集成 | 4,200+ | 0 known failures (6 pre-existing failures fixed 2026-07-03 ~ 07-08, see AGENTS.md §6.3) |
-| E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (mode of 56 runs, mean 92.7%; 0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
-| E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (mode of 42 runs, mean 93.0%; 0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
+| E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (mode of 67 runs, mean 86.0%; 0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
+| E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (mode of 47 runs, mean 93.2%; 0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
 | Expert Roles / 专家角色 | 27 | 27 PASS |
 
 > **Note / 注意**: E2E tests require `GLM_API_KEY` + FreeCAD — without them they are skipped. Scores are **per-case** results (not a multi-case average). Scoring = PASS/(PASS+FAIL+WARN); SKIP (missing optional dep) is excluded from the denominator, and critical checks (collision, COM stability, MuJoCo physics, grasp) FAIL rather than downgrade to warning. The 4dof_arm score varies slightly run-to-run due to LLM non-determinism; the wheeled dual-arm is deterministic (compose path).

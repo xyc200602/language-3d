@@ -8,6 +8,9 @@ dist/
 build/
 *.egg
 
+# Tooling scratch
+.zcode/
+
 # Environment
 .env
 .env.local
@@ -96,6 +99,7 @@ data/*.png
 # Legacy development logs (migrated to docs/history/progress.txt)
 development_log/
 data/runs/
+data/experience/
 data/archive_pre_refactor/
 docs/progress_report_20260621.html
 data/debug/
