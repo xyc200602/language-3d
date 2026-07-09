@@ -30,6 +30,22 @@ _REAL_TS = _os.path.basename(_os.path.dirname(_4dof_runs[0])) \
 if not _4dof_runs:
     pytest.skip("no 4dof_arm run with assembly.json available", allow_module_level=True)
 
+# The /animate route requires engineering_package/urdf.xml (heavy artifact,
+# gitignored — NOT present on a fresh CI clone, only the lightweight JSONs are
+# committed). The /positions route only needs assembly.json (committed), so the
+# module-level guard above stays on assembly.json and the two animate tests get
+# a separate per-test guard below. Without this split, committing the run
+# archive (e928862) un-skipped the whole module and the animate tests hit 404
+# on CI where no URDF exists.
+_has_urdf = _os.path.exists(
+    f"data/runs/{_REAL_CASE}/{_REAL_TS}/engineering_package/urdf.xml"
+)
+needs_urdf = pytest.mark.skipif(
+    not _has_urdf,
+    reason="engineering_package/urdf.xml not present (CI clone ships only "
+           "lightweight JSONs); /animate route needs the URDF",
+)
+
 
 def test_positions_returns_per_part_placement() -> None:
     """/positions yields a world position (mm) for each assembled part."""
@@ -55,6 +71,7 @@ def test_positions_missing_run_404() -> None:
     assert r.status_code == 404
 
 
+@needs_urdf
 def test_animate_returns_motion_frames() -> None:
     """/animate forwards the record_joint_motion frame series to the client.
 
@@ -95,6 +112,7 @@ def test_animate_missing_urdf_404() -> None:
     mock_rec.assert_not_called()
 
 
+@needs_urdf
 def test_animate_propagates_record_failure() -> None:
     """When record_joint_motion reports ok=False, the route returns 500."""
     with patch("lang3d.tools.sim_mujoco.record_joint_motion",
