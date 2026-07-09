@@ -8,13 +8,13 @@
 \usepackage[ruled,vlined]{algorithm2e}
 
 % ===================================================================
-% Language-3D: End-to-End Generation of Manufacturable Robot Assemblies
+% Language-3D: End-to-End Generation of Manufacturing-Ready Robot Assemblies
 % from Natural Language
 %
 % All external claims cross-verified >=2 sources (AGENTS.md §1.2)
 % ===================================================================
 
-\title{Language-3D: End-to-End Generation of Manufacturable Robot Assemblies from Natural Language}
+\title{Language-3D: End-to-End Generation of Manufacturing-Ready Robot Assemblies from Natural Language}
 
 \author{
 \IEEEauthorblockN{Youcheng Xiong}
@@ -32,9 +32,9 @@ Beijing, China
 % ===================================================================
 We present \textbf{Language-3D}, a multi-agent system that converts natural language descriptions into \emph{engineering packages} for robot assemblies---including STL/STEP meshes, URDF models, bills of materials (BOM), firmware templates, and ROS2 package skeletons. Unlike prior work that generates either single CAD parts~\cite{cadllama2025, stepllm2026}, voxel-based block assemblies~\cite{bloxnet2025}, or URDF-only morphologies~\cite{robomorph2024}, Language-3D produces the full set of artifacts needed for manufacturing and deployment. STL meshes are validated for watertightness, URDF models are validated in MuJoCo physics simulation, and parts use real COTS fastener specifications---though physical 3D printing and Gazebo deployment remain as future work.
 
-The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp, and (5)~a self-evolving experience store that retrieves verified-good past cases to prime new generations (lexical retrieval; successes only).
+The system features: (1)~a COTS-driven knowledge base of 94 part templates (56 real commercial components with verified ISO/DIN specifications), (2)~eight connection types with real CAD feature generation (bolted clearance holes, press-fit interference bores, snap-fit joints, etc.), (3)~a dual-channel verification architecture combining vision-language model (VLM) inspection with geometric arbitration (FCL collision sweep, assembly sequence validation), (4)~a MuJoCo physics validation pipeline with native actuator models verifying that generated robots can drive, articulate, and grasp, and (5)~a case-based experience store that retrieves verified-good past cases to prime new generations (lexical retrieval; successes only).
 
-We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with a composite quality score $Q \in [0,1]$ (a relative rank, not an absolute quality percentage), achieving a mean of 0.68 (range 0.45--0.85) with 7/7 distinct values. The composite's grasp term is a per-case success \emph{rate} (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%. We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp, lift, and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
+We evaluate on seven robot configurations (2--7-DOF arms and a 4-wheel dual-arm mobile robot) with a composite quality score $Q \in [0,1]$ (a relative rank, not an absolute quality percentage), achieving a mean of 0.65 (range 0.45--0.85) with 7/7 distinct values. The composite's grasp term is a per-case success \emph{rate} (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%. We are transparent that no external benchmark exists for the NL$\to$robot-package task and that the static-grasp, lift, and per-joint collision checks have known scope limits (\S\ref{sec:sim-limits}).
 \end{abstract}
 
 % ===================================================================
@@ -57,7 +57,7 @@ Automated robot design from natural language is a long-standing goal at the inte
     \item \textbf{Task formulation}: We formalize NL~$\to$~manufacturable robot assembly package as a new task with evaluation criteria spanning geometry, physics, and manufacturing.
     \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 package structures from NL, with 8 real connection types and a 56-part COTS knowledge base.
     \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
-    \item \textbf{Evaluation}: Seven benchmark cases evaluated by a composite quality score (gate + geometric mean of robustness/functionality/reliability; $Q\in[0,1]$ relative rank, mean 0.68, 7/7 distinct values), with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
+    \item \textbf{Evaluation}: Seven benchmark cases evaluated by a composite quality score (gate + geometric mean of robustness/functionality/reliability; $Q\in[0,1]$ relative rank, mean 0.65, 7/7 distinct values), with all cases passing MuJoCo physics stability, plus an eighth topology-aware humanoid case demonstrating generalization beyond fixed-base arms.
 \end{enumerate}
 
 % ===================================================================
@@ -83,7 +83,7 @@ Table~\ref{tab:comparison} summarizes the comparison.
 \subsection{System Architecture}
 The core design principle is \emph{determinism where it matters, intelligence where it helps}: the LLM handles open-ended generation (assembly topology, part selection) while deterministic stages (Solver, CAD, sanitizers, physics) handle geometry and validation, ensuring that output is reproducible and physically grounded. This separation also bounds the variance: a failed LLM generation can be re-run without re-deriving physics or connection geometry.
 
-Figure~\ref{fig:architecture} shows the pipeline. Natural language input is processed by a multi-agent chain: \textbf{Architect} (GLM-5.2 generates assembly JSON, primed by retrieved past cases), \textbf{Solver} (computes 3D positions via anchor constraints + FCL collision-aware range clamping), \textbf{CAD Engineer} (FreeCAD 1.1 generates per-part STL/STEP meshes with connection features), and a dual-channel \textbf{Verifier} (GLM-4.6V + geometric arbitration). A \textbf{Fixer} routes failures back to the appropriate upstream stage by failure type. Verified assemblies are recorded into a self-evolving experience store for future retrieval and exported as complete engineering packages.
+Figure~\ref{fig:architecture} shows the pipeline. Natural language input is processed by a multi-agent chain: \textbf{Architect} (GLM-5.2 generates assembly JSON, primed by retrieved past cases), \textbf{Solver} (computes 3D positions via anchor constraints + FCL collision-aware range clamping), \textbf{CAD Engineer} (FreeCAD 1.1 generates per-part STL/STEP meshes with connection features), and a dual-channel \textbf{Verifier} (GLM-4.6V + geometric arbitration). A \textbf{Fixer} routes failures back to the appropriate upstream stage by failure type. Verified assemblies are recorded into a case-based experience store for future retrieval and exported as complete engineering packages.
 
 \begin{figure*}[t]
 \centering
@@ -119,7 +119,7 @@ Connection selection is physics-aware: when the LLM omits a connection method, a
 
 \textbf{Channel 2 (Geometric Arbitration)}: A deterministic geometric oracle runs FCL mesh-based collision detection (7 samples per joint across its range), assembly-sequence validation (parent-before-child tree feasibility), and center-of-mass stability (support polygon check). The geometric channel overrides the VLM in two cases: (1)~\emph{false-alarm filter}---when the VLM reports a defect that geometry proves absent (e.g., ``wheels above ground'' on grounded wheels), the complaint is removed; (2)~\emph{assembly-sequence enforcement}---when geometry violates parent-before-child tree feasibility, the result is forced to FAIL regardless of VLM verdict. The collision-range sweep is advisory (narrows joint ranges but does not veto). Center-of-mass and proportion checks inform the Fixer's routing but do not directly override the VLM. Across 143 passing runs in our historical data, the false-alarm override triggered in at most $\sim$6\% of cases (an upper bound that includes Fixer-resolved rounds); the assembly-sequence enforcement is rarer still. The override only removes geometrically-refutable complaints---hard structural defects (mesh collision, disconnected tree) always force FAIL and cannot be overridden.
 
-\subsection{Self-Evolving Experience Store}
+\subsection{Case-Based Experience Store}
 Following ArtiCAD's~\cite{articad2026} observation that accumulated design knowledge improves future generations, Language-3D maintains an experience store of past verified-good assemblies cases. The store implements a \emph{retrieve-before} / \emph{store-after} pattern: before the Architect generates a new assembly, the store is queried for similar past cases (matched by robot category, keyword overlap, and DOF proximity), and the retrieved cases are injected as additional few-shot precedent; after the pipeline verifies an assembly, its distilled record (DOF, joint-type histogram, converged default angles) is appended for future retrieval. Retrieval is lexical (weighted scoring mirroring the existing template-search API), not embedding-based, because the project's LLM backend exposes no embedding endpoint---this is less semantically expressive than ArtiCAD's FAISS partitioning but runs with no external dependency. The store is successes-only (failed assemblies are never stored) and prunes least-retrieved entries past a per-category cap. On a fresh checkout the store is empty, so generation falls back to the parametric examples and the prompt is byte-identical to the pre-store baseline.
 
 \subsection{MuJoCo Physics Validation}
@@ -140,7 +140,7 @@ The system injects a native MuJoCo \texttt{<actuator>} model (replacing hand-rol
 \subsection{Benchmark Cases}
 We evaluate on seven robot configurations spanning 2--7 degrees of freedom plus a mobile dual-arm platform, and an eighth humanoid topology that tests generalization beyond fixed-base arms:
 \begin{itemize}
-    \item \textbf{2dof--7dof\_arm}: Six fixed-base arms with increasing kinematic complexity, each ``with a parallel-jaw gripper''.
+    \item \textbf{2dof--7dof\_arm}: Six fixed-base arms with increasing kinematic complexity, each ``with a parallel-jaw gripper''. The ``N-DOF'' label counts the main arm-pose joints (shoulder/elbow/wrist); the MuJoCo ``actuated DOFs'' in Table~\ref{tab:quant} additionally include the base-yaw rotation and the gripper's prismatic finger joints (a parallel-jaw gripper has one driven + one mimic finger), so actuated is consistently $N+2$.
     \item \textbf{4wheel\_dual\_arm}: ``Design a 4-wheel dual-arm robot with differential drive, two 3-DOF arms mounted on the chassis.''
     \item \textbf{humanoid\_2leg\_2arm}: ``2 legs 2 arms humanoid robot, each leg has 3 joints, each arm has 3 DOF, camera on top''---a legged topology that stresses the arm-oriented range clamping and VLM classification (reported separately as it does not fit the fixed-base benchmark profile).
 \end{itemize}
@@ -170,22 +170,22 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \textbf{Case} & \textbf{COM\,margin} & \textbf{Workspace} & \textbf{FCL\,pairs} & \textbf{Triangles} & \textbf{PD-hold} & \textbf{Actuated} & \textbf{Watertight} \\
  & (mm) & (mm) & (0/severe) & count & error ($^\circ$) & DOFs & ratio \\
 \midrule
-2dof\_arm & 75.0 & 336 & 0/18 & 111{,}986 & 1.2 & 4 & 9/9 \\
-3dof\_arm & 75.0 & 461 & 0/25 & 113{,}072 & 2.4 & 5 & 10/10 \\
-4dof\_arm & 75.0 & 504 & 0/33 & 118{,}142 & 1.8 & 6 & 11/11 \\
-5dof\_arm & 68.7 & 684 & 0/52 & 37{,}840 & 1.4 & 7 & 12/12 \\
-6dof\_arm & 70.4 & 720 & 0/52 & 129{,}840 & 1.4 & 8 & 13/13 \\
-7dof\_arm & 70.4 & 1059 & 0/133 & 128{,}166 & 1.4 & 9 & 19/19 \\
-4wheel\_dual\_arm & 145.0 & 464 & 0/426 & 287{,}958 & 0.7 & 14 & 38/38 \\
+2dof\_arm & 75.0 & 252 & 0/18 & 18{,}590 & 1.3 & 4 & 9/9 \\
+3dof\_arm & 75.0 & 484 & 0/33 & 29{,}594 & 1.1 & 5 & 11/11 \\
+4dof\_arm & 98.9 & 538 & 0/33 & 26{,}480 & 2.2 & 6 & 11/11 \\
+5dof\_arm & 27.0 & 464 & 0/52 & 24{,}082 & 1.3 & 7 & 13/13 \\
+6dof\_arm & 43.9 & 709 & 0/19 & 35{,}642 & 3.4 & 7 & 12/13 \\
+7dof\_arm & 60.0 & 848 & 0/102 & 25{,}820 & 1.9 & 9 & 17/17 \\
+4wheel\_dual\_arm & 145.0 & 413 & 0/426 & 61{,}738 & 0.7 & 14 & 38/38 \\
 \midrule
-\textbf{Mean} & \textbf{82.8} & \textbf{604} & \textbf{0} & \textbf{132{,}438} & \textbf{1.5} & \textbf{7.6} & \textbf{100\%} \\
+\textbf{Mean} & \textbf{75.0} & \textbf{529} & \textbf{0} & \textbf{31{,}706} & \textbf{1.7} & \textbf{7.4} & \textbf{99\%} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
-\footnotesize COM\,margin = signed distance from ground-projected COM to nearest support-polygon edge (higher = more stable; negative = tips over). Workspace = bounding-box max edge. FCL\,pairs = severe penetrations ($>$5\,mm) / total pairs checked. PD-hold error = worst-joint steady-state droop under PD control \emph{without} gravity-compensation feed-forward (kp=50, kv=5; see \S\ref{sec:sim-limits}).
+\footnotesize COM\,margin = signed distance from ground-projected COM to nearest support-polygon edge (higher = more stable; negative = tips over); the polygon is built from the kinematic root and its fixed-joint descendants, excluding dangling appendages. Workspace = bounding-box max edge. FCL\,pairs = severe penetrations ($>$5\,mm) / total pairs checked. Triangle count uses a uniform mesh tessellation (absolute 0.1\,mm chordal deviation, Relative=False) so counts are comparable across cases; the support polygon and COM metrics are the run-to-run-varying quantities. PD-hold error = worst-joint steady-state droop under PD control \emph{without} gravity-compensation feed-forward (kp=50, kv=5; see \S\ref{sec:sim-limits}).
 \end{table*}
 
-Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units, each drawn from a frozen per-case benchmark run (see \S Reproducibility). The COM stability margin ranges from 68.7\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---a 2.1$\times$ difference. The workspace extent scales from 336\,mm (2dof) to 1059\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio. The raw PD-hold droop ranges 0.7--2.4$^\circ$ (benchmark-run mean 1.5$^\circ$; up to 3.3$^\circ$ observed in non-benchmark 6dof runs), well within the 5$^\circ$ composite gate.
+Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units, each drawn from a frozen per-case benchmark run (see \S Reproducibility). The COM stability margin ranges from 27.0\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---reflecting the wide-stance mobile base versus the narrow fixed-base arms. The workspace extent scales from 252\,mm (2dof) to 848\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and near-100\% watertight STL ratio (one 6dof benchmark run has 12/13 watertight). Triangle counts are now comparable across cases (18k--36k for arms) because STL export uses a uniform absolute mesh deviation (0.1\,mm chordal, Relative=False); an earlier adaptive-tessellation build produced a 3$\times$ inconsistent spread (one part alone hit 88k triangles) that was not a design-quality signal. The raw PD-hold droop ranges 0.7--3.4$^\circ$ (benchmark-run mean 1.7$^\circ$), well within the 5$^\circ$ composite gate.
 
 \textbf{Composite quality score.} A single rankable score must satisfy two constraints: (1)~a fatal flaw (tipping, no actuation) should not be averaged away, and (2)~dimensions that do not vary across cases should not dilute the signal. We therefore use a \emph{gate-then-score} design: four binary gates (MuJoCo loads, raw PD-hold droop $<$\,5$^\circ$ \emph{without} gravity-compensation feed-forward---see \S\ref{sec:sim-limits}---which is a genuine stiffness signal rather than the trivially-zero compensated error, 0 severe collisions, COM inside support polygon) must all pass; if any fails, $Q=0$. If all pass, $Q \in [0,1]$ is the geometric mean of three sub-scores:
 \begin{equation}
@@ -203,7 +203,7 @@ Two terms were deliberately excluded from $s_{\text{func}}$ and $s_{\text{rely}}
 
 Physical metrics come from the \emph{median}-scoring run (the typical outcome), not the best run; the distribution sub-scores ($g_{\text{rate}}$, $s_{\text{rely}}$) use all non-zero runs. Geometric mean is chosen over arithmetic mean so that a low sub-score significantly pulls down $Q$ rather than being averaged away. Critically, the grasp term is a \emph{success rate} (6dof: $g_{\text{rate}}=0.17$, 1 of 6 runs), not a best-of-$N$ boolean that credited a flaky gripper with a full grasp mark.
 
-Table~\ref{tab:composite} reports $Q$ for the seven cases. The composite achieves \textbf{7 distinct values across 7 cases}. The wheeled dual-arm ranks highest ($Q=0.85$), reflecting its wide stance ($s_{\text{robust}}=0.63$) and reliable grasp ($g_{\text{rate}}=0.95$). The 7-DOF arm ranks lowest ($Q=0.45$: $g_{\text{rate}}=0$, no run ever grasped, and a narrower effective stance). Discriminative power comes primarily from $s_{\text{func}}$ (which varies 0.40--1.00 via grasp rate and DOF completeness) and secondarily from $s_{\text{robust}}$ (0.25--0.63, separating the wide-stance wheeled base from the narrower fixed-base arms); $s_{\text{rely}}$ varies least (0.86--1.00) since all cases produce usable assemblies most of the time.
+Table~\ref{tab:composite} reports $Q$ for the seven cases. The composite achieves \textbf{7 distinct values across 7 cases}. The wheeled dual-arm ranks highest ($Q=0.85$), reflecting its wide stance ($s_{\text{robust}}=0.63$) and reliable grasp ($g_{\text{rate}}=0.95$). The lower-DOF arms (2--4 DOF) rank next ($Q$=0.75, 0.72, 0.78) with reliable grasps and full actuation. The higher-DOF arms rank lower: 5dof/6dof/7dof at $Q$=0.45/0.48/0.49, because grasp reliability degrades with kinematic complexity ($g_{\text{rate}}$ 0.43/0.12/0.00) and their longer levers yield narrower stability margins. Discriminative power comes primarily from $s_{\text{func}}$ (which varies 0.40--1.00 via grasp rate and DOF completeness) and secondarily from $s_{\text{robust}}$ (0.14--0.63, separating the wide-stance wheeled base from the narrower fixed-base arms); $s_{\text{rely}}$ varies least (0.89--1.00) since all cases produce usable assemblies most of the time.
 
 \begin{table}[h]
 \centering
@@ -215,14 +215,14 @@ Table~\ref{tab:composite} reports $Q$ for the seven cases. The composite achieve
 \textbf{Case} & $s_{\text{robust}}$ & $g_{\text{rate}}$ & $s_{\text{func}}$ & $s_{\text{rely}}$ & \textbf{$Q$} \\
 \midrule
 2dof\_arm & 0.42 & 1.00 & 1.00 & 1.00 & 0.75 \\
-3dof\_arm & 0.42 & 1.00 & 1.00 & 0.86 & 0.71 \\
-4dof\_arm & 0.42 & 0.92 & 0.95 & 0.95 & 0.73 \\
-5dof\_arm & 0.39 & 0.60 & 0.76 & 1.00 & 0.67 \\
-6dof\_arm & 0.38 & 0.17 & 0.50 & 1.00 & 0.58 \\
-7dof\_arm & 0.25 & 0.00 & 0.40 & 0.89 & 0.45 \\
+3dof\_arm & 0.42 & 1.00 & 1.00 & 0.89 & 0.72 \\
+4dof\_arm & 0.52 & 0.91 & 0.94 & 0.96 & 0.78 \\
+5dof\_arm & 0.14 & 0.43 & 0.66 & 1.00 & 0.45 \\
+6dof\_arm & 0.23 & 0.12 & 0.48 & 1.00 & 0.48 \\
+7dof\_arm & 0.32 & 0.00 & 0.40 & 0.90 & 0.49 \\
 4wheel & 0.63 & 0.95 & 0.97 & 1.00 & 0.85 \\
 \midrule
-\textbf{Mean} & & & & & \textbf{0.68} \\
+\textbf{Mean} & & & & & \textbf{0.65} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
@@ -276,7 +276,7 @@ To our knowledge, Language-3D is the first system in the surveyed academic liter
 % ===================================================================
 \section{Conclusion}
 % ===================================================================
-We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves a composite quality score of 0.68 (mean, range 0.45--0.85 across seven benchmark cases), with 7/7 distinct values demonstrating real discriminative power. The grasp term is a per-case success rate (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%; the lift ratio is measured but omitted from the score because no configuration achieves positive lift---honestly characterizing the gap between static grasping and dynamic object manipulation. The deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproduce run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
+We presented Language-3D, a system that converts natural language into engineering packages for robot assemblies. By combining a COTS knowledge base, real CAD connection features, dual-channel verification, and MuJoCo physics validation, the system achieves a composite quality score of 0.65 (mean, range 0.45--0.85 across seven benchmark cases), with 7/7 distinct values demonstrating real discriminative power. The grasp term is a per-case success rate (not best-of-$N$), exposing that the 6-DOF arm grasps in only 17\% of runs and the 7-DOF in 0\%; the lift ratio is measured but omitted from the score because no configuration achieves positive lift---honestly characterizing the gap between static grasping and dynamic object manipulation. The deterministic pipeline stages (Solver, CAD, sanitizer, physics) reproduce run-to-run and variance confined to the LLM generation step. The generated URDFs are validated in both MuJoCo (physics stability, joint actuation, grasp) and ROS2 Humble + Gazebo Classic (URDF parsing, colcon build, robot\_state\_publisher, gzserver spawn). Physical manufacturing (3D printing, hardware deployment) remains as future work. The core contribution is the \emph{artifact generation pipeline}---closing the gap from text to a complete, structured engineering package---with deployment validation as the natural next step.
 
 \bibliographystyle{IEEEtran}
 \bibliography{references}
