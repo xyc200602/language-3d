@@ -14,9 +14,12 @@ when they are not installed.
 from __future__ import annotations
 
 import json
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..knowledge.mechanics import Assembly, Joint, Part
 from ..models.base import ToolDefinition

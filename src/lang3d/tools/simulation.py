@@ -13,6 +13,7 @@ Tools:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import random
@@ -22,6 +23,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..knowledge.materials import SAFETY_FACTORS, get_material
 from ..knowledge.simulation import FEA_PATTERNS, MESH_SIZES, recommend_mesh_size

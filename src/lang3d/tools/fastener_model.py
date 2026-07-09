@@ -13,7 +13,10 @@ Uses dimension data from ``knowledge.fastener_catalog`` — the authoritative so
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..knowledge.fastener_catalog import (
     BOLT_SPECS,

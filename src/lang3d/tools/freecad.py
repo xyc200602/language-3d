@@ -15,6 +15,7 @@ Installation:
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import subprocess
@@ -22,6 +23,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from ..models.base import ToolDefinition
 from .base import Tool
