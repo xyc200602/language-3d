@@ -107,12 +107,38 @@ def _find_freecad_python() -> str | None:
             Path("C:/Program Files/FreeCAD/bin/python.exe"),
             Path("C:/Program Files (x86)/FreeCAD/bin/python.exe"),
         ]
-        # Also try to find FreeCAD dynamically
-        program_files = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
-        for p in program_files.glob("FreeCAD*/bin/python.exe"):
-            search_paths.insert(0, p)
+        # Also try to find FreeCAD dynamically in system + user install dirs.
+        # FreeCAD 1.1 defaults to a per-user install under %LOCALAPPDATA%\Programs,
+        # not C:\Program Files — without this glob the finder misses it.
+        for base_env in ("PROGRAMFILES", "LOCALAPPDATA"):
+            base = Path(os.environ.get(base_env, ""))
+            if base.exists():
+                for p in base.glob("Programs/FreeCAD*/bin/python.exe"):
+                    search_paths.insert(0, p)
+                for p in base.glob("FreeCAD*/bin/python.exe"):
+                    search_paths.insert(0, p)
 
         for p in search_paths:
+            if p.exists():
+                _FREECAD_PYTHON = str(p)
+                return _FREECAD_PYTHON
+
+    # Linux/macOS: FreeCAD ships its Python interpreter at known paths.
+    # Ubuntu/Debian package:  /usr/lib/freecad/bin/python  (or via `freecad -c`)
+    # AppImage:               extracted /opt/FreeCAD*/bin/python
+    # macOS:                  /Applications/FreeCAD.app/Contents/bin/python
+    if sys.platform != "win32":
+        linux_paths = [
+            Path("/usr/lib/freecad/bin/python"),
+            Path("/usr/lib/freecad-daily/bin/python"),
+            Path("/usr/bin/python3"),  # if FreeCAD Python module is importable
+        ]
+        for p in linux_paths:
+            if p.exists():
+                _FREECAD_PYTHON = str(p)
+                return _FREECAD_PYTHON
+        # macOS app bundle
+        for p in Path("/Applications").glob("FreeCAD*.app/Contents/bin/python"):
             if p.exists():
                 _FREECAD_PYTHON = str(p)
                 return _FREECAD_PYTHON

@@ -9,6 +9,12 @@
 # Optional dependencies that broaden coverage (trimesh+python-fcl for
 # collision checks, mujoco for physics) are installed so those integration
 # tests run rather than skip.
+#
+# FreeCAD is NOT installed on CI (no reliable headless package for Ubuntu).
+# The conftest auto-skips integration tests whose source references FreeCAD
+# when FreeCAD is absent. A per-test timeout (180s) ensures any test that
+# hangs (e.g. a subprocess that never returns) fails fast instead of
+# exhausting the job timeout.
 
 name: CI
 
@@ -24,7 +30,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 25
 
     steps:
       - name: Check out source
@@ -55,6 +61,7 @@ jobs:
         run: |
           xvfb-run -a pytest tests/ \
             -m "not e2e and not api and not gui" \
+            --timeout=180 \
             --maxfail=10 \
             -q \
             --no-header \
