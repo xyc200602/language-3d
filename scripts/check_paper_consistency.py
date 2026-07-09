@@ -94,16 +94,21 @@ if _composite_ok:
         max_q = max(r.q for r in results)
         n_distinct = len(set(q_vals.values()))
 
-        # Abstract / Conclusion / Intro claim: mean 0.63, range 0.48-0.83, 7/7.
-        # Tight tolerance (0.015) — Q values are deterministic given the frozen
-        # BENCHMARK runs, so any drift indicates a stale table or a broken
-        # benchmark marker, not measurement noise.
-        check(abs(mean_q - 0.63) < 0.015,
-              f"composite mean Q = {mean_q:.3f}, paper says 0.63")
-        check(abs(min_q - 0.48) < 0.015,
-              f"composite min Q = {min_q:.3f}, paper says 0.48")
-        check(abs(max_q - 0.83) < 0.015,
-              f"composite max Q = {max_q:.3f}, paper says 0.83")
+        # Abstract / Conclusion / Intro claim: mean 0.68, range 0.49-0.85, 7/7.
+        # These are parsed from the actual paper text (not hardcoded) so the
+        # check stays correct as the paper evolves. Q values are deterministic
+        # given the frozen BENCHMARK runs, so drift indicates a stale table.
+        _m_mean = re.search(r"mean of ([\d.]+)", TEX)
+        _m_range = re.search(r"range ([\d.]+)--([\d.]+)", TEX)
+        _paper_mean = float(_m_mean.group(1)) if _m_mean else 0.68
+        _paper_min = float(_m_range.group(1)) if _m_range else 0.49
+        _paper_max = float(_m_range.group(2)) if _m_range else 0.85
+        check(abs(mean_q - _paper_mean) < 0.015,
+              f"composite mean Q = {mean_q:.3f}, paper says {_paper_mean}")
+        check(abs(min_q - _paper_min) < 0.015,
+              f"composite min Q = {min_q:.3f}, paper says {_paper_min}")
+        check(abs(max_q - _paper_max) < 0.015,
+              f"composite max Q = {max_q:.3f}, paper says {_paper_max}")
         check(n_distinct == 7,
               f"composite distinct = {n_distinct}/7, paper says 7/7")
 
@@ -135,14 +140,31 @@ if _composite_ok:
                 check(False,
                       f"Table II Q for {case}: paper={paper_q}, recomputed={real_q}")
 
-        # Grasp success rate: paper says 6dof 17%, 7dof 0%
-        for case, claimed in [("6dof_arm", 0.17), ("7dof_arm", 0.0)]:
+        # Grasp success rate: parse the paper's claimed rates from the text
+        # (e.g. "6-DOF arm grasps in only 13% of runs" and g_rate=0.12 in
+        # Table III). Strict tolerance (0.02): the rate is a small-integer
+        # fraction (1/8=0.125), so a 0.08 tolerance would have let the stale
+        # "17% vs actual 12%" error slip through — exactly the bug this check
+        # failed to catch.
+        for case, label in [("6dof_arm", "6-DOF"), ("7dof_arm", "7-DOF")]:
             p, t = _grasp_pass_count(case)
             if t > 0:
                 rate = p / t
-                check(abs(rate - claimed) <= 0.08,
-                      f"{case} grasp rate = {rate:.2f} ({p}/{t}), paper says {claimed:.0%}",
-                      warn=True)
+                # parse "X-DOF arm grasps in only NN% of runs" from abstract/conclusion
+                _claimed = None
+                # Match "6-DOF arm grasps in only 13%" or the abbreviated
+                # "7-DOF in 0%" (the abstract shortens the second mention).
+                _cm = re.search(rf"{label} arm grasps in only (\d+)\\?%", TEX)
+                if not _cm:
+                    _cm = re.search(rf"{label} in (\d+)\\?%", TEX)
+                if _cm:
+                    _claimed = int(_cm.group(1)) / 100.0
+                if _claimed is not None:
+                    check(abs(rate - _claimed) <= 0.02,
+                          f"{case} grasp rate = {rate:.2f} ({p}/{t}), "
+                          f"paper says {_claimed:.0%}")
+                else:
+                    warnings.append(f"could not parse {label} grasp-% claim in paper text")
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +176,8 @@ check("seven robot configurations" in TEX,
 check("Seven benchmark cases" in TEX,
       "contribution #4: 'Seven benchmark cases' missing")
 check("eighth" in TEX, "humanoid 'eighth' case framing missing")
-check("Self-Evolving Experience Store" in TEX,
-      "no §Method subsection for experience store")
+check("Case-Based Experience Store" in TEX,
+      "no §Method subsection for experience store (renamed from Self-Evolving)")
 check("Two benchmark cases" not in TEX and "two representative cases" not in TEX,
       "leftover 'two cases' reference (contradicts seven)")
 check("94 part templates" in TEX and "56 real commercial" in TEX,
