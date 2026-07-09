@@ -1,0 +1,158 @@
+{
+  "base_plate": {
+    "position": [
+      0,
+      0,
+      4.0
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "base_yaw_servo": {
+    "position": [
+      0.0,
+      0.0,
+      32.45
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "shoulder_pitch_servo": {
+    "position": [
+      0.0,
+      -40.7,
+      32.45
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "upper_arm_link": {
+    "position": [
+      0.0,
+      -107.1556,
+      61.1288
+    ],
+    "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "elbow_pitch_servo": {
+    "position": [
+      0.0,
+      -164.7829,
+      101.4799
+    ],
+    "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "lower_arm_link": {
+    "position": [
+      0.0,
+      -230.6697,
+      116.105
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "wrist_pitch_servo": {
+    "position": [
+      0.0,
+      -296.0197,
+      116.105
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "wrist_roll_servo": {
+    "position": [
+      0.0,
+      -338.1874,
+      104.4327
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_base": {
+    "position": [
+      0.0,
+      -375.4572,
+      78.3361
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_servo": {
+    "position": [
+      0.0,
+      -393.5249,
+      104.1394
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_finger_left": {
+    "position": [
+      -21.0,
+      -416.4148,
+      49.6573
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_finger_right": {
+    "position": [
+      21.0,
+      -416.4148,
+      49.6573
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  }
+}

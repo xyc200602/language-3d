@@ -1,0 +1,301 @@
+{
+  "test_id": "humanoid_2leg_2arm",
+  "timestamp": "2026-07-03 16:35:24",
+  "description": "设计一个2腿2臂人型机器人，两条腿各有3个关节，两只手臂各有3个自由度，顶部有摄像头",
+  "score": 90.2,
+  "score_formula": "PASS / (PASS + FAIL + WARN), SKIP excluded",
+  "check_counts": {
+    "PASS": 37,
+    "FAIL": 2,
+    "SKIP": 0,
+    "WARN": 2
+  },
+  "critical_fails": 2,
+  "checks": [
+    {
+      "phase": "phase1",
+      "step": "vlm_loop_completed",
+      "status": "PASS",
+      "detail": "VLM loop done (436.8s), 2 rounds, passed=True",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "part_count",
+      "status": "PASS",
+      "detail": "Parts: 34 (min 12)",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "joint_count",
+      "status": "PASS",
+      "detail": "Joints: 33 (min 6)",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "connected_tree",
+      "status": "PASS",
+      "detail": "Joints form connected tree",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "has_arms",
+      "status": "PASS",
+      "detail": "Arm-like parts present",
+      "critical": false
+    },
+    {
+      "phase": "phase2",
+      "step": "all_parts_positioned",
+      "status": "PASS",
+      "detail": "Positions: 34/34",
+      "critical": false
+    },
+    {
+      "phase": "phase2",
+      "step": "no_nan_positions",
+      "status": "PASS",
+      "detail": "NaN/Inf positions: 0",
+      "critical": true
+    },
+    {
+      "phase": "phase2",
+      "step": "rotation_data",
+      "status": "WARN",
+      "detail": "Parts with rotation: 34/34"
+    },
+    {
+      "phase": "phase2",
+      "step": "outliers",
+      "status": "WARN",
+      "detail": "Parts >2000mm from centroid: 0"
+    },
+    {
+      "phase": "phase3",
+      "step": "render_count",
+      "status": "PASS",
+      "detail": "Render views: 4 (min 3)",
+      "critical": false
+    },
+    {
+      "phase": "phase3",
+      "step": "render_quality",
+      "status": "PASS",
+      "detail": "Average size: 708.2KB (min 10KB)",
+      "critical": false
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_exists",
+      "status": "PASS",
+      "detail": "Export dir: data\\runs\\humanoid_2leg_2arm\\20260703_162759\\engineering_package",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_design_report.json",
+      "status": "PASS",
+      "detail": "design_report.json: exists (1547 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_bom.md",
+      "status": "PASS",
+      "detail": "bom.md: exists (4482 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_assembly_guide.md",
+      "status": "PASS",
+      "detail": "assembly_guide.md: exists (22072 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_urdf.xml",
+      "status": "PASS",
+      "detail": "urdf.xml: exists (45526 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_README.md",
+      "status": "PASS",
+      "detail": "README.md: exists (2854 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_freecad_scripts",
+      "status": "PASS",
+      "detail": "freecad_scripts/: 34 files",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_firmware",
+      "status": "PASS",
+      "detail": "firmware/: 5 files",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_stl_parts",
+      "status": "PASS",
+      "detail": "stl_parts/: 34 files",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_subsystems",
+      "status": "PASS",
+      "detail": "subsystems/: 2 files",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "report_mass",
+      "status": "PASS",
+      "detail": "Total mass: 5.645 kg",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "report_parts_match",
+      "status": "PASS",
+      "detail": "Report parts: 34 vs assembly: 34",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "verification_status",
+      "status": "PASS",
+      "detail": "VLM verification status: PASSED",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "kinematic_analysis_present",
+      "status": "PASS",
+      "detail": "Loops: 0, converged: True",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "urdf_structure",
+      "status": "PASS",
+      "detail": "URDF has <link>: True, <joint>: True",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "urdf_origins_sane",
+      "status": "PASS",
+      "detail": "Absurd movable-joint origins: 0 (threshold max(0.2m, 2x parent_dim))",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "script_complexity",
+      "status": "PASS",
+      "detail": "Scripts with engineering features: 34/34 (100%)",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "stl_triangle_count",
+      "status": "PASS",
+      "detail": "Total triangles: 331,448",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "stl_watertight_ratio",
+      "status": "PASS",
+      "detail": "Watertight: 34/34",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "gripper_finger_watertight",
+      "status": "PASS",
+      "detail": "Gripper fingers watertight: 4/4 (ALL required — broken fingers cannot grasp)",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "step_completeness",
+      "status": "PASS",
+      "detail": "STEP files: 34/34",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "no_severe_collisions",
+      "status": "PASS",
+      "detail": "Severe(>5mm): 0, checked: 484 (0.08s)",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "motion_collision_sweep",
+      "status": "PASS",
+      "detail": "Motion sweep: 12 joints, 0 with collisions — collision-free",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "com_stability",
+      "status": "PASS",
+      "detail": "COM within support polygon: True (COM=(-0.0,-49.2,197.2)mm, 在支撑多边形内 (裕量 0.8mm))",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "parts_reachable",
+      "status": "PASS",
+      "detail": "Reachable: 34/34 (100%)",
+      "critical": false
+    },
+    {
+      "phase": "phase6",
+      "step": "workspace_nontrivial",
+      "status": "PASS",
+      "detail": "Workspace bbox max edge: 554mm (threshold 100mm)",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_loads",
+      "status": "PASS",
+      "detail": "URDF loaded into MuJoCo",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_physics_stable",
+      "status": "FAIL",
+      "detail": "Physics unstable (stabilized=False, err=12.08013861952144deg, disp=13.258217444056887mm): [sim_mujoco] data\\runs\\humanoid_2leg_2arm\\20260703_162759\\engineering_package\\urdf.xml\n加载结果: 成功\nURDF 链接数: 34  MuJoCo body 数: 17  (fixed 合并: 17)\n动态 body 数: 16\n关节数: 16\n\n--- Mesh 路径警告 ---\n  ! Rewrote 34 ",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_joints_actuate",
+      "status": "PASS",
+      "detail": "Actuated joints: 16 (min 6)",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "sim_grasp",
+      "status": "FAIL",
+      "detail": "Grasp test: FAILED — 静态抓取: PASS (几何 + 摩擦夹持)",
+      "critical": true
+    }
+  ]
+}

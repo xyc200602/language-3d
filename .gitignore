@@ -99,6 +99,18 @@ data/*.png
 # Legacy development logs (migrated to docs/history/progress.txt)
 development_log/
 data/runs/
+# ...but track the lightweight benchmark data so the composite score is
+# reproducible from a clean clone (paper Table I/III). The heavy STL/render
+# artifacts stay ignored — only e2e_report.json + assembly.json + positions.json
+# + the BENCHMARK marker are committed (~2MB total for the full run distribution).
+!data/runs/
+data/runs/*
+!data/runs/*/
+data/runs/*/*
+!data/runs/*/BENCHMARK
+!data/runs/*/*/e2e_report.json
+!data/runs/*/*/assembly.json
+!data/runs/*/*/positions.json
 data/experience/
 data/archive_pre_refactor/
 docs/progress_report_20260621.html

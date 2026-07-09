@@ -1,0 +1,157 @@
+{
+  "test_id": "4dof_arm",
+  "timestamp": "2026-06-28 22:41:35",
+  "description": "设计一个4自由度机械臂，底座固定，包含肩部旋转、肩部俯仰、肘部弯曲和腕部旋转关节",
+  "score": 76.5,
+  "score_formula": "PASS / (PASS + FAIL + WARN), SKIP excluded",
+  "check_counts": {
+    "PASS": 13,
+    "FAIL": 2,
+    "SKIP": 4,
+    "WARN": 2
+  },
+  "critical_fails": 2,
+  "checks": [
+    {
+      "phase": "phase1",
+      "step": "vlm_loop_completed",
+      "status": "PASS",
+      "detail": "VLM loop done (512.5s), 3 rounds, passed=True",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "part_count",
+      "status": "PASS",
+      "detail": "Parts: 11 (min 6)",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "joint_count",
+      "status": "PASS",
+      "detail": "Joints: 10 (min 4)",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "connected_tree",
+      "status": "PASS",
+      "detail": "Joints form connected tree",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "has_arms",
+      "status": "PASS",
+      "detail": "Arm-like parts present",
+      "critical": false
+    },
+    {
+      "phase": "phase2",
+      "step": "all_parts_positioned",
+      "status": "PASS",
+      "detail": "Positions: 11/11",
+      "critical": false
+    },
+    {
+      "phase": "phase2",
+      "step": "no_nan_positions",
+      "status": "PASS",
+      "detail": "NaN/Inf positions: 0",
+      "critical": true
+    },
+    {
+      "phase": "phase2",
+      "step": "rotation_data",
+      "status": "WARN",
+      "detail": "Parts with rotation: 11/11"
+    },
+    {
+      "phase": "phase2",
+      "step": "outliers",
+      "status": "WARN",
+      "detail": "Parts >2000mm from centroid: 0"
+    },
+    {
+      "phase": "phase3",
+      "step": "render_count",
+      "status": "PASS",
+      "detail": "Render views: 5 (min 3)",
+      "critical": false
+    },
+    {
+      "phase": "phase3",
+      "step": "render_quality",
+      "status": "PASS",
+      "detail": "Average size: 569.5KB (min 10KB)",
+      "critical": false
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_exists",
+      "status": "FAIL",
+      "detail": "No export directory",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "content_check",
+      "status": "SKIP",
+      "detail": "No export directory"
+    },
+    {
+      "phase": "phase6",
+      "step": "no_severe_collisions",
+      "status": "PASS",
+      "detail": "Severe(>5mm): 0, checked: 33 (0.01s)",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "motion_collision_sweep",
+      "status": "FAIL",
+      "detail": "Motion sweep: 4 joints, 1 with collisions (shoulder_link) — 穿模 detected",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "com_stability",
+      "status": "PASS",
+      "detail": "COM within support polygon: True (COM=(0.0,-52.8,69.0)mm, 在支撑多边形内 (裕量 72.2mm))",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "parts_reachable",
+      "status": "PASS",
+      "detail": "Reachable: 11/11 (100%)",
+      "critical": false
+    },
+    {
+      "phase": "phase6",
+      "step": "workspace_nontrivial",
+      "status": "PASS",
+      "detail": "Workspace bbox max edge: 557mm (threshold 125mm)",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_loads",
+      "status": "SKIP",
+      "detail": "No export directory"
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_physics_stable",
+      "status": "SKIP",
+      "detail": "No export directory"
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_joints_actuate",
+      "status": "SKIP",
+      "detail": "No export directory"
+    }
+  ]
+}

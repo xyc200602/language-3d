@@ -1,0 +1,171 @@
+{
+  "base_plate": {
+    "position": [
+      0,
+      0,
+      4.0
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "base_yaw_servo": {
+    "position": [
+      0.0,
+      0.0,
+      36.0
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "shoulder_pitch_servo": {
+    "position": [
+      0.0,
+      -45.0,
+      36.0
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "upper_arm_link": {
+    "position": [
+      0.0,
+      -134.9364,
+      79.0182
+    ],
+    "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "elbow_pitch_servo": {
+    "position": [
+      0.0,
+      -212.7558,
+      133.508
+    ],
+    "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "forearm_link": {
+    "position": [
+      0.0,
+      -293.5623,
+      148.0768
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "wrist_roll_servo": {
+    "position": [
+      0.0,
+      -368.5623,
+      148.0768
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "wrist_pitch_servo": {
+    "position": [
+      0.0,
+      -402.7623,
+      185.0768
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "tool_flange_servo": {
+    "position": [
+      35.0,
+      -434.2496,
+      213.4732
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_base": {
+    "position": [
+      70.0,
+      -461.4454,
+      194.4305
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_servo": {
+    "position": [
+      70.0,
+      -479.5131,
+      220.2337
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_finger_left": {
+    "position": [
+      50.0,
+      -497.4881,
+      169.1931
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  },
+  "gripper_finger_right": {
+    "position": [
+      90.0,
+      -497.4881,
+      169.1931
+    ],
+    "rotation": [
+      1.0,
+      0.0,
+      0.0,
+      35.0
+    ]
+  }
+}

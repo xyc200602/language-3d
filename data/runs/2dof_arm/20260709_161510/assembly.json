@@ -1,0 +1,268 @@
+{
+  "name": "2dof_arm_with_gripper",
+  "parts": [
+    {
+      "name": "base_plate",
+      "category": "structural",
+      "description": "底座安装板，提供整体接地支撑",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 320.0,
+        "width": 150,
+        "height": 8
+      }
+    },
+    {
+      "name": "base_yaw_servo",
+      "category": "actuator",
+      "description": "底座旋转关节舵机MG996R",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "yaw_link",
+      "category": "structural",
+      "description": "yaw连杆，承受肩部载荷",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 30,
+        "height": 20,
+        "length": 80
+      }
+    },
+    {
+      "name": "shoulder_pitch_servo",
+      "category": "actuator",
+      "description": "肩部俯仰舵机MG996R",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "upper_arm_link",
+      "category": "structural",
+      "description": "大臂连杆，连接肩部与夹爪",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 30,
+        "height": 20,
+        "length": 100
+      }
+    },
+    {
+      "name": "gripper_base",
+      "category": "mechanical",
+      "description": "夹爪基座(含直线导轨槽和舵机安装座)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 28,
+        "width": 50,
+        "height": 32
+      }
+    },
+    {
+      "name": "gripper_servo",
+      "category": "actuator",
+      "description": "夹爪驱动舵机SG90",
+      "material": "Steel",
+      "dimensions": {
+        "length": 22.2,
+        "width": 11.8,
+        "height": 31.0,
+        "shaft_diameter": 4.6,
+        "shaft_length": 5.0
+      }
+    },
+    {
+      "name": "gripper_finger_left",
+      "category": "mechanical",
+      "description": "夹爪左手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 10,
+        "height": 28
+      }
+    },
+    {
+      "name": "gripper_finger_right",
+      "category": "mechanical",
+      "description": "夹爪右手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 10,
+        "height": 28
+      }
+    }
+  ],
+  "joints": [
+    {
+      "type": "revolute",
+      "parent": "base_plate",
+      "child": "base_yaw_servo",
+      "range_deg": [
+        0.0,
+        90.0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": null,
+      "axis": "z",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_yaw_servo",
+      "child": "yaw_link",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "yaw_link",
+      "child": "shoulder_pitch_servo",
+      "range_deg": [
+        -80.0,
+        40.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "shoulder_pitch_servo",
+      "child": "upper_arm_link",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "upper_arm_link",
+      "child": "gripper_base",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "gripper_base",
+      "child": "gripper_servo",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "gripper_base",
+      "child": "gripper_finger_left",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -20.0,
+        -44.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "gripper_fingers",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "gripper_base",
+      "child": "gripper_finger_right",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        20.0,
+        -44.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "gripper_fingers",
+      "mimic_joint": "gripper_finger_left",
+      "mimic_multiplier": -1.0,
+      "mimic_offset": 0
+    }
+  ],
+  "default_angles": {
+    "shoulder_pitch_servo": -35.0,
+    "base_yaw_servo": 0.0
+  }
+}

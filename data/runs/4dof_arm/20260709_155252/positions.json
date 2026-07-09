@@ -1,0 +1,145 @@
+{
+  "base_plate": {
+    "position": [
+      0,
+      0,
+      4.0
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "base_yaw_servo": {
+    "position": [
+      0.0,
+      0.0,
+      32.45
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "shoulder_pitch_servo": {
+    "position": [
+      0.0,
+      0.0,
+      95.35
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "upper_arm_link": {
+    "position": [
+      0.0,
+      -76.3809,
+      127.1452
+    ],
+    "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      32.0
+    ]
+  },
+  "elbow_pitch_servo": {
+    "position": [
+      0.0,
+      -144.5216,
+      169.7242
+    ],
+    "rotation": [
+      -1.0,
+      0.0,
+      0.0,
+      32.0
+    ]
+  },
+  "forearm_link": {
+    "position": [
+      0.0,
+      -216.1451,
+      183.2361
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "wrist_roll_servo": {
+    "position": [
+      0.0,
+      -286.1451,
+      183.2361
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "gripper_base": {
+    "position": [
+      0.0,
+      -323.7451,
+      183.2361
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "gripper_servo": {
+    "position": [
+      0.0,
+      -323.7451,
+      214.7361
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "gripper_finger_left": {
+    "position": [
+      -20.0,
+      -367.7451,
+      183.2361
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  },
+  "gripper_finger_right": {
+    "position": [
+      20.0,
+      -367.7451,
+      183.2361
+    ],
+    "rotation": [
+      0,
+      0,
+      1,
+      0
+    ]
+  }
+}

@@ -1,0 +1,299 @@
+{
+  "test_id": "4wheel_dual_arm",
+  "timestamp": "2026-06-26 23:36:55",
+  "description": "设计一个4轮双臂机器人，四个差速驱动轮分布在底盘四角，底盘上方左右各安装一个3自由度机械臂",
+  "score": 92.9,
+  "checks": [
+    {
+      "phase": "phase1",
+      "step": "vlm_loop_completed",
+      "status": "PASS",
+      "detail": "Pipeline done (232.4s), 1 rounds, passed=True",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "part_count",
+      "status": "PASS",
+      "detail": "Parts: 38 (min 15)",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "joint_count",
+      "status": "PASS",
+      "detail": "Joints: 37 (min 4)",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "connected_tree",
+      "status": "PASS",
+      "detail": "Joints form connected tree",
+      "critical": true
+    },
+    {
+      "phase": "phase1",
+      "step": "has_arms",
+      "status": "PASS",
+      "detail": "Arm-like parts present",
+      "critical": false
+    },
+    {
+      "phase": "phase2",
+      "step": "all_parts_positioned",
+      "status": "PASS",
+      "detail": "Positions: 38/38",
+      "critical": false
+    },
+    {
+      "phase": "phase2",
+      "step": "no_nan_positions",
+      "status": "PASS",
+      "detail": "NaN/Inf positions: 0",
+      "critical": true
+    },
+    {
+      "phase": "phase2",
+      "step": "rotation_data",
+      "status": "WARN",
+      "detail": "Parts with rotation: 38/38"
+    },
+    {
+      "phase": "phase2",
+      "step": "outliers",
+      "status": "WARN",
+      "detail": "Parts >2000mm from centroid: 0"
+    },
+    {
+      "phase": "phase3",
+      "step": "render_count",
+      "status": "PASS",
+      "detail": "Render views: 4 (min 3)",
+      "critical": false
+    },
+    {
+      "phase": "phase3",
+      "step": "render_quality",
+      "status": "PASS",
+      "detail": "Average size: 769.2KB (min 10KB)",
+      "critical": false
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_exists",
+      "status": "PASS",
+      "detail": "Export dir: data\\runs\\4wheel_dual_arm\\20260626_233254\\engineering_package",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_design_report.json",
+      "status": "PASS",
+      "detail": "design_report.json: exists (1942 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_bom.md",
+      "status": "PASS",
+      "detail": "bom.md: exists (5152 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_assembly_guide.md",
+      "status": "PASS",
+      "detail": "assembly_guide.md: exists (25402 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_urdf.xml",
+      "status": "PASS",
+      "detail": "urdf.xml: exists (49110 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_README.md",
+      "status": "PASS",
+      "detail": "README.md: exists (3046 bytes)",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_freecad_scripts",
+      "status": "PASS",
+      "detail": "freecad_scripts/: 38 files",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_firmware",
+      "status": "PASS",
+      "detail": "firmware/: 8 files",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_stl_parts",
+      "status": "PASS",
+      "detail": "stl_parts/: 38 files",
+      "critical": true
+    },
+    {
+      "phase": "phase4",
+      "step": "pkg_dir_subsystems",
+      "status": "PASS",
+      "detail": "subsystems/: 4 files",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "report_mass",
+      "status": "PASS",
+      "detail": "Total mass: 11.409 kg",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "report_parts_match",
+      "status": "PASS",
+      "detail": "Report parts: 38 vs assembly: 38",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "verification_status",
+      "status": "PASS",
+      "detail": "VLM verification status: PASSED",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "kinematic_analysis_present",
+      "status": "PASS",
+      "detail": "Loops: 0, converged: True",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "differential_constraint_detected",
+      "status": "PASS",
+      "detail": "Differential pair: wheel_fl/wheel_fr track=200.0mm",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "urdf_structure",
+      "status": "PASS",
+      "detail": "URDF has <link>: True, <joint>: True",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "urdf_origins_sane",
+      "status": "PASS",
+      "detail": "Absurd movable-joint origins: 0 (threshold max(0.2m, 2x parent_dim))",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "script_complexity",
+      "status": "PASS",
+      "detail": "Scripts with engineering features: 38/38 (100%)",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "stl_triangle_count",
+      "status": "PASS",
+      "detail": "Total triangles: 306,780",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "stl_watertight_ratio",
+      "status": "PASS",
+      "detail": "Watertight: 38/38",
+      "critical": false
+    },
+    {
+      "phase": "phase5",
+      "step": "gripper_finger_watertight",
+      "status": "PASS",
+      "detail": "Gripper fingers watertight: 4/4 (ALL required — broken fingers cannot grasp)",
+      "critical": true
+    },
+    {
+      "phase": "phase5",
+      "step": "step_completeness",
+      "status": "PASS",
+      "detail": "STEP files: 38/38",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "no_severe_collisions",
+      "status": "WARN",
+      "detail": "Severe(>5mm): 0, checked: 426 (0.14s)"
+    },
+    {
+      "phase": "phase6",
+      "step": "motion_collision_sweep",
+      "status": "PASS",
+      "detail": "Motion sweep: 10 joints, 0 with collisions — collision-free",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "com_stability",
+      "status": "PASS",
+      "detail": "COM within support polygon: True (COM=(-0.0,-17.6,134.4)mm, 在支撑多边形内 (裕量 145.0mm))",
+      "critical": true
+    },
+    {
+      "phase": "phase6",
+      "step": "parts_reachable",
+      "status": "PASS",
+      "detail": "Reachable: 38/38 (100%)",
+      "critical": false
+    },
+    {
+      "phase": "phase6",
+      "step": "workspace_nontrivial",
+      "status": "PASS",
+      "detail": "Workspace bbox max edge: 464mm (threshold 171mm)",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_loads",
+      "status": "PASS",
+      "detail": "URDF loaded into MuJoCo",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_physics_stable",
+      "status": "PASS",
+      "detail": "PD-hold physics stable (stabilized=True, err=1.4654959018056447e-18deg, disp=0.0mm)",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "mujoco_joints_actuate",
+      "status": "PASS",
+      "detail": "Actuated joints: 14 (min 4)",
+      "critical": true
+    },
+    {
+      "phase": "phase7",
+      "step": "sim_grasp",
+      "status": "PASS",
+      "detail": "Grasp test: cube held against gravity — 静态抓取: PASS (几何 + 摩擦夹持)",
+      "critical": true
+    }
+  ]
+}

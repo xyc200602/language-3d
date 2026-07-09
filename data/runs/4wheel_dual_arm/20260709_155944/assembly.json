@@ -1,0 +1,1187 @@
+{
+  "name": "dual_arm_3dof_4w_differential_base",
+  "parts": [
+    {
+      "name": "base_footprint",
+      "category": "structural",
+      "description": "虚拟接地参考（base_footprint，不可见）",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 1.0,
+        "width": 1.0,
+        "height": 0.1
+      }
+    },
+    {
+      "name": "base_plate",
+      "category": "structural",
+      "description": "车体底盘（base_link，兼具外壳）",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 342.0,
+        "width": 200.0,
+        "height": 5.0
+      }
+    },
+    {
+      "name": "motor_fl",
+      "category": "actuator",
+      "description": "fl驱动电机JGA25-370 减速电机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 37.0,
+        "width": 25.0,
+        "height": 25.0
+      }
+    },
+    {
+      "name": "motor_fr",
+      "category": "actuator",
+      "description": "fr驱动电机JGA25-370 减速电机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 37.0,
+        "width": 25.0,
+        "height": 25.0
+      }
+    },
+    {
+      "name": "motor_rl",
+      "category": "actuator",
+      "description": "rl驱动电机JGA25-370 减速电机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 37.0,
+        "width": 25.0,
+        "height": 25.0
+      }
+    },
+    {
+      "name": "motor_rr",
+      "category": "actuator",
+      "description": "rr驱动电机JGA25-370 减速电机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 37.0,
+        "width": 25.0,
+        "height": 25.0
+      }
+    },
+    {
+      "name": "wheel_fl",
+      "category": "mechanical",
+      "description": "fl轮",
+      "material": "Rubber",
+      "dimensions": {
+        "diameter": 90.0,
+        "height": 31.499999999999996
+      }
+    },
+    {
+      "name": "wheel_fr",
+      "category": "mechanical",
+      "description": "fr轮",
+      "material": "Rubber",
+      "dimensions": {
+        "diameter": 90.0,
+        "height": 31.499999999999996
+      }
+    },
+    {
+      "name": "wheel_rl",
+      "category": "mechanical",
+      "description": "rl轮",
+      "material": "Rubber",
+      "dimensions": {
+        "diameter": 90.0,
+        "height": 31.499999999999996
+      }
+    },
+    {
+      "name": "wheel_rr",
+      "category": "mechanical",
+      "description": "rr轮",
+      "material": "Rubber",
+      "dimensions": {
+        "diameter": 90.0,
+        "height": 31.499999999999996
+      }
+    },
+    {
+      "name": "chassis_body",
+      "category": "structural",
+      "description": "车体外壳（base_link body，包覆传动）",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 331.2,
+        "width": 189.2,
+        "height": 45.0
+      }
+    },
+    {
+      "name": "suspension_fl",
+      "category": "mechanical",
+      "description": "fl悬挂减震支柱",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 9.0,
+        "height": 10.0
+      }
+    },
+    {
+      "name": "suspension_fr",
+      "category": "mechanical",
+      "description": "fr悬挂减震支柱",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 9.0,
+        "height": 10.0
+      }
+    },
+    {
+      "name": "suspension_rl",
+      "category": "mechanical",
+      "description": "rl悬挂减震支柱",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 9.0,
+        "height": 10.0
+      }
+    },
+    {
+      "name": "suspension_rr",
+      "category": "mechanical",
+      "description": "rr悬挂减震支柱",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 9.0,
+        "height": 10.0
+      }
+    },
+    {
+      "name": "battery_box",
+      "category": "electronics",
+      "description": "电池盒",
+      "material": "PLA",
+      "dimensions": {
+        "length": 171.0,
+        "width": 60.0,
+        "height": 25.0
+      }
+    },
+    {
+      "name": "arm_l_base_plate",
+      "category": "structural",
+      "description": "底座安装板",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 70,
+        "width": 50,
+        "height": 6
+      }
+    },
+    {
+      "name": "arm_l_base_yaw_servo",
+      "category": "actuator",
+      "description": "底座旋转舵机MG996R",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "arm_l_yaw_link_0",
+      "category": "structural",
+      "description": "yaw连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 20,
+        "height": 12,
+        "length": 80
+      }
+    },
+    {
+      "name": "arm_l_pitch_servo_1",
+      "category": "actuator",
+      "description": "pitch舵机MG996R",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "arm_l_pitch_link_1",
+      "category": "structural",
+      "description": "pitch连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 20,
+        "height": 12,
+        "length": 80
+      }
+    },
+    {
+      "name": "arm_l_pitch_servo_2",
+      "category": "actuator",
+      "description": "pitch舵机DS3218",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.0,
+        "width": 20.0,
+        "height": 38.5,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "arm_l_pitch_link_2",
+      "category": "structural",
+      "description": "pitch连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 20,
+        "height": 12,
+        "length": 70
+      }
+    },
+    {
+      "name": "arm_l_gripper_base",
+      "category": "mechanical",
+      "description": "夹爪基座(含直线导轨槽和舵机安装座)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 28,
+        "width": 50,
+        "height": 32
+      }
+    },
+    {
+      "name": "arm_l_gripper_servo",
+      "category": "actuator",
+      "description": "夹爪驱动舵机SG90",
+      "material": "Steel",
+      "dimensions": {
+        "length": 22.2,
+        "width": 11.8,
+        "height": 31.0,
+        "shaft_diameter": 4.6,
+        "shaft_length": 5.0
+      }
+    },
+    {
+      "name": "arm_l_gripper_finger_left",
+      "category": "mechanical",
+      "description": "夹爪左手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 14,
+        "height": 28
+      }
+    },
+    {
+      "name": "arm_l_gripper_finger_right",
+      "category": "mechanical",
+      "description": "夹爪右手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 14,
+        "height": 28
+      }
+    },
+    {
+      "name": "arm_r_base_plate",
+      "category": "structural",
+      "description": "底座安装板",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 70,
+        "width": 50,
+        "height": 6
+      }
+    },
+    {
+      "name": "arm_r_base_yaw_servo",
+      "category": "actuator",
+      "description": "底座旋转舵机MG996R",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "arm_r_yaw_link_0",
+      "category": "structural",
+      "description": "yaw连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 20,
+        "height": 12,
+        "length": 80
+      }
+    },
+    {
+      "name": "arm_r_pitch_servo_1",
+      "category": "actuator",
+      "description": "pitch舵机MG996R",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "arm_r_pitch_link_1",
+      "category": "structural",
+      "description": "pitch连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 20,
+        "height": 12,
+        "length": 80
+      }
+    },
+    {
+      "name": "arm_r_pitch_servo_2",
+      "category": "actuator",
+      "description": "pitch舵机DS3218",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.0,
+        "width": 20.0,
+        "height": 38.5,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "arm_r_pitch_link_2",
+      "category": "structural",
+      "description": "pitch连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "width": 20,
+        "height": 12,
+        "length": 70
+      }
+    },
+    {
+      "name": "arm_r_gripper_base",
+      "category": "mechanical",
+      "description": "夹爪基座(含直线导轨槽和舵机安装座)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 28,
+        "width": 50,
+        "height": 32
+      }
+    },
+    {
+      "name": "arm_r_gripper_servo",
+      "category": "actuator",
+      "description": "夹爪驱动舵机SG90",
+      "material": "Steel",
+      "dimensions": {
+        "length": 22.2,
+        "width": 11.8,
+        "height": 31.0,
+        "shaft_diameter": 4.6,
+        "shaft_length": 5.0
+      }
+    },
+    {
+      "name": "arm_r_gripper_finger_left",
+      "category": "mechanical",
+      "description": "夹爪左手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 14,
+        "height": 28
+      }
+    },
+    {
+      "name": "arm_r_gripper_finger_right",
+      "category": "mechanical",
+      "description": "夹爪右手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 14,
+        "height": 28
+      }
+    }
+  ],
+  "joints": [
+    {
+      "type": "fixed",
+      "parent": "base_footprint",
+      "child": "base_plate",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": [
+        0.0,
+        0.0,
+        93.5
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "motor_fl",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -36.5,
+        133.38,
+        -48.5
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "motor_fr",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        36.5,
+        133.38,
+        -48.5
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "motor_rl",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -36.5,
+        -133.38,
+        -48.5
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "motor_rr",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        36.5,
+        -133.38,
+        -48.5
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "base_plate",
+      "child": "wheel_fl",
+      "range_deg": [
+        -360,
+        360
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -100.0,
+        133.38,
+        -48.5
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "base_plate",
+      "child": "wheel_fr",
+      "range_deg": [
+        -360,
+        360
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        100.0,
+        133.38,
+        -48.5
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "base_plate",
+      "child": "wheel_rl",
+      "range_deg": [
+        -360,
+        360
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -100.0,
+        -133.38,
+        -48.5
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "base_plate",
+      "child": "wheel_rr",
+      "range_deg": [
+        -360,
+        360
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        100.0,
+        -133.38,
+        -48.5
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "chassis_body",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        0.0,
+        0.0,
+        25.0
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "suspension_fl",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -73.0,
+        133.38,
+        -3.0
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "suspension_fr",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        73.0,
+        133.38,
+        -3.0
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "suspension_rl",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -73.0,
+        -133.38,
+        -3.0
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "suspension_rr",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        73.0,
+        -133.38,
+        -3.0
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_plate",
+      "child": "battery_box",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "chassis_body",
+      "child": "arm_l_base_plate",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -70.0,
+        0.0,
+        25.5
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "arms",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "arm_l_base_plate",
+      "child": "arm_l_base_yaw_servo",
+      "range_deg": [
+        -90.0,
+        0.0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": null,
+      "axis": "z",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_l_base_yaw_servo",
+      "child": "arm_l_yaw_link_0",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "arm_l_yaw_link_0",
+      "child": "arm_l_pitch_servo_1",
+      "range_deg": [
+        -80.0,
+        40.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_l_pitch_servo_1",
+      "child": "arm_l_pitch_link_1",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "arm_l_pitch_link_1",
+      "child": "arm_l_pitch_servo_2",
+      "range_deg": [
+        -45.0,
+        90.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_l_pitch_servo_2",
+      "child": "arm_l_pitch_link_2",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_l_pitch_link_2",
+      "child": "arm_l_gripper_base",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_l_gripper_base",
+      "child": "arm_l_gripper_servo",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "arm_l_gripper_base",
+      "child": "arm_l_gripper_finger_left",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -23.0,
+        -44.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "arm_l_gripper_base",
+      "child": "arm_l_gripper_finger_right",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        23.0,
+        -44.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "arm_l_gripper_finger_left",
+      "mimic_multiplier": -1.0,
+      "mimic_offset": 0
+    },
+    {
+      "type": "fixed",
+      "parent": "chassis_body",
+      "child": "arm_r_base_plate",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        70.0,
+        0.0,
+        25.5
+      ],
+      "axis": "auto",
+      "no_distribute": true,
+      "distribution_group": "arms",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "arm_r_base_plate",
+      "child": "arm_r_base_yaw_servo",
+      "range_deg": [
+        0.0,
+        90.0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": null,
+      "axis": "z",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_r_base_yaw_servo",
+      "child": "arm_r_yaw_link_0",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "arm_r_yaw_link_0",
+      "child": "arm_r_pitch_servo_1",
+      "range_deg": [
+        -80.0,
+        40.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_r_pitch_servo_1",
+      "child": "arm_r_pitch_link_1",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "arm_r_pitch_link_1",
+      "child": "arm_r_pitch_servo_2",
+      "range_deg": [
+        -45.0,
+        90.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_r_pitch_servo_2",
+      "child": "arm_r_pitch_link_2",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_r_pitch_link_2",
+      "child": "arm_r_gripper_base",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "arm_r_gripper_base",
+      "child": "arm_r_gripper_servo",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": null,
+      "axis": "auto",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "arm_r_gripper_base",
+      "child": "arm_r_gripper_finger_left",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        -16,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "arm_r_gripper_base",
+      "child": "arm_r_gripper_finger_right",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        16,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "arm_r_gripper_finger_left",
+      "mimic_multiplier": -1.0,
+      "mimic_offset": 0
+    }
+  ],
+  "default_angles": {
+    "arm_l_pitch_servo_1": -35.0,
+    "arm_l_pitch_servo_2": 30.0,
+    "arm_r_pitch_servo_1": -35.0,
+    "arm_r_pitch_servo_2": 30.0,
+    "arm_l_base_yaw_servo": -30.0,
+    "arm_r_base_yaw_servo": 30.0
+  }
+}

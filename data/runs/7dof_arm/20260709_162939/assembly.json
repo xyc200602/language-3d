@@ -1,0 +1,550 @@
+{
+  "name": "7dof_redundant_arm",
+  "parts": [
+    {
+      "name": "base_plate",
+      "category": "structural",
+      "description": "底座安装板，提供整体支撑",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 342.0,
+        "width": 150,
+        "height": 8
+      }
+    },
+    {
+      "name": "base_yaw_servo",
+      "category": "actuator",
+      "description": "底座旋转舵机(J1-Yaw)",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 41,
+        "height": 43
+      }
+    },
+    {
+      "name": "shoulder_pitch_servo",
+      "category": "actuator",
+      "description": "肩部俯仰舵机(J2-Pitch)",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 41,
+        "height": 43
+      }
+    },
+    {
+      "name": "upper_arm_link",
+      "category": "structural",
+      "description": "大臂连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 120,
+        "width": 30,
+        "height": 20
+      }
+    },
+    {
+      "name": "elbow_pitch_servo",
+      "category": "actuator",
+      "description": "肘部俯仰舵机(J3-Pitch)",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 41,
+        "height": 43
+      }
+    },
+    {
+      "name": "forearm_link",
+      "category": "structural",
+      "description": "小臂连杆",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 100,
+        "width": 25,
+        "height": 18
+      }
+    },
+    {
+      "name": "wrist_roll_servo_1",
+      "category": "actuator",
+      "description": "腕部滚转舵机(J4-Roll)",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 22,
+        "height": 31
+      }
+    },
+    {
+      "name": "wrist_roll_link_1",
+      "category": "structural",
+      "description": "腕部滚转连接件",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 40,
+        "width": 22,
+        "height": 15
+      }
+    },
+    {
+      "name": "wrist_pitch_servo",
+      "category": "actuator",
+      "description": "腕部俯仰舵机(J5-Pitch)",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 22,
+        "height": 31
+      }
+    },
+    {
+      "name": "wrist_pitch_link",
+      "category": "structural",
+      "description": "腕部俯仰连接件",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 40,
+        "width": 22,
+        "height": 15
+      }
+    },
+    {
+      "name": "wrist_roll_servo_2",
+      "category": "actuator",
+      "description": "腕部滚转舵机(J6-Roll)",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 22,
+        "height": 31
+      }
+    },
+    {
+      "name": "wrist_roll_link_2",
+      "category": "structural",
+      "description": "腕部滚转连接件",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 40,
+        "width": 22,
+        "height": 15
+      }
+    },
+    {
+      "name": "wrist_roll_servo_3",
+      "category": "actuator",
+      "description": "末端滚转舵机(J7-Roll)",
+      "material": "Steel",
+      "dimensions": {
+        "diameter": 22,
+        "height": 31
+      }
+    },
+    {
+      "name": "gripper_base",
+      "category": "mechanical",
+      "description": "夹爪基座(含直线导轨槽和舵机安装座)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 28,
+        "width": 50,
+        "height": 32
+      }
+    },
+    {
+      "name": "gripper_servo",
+      "category": "actuator",
+      "description": "夹爪驱动舵机SG90",
+      "material": "Steel",
+      "dimensions": {
+        "length": 22.2,
+        "width": 11.8,
+        "height": 31.0,
+        "shaft_diameter": 4.6,
+        "shaft_length": 5.0
+      }
+    },
+    {
+      "name": "gripper_finger_left",
+      "category": "mechanical",
+      "description": "夹爪左手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 14,
+        "height": 28
+      }
+    },
+    {
+      "name": "gripper_finger_right",
+      "category": "mechanical",
+      "description": "夹爪右手指(含滑动导轨和L形指尖)",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 14,
+        "height": 28
+      }
+    }
+  ],
+  "joints": [
+    {
+      "type": "revolute",
+      "parent": "base_plate",
+      "child": "base_yaw_servo",
+      "range_deg": [
+        0.0,
+        90.0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "z",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_yaw_servo",
+      "child": "shoulder_pitch_servo",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "shoulder_pitch_servo",
+      "child": "upper_arm_link",
+      "range_deg": [
+        -80.0,
+        40.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "upper_arm_link",
+      "child": "elbow_pitch_servo",
+      "range_deg": [
+        -26.0,
+        79.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "elbow_pitch_servo",
+      "child": "forearm_link",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "forearm_link",
+      "child": "wrist_roll_servo_1",
+      "range_deg": [
+        -120.0,
+        120.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "y",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "wrist_roll_servo_1",
+      "child": "wrist_roll_link_1",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "wrist_roll_link_1",
+      "child": "wrist_pitch_servo",
+      "range_deg": [
+        -45.0,
+        90.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "wrist_pitch_servo",
+      "child": "wrist_pitch_link",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "wrist_pitch_link",
+      "child": "wrist_roll_servo_2",
+      "range_deg": [
+        -120.0,
+        120.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "y",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "wrist_roll_servo_2",
+      "child": "wrist_roll_link_2",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "wrist_roll_link_2",
+      "child": "wrist_roll_servo_3",
+      "range_deg": [
+        -120.0,
+        120.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        31.0
+      ],
+      "axis": "y",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "wrist_roll_servo_3",
+      "child": "gripper_base",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        31.0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "gripper_base",
+      "child": "gripper_servo",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "z",
+      "no_distribute": false,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "gripper_base",
+      "child": "gripper_finger_left",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -23.0,
+        -44.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": null,
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "gripper_base",
+      "child": "gripper_finger_right",
+      "range_deg": [
+        -8,
+        12
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        23.0,
+        -44.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": null,
+      "mimic_joint": "gripper_finger_left",
+      "mimic_multiplier": -1.0,
+      "mimic_offset": 0
+    }
+  ],
+  "default_angles": {
+    "base_yaw_servo": 0.0,
+    "elbow_pitch_servo": 34.0,
+    "wrist_roll_servo_1": 0.0,
+    "wrist_pitch_servo": 30.0,
+    "wrist_roll_servo_2": 0.0,
+    "wrist_roll_servo_3": 0.0,
+    "upper_arm_link": -35.0
+  }
+}

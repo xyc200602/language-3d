@@ -1,0 +1,400 @@
+{
+  "name": "5dof_robotic_arm",
+  "parts": [
+    {
+      "name": "base_plate",
+      "category": "structural",
+      "description": "底座安装板，整个机械臂的支撑基础",
+      "material": "Aluminum",
+      "dimensions": {
+        "length": 320.0,
+        "width": 200,
+        "height": 8
+      }
+    },
+    {
+      "name": "base_yaw_servo",
+      "category": "actuator",
+      "description": "底座旋转MG996R舵机，提供yaw轴旋转",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "shoulder_pitch_servo",
+      "category": "actuator",
+      "description": "肩部俯仰MG996R舵机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "upper_arm_link",
+      "category": "structural",
+      "description": "大臂连杆",
+      "material": "Carbon Fiber",
+      "dimensions": {
+        "length": 100,
+        "width": 35,
+        "height": 20
+      }
+    },
+    {
+      "name": "elbow_pitch_servo",
+      "category": "actuator",
+      "description": "肘部俯仰MG996R舵机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "lower_arm_link",
+      "category": "structural",
+      "description": "小臂连杆",
+      "material": "Carbon Fiber",
+      "dimensions": {
+        "length": 90,
+        "width": 30,
+        "height": 18
+      }
+    },
+    {
+      "name": "wrist_pitch_servo",
+      "category": "actuator",
+      "description": "腕部俯仰MG996R舵机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "wrist_roll_servo",
+      "category": "actuator",
+      "description": "腕部滚转MG996R舵机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 40.7,
+        "width": 19.7,
+        "height": 42.9,
+        "shaft_diameter": 5.8,
+        "shaft_length": 6.0
+      }
+    },
+    {
+      "name": "gripper_base",
+      "category": "mechanical",
+      "description": "夹爪基座，包含导轨槽和舵机座",
+      "material": "PLA",
+      "dimensions": {
+        "length": 40,
+        "width": 45,
+        "height": 32
+      }
+    },
+    {
+      "name": "gripper_servo",
+      "category": "actuator",
+      "description": "夹爪SG90驱动舵机",
+      "material": "Steel",
+      "dimensions": {
+        "length": 22.2,
+        "width": 11.8,
+        "height": 31.0,
+        "shaft_diameter": 4.6,
+        "shaft_length": 5.0
+      }
+    },
+    {
+      "name": "gripper_finger_left",
+      "category": "mechanical",
+      "description": "夹爪左手指",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 15,
+        "height": 28
+      }
+    },
+    {
+      "name": "gripper_finger_right",
+      "category": "mechanical",
+      "description": "夹爪右手指",
+      "material": "PLA",
+      "dimensions": {
+        "length": 60,
+        "width": 15,
+        "height": 28
+      }
+    }
+  ],
+  "joints": [
+    {
+      "type": "revolute",
+      "parent": "base_plate",
+      "child": "base_yaw_servo",
+      "range_deg": [
+        0.0,
+        90.0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "z",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "base_yaw_servo",
+      "child": "shoulder_pitch_servo",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "shoulder_pitch_servo",
+      "child": "upper_arm_link",
+      "range_deg": [
+        -80.0,
+        10.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "upper_arm_link",
+      "child": "elbow_pitch_servo",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "elbow_pitch_servo",
+      "child": "lower_arm_link",
+      "range_deg": [
+        -40.0,
+        80.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "lower_arm_link",
+      "child": "wrist_pitch_servo",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "wrist_pitch_servo",
+      "child": "wrist_roll_servo",
+      "range_deg": [
+        -40.0,
+        80.0
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "x",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "revolute",
+      "parent": "wrist_roll_servo",
+      "child": "gripper_base",
+      "range_deg": [
+        -180,
+        180
+      ],
+      "parent_anchor": "front",
+      "child_anchor": "back",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "y",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "fixed",
+      "parent": "gripper_base",
+      "child": "gripper_servo",
+      "range_deg": [
+        0,
+        0
+      ],
+      "parent_anchor": "top",
+      "child_anchor": "bottom",
+      "offset": [
+        0,
+        0,
+        0
+      ],
+      "axis": "z",
+      "no_distribute": false,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "gripper_base",
+      "child": "gripper_finger_left",
+      "range_deg": [
+        -15,
+        12.5
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        -21.0,
+        -50.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "",
+      "mimic_multiplier": 1.0,
+      "mimic_offset": 0.0
+    },
+    {
+      "type": "prismatic",
+      "parent": "gripper_base",
+      "child": "gripper_finger_right",
+      "range_deg": [
+        -15,
+        12.5
+      ],
+      "parent_anchor": "center",
+      "child_anchor": "center",
+      "offset": [
+        21.0,
+        -50.0,
+        0.0
+      ],
+      "axis": "x",
+      "no_distribute": true,
+      "distribution_group": "",
+      "mimic_joint": "gripper_finger_left",
+      "mimic_multiplier": -1.0,
+      "mimic_offset": 0.0
+    }
+  ],
+  "default_angles": {
+    "gripper_base": 0.0,
+    "base_yaw_servo": 0.0,
+    "upper_arm_link": -35.0,
+    "lower_arm_link": 35.0,
+    "wrist_roll_servo": 35.0
+  }
+}

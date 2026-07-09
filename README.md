@@ -383,7 +383,21 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 
 ## License
 
-MIT License
+MIT License — Language-3D is open-source. To our knowledge it is the first open-source system to produce a complete manufacturing-ready package (STL + STEP + URDF + BOM + firmware + ROS2 package + assembly guide) from natural language. Prior open-source NL→robot systems produce a strict subset of these artifacts.
+
+### Reproducing the Benchmark / 复现基准测试
+
+The benchmark run archive is committed (lightweight JSON only — the STL/render artifacts are gitignored to keep the clone small):
+
+```bash
+# Reproduce Table I/III (composite score) from a clean clone:
+python -m lang3d.eval.composite_score
+
+# Verify the paper's claims against recomputed data:
+python scripts/check_paper_consistency.py
+```
+
+Each case's frozen benchmark run is pinned by `data/runs/<case>/BENCHMARK`; the full run distribution (for the grasp-rate and reliability sub-scores) lives in the `e2e_report.json` files. No API key or FreeCAD is needed to reproduce the scoring — only to regenerate runs.
 
 ---
 

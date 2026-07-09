@@ -1,0 +1,23 @@
+{
+  "test_id": "4dof_arm",
+  "timestamp": "2026-07-03 17:28:11",
+  "description": "设计一个4自由度机械臂，底座固定，包含肩部旋转、肩部俯仰、肘部弯曲和腕部旋转关节",
+  "score": 0.0,
+  "score_formula": "PASS / (PASS + FAIL + WARN), SKIP excluded",
+  "check_counts": {
+    "PASS": 0,
+    "FAIL": 1,
+    "SKIP": 0,
+    "WARN": 0
+  },
+  "critical_fails": 1,
+  "checks": [
+    {
+      "phase": "phase1",
+      "step": "vlm_loop_completed",
+      "status": "FAIL",
+      "detail": "VLM loop done (17.4s), 3 rounds, passed=False",
+      "critical": true
+    }
+  ]
+}
