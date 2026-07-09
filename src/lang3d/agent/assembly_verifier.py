@@ -177,6 +177,60 @@ class AssemblyVerificationResult:
     )
 
 
+def _kinematic_support_set(assembly: Any, max_hops: int = 2) -> set[str]:
+    """Names of parts that may bear weight against the ground (support contacts).
+
+    The support polygon must be built from STRUCTURAL ground contacts, not
+    dangling appendages that merely happen to reach low.  A part qualifies if
+    it is the kinematic root (a part that is never a child — what is bolted to
+    the ground/world) or a ``fixed``-joint descendant within ``max_hops`` of a
+    root.  Revolute/prismatic descendants are excluded past the root itself
+    because an articulated link does not rigidly bear the base's weight; deep
+    leaves (gripper fingers, many joints from the root) are always excluded.
+
+    This mirrors the root-finding idiom in ``assembly_solver.py:655`` (a part
+    that is never a child is a root) and is kept module-local to avoid a
+    circular import (assembly_solver imports from the tools package).
+    """
+    part_names = {p.name for p in assembly.parts}
+    child_set = {j.child for j in assembly.joints}
+    roots = part_names - child_set
+    if not roots:
+        roots = {assembly.parts[0].name} if assembly.parts else set()
+
+    # BFS outward from each root, following ONLY fixed joints, up to max_hops.
+    # The root is always included (a fixed-base arm's base_plate is the sole
+    # support; a mobile robot's chassis root qualifies and its fixed-mounted
+    # sub-frames do too).
+    support: set[str] = set(roots)
+    frontier = set(roots)
+    for _ in range(max_hops):
+        nxt: set[str] = set()
+        for j in assembly.joints:
+            if j.parent in frontier and j.child in part_names and j.type == "fixed":
+                if j.child not in support:
+                    nxt.add(j.child)
+        support |= nxt
+        frontier = nxt
+        if not frontier:
+            break
+
+    # Mobile robots: wheels are revolute children of the chassis, so the
+    # fixed-joint BFS above does NOT reach them.  But wheels ARE legitimate
+    # ground contacts (they bear the robot's weight).  Add any part whose name
+    # indicates a wheel/leg/foot/caster — these are the mobile-base support
+    # points.  Name-based matching is acceptable here because wheel/leg names
+    # are conventionally stable across robot families, unlike generic
+    # structural-link names.
+    _MOBILE_CONTACT_KEYWORDS = ("wheel", "leg", "foot", "caster", "track")
+    for p in assembly.parts:
+        n = p.name.lower()
+        if any(kw in n for kw in _MOBILE_CONTACT_KEYWORDS):
+            support.add(p.name)
+
+    return support
+
+
 class AssemblyVerifier:
     """Verifies assembly completeness, joint fits, and tolerances."""
 
@@ -1099,6 +1153,20 @@ class AssemblyVerifier:
                 notes="UNVERIFIED: 无位置数据",
             )
 
+        # A support-polygon vertex must be a STRUCTURAL ground contact, not a
+        # dangling appendage that merely happens to reach low.  Without this
+        # filter a gripper finger whose tip dangles to ground height (e.g.
+        # 7dof_arm: fingers at z=14, low=0) was counted as a support point,
+        # inflating the polygon to 1067mm and (a) falsely passing the COM
+        # stability gate for a tipping robot and (b) corrupting the composite
+        # s_robust.  The physically-correct rule: a part is a support contact
+        # only if it is the kinematic ROOT (what is bolted to the ground) or a
+        # fixed-joint descendant within a small hop count of the root.  Deep
+        # leaves (gripper fingers) are excluded by construction.  Wheels remain
+        # valid for mobile robots because they are direct children of the
+        # chassis root.  (Kinematic-root idiom mirrors assembly_solver.py:655.)
+        support_roots = _kinematic_support_set(assembly, max_hops=2)
+
         # min_z over physical parts only (exclude the virtual base_footprint
         # at Z=0, which would set min_z=0 and push real wheels above the
         # 5mm ground-contact threshold). See exclusion note below.
@@ -1115,6 +1183,11 @@ class AssemblyVerifier:
             # stability for every wheeled robot. Real contact points are the
             # wheels (and any leg/foot parts).
             if name == "base_footprint":
+                continue
+            # A part low enough to touch the ground is a support contact ONLY
+            # if it is structurally tied to the kinematic root.  A dangling
+            # gripper finger is low but not a support — it bears no weight.
+            if name not in support_roots:
                 continue
             z = place["position"][2]
             part = next((p for p in assembly.parts if p.name == name), None)

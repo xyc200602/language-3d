@@ -497,3 +497,54 @@ class TestF5F6NewChecks:
         assert not result.com_stability.inside_support_polygon, (
             "COM clearly outside a 10×10 base should be detected as unstable"
         )
+
+    def test_dangling_finger_not_in_support_polygon(self, tmp_path):
+        """A gripper finger whose tip dangles to ground height must NOT be
+        counted as a support-polygon vertex.
+
+        Regression for the bug where ``check_center_of_mass_stability`` built
+        the support polygon from ANY low part (no structural filter).  In the
+        7dof_arm benchmark this inflated the polygon to 1067mm because the
+        gripper fingers (at z=14, low=0) were treated as support contacts,
+        which (a) falsely passed the COM stability gate for tipping robots and
+        (b) corrupted the composite s_robust.  The fix restricts support
+        contacts to the kinematic root and its fixed-joint descendants.
+        """
+        base = _box("base_plate", length=100, width=100, height=8)
+        # Tall arm lifting the gripper high above the base.
+        arm = _box("arm_link", length=20, width=20, height=200)
+        # Gripper finger whose lowest point reaches ground height (low=0),
+        # dangling far out in +X from the base centre — exactly the
+        # 7dof failure geometry.  It is a revolute-joint leaf, not a support.
+        finger = _box("gripper_finger", length=10, width=10, height=60)
+        asm = Assembly(
+            name="arm_with_dangling_finger",
+            parts=[base, arm, finger],
+            joints=[
+                Joint(type="fixed", parent="base_plate", child="arm_link",
+                      parent_anchor="top", child_anchor="bottom"),
+                Joint(type="revolute", parent="arm_link", child="gripper_finger",
+                      parent_anchor="top", child_anchor="bottom",
+                      offset=(80, 0, -30), axis="y",
+                      range_deg=[-90, 90]),
+            ],
+        )
+        solver = AssemblySolver(asm)
+        placements = solver.solve()
+        v = AssemblyVerifier()
+        result = v.check_center_of_mass_stability(asm, placements)
+        assert result.verified
+
+        # The finger is at X≈80, well outside the base's 100×100 footprint
+        # (±50).  If the finger were (wrongly) included as a support vertex,
+        # its corners would appear at X∈[75,85] in the polygon.  Assert they
+        # do not — only base_plate corners (X∈[-50,50]) should be present.
+        max_polygon_x = max((abs(x) for x, _ in result.support_polygon_xy), default=0.0)
+        assert max_polygon_x <= 50.0 + 1.0, (
+            f"Dangling finger leaked into support polygon: max |X|={max_polygon_x:.1f}mm "
+            f"(base is only ±50mm) — finger corners should be excluded"
+        )
+        # Sanity: the base IS a support vertex, so the polygon is non-empty.
+        assert len(result.support_polygon_xy) >= 4, (
+            "base_plate should contribute its 4 corners to the support polygon"
+        )
