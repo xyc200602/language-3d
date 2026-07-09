@@ -140,7 +140,7 @@ The system injects a native MuJoCo \texttt{<actuator>} model (replacing hand-rol
 \subsection{Benchmark Cases}
 We evaluate on seven robot configurations spanning 2--7 degrees of freedom plus a mobile dual-arm platform, and an eighth humanoid topology that tests generalization beyond fixed-base arms:
 \begin{itemize}
-    \item \textbf{2dof--7dof\_arm}: Six fixed-base arms with increasing kinematic complexity, each ``with a parallel-jaw gripper''. The ``N-DOF'' label counts the main arm-pose joints (shoulder/elbow/wrist); the MuJoCo ``actuated DOFs'' in Table~\ref{tab:quant} additionally include the base-yaw rotation and the gripper's prismatic finger joints (a parallel-jaw gripper has one driven + one mimic finger), so actuated is consistently $N+2$.
+    \item \textbf{2dof--7dof\_arm}: Six fixed-base arms with increasing kinematic complexity, each ``with a parallel-jaw gripper''. The ``N-DOF'' label counts the arm-pose revolute joints (base yaw, shoulder/elbow pitch, wrist roll/yaw). Each arm additionally has a parallel-jaw gripper (one driven prismatic finger + one mimic-coupled twin); the gripper's linear motion is functional but not counted as arm DOF, so the ``Arm DOF'' column in Table~\ref{tab:quant} equals N for each Ndof case.
     \item \textbf{4wheel\_dual\_arm}: ``Design a 4-wheel dual-arm robot with differential drive, two 3-DOF arms mounted on the chassis.''
     \item \textbf{humanoid\_2leg\_2arm}: ``2 legs 2 arms humanoid robot, each leg has 3 joints, each arm has 3 DOF, camera on top''---a legged topology that stresses the arm-oriented range clamping and VLM classification (reported separately as it does not fit the fixed-base benchmark profile).
 \end{itemize}
@@ -167,18 +167,18 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \small
 \begin{tabular}{l|cccc|ccc}
 \toprule
-\textbf{Case} & \textbf{COM\,margin} & \textbf{Workspace} & \textbf{FCL\,pairs} & \textbf{Triangles} & \textbf{PD-hold} & \textbf{Actuated} & \textbf{Watertight} \\
- & (mm) & (mm) & (0/severe) & count & error ($^\circ$) & DOFs & ratio \\
+\textbf{Case} & \textbf{COM\,margin} & \textbf{Workspace} & \textbf{FCL\,pairs} & \textbf{Triangles} & \textbf{PD-hold} & \textbf{Arm} & \textbf{Watertight} \\
+ & (mm) & (mm) & (0/severe) & count & error ($^\circ$) & DOF & ratio \\
 \midrule
-2dof\_arm & 75.0 & 252 & 0/18 & 18{,}590 & 1.3 & 4 & 9/9 \\
-3dof\_arm & 75.0 & 484 & 0/33 & 29{,}594 & 1.1 & 5 & 11/11 \\
-4dof\_arm & 98.9 & 538 & 0/33 & 26{,}480 & 2.2 & 6 & 11/11 \\
-5dof\_arm & 52.8 & 443 & 0/42 & 24{,}618 & 2.2 & 7 & 12/12 \\
-6dof\_arm & 70.4 & 720 & 0/52 & 129{,}840$^\ddagger$ & 1.4 & 8 & 13/13 \\
-7dof\_arm & 60.0 & 848 & 0/102 & 25{,}820 & 1.9 & 9 & 17/17 \\
-4wheel\_dual\_arm & 145.0 & 413 & 0/426 & 61{,}738 & 0.7 & 14 & 38/38 \\
+2dof\_arm & 75.0 & 252 & 0/18 & 18{,}590 & 1.3 & 2 & 9/9 \\
+3dof\_arm & 75.0 & 484 & 0/33 & 29{,}594 & 1.1 & 3 & 11/11 \\
+4dof\_arm & 98.9 & 538 & 0/33 & 26{,}480 & 2.2 & 4 & 11/11 \\
+5dof\_arm & 52.8 & 443 & 0/42 & 24{,}618 & 2.2 & 5 & 12/12 \\
+6dof\_arm & 70.4 & 720 & 0/52 & 129{,}840$^\ddagger$ & 1.4 & 6 & 13/13 \\
+7dof\_arm & 60.0 & 848 & 0/102 & 25{,}820 & 1.9 & 7 & 17/17 \\
+4wheel\_dual\_arm & 145.0 & 413 & 0/426 & 61{,}738 & 0.7 & 10 & 38/38 \\
 \midrule
-\textbf{Mean} & \textbf{82.4} & \textbf{528} & \textbf{0} & \textbf{31{,}783}$^*$ & \textbf{1.5} & \textbf{7.6} & \textbf{100\%} \\
+\textbf{Mean} & \textbf{82.4} & \textbf{528} & \textbf{0} & \textbf{31{,}783}$^*$ & \textbf{1.5} & \textbf{5.3} & \textbf{100\%} \\
 \bottomrule
 \end{tabular}
 \vspace{1mm}
