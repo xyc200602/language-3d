@@ -1642,6 +1642,34 @@ def _validate_assembly(assembly: Assembly) -> None:
     if assembly.joints:
         _ensure_connected(assembly, part_names)
 
+    # DOF-completeness: when the assembly name carries an explicit "<N>dof"
+    # prefix (the Architect names arms like "6dof_industrial_ball_wrist_arm"),
+    # verify the generated revolute-joint count matches. A recurring failure
+    # (6dof_arm: 4/9 historical runs) is the LLM merging two wrist joints
+    # into one housing, producing N-1 revolute joints for an N-DOF request.
+    # Without this check the under-DOF assembly passed silently (joint_count
+    # only checks a minimum). Raise so the Fixer regenerates with the missing
+    # joint called out explicitly.
+    #
+    # Only revolute/continuous joints count as arm-pose DOF — prismatic joints
+    # are gripper fingers (a parallel-jaw gripper's linear motion is not part
+    # of the arm's kinematic DOF), and mimic joints are coupled (never a DOF).
+    _dof_m = re.search(r"(\d+)\s*dof", assembly.name, re.IGNORECASE)
+    if _dof_m:
+        expected_dof = int(_dof_m.group(1))
+        actual_dof = sum(
+            1 for j in assembly.joints
+            if j.type in ("revolute", "continuous")
+        )
+        if actual_dof < expected_dof:
+            raise RuntimeError(
+                f"DOF mismatch: assembly '{assembly.name}' requests "
+                f"{expected_dof} DOF but only {actual_dof} revolute joints "
+                f"found. The LLM likely merged two joints into one housing "
+                f"(a recurring 6dof failure) — regenerate with "
+                f"{expected_dof} distinct revolute joints."
+            )
+
     # Check dimensions
     for part in assembly.parts:
         if not part.dimensions:

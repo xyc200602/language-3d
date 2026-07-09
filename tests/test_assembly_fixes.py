@@ -548,3 +548,78 @@ class TestF5F6NewChecks:
         assert len(result.support_polygon_xy) >= 4, (
             "base_plate should contribute its 4 corners to the support polygon"
         )
+
+
+class TestDOFCompleteness:
+    """The assembly name carries an explicit '<N>dof' prefix (e.g.
+    '6dof_industrial_ball_wrist_arm').  The sanitizer must reject an assembly
+    whose independent actuated-joint count falls short of N — a recurring
+    failure (6dof_arm: 4/9 historical runs) where the LLM merges two wrist
+    joints into one housing, producing N-1 DOF for an N-DOF request.
+    """
+
+    def _arm_with_dof(self, name: str, n_revolute: int) -> Assembly:
+        """Build a minimal arm: base_plate + N revolute joints in a chain +
+        a gripper (1 driven prismatic + 1 mimic)."""
+        parts = [_box("base_plate", 100, 100, 8)]
+        joints = []
+        prev = "base_plate"
+        link_names = [f"link_{i}" for i in range(n_revolute)]
+        for i in range(n_revolute):
+            parts.append(_box(link_names[i], 20, 20, 60))
+            joints.append(Joint(type="revolute", parent=prev, child=link_names[i],
+                                parent_anchor="top", child_anchor="bottom",
+                                axis="x" if i % 2 else "z", range_deg=(-90, 90)))
+            prev = link_names[i]
+        # Gripper: 1 driven + 1 mimic finger (mimic does NOT count as a DOF)
+        parts.append(_box("gripper_base", 30, 30, 20))
+        parts.append(_box("finger_l", 10, 5, 30))
+        parts.append(_box("finger_r", 10, 5, 30))
+        joints.append(Joint(type="fixed", parent=prev, child="gripper_base",
+                            parent_anchor="top", child_anchor="bottom"))
+        joints.append(Joint(type="prismatic", parent="gripper_base", child="finger_l",
+                            parent_anchor="front", child_anchor="back",
+                            axis="y", range_deg=(0, 10)))
+        joints.append(Joint(type="prismatic", parent="gripper_base", child="finger_r",
+                            parent_anchor="front", child_anchor="back",
+                            axis="y", range_deg=(0, 10), mimic_joint="finger_l"))
+        return Assembly(name=name, parts=parts, joints=joints)
+
+    def test_dof_complete_passes(self):
+        """A 6dof-named arm with 6 independent revolute joints passes."""
+        from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
+        asm = self._arm_with_dof("6dof_test_arm", n_revolute=6)
+        _validate_assembly(asm)  # must not raise
+
+    def test_missing_dof_raises(self):
+        """A 6dof-named arm with only 5 revolute joints is rejected.
+
+        This is the exact 6dof failure mode: the LLM merges wrist-yaw into
+        the wrist-pitch housing, dropping one DOF.  Without this check the
+        assembly passed silently (joint_count only enforced a minimum).
+        """
+        from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
+        asm = self._arm_with_dof("6dof_test_arm", n_revolute=5)
+        with pytest.raises(RuntimeError, match="DOF mismatch"):
+            _validate_assembly(asm)
+
+    def test_prismatic_gripper_not_counted_as_arm_dof(self):
+        """Gripper prismatic joints must NOT count toward the arm's DOF.
+
+        A 6dof arm with 6 revolute joints + a 2-finger gripper (1 driven +
+        1 mimic prismatic) must pass: the DOF check counts only revolute
+        joints, so the gripper's linear motion does not inflate the count
+        nor mask a missing arm joint.
+        """
+        from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
+        # 6 revolute (correct) + gripper with 1 driven + 1 mimic prismatic.
+        asm = self._arm_with_dof("6dof_test_arm", n_revolute=6)
+        _validate_assembly(asm)  # 6 revolute == 6 DOF, gripper ignored
+
+    def test_no_dof_in_name_skips_check(self):
+        """An assembly without a '<N>dof' name prefix is not DOF-checked
+        (e.g. 'dual_arm_3dof_4w_base' uses a different naming convention and
+        is validated by joint_count / connected_tree instead)."""
+        from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
+        asm = self._arm_with_dof("custom_robot", n_revolute=2)
+        _validate_assembly(asm)  # must not raise despite only 2 DOF
