@@ -1157,8 +1157,8 @@ class AssemblySolver:
         identity.
 
         THAT COMPENSATION IS NOW REMOVED.  ``part_feature_engine`` sets
-        ``orient_axis`` on every cylinder op: wheels (axis="y") → STL
-        cylinder built along Y; servos (axis="z") → STL along Z.  The
+        ``orient_axis`` on every cylinder op: wheels (axis="x") → STL
+        cylinder built along X; servos (axis="z") → STL along Z.  The
         correct orientation is baked into the STL geometry itself, so
         applying a second orientation here would DOUBLE-ROTATE the wheel
         (correct Y + R_x(90°) → back to Z = 磨盘).  Returning the pure

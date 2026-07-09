@@ -798,9 +798,8 @@ class AssemblyToURDF:
             # cylinder axis matches the wheel axle. Without this the
             # collision cylinder lies flat in MuJoCo → wheels look like
             # discs and don't roll correctly.
-            import math as _cm
             if "wheel" in link.name.lower() and link.collision_primitive is not None:
-                col_origin.set("rpy", f"0 {_cm.pi / 2:.6f} 0")
+                col_origin.set("rpy", f"0 {math.pi / 2:.6f} 0")
             else:
                 col_origin.set("rpy", "0 0 0")
             col_geom = ET.SubElement(collision, "geometry")

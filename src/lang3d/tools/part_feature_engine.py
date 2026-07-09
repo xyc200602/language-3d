@@ -574,12 +574,12 @@ def _generate_standard_body(
             "outer_radius": _cyl_radius(d),
             "inner_radius": config.bore["diameter_mm"] / 2,
             "height": d["height"],
-            # Wheels (revolute axis="y") must have their cylinder re-pointed
-            # along Y so the tyre + bore align with the axle — see the
+            # Wheels (revolute axis="x") must have their cylinder re-pointed
+            # along X so the tyre + bore align with the axle — see the
             # orient_axis handling in freecad.py.  Without this the wheel
             # STL is a flat disc (磨盘) lying in the XY plane, not a wheel.
             # Convention matches vtk_renderer._add_dimension_approximation
-            # (name.startswith("wheel_") → orient "y").
+            # (name.startswith("wheel_") → orient "x").
             "orient_axis": "x" if name.lower().startswith("wheel_") else "z",
             "name": body,
         })

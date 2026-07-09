@@ -1451,16 +1451,15 @@ def _add_dimension_approximation(
     horizontal after the actor rotation is applied.
 
     Cylinder orientation is inferred from the part NAME: wheels (``wheel_*``)
-    have their axle along Y (axis="y" joint), so the cylinder height (wheel
-    width) extends along Y — the cylinder lies on its side and rolls along X.
+    have their axle along X (revolute axis="x" — in this project's frame the
+    body's long edge is Y/front-back, so the perpendicular axle is X), so the
+    cylinder height (wheel width) extends along X and rolls forward in Y.
     All other cylinders (servos, standoffs) keep height on Z (vertical).
     """
     if "outer_diameter" in dims or "diameter" in dims:
         d = dims.get("outer_diameter", dims.get("diameter", 10))
         h = dims.get("height", dims.get("length", 10))
-        # Wheels have axle along Y (axis="y"); everything else is vertical (Z).
-        # Wheels have axle along X (revolute axis="x" — the body's long edge
-        # is Y/front-back, so wheels roll along Y; axle perpendicular = X).
+        # Wheels: axle along X (revolute axis="x").  Everything else: vertical (Z).
         orient = "x" if name.lower().startswith("wheel_") else "z"
         renderer.add_cylinder(
             radius=d / 2, height=h, color=color, position=tuple(position),

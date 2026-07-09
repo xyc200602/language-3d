@@ -21,9 +21,13 @@ Why this matters (root cause of the dual-arm failures):
 
 Convention pins (must match ``EXAMPLE_4W_ROBOT`` exactly, validated by the
 solver producing flat, symmetric wheels):
-  * wheel joint: ``revolute, axis="y", parent_anchor="left"/"right",
-    child_anchor="center", no_distribute=True`` — axis=y makes the cylinder
-    lie horizontally (its spin axis is Y, so it rolls forward/back).
+  * wheel joint: ``revolute, axis="x", parent_anchor="center",
+    child_anchor="center", offset=<corner XY + wheel_drop>,
+    no_distribute=True`` — In THIS project's frame, X is left-right (track)
+    and Y is front-back (driving direction), so axis=x puts the axle along
+    the track → the wheel rolls in Y (forward/back).  This is the lateral
+    axle; the Husky URDF expresses the same axle as axis="y" because
+    Husky's frame swaps X/Y (Husky X=front-back, Y=left-right).
   * motors: ``fixed, parent=base_plate, parent_anchor="bottom",
     distribution_group="motors"`` — the solver's 2×2 grid distribution puts
     them at the four corners of the base underside.
@@ -361,9 +365,11 @@ def build_wheeled_base(
         })
 
     # --- wheels (mounted DIRECTLY on base_plate, Husky structure) ---
-    # Each wheel is a continuous/revolute joint directly on base_plate (Husky:
-    # wheel_link ← continuous joint, axis=y ← base_link). NO motor→suspension
-    # chain. axis="y" makes the cylinder lie horizontal and roll forward.
+    # Each wheel is a revolute joint directly on base_plate (Husky: wheel_link
+    # ← continuous joint on base_link, NO motor→suspension chain).  We emit
+    # axis="x": in THIS project's frame X is left-right (track) and Y is
+    # front-back, so the X axle makes the wheel roll forward in Y.  (The Husky
+    # URDF uses axis="y" because Husky swaps X/Y — see module docstring.)
     #
     # WHEEL POSITIONING (Husky URDF convention — see
     # docs/references/external/husky_urdf_ground_truth.md):
