@@ -211,8 +211,8 @@ A retrieve-before / store-after memory of verified-good assemblies (`experience/
 | Rendering / 渲染 | 1 | `vtk_renderer.py` — offscreen VTK + crop + clipping |
 | Utilities / 工具 | 2+ | `ik_solver.py`, `mesh_collision.py`, `sim_mujoco.py` |
 
-> **Note / 注意**: The "Tools" column counts *tool classes* (functions registered), which sum to ~61; the "46 tool modules" above counts *registered `.py` module files*. These are two different granularities. The 56-part COTS knowledge base is a separate count (commercial part templates, not tools).
-> "Tools" 列数的是*工具类*（注册的功能，合计约 61）；上面的"46 tool modules"数的是*注册的 `.py` 模块文件*。两者口径不同。56-part COTS 知识库是另一个计数（商用零件模板，非工具）。
+> **Note / 注意**: The "Tools" column counts *tool classes* (functions registered), which sum to ~120; the "46 tool modules" above counts *registered `.py` module files* in `tools/__init__.py` (59 `.py` files live on disk, but 13 are internal helpers like `base.py`, `freecad_common.py`, `sanitizers.py` that are not registered as tool providers). The 56-part COTS knowledge base is a separate count (commercial part templates, not tools).
+> "Tools" 列数的是*工具类*（注册的功能，合计约 120）；上面的"46 tool modules"数的是 `tools/__init__.py` 中*注册的 `.py` 模块文件*（磁盘上 59 个 `.py`，其中 13 个是 `base.py`、`freecad_common.py`、`sanitizers.py` 等内部辅助文件，不作为工具注册）。56-part COTS 知识库是另一个计数（商用零件模板，非工具）。
 
 ---
 
@@ -285,7 +285,7 @@ language-3d/
 │   │       ├── slicing.py         # G-code slicing
 │   │       └── design.py          # Design hierarchy, stability, power
 │   └── config.py                  # Configuration
-├── tests/                         # 4,200+ tests
+├── tests/                         # 3,700+ tests
 │   ├── test_e2e_production.py     # E2E pipeline (4dof_arm + 4wheel_dual_arm)
 │   ├── test_expert_roles.py       # Expert agent role + tool whitelist tests
 │   └── ...
@@ -302,7 +302,7 @@ language-3d/
 
 | Suite / 测试套件 | Tests | Status / 状态 |
 |---|---|---|
-| Unit + Integration / 单元 + 集成 | 4,200+ | 0 known failures (6 pre-existing failures fixed 2026-07-03 ~ 07-08, see AGENTS.md §6.3) |
+| Unit + Integration / 单元 + 集成 | 3,700+ | 0 known failures (6 pre-existing failures fixed 2026-07-03 ~ 07-08, see AGENTS.md §6.3) |
 | E2E: 4dof_arm (pipeline) / 机械臂 | 1 | **95.1%** (mode of 69 runs, mean 86.2%; 0 SKIP; MuJoCo + grasp + motion-collision PASS, range clamp active) |
 | E2E: 4wheel_dual_arm (pipeline) / 轮式双臂 | 1 | **95.3%** (mode of 49 runs, mean 93.3%; 0 SKIP; drives + turns, deterministic compose, motion-collision-free) |
 | Expert Roles / 专家角色 | 27 | 27 PASS |

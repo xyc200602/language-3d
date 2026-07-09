@@ -503,7 +503,11 @@ def validate_all_parts(
     report = BatchValidationReport(total_parts=len(parts))
 
     if not _freecad_available():
-        logger.error("FreeCAD not available — skipping validation")
+        logger.warning(
+            "FreeCAD not available — skipping part validation. "
+            "Mesh quality/watertightness cannot be verified without FreeCAD; "
+            "install FreeCAD 1.1 for full validation."
+        )
         report.skipped = len(parts)
         for p in parts:
             report.results.append(PartValidationResult(

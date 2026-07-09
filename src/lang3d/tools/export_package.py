@@ -339,9 +339,19 @@ def generate_part_stls(
         script_path.write_text(script, encoding="utf-8")
 
     # Check FreeCAD availability — bail out early if not installed so the
-    # caller can fall back to trimesh preview STLs.
+    # caller can fall back to trimesh preview STLs.  This is a WARNING, not
+    # info: without FreeCAD the exported STLs are trimesh approximations
+    # (no real CAD geometry), which a user could mistake for production-grade
+    # output.  The {"skipped": True} return lets callers detect this and
+    # fall back, but the log makes the degradation explicit (AGENTS.md §1.1:
+    # degrade loudly, never silently).
     if not _find_freecad_python():
-        logger.info("FreeCAD not available — skipping real STL generation")
+        logger.warning(
+            "FreeCAD not found — real STL generation skipped. Exported STLs "
+            "will be trimesh preview approximations, NOT production CAD "
+            "geometry. Install FreeCAD 1.1 and ensure _find_freecad_python() "
+            "can locate it for manufacturing-grade meshes."
+        )
         return (str(stl_dir_p), {"skipped": True})
 
     # Run FreeCAD to generate the actual STLs
