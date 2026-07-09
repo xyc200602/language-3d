@@ -132,26 +132,27 @@ class TestSingleRunScoring:
         assert any("support polygon" in reason for reason in r.gate_reasons)
 
     def test_grasp_failure_lowers_functionality(self):
-        """s_func weights grasp at 0.4 (success-rate) + 0.3 (lift) = 0.7 of total.
+        """s_func weights grasp at 0.6 (success-rate) + 0.4 (DOF).
 
-        A grasp fail zeroes both the grasp-rate and (effectively) lift terms,
-        so s_func drops by ~0.7 relative to a passing gripper.  This replaces
-        the old 0.5-weight binary that credited a flaky gripper identically to
-        a reliable one.
+        A grasp fail zeroes the grasp-rate term, so s_func drops by 0.6
+        relative to a passing gripper.  The lift term was removed from the
+        formula (no benchmark case achieves positive lift — paper §sim-limits,
+        so a 0.3-weighted constant-zero term carried no ranking signal); its
+        weight was redistributed to grasp (0.4→0.6) and DOF (0.3→0.4).
         """
         passing = compute_composite(_make_report(grasp_ok=True, lift_ratio=1.0), _make_assembly(), "4dof_arm")
         failing = compute_composite(_make_report(grasp_ok=False, lift_ratio=0.0), _make_assembly(), "4dof_arm")
         # dof_ratio = 1.0 in both (4 actuated / 4 expected)
-        # passing: 0.4*1 + 0.3*1 + 0.3*1 = 1.0
+        # passing: 0.6*1 + 0.4*1 = 1.0
         assert passing.s_func == pytest.approx(1.0)
-        # failing: 0.4*0 + 0.3*0 + 0.3*1 = 0.3
-        assert failing.s_func == pytest.approx(0.3)
+        # failing: 0.6*0 + 0.4*1 = 0.4
+        assert failing.s_func == pytest.approx(0.4)
 
     def test_dof_completeness_lowers_functionality(self):
-        """Fewer actuated joints than expected lowers s_func via the 0.3 dof term."""
+        """Fewer actuated joints than expected lowers s_func via the 0.4 dof term."""
         r = compute_composite(_make_report(actuated=2, grasp_ok=True, lift_ratio=1.0), _make_assembly(), "4dof_arm")
-        # dof_ratio = 2/4 = 0.5; s_func = 0.4*1 + 0.3*1 + 0.3*0.5 = 0.85
-        assert r.s_func == pytest.approx(0.85)
+        # dof_ratio = 2/4 = 0.5; s_func = 0.6*1 + 0.4*0.5 = 0.8
+        assert r.s_func == pytest.approx(0.8)
 
     def test_q_is_in_zero_one_not_percentage(self):
         """Q is a relative rank in [0,1], never multiplied by 100.
@@ -220,15 +221,20 @@ class TestLegacyReports:
 
 
 class TestCaseLevelScoring:
-    def test_reliability_uses_mean_normalized_by_ceiling(self, tmp_path):
-        """s_rely = mean(nonzero_scores) / SCORE_CEILING.
+    def test_reliability_is_cross_run_pass_rate(self, tmp_path):
+        """s_rely = fraction of non-zero runs reaching the 80% usable threshold.
 
-        Replaces the old P(score>=80) binary that gave near-identical s_rely
-        to a deterministic case and a high-variance one.  The mean captures
-        the typical distance from the reachable ceiling (95.1%).
+        Replaces the prior mean/ceiling self-normalisation, which divided the
+        rubric's own score by its own ceiling — a self-referential quantity
+        that clustered in a narrow 0.92-0.99 band across very different cases
+        (a deterministic 4wheel and a high-variance 4dof scored nearly
+        identically) and carried little discriminative signal.  A pass-rate
+        against an absolute 80% bar asks "does this robot reliably produce a
+        usable assembly", which is the actual reliability question.
         """
         case = "4dof_arm"
         case_dir = tmp_path / case
+        # scores: 95.1, 95.1, 61.9 (below 80), 88.0 → 3 of 4 reach 80% = 0.75
         for i, score in enumerate([95.1, 95.1, 61.9, 88.0]):
             run_dir = case_dir / f"run{i}"
             run_dir.mkdir(parents=True)
@@ -238,10 +244,8 @@ class TestCaseLevelScoring:
 
         r = compute_composite_for_case(case, runs_dir=tmp_path)
         assert r is not None
-        # mean = (95.1+95.1+61.9+88.0)/4 = 85.025; ceiling = 95.1
-        from lang3d.eval.composite_score import SCORE_CEILING
-        expected = 85.025 / SCORE_CEILING
-        assert r.s_rely == pytest.approx(expected, rel=1e-3)
+        # 3 of 4 runs >= 80% → s_rely = 0.75
+        assert r.s_rely == pytest.approx(0.75, rel=1e-3)
 
     def test_median_run_used_for_physics_not_best(self, tmp_path):
         """Physical metrics come from a median-score run, not the best.
@@ -310,8 +314,8 @@ class TestCaseLevelScoring:
         r = compute_composite_for_case(case, runs_dir=tmp_path)
         assert r is not None
         assert r.raw_components["grasp_rate"] == pytest.approx(0.2)
-        # s_func = 0.4*0.2 + 0.3*0 + 0.3*1 = 0.38  (dof_ratio=1, lift=0)
-        assert r.s_func == pytest.approx(0.38)
+        # s_func = 0.6*0.2 + 0.4*1 = 0.52  (dof_ratio=1; lift removed from formula)
+        assert r.s_func == pytest.approx(0.52)
 
     def test_metrics_run_preferred_over_legacy_same_score(self, tmp_path):
         """When a legacy (no-metrics) and a new (with-metrics) run tie on

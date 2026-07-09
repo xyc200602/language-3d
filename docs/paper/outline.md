@@ -1,5 +1,15 @@
 # Paper Outline: Language-3D
 
+> **⚠ STALE — superceded by main.tex (2026-07-09).** This outline was the
+> early drafting scaffold. Several of its claims are now outdated and were
+> corrected in the paper proper: it says "two benchmark cases" (the paper
+> now evaluates seven); it claims "stddev=0.0%, fully deterministic" for
+> 4dof_arm (the paper's Reproducibility section shows the real bimodal
+> distribution); and the composite-score formula (Q) was redesigned (the
+> lift term removed, s_rely changed to a cross-run pass rate, mean now 0.68).
+> Treat `main.tex` as the single source of truth; this file is kept only as a
+> historical design record.
+
 > **Cross-verification rule (AGENTS.md §1.2)**: Every external claim cited in
 > this paper must be verified against ≥2 independent sources. Claims marked
 > ⚠ are partially verified and need strengthening before submission.

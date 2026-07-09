@@ -7,11 +7,16 @@ the NL→robot-package task, so presenting it as a percentage would be false
 precision). Three sub-scores capture the dimensions that actually vary:
 
 1. **Robustness** — does it stand up?  (COM margin normalised by the real
-   support-polygon diameter, not a cosmetic base-part size)
+   support-polygon diameter — built from the kinematic root and its
+   fixed-joint descendants, NOT dangling appendages that merely reach low)
 2. **Functionality** — can it do what arms do?  (grasp success *rate* across
-   runs, not best-of-N; plus lift quality and DOF completeness)
-3. **Reliability** — does it work every time?  (mean e2e score across runs,
-   normalised by the 95.1% theoretical ceiling)
+   runs, not best-of-N; plus DOF completeness.  Lift quality is measured and
+   exposed in the raw components for audit but is NOT in the formula because
+   no benchmark case achieves positive lift — a consistently-zero term carries
+   no ranking signal; see paper §sim-limits)
+3. **Reliability** — does it work every time?  (fraction of non-zero runs that
+   reach a usable 80% score threshold — a cross-run pass rate, NOT a
+   self-referential mean/ceiling ratio which clustered in a narrow band)
 
 ``Q = (s_robust * s_func * s_rely) ** (1/3)`` if every gate passes,
 else ``Q = 0``.  The geometric mean (rather than arithmetic) is chosen so a
@@ -87,11 +92,13 @@ logger = logging.getLogger(__name__)
 #: gated here (it is ~0° by construction — see module docstring).
 RAW_DROOP_GATE_DEG = 5.0
 
-#: Theoretical maximum e2e rubric score.  The rubric has 41 checks, of which
-#: 2 are informational and always WARN (rotation_data, outliers), so the
-#: achievable ceiling is 39/41 = 95.1%, NOT 100%.  s_rely normalises the
-#: across-run mean score by this ceiling so a perfectly-reproducible case
-#: scores s_rely = 1.0 rather than an unreachable 95.1/100.
+#: Theoretical maximum e2e rubric score (documentation only, not used in the
+#: composite).  The rubric has 41 checks, of which 2 are informational and
+#: always WARN (rotation_data, outliers), so the achievable ceiling is
+#: 39/41 = 95.1%, NOT 100%.  Retained as a documented reference for what a
+#: "perfect" rubric run scores; s_rely now uses an absolute 80% usability
+#: threshold instead of dividing by this ceiling (self-referential mean/ceiling
+#: clustered in a narrow band and carried little discriminative signal).
 SCORE_CEILING = 95.1
 
 #: Expected actuated DOF per case, for the s_func DOF-completeness term.
@@ -433,30 +440,39 @@ def _gate_and_subs(
     else:
         s_robust = 0.0
 
-    # 2. Functionality: grasp success-RATE (not best-of-N) + lift quality +
-    #    DOF completeness.  When the case has no gripper (grasp_rate == -1),
-    #    the grasp/lift weight collapses into dof_ratio so a gripperless case
-    #    is scored on actuation alone.
+    # 2. Functionality: grasp success-RATE (not best-of-N) + DOF completeness.
+    #    The lift term (lift_quality) is NO LONGER in the formula: across all
+    #    benchmark cases no configuration achieves positive lift (the cube
+    #    drops during the lift phase — paper §sim-limits), so a 0.3-weighted
+    #    lift term carried no information and diluted the grasp signal.  Lift
+    #    is still measured and exposed in raw_components for audit, but a
+    #    consistently-zero term does not belong in a rank score.  When the case
+    #    has no gripper (grasp_rate == -1), s_func collapses to DOF only.
     dof_ratio = min(1.0, (actuated or 0.0) / expected) if expected > 0 else 0.0
     if grasp_rate < 0:
         # No gripper in any run — score on DOF only.
         s_func = dof_ratio
     else:
         g = max(0.0, grasp_rate)
-        l = max(0.0, lift_quality if lift_quality >= 0 else 0.0)
-        s_func = 0.4 * g + 0.3 * l + 0.3 * dof_ratio
+        s_func = 0.6 * g + 0.4 * dof_ratio
 
-    # 3. Reliability: mean score normalised by the achievable ceiling.
-    #    Replaces the prior P(score>=80) binary, which gave nearly-identical
-    #    s_rely to a deterministic case (4wheel, all 83-95) and a highly
-    #    random one (4dof, 0-95).  The mean captures the typical outcome and
-    #    its distance from the reachable ceiling.
+    # 3. Reliability: fraction of non-zero runs that reach a usable threshold.
+    #    This replaces the prior mean/ceiling self-normalisation, which used the
+    #    rubric's own score divided by its own ceiling — a self-referential
+    #    quantity that clustered in a narrow 0.92-0.99 band across very
+    #    different cases (a deterministic 4wheel and a high-variance 4dof
+    #    scored nearly identically) and carried little discriminative signal.
+    #    A pass-rate against an absolute 80% bar is a genuine cross-run
+    #    stability measure: it asks "does this robot reliably produce a
+    #    usable assembly", not "how close to the rubric ceiling is the mean".
+    usable_threshold = 80.0
     nonzero_scores = [r.get("score", 0) for r in reports_list if r.get("score", 0) > 0]
     if nonzero_scores:
-        s_rely = min(1.0, (sum(nonzero_scores) / len(nonzero_scores)) / SCORE_CEILING)
+        s_rely = sum(1 for s in nonzero_scores if s >= usable_threshold) / len(nonzero_scores)
     else:
         s_rely = 0.0
     raw["mean_score"] = sum(nonzero_scores) / len(nonzero_scores) if nonzero_scores else 0.0
+    raw["reliability_pass_rate"] = s_rely
     raw["total_runs"] = len(reports_list)
 
     return gate_passed, gate_reasons, s_robust, s_func, s_rely, raw
