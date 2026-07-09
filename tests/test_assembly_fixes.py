@@ -603,6 +603,18 @@ class TestDOFCompleteness:
         with pytest.raises(RuntimeError, match="DOF mismatch"):
             _validate_assembly(asm)
 
+    def test_excess_dof_raises(self):
+        """A 7dof-named arm with 8 revolute joints is rejected.
+
+        Observed in production: the LLM added a redundant joint (base-yaw +
+        7 numbered joints = 8 for a 7-DOF request).  The sanitizer must flag
+        over-DOF as well as under-DOF so the name and the joint count agree.
+        """
+        from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
+        asm = self._arm_with_dof("7dof_test_arm", n_revolute=8)
+        with pytest.raises(RuntimeError, match="too many"):
+            _validate_assembly(asm)
+
     def test_prismatic_gripper_not_counted_as_arm_dof(self):
         """Gripper prismatic joints must NOT count toward the arm's DOF.
 

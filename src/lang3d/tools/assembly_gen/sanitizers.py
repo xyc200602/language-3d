@@ -1666,13 +1666,18 @@ def _validate_assembly(assembly: Assembly) -> None:
             if j.type in ("revolute", "continuous")
             and not any(kw in (j.child or "").lower() for kw in _WHEEL_KEYWORDS)
         )
-        if actual_dof < expected_dof:
+        if actual_dof != expected_dof:
+            direction = (
+                "too few — the LLM likely merged two joints into one housing "
+                "(a recurring 6dof failure)"
+                if actual_dof < expected_dof
+                else "too many — the LLM added a redundant joint"
+            )
             raise RuntimeError(
                 f"DOF mismatch: assembly '{assembly.name}' requests "
-                f"{expected_dof} DOF but only {actual_dof} revolute joints "
-                f"found. The LLM likely merged two joints into one housing "
-                f"(a recurring 6dof failure) — regenerate with "
-                f"{expected_dof} distinct revolute joints."
+                f"{expected_dof} DOF but {actual_dof} revolute joints found "
+                f"({direction}). Regenerate with exactly {expected_dof} "
+                f"distinct revolute joints."
             )
 
     # Check dimensions
