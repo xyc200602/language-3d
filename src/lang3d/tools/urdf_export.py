@@ -9,6 +9,7 @@ Public API:
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -20,6 +21,8 @@ from typing import Any
 from ..knowledge.mechanics import Assembly, Joint, Part
 from ..models.base import ToolDefinition
 from .base import Tool
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # Constants
@@ -155,8 +158,7 @@ def _resolve_axis(joint: Joint) -> list[float]:
     if (child.startswith("wheel_") or child.startswith("tire_")) \
             and joint.type in ("revolute", "continuous"):
         if abs(resolved[2]) > 0.5:  # Z-dominant
-            import logging
-            logging.getLogger("lang3d.urdf_export").warning(
+            logger.warning(
                 "wheel joint %s→%s had axis %s (turntable); forcing to X "
                 "(rolling axle). See mobile_base_gen.py convention.",
                 joint.parent, joint.child, resolved,
