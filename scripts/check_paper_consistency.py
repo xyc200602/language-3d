@@ -94,28 +94,31 @@ if _composite_ok:
         max_q = max(r.q for r in results)
         n_distinct = len(set(q_vals.values()))
 
-        # Abstract / Conclusion / Intro claim: mean 0.68, range 0.49-0.85, 7/7.
+        # Abstract / Conclusion / Intro claim: mean 0.68, range 0.49-0.84, 7/7.
         # These are parsed from the actual paper text (not hardcoded) so the
         # check stays correct as the paper evolves. Q values are deterministic
         # given the frozen BENCHMARK runs, so drift indicates a stale table.
+        # Tight tolerance (0.005): the scorer rounds to 2dp, so a correct paper
+        # should match within half of the last decimal place; 0.015 (the old
+        # value) silently masked a 0.85-vs-0.8397 discrepancy (audit 2026-07-10).
+        _Q_TOL = 0.005
         _m_mean = re.search(r"mean of ([\d.]+)", TEX)
         _m_range = re.search(r"range ([\d.]+)--([\d.]+)", TEX)
         _paper_mean = float(_m_mean.group(1)) if _m_mean else 0.68
         _paper_min = float(_m_range.group(1)) if _m_range else 0.49
-        _paper_max = float(_m_range.group(2)) if _m_range else 0.85
-        check(abs(mean_q - _paper_mean) < 0.015,
+        _paper_max = float(_m_range.group(2)) if _m_range else 0.84
+        check(abs(mean_q - _paper_mean) < _Q_TOL,
               f"composite mean Q = {mean_q:.3f}, paper says {_paper_mean}")
-        check(abs(min_q - _paper_min) < 0.015,
+        check(abs(min_q - _paper_min) < _Q_TOL,
               f"composite min Q = {min_q:.3f}, paper says {_paper_min}")
-        check(abs(max_q - _paper_max) < 0.015,
+        check(abs(max_q - _paper_max) < _Q_TOL,
               f"composite max Q = {max_q:.3f}, paper says {_paper_max}")
         check(n_distinct == 7,
               f"composite distinct = {n_distinct}/7, paper says 7/7")
 
         # Per-case Q in Table II (tab:composite). Parse by splitting each data
         # row on '&' and taking the Q column (6th), rather than a fragile
-        # anchored regex that mis-counts columns. Tight tolerance (0.015) since
-        # the benchmark runs are frozen.
+        # anchored regex that mis-counts columns. Tight tolerance (0.005).
         _comp_block = TEX.split("tab:composite")[1].split("\\end{table}")[0] if "tab:composite" in TEX else ""
         _table_q = {}
         for line in _comp_block.splitlines():
@@ -136,7 +139,7 @@ if _composite_ok:
                     break
         for case, real_q in q_vals.items():
             paper_q = _table_q.get(case)
-            if paper_q is not None and abs(paper_q - real_q) > 0.015:
+            if paper_q is not None and abs(paper_q - real_q) > _Q_TOL:
                 check(False,
                       f"Table II Q for {case}: paper={paper_q}, recomputed={real_q}")
 

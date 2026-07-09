@@ -21,6 +21,7 @@ STEP-LLM\cite{stepllm2026} & \checkmark & -- & -- & -- & \checkmark & -- & -- & 
 LLM4CAD\cite{llm4cad2025} & \checkmark & -- & \checkmark & -- & -- & -- & -- & -- & -- \\
 \midrule
 ArtiCAD\cite{articad2026} & \checkmark & \checkmark & \checkmark & --$^*$ & -- & -- & -- & --$^\dagger$ & \checkmark \\
+Articraft\cite{articraft2026} & \checkmark & \checkmark & -- & \checkmark & -- & -- & -- & -- & -- \\
 Blox-Net\cite{bloxnet2025} & \checkmark & \checkmark & -- & voxel & -- & -- & -- & \checkmark & \checkmark \\
 RoboMorph\cite{robomorph2024} & \checkmark & \checkmark & -- & -- & -- & -- & -- & \checkmark & -- \\
 \midrule
@@ -35,6 +36,13 @@ RoboMorph\cite{robomorph2024} & \checkmark & \checkmark & -- & -- & -- & -- & --
 $^*$ArtiCAD generates editable FreeCAD code from which STL may be derivable,
 but STL mesh export is not reported in the paper. Sources: arXiv HTML §6 +
 Bytez summary (both confirm URDF export; neither mentions STL/BOM/firmware).
+
+\textbf{Articraft} (arXiv:2605.15187, Cambridge/Oxford, open source) generates
+articulated 3D assets as URDF + STL via an LLM coding agent writing against a
+domain SDK. It targets general articulated objects (furniture, household items;
+Articraft-10K dataset: 10K assets, 245 categories), not robot engineering
+packages---no BOM, firmware, ROS2 structure, assembly guides, or COTS part
+specs. Sources: arXiv abstract + HTML + GitHub (mattzh72/articraft).
 
 $^\dagger$ArtiCAD mentions ``physical prototyping'' in its abstract, but
 does not describe automated physics simulation validation (e.g., contact,

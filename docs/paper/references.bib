@@ -37,8 +37,10 @@
           and Fija{\l}kowski, Pawe{\l} and Cygan, Marek and Kuci{\'n}ski, {\L}ukasz},
   journal={arXiv preprint arXiv:2407.08626},
   year={2024},
-  note={Verified: arXiv + OpenReview (id pvqj1S08Rd). LLM evolves modular
-        robot URDF. Skeleton only, no CAD geometry/connections/BOM.}
+  note={Verified: arXiv + OpenReview. Forum id pvqj1S08Rd = RSS 2024 Workshop
+        EARL (first appearance); also at ICLR 2025 Workshop (id EGmBaqcRLY,
+        Oral). LLM evolves modular robot URDF. Skeleton only, no CAD
+        geometry/connections/BOM.}
 }
 
 @inproceedings{robogen2024,
@@ -220,4 +222,32 @@
         VLM + evolutionary search co-designs manufacturable robotic tools/
         grippers. Overlaps on VLM loop + manufacturability; focuses on tool
         design, not full robot-body engineering package.}
+}
+
+% === Concurrent open-source NL->URDF+STL work (added per audit 2026-07-10) ===
+
+@article{articraft2026,
+  title={Articraft: An Agentic System for Scalable Articulated 3D Asset Generation},
+  author={others},
+  journal={arXiv preprint arXiv:2605.15187},
+  year={2026},
+  note={Verified: arXiv abstract + HTML full text + GitHub (mattzh72/articraft)
+        + project page (articraft3d.github.io). Cambridge/Oxford. LLM coding
+        agent generates articulated 3D assets (household objects, furniture)
+        by writing code against a domain SDK; outputs URDF + STL meshes.
+        Built Articraft-10K dataset (10K assets, 245 categories). Overlaps
+        on LLM-agent + URDF + STL; differs in task domain (general articulated
+        objects, not robot engineering packages) and does not produce BOM,
+        firmware, ROS2 packages, assembly guides, or COTS part specs.}
+}
+
+@article{selfimprovingcad2026,
+  title={Self-Improving CAD Agents with Finite Element Analysis},
+  author={others},
+  journal={arXiv preprint arXiv:2605.17448},
+  year={2026},
+  note={Verified: arXiv HTML (v2). LLM CAD agents with a self-improvement
+        loop grounded in FEA feedback (CadQuery + CalculiX). Touches the
+        FEA structural-analysis item on Language-3D's roadmap (not yet
+        implemented). Aligns with our deterministic-verification philosophy.}
 }
