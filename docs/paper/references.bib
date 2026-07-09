@@ -187,3 +187,37 @@
         reliability---aligned with Language-3D's deterministic Solver stage.
         Evaluates on mechanical/industrial/mold assembly tasks.}
 }
+
+% === Direct competitors flagged by audit (in author's related_work notes but not cited) ===
+
+@article{robotdesigngpt2026,
+  title={RobotDesignGPT: Text-to-URDF Robot Generation via VLM},
+  author={others},
+  journal={arXiv preprint arXiv:2601.11801},
+  year={2026},
+  note={Verified: arXiv HTML full text. Text+image -> URDF robot description
+        via VLM. Closest direct NL->URDF competitor; no CAD geometry/BOM/
+        firmware/assembly package.}
+}
+
+@article{text2assembly2025,
+  title={Text to Robotic Assembly of Multi-Component Objects},
+  author={others},
+  journal={arXiv preprint arXiv:2511.02162},
+  year={2025},
+  note={Verified: arXiv abstract. Text -> multi-component physical assembly
+        executed by an ABB robot arm (``robot make me a chair''). Overlaps
+        on assembly + physical execution; differs in focus (furniture assembly
+        execution, not robot-body package generation).}
+}
+
+@inproceedings{vlmgineer2026,
+  title={VLMgineer: VLM-driven Automated Design of Makeable Tools},
+  author={Gao, H. and others},
+  booktitle={International Conference on Learning Representations (ICLR)},
+  year={2026},
+  note={Verified: UPenn PDF (seas.upenn.edu) + OpenReview (id nESyz4PvJL).
+        VLM + evolutionary search co-designs manufacturable robotic tools/
+        grippers. Overlaps on VLM loop + manufacturability; focuses on tool
+        design, not full robot-body engineering package.}
+}

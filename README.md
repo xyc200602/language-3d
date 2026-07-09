@@ -195,7 +195,7 @@ A retrieve-before / store-after memory of verified-good assemblies (`experience/
 
 ## Tool System / 工具系统
 
-56 tool modules organized into 9 categories. Each expert role has a tool whitelist (`ROLE_TOOL_CATEGORIES`); in the executor path this is enforced, in the AssemblyPipeline path it is advisory (stages call domain functions directly):
+46 tool modules organized into 9 categories (registering 120+ tool classes). Each expert role has a tool whitelist (`ROLE_TOOL_CATEGORIES`); in the executor path this is enforced, in the AssemblyPipeline path it is advisory (stages call domain functions directly):
 
 > **Note:** Tool whitelist enforcement is active in the `OrchestratorAgent` path. The production `AssemblyPipeline` path calls domain functions directly (not through the tool registry), so the whitelist is advisory there.
 
@@ -210,6 +210,9 @@ A retrieve-before / store-after memory of verified-good assemblies (`experience/
 | Export / 导出 | 2+ | `export_package.py`, `urdf_export.py`, `bom_gen.py` |
 | Rendering / 渲染 | 1 | `vtk_renderer.py` — offscreen VTK + crop + clipping |
 | Utilities / 工具 | 2+ | `ik_solver.py`, `mesh_collision.py`, `sim_mujoco.py` |
+
+> **Note / 注意**: The "Tools" column counts *tool classes* (functions registered), which sum to ~61; the "46 tool modules" above counts *registered `.py` module files*. These are two different granularities. The 56-part COTS knowledge base is a separate count (commercial part templates, not tools).
+> "Tools" 列数的是*工具类*（注册的功能，合计约 61）；上面的"46 tool modules"数的是*注册的 `.py` 模块文件*。两者口径不同。56-part COTS 知识库是另一个计数（商用零件模板，非工具）。
 
 ---
 
@@ -253,7 +256,7 @@ language-3d/
 │   ├── models/                    # LLM/VLM Backends
 │   │   ├── glm.py                 # GLM-5.2 (text) + GLM-4.6V (vision)
 │   │   └── router.py              # 4-level vision model tiers (fast/standard/detailed/maximum; default: detailed)
-│   ├── tools/                     # 56 tool modules
+│   ├── tools/                     # 46 tool modules
 │   │   ├── assembly_generator.py  # NL → assembly JSON + VLM loop (main loop)
 │   │   ├── assembly_gen/          # Extracted sub-modules (P1-1 split)
 │   │   │   ├── sanitizers.py      # Post-generation correction (anchors, angles, limits)
