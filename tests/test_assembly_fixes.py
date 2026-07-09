@@ -630,8 +630,24 @@ class TestDOFCompleteness:
 
     def test_no_dof_in_name_skips_check(self):
         """An assembly without a '<N>dof' name prefix is not DOF-checked
-        (e.g. 'dual_arm_3dof_4w_base' uses a different naming convention and
-        is validated by joint_count / connected_tree instead)."""
+        (validated by joint_count / connected_tree instead)."""
         from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
         asm = self._arm_with_dof("custom_robot", n_revolute=2)
         _validate_assembly(asm)  # must not raise despite only 2 DOF
+
+    def test_dual_arm_dof_is_per_arm(self):
+        """A 'dual_arm_3dof_...' name means 3 DOF PER ARM = 6 total.
+        The sanitizer must scale by arm_count so a correct 6-joint dual-arm
+        passes, not false-trips on 'too many joints' (regression: the
+        unscaled check blocked the 4wheel_dual_arm e2e on 2026-07-09)."""
+        from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
+        # 3 DOF per arm × 2 arms = 6 revolute joints → must pass
+        asm = self._arm_with_dof("dual_arm_3dof_4w_differential_base", n_revolute=6)
+        _validate_assembly(asm)  # must NOT raise
+
+    def test_dual_arm_under_dof_raises(self):
+        """A 'dual_arm_3dof' with only 4 revolute joints (should be 6) raises."""
+        from lang3d.tools.assembly_gen.sanitizers import _validate_assembly
+        asm = self._arm_with_dof("dual_arm_3dof_wheeled", n_revolute=4)
+        with pytest.raises(RuntimeError, match="DOF mismatch"):
+            _validate_assembly(asm)

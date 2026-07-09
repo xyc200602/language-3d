@@ -1656,7 +1656,15 @@ def _validate_assembly(assembly: Assembly) -> None:
     # of the arm's kinematic DOF), and mimic joints are coupled (never a DOF).
     _dof_m = re.search(r"(\d+)\s*dof", assembly.name, re.IGNORECASE)
     if _dof_m:
-        expected_dof = int(_dof_m.group(1))
+        per_arm_dof = int(_dof_m.group(1))
+        # The "Ndof" in a dual-arm/multi-arm name is the PER-ARM DOF, not the
+        # total (assembly_compose.py:215 builds f"dual_arm_{arm_dof}dof_..."
+        # where arm_dof is one arm's joint count).  Detect dual/paired prefixes
+        # and scale the expected total accordingly.
+        _name_lower = assembly.name.lower()
+        _DUAL_KEYWORDS = ("dual_arm", "dual_arm", "双臂", "dualleg", "dual_leg")
+        arm_count = 2 if any(kw in _name_lower for kw in _DUAL_KEYWORDS) else 1
+        expected_dof = per_arm_dof * arm_count
         # Count arm-pose revolute joints, EXCLUDING wheels (a wheel is a
         # revolute locomotion joint, not a manipulation DOF) and gripper
         # prismatic fingers (linear gripper motion, not arm pose).
@@ -1673,9 +1681,10 @@ def _validate_assembly(assembly: Assembly) -> None:
                 if actual_dof < expected_dof
                 else "too many — the LLM added a redundant joint"
             )
+            _scope = f" ({arm_count}×{per_arm_dof} per arm)" if arm_count > 1 else ""
             raise RuntimeError(
                 f"DOF mismatch: assembly '{assembly.name}' requests "
-                f"{expected_dof} DOF but {actual_dof} revolute joints found "
+                f"{expected_dof} DOF{_scope} but {actual_dof} revolute joints found "
                 f"({direction}). Regenerate with exactly {expected_dof} "
                 f"distinct revolute joints."
             )
