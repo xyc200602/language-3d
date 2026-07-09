@@ -1247,18 +1247,45 @@ def _phase7_mujoco_simulation(
             metrics=physics_metrics,
         )
 
-        # Count actuated joints
-        actuated = report_lower.count("joint_name") or report_lower.count("joint:")
-        # Fallback: count "actuated: yes" patterns
-        if not actuated:
-            import re as _re
-            actuated = len(_re.findall(r"\bactuated\b.*?\byes\b", report_lower))
+        # Count actuated joints.
+        # The prior implementation string-matched the MuJoCo report text
+        # ("joint_name" / "joint:" occurrences), which double-counted the
+        # gripper's mimic finger (counted BOTH prismatic fingers instead of
+        # excluding the mimic-coupled one) and reported "6 actuated" for a
+        # 4-DOF arm — visibly wrong in Table I and inflating the composite's
+        # dof_ratio. Now count directly from the assembly object when available
+        # (authoritative): arm DOF = revolute joints; total actuated = revolute
+        # + non-mimic prismatic (the gripper's driven finger, not its coupled
+        # twin). Fixed and mimic joints are never actuated.
+        arm_dof = total_actuated = 0
+        if assembly is not None and getattr(assembly, "joints", None):
+            arm_dof = sum(
+                1 for j in assembly.joints
+                if j.type in ("revolute", "continuous")
+            )
+            driven_prismatic = sum(
+                1 for j in assembly.joints
+                if j.type == "prismatic" and not j.mimic_joint
+            )
+            total_actuated = arm_dof + driven_prismatic
+        else:
+            # Legacy fallback (assembly unavailable) — keep the string match
+            # but note it may over-count the mimic finger.
+            total_actuated = report_lower.count("joint_name") or report_lower.count("joint:")
+            if not total_actuated:
+                import re as _re
+                total_actuated = len(_re.findall(r"\bactuated\b.*?\byes\b", report_lower))
+            arm_dof = total_actuated  # cannot distinguish without assembly
         _check(
             checks, phase, "mujoco_joints_actuate",
-            actuated >= min_joints,
-            f"Actuated joints: {actuated} (min {min_joints})",
+            total_actuated >= min_joints,
+            f"Actuated joints: {total_actuated} (arm DOF {arm_dof}; min {min_joints})",
             critical=True,
-            metrics={"actuated_joints": int(actuated), "min_expected": int(min_joints)},
+            metrics={
+                "actuated_joints": int(total_actuated),
+                "arm_dof": int(arm_dof),
+                "min_expected": int(min_joints),
+            },
         )
 
         # sim_grasp: if the assembly has a gripper (finger prismatic joints),

@@ -391,7 +391,13 @@ def _gate_and_subs(
     com_margin = _metric(com, "com_margin_mm")
     poly_diam = _metric(com, "support_polygon_diameter_mm")
     severe = _metric(coll, "severe_count")
-    actuated = _metric(actuated_chk, "actuated_joints")
+    # Prefer arm_dof (revolute count = the NL-requested arm DOF, excluding
+    # gripper prismatic fingers) over actuated_joints (which includes the
+    # gripper's driven finger and inflated dof_ratio beyond 1.0 for every
+    # grippered arm). Fall back to actuated_joints for legacy reports that
+    # predate the arm_dof field.
+    arm_dof = _metric(actuated_chk, "arm_dof")
+    actuated = arm_dof if arm_dof is not None else _metric(actuated_chk, "actuated_joints")
 
     # Stance normaliser: prefer the real support-polygon diameter; fall back
     # to the base-part footprint heuristic only for legacy reports.
