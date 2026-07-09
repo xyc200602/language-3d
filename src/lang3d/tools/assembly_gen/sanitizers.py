@@ -1657,9 +1657,14 @@ def _validate_assembly(assembly: Assembly) -> None:
     _dof_m = re.search(r"(\d+)\s*dof", assembly.name, re.IGNORECASE)
     if _dof_m:
         expected_dof = int(_dof_m.group(1))
+        # Count arm-pose revolute joints, EXCLUDING wheels (a wheel is a
+        # revolute locomotion joint, not a manipulation DOF) and gripper
+        # prismatic fingers (linear gripper motion, not arm pose).
+        _WHEEL_KEYWORDS = ("wheel", "轮")
         actual_dof = sum(
             1 for j in assembly.joints
             if j.type in ("revolute", "continuous")
+            and not any(kw in (j.child or "").lower() for kw in _WHEEL_KEYWORDS)
         )
         if actual_dof < expected_dof:
             raise RuntimeError(

@@ -1254,20 +1254,36 @@ def _phase7_mujoco_simulation(
         # excluding the mimic-coupled one) and reported "6 actuated" for a
         # 4-DOF arm — visibly wrong in Table I and inflating the composite's
         # dof_ratio. Now count directly from the assembly object when available
-        # (authoritative): arm DOF = revolute joints; total actuated = revolute
-        # + non-mimic prismatic (the gripper's driven finger, not its coupled
-        # twin). Fixed and mimic joints are never actuated.
+        # (authoritative).
+        #
+        # Three distinct DOF notions, kept separate to avoid the recurring
+        # confusion where "actuated" conflated arm joints, gripper fingers,
+        # and wheels:
+        #   arm_dof       = revolute joints EXCLUDING wheels (the NL-requested
+        #                   arm pose DOF: base/shoulder/elbow/wrist). Wheels
+        #                   are revolute but are locomotion, not manipulation.
+        #   driven_fingers = non-mimic prismatic joints (the gripper's driven
+        #                   finger; its mimic twin is coupled, not independent)
+        #   total_actuated = arm_dof + driven_fingers (+ wheels, if present)
+        # The composite s_func uses arm_dof vs EXPECTED_DOF (which counts arm
+        # DOF only); Table I's "Arm DOF" column reports arm_dof.
         arm_dof = total_actuated = 0
         if assembly is not None and getattr(assembly, "joints", None):
-            arm_dof = sum(
-                1 for j in assembly.joints
-                if j.type in ("revolute", "continuous")
-            )
+            _WHEEL_KEYWORDS = ("wheel", "轮")
+            n_wheels = 0
+            arm_rev = 0
+            for j in assembly.joints:
+                if j.type in ("revolute", "continuous"):
+                    if any(kw in (j.child or "").lower() for kw in _WHEEL_KEYWORDS):
+                        n_wheels += 1
+                    else:
+                        arm_rev += 1
             driven_prismatic = sum(
                 1 for j in assembly.joints
                 if j.type == "prismatic" and not j.mimic_joint
             )
-            total_actuated = arm_dof + driven_prismatic
+            arm_dof = arm_rev
+            total_actuated = arm_rev + n_wheels + driven_prismatic
         else:
             # Legacy fallback (assembly unavailable) — keep the string match
             # but note it may over-count the mimic finger.
