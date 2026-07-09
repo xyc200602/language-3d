@@ -179,7 +179,7 @@ def _xml_set_param(root: "ET.Element", group_name: str, param_name: str, value: 
 from .freecad_script_builder import (  # noqa: F401
     _build_script, _build_batch_script,
     _FASTENER_DIMS, _FREECAD_ANCHOR_NORMALS,
-    SUBSYSTEM_COLORS,
+    SUBSYSTEM_COLORS, _mesh_export_lines,
 )
 
 def _z_to_normal_rotation(
@@ -638,7 +638,7 @@ def build_assembly_script(
     if output_path:
         lines.append(f'doc.saveAs({json.dumps(str(output_path) + ".FCStd")})')
         lines.append(f'_all_objs = [o for o in doc.Objects if hasattr(o, "Shape")]')
-        lines.append(f'Mesh.export(_all_objs, {json.dumps(str(output_path) + ".stl")})')
+        lines.extend(_mesh_export_lines("_all_objs", str(output_path) + ".stl"))
         lines.append("print(f'Assembly saved and exported')")
 
     lines.append("print(f'Assembly: {len(doc.Objects)} objects created')")

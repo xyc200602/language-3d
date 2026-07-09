@@ -17,6 +17,54 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# --- Standardised STL mesh tessellation (fixes inconsistent triangle counts) ---
+# FreeCAD's ``Mesh.export(shape, path)`` meshes the shape with ADAPTIVE defaults
+# that scale a hidden deflection by each shape's bounding-box diagonal — so a
+# boolean-intersected cylinder (e.g. a 54mm bolt hole) can tessellate to 88k
+# triangles while a structurally identical smaller one gets 4k, with no change
+# to the script.  This produced the 5dof triangle anomaly (37,840 vs 4dof's
+# 118,142) flagged in the paper audit.
+#
+# The fix meshes every shape with MeshPart.meshFromShape using ABSOLUTE
+# deflection (Relative=False), decoupling mesh density from bbox size and
+# boolean topology.  Values are the standard CAD-to-sim defaults: 0.1mm chordal
+# sag resolves M3-M8 bolt holes for MuJoCo collision without over-tessellating
+# flat faces; 0.3 rad (17°) caps curve facet count.
+STL_LINEAR_DEFLECTION = 0.1
+STL_ANGULAR_DEFLECTION = 0.3
+
+
+def _mesh_export_lines(export_var: str, path: str) -> list[str]:
+    """Emit deterministic-mesh STL export lines.
+
+    Replaces bare ``Mesh.export(_export_list, path)`` which leaked adaptive
+    tessellation.  Uses MeshPart.meshFromShape with absolute deflection so all
+    parts get uniform mesh density regardless of size or boolean topology.
+    ``export_var`` is the Python expression yielding the list of doc objects
+    (e.g. ``"_export_list"`` or ``"_all_objs"``).
+
+    Each shape is meshed with the same absolute LinearDeflection/AngularDeflection,
+    then merged into one Mesh.MeshObject and written via ``.write()`` (NOT
+    ``Mesh.export`` — the latter rejects bare Mesh objects with "None of the
+    objects can be exported to a mesh file"; it only accepts document objects).
+    """
+    return [
+        "import MeshPart",
+        f"_mesh = None",
+        f"for _o in {export_var}:",
+        "    _m = MeshPart.meshFromShape(",
+        "        Shape=_o.Shape,",
+        f"        LinearDeflection={STL_LINEAR_DEFLECTION},",
+        f"        AngularDeflection={STL_ANGULAR_DEFLECTION},",
+        "        Relative=False)",
+        "    if _mesh is None:",
+        "        _mesh = _m",
+        "    else:",
+        "        _mesh.addMesh(_m)",
+        f"_mesh.write({json.dumps(str(path))})",
+    ]
+
+
 # Deferred import to avoid circular dependency (freecad.py imports from
 # this module at module level for the re-export, so we can't import from
 # freecad at module level here). Resolve on first use.
@@ -304,13 +352,14 @@ def _build_script(operations: list[dict]) -> str:
         elif op_type == "export_stl":
             path = _safe_path(op["path"])
             obj_name = _safe_name(op["object"]) if op.get("object") else ""
-            tolerance = float(op.get("tolerance", 0.1))
-            # Use Mesh.export which is more robust than Mesh.Mesh(shape.tessellate())
+            # Mesh via MeshPart.meshFromShape with absolute deflection — bare
+            # Mesh.export used adaptive tessellation that produced wildly
+            # inconsistent triangle counts (see STL_LINEAR_DEFLECTION docs).
             if obj_name:
                 lines.append(f'_export_list = [doc.getObject("{obj_name}")]')
             else:
                 lines.append("_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]")
-            lines.append(f'Mesh.export(_export_list, {json.dumps(str(path))})')
+            lines.extend(_mesh_export_lines("_export_list", path))
             lines.append("import os")
             lines.append(f'_stl_path = {json.dumps(str(path))}')
             lines.append('print(f"STL exported: {os.path.getsize(_stl_path):,} bytes")')
@@ -990,7 +1039,7 @@ def _build_batch_script(all_ops: list[list[dict]]) -> str:
                 path = _safe_path(op["path"])
                 name = _safe_name(op.get("name", ""))
                 part_lines.append(f"_export_list = [o for o in doc.Objects if hasattr(o, 'Shape')]")
-                part_lines.append(f'Mesh.export(_export_list, {json.dumps(str(path))})')
+                part_lines.extend(_mesh_export_lines("_export_list", path))
                 part_lines.append(f'print({json.dumps(f"Exported: {path}")})')
 
             # For other op types, fall back to _build_script
