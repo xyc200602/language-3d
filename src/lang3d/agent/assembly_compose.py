@@ -289,12 +289,20 @@ def _to_assembly(parts: list[dict], joints: list[dict],
 
 def _cross_arm_collision_count(
     parts: list[dict], joints: list[dict], default_angles: dict[str, float],
+    *, checker=None,
 ) -> int:
     """Count arm_l↔arm_r collisions at the given pose (static check).
 
     Returns 0 when the two arms do not interpenetrate.  Uses the project's
     trimesh+FCL checker; degrades to "no info" (returns 0) if FCL is absent
     so a missing optional dep never blocks composition.
+
+    Args:
+        checker: an optional shared :class:`MeshCollisionChecker`. When the
+            caller is a joint-range search (many trials, same parts), pass one
+            instance so its per-part BVH cache persists across trials instead
+            of being rebuilt every call (the dominant cost of collision-aware
+            clamping). ``None`` builds a throwaway checker (back-compat).
     """
     try:
         from ..tools.mesh_collision import MeshCollisionChecker, HAS_FCL
@@ -303,7 +311,8 @@ def _cross_arm_collision_count(
         return 0
     if not HAS_FCL:
         return 0
-    checker = MeshCollisionChecker()
+    if checker is None:
+        checker = MeshCollisionChecker()
     asm = _to_assembly(parts, joints, default_angles)
     pos = AssemblySolver(asm).solve()
     res = checker.check_assembly_collisions(
@@ -321,6 +330,7 @@ def _cross_arm_collision_count(
 
 def _any_collision_count(
     parts: list[dict], joints: list[dict], default_angles: dict[str, float],
+    *, checker=None,
 ) -> int:
     """Count ALL non-adjacent collisions at the given pose (static check).
 
@@ -331,6 +341,11 @@ def _any_collision_count(
     ALL self-collisions, not just inter-arm ones.  (An elbow that rams its
     own shoulder at +150° is just as unusable as one that rams the other
     arm.)  Degrades to 0 when FCL is absent.
+
+    Args:
+        checker: see :func:`_cross_arm_collision_count` — pass a shared
+            instance across a joint-range search so the per-part BVH cache
+            persists. ``None`` builds a throwaway checker.
     """
     try:
         from ..tools.mesh_collision import MeshCollisionChecker, HAS_FCL
@@ -339,7 +354,8 @@ def _any_collision_count(
         return 0
     if not HAS_FCL:
         return 0
-    checker = MeshCollisionChecker()
+    if checker is None:
+        checker = MeshCollisionChecker()
     asm = _to_assembly(parts, joints, default_angles)
     pos = AssemblySolver(asm).solve()
     res = checker.check_assembly_collisions(
@@ -388,12 +404,19 @@ def _configure_collision_aware_dual_arm(
         return  # not a dual-arm-zaw assembly; nothing to coordinate
 
     try:
-        from ..tools.mesh_collision import HAS_FCL
+        from ..tools.mesh_collision import HAS_FCL, MeshCollisionChecker
     except ImportError:
         HAS_FCL = False
     if not HAS_FCL:
         log.info("dual-arm collision config skipped (python-fcl not installed)")
         return
+
+    # One shared checker for BOTH phases so the per-part BVH cache built
+    # during Phase 1's splay trials is reused in Phase 2's range search
+    # (the parts never change between trials — only joint angles, which move
+    # transforms, not meshes). This is what makes the O(trials × pairs) BVH
+    # builds collapse to O(parts).
+    shared_checker = MeshCollisionChecker()
 
     # ---- Phase 1: symmetric outward splay of base yaw ----
     # Search |yaw| from 30° up to 90° in 15° steps; take the first that
@@ -404,7 +427,7 @@ def _configure_collision_aware_dual_arm(
         trial = dict(default_angles)
         trial[arm_yaws["l"]] = -splay
         trial[arm_yaws["r"]] = +splay
-        if _cross_arm_collision_count(parts, joints, trial) == 0:
+        if _cross_arm_collision_count(parts, joints, trial, checker=shared_checker) == 0:
             chosen_splay = splay
             break
     if chosen_splay is None:
@@ -422,13 +445,15 @@ def _configure_collision_aware_dual_arm(
 
     # ---- Phase 2: per-joint soft-limit search ----
     # Delegate to the generic collision-aware range clamper (shared with
-    # the single-arm and post-solver pipeline path).
+    # the single-arm and post-solver pipeline path). Pass the shared checker
+    # so Phase 2 inherits Phase 1's BVH cache.
     _clamp_joint_ranges_to_collision_free(
         parts, joints, default_angles,
         joint_filter=lambda j: (
             j.get("child", "").startswith("arm_l_")
             or j.get("child", "").startswith("arm_r_")
         ),
+        checker=shared_checker,
     )
 
 
@@ -438,6 +463,7 @@ def _clamp_joint_ranges_to_collision_free(
     default_angles: dict[str, float],
     *,
     joint_filter=None,
+    checker=None,
 ) -> int:
     """Rewrite each revolute joint's ``range_deg`` to its collision-free subset.
 
@@ -457,6 +483,12 @@ def _clamp_joint_ranges_to_collision_free(
         joint_filter: predicate ``(joint_dict) -> bool`` selecting which
             revolute joints to clamp.  Defaults to all revolute joints whose
             child is NOT a wheel/tire/motor (i.e. arm joints).
+        checker: an optional shared :class:`MeshCollisionChecker`. When the
+            caller already built one (e.g. ``_configure_collision_aware_dual_arm``
+            ran Phase 1 with it), pass it so the per-part BVH cache persists
+            into Phase 2. ``None`` builds a fresh checker local to this call —
+            still cached across the joints WITHIN this call, just not across
+            the Phase-1→Phase-2 boundary.
 
     Returns the number of joints whose range was narrowed.  Silent no-op
     (returns 0) when FCL is unavailable — clamping is a refinement, not a
@@ -466,12 +498,16 @@ def _clamp_joint_ranges_to_collision_free(
     log = logging.getLogger("lang3d.assembly_compose")
 
     try:
-        from ..tools.mesh_collision import HAS_FCL
+        from ..tools.mesh_collision import HAS_FCL, MeshCollisionChecker
     except ImportError:
         HAS_FCL = False
     if not HAS_FCL:
         log.debug("collision-aware range clamp skipped (python-fcl not installed)")
         return 0
+    # One checker shared across every joint's range search so each part's BVH
+    # is built once (parts don't change between trials — only joint angles do).
+    if checker is None:
+        checker = MeshCollisionChecker()
 
     if joint_filter is None:
         # Default: arm joints = revolute, not wheels/tires/motors.
@@ -492,6 +528,10 @@ def _clamp_joint_ranges_to_collision_free(
         if hi - lo < 1.0:
             continue
         home = default_angles.get(child, (lo + hi) / 2.0)
+        # Bind the shared checker into the check_fn so every trial of this
+        # joint's search (and across all joints) reuses the same per-part BVH
+        # cache instead of rebuilding it per call.
+        check_fn = lambda p, j_, a, _c=checker: _any_collision_count(p, j_, a, checker=_c)
         # Binary-search the maximal collision-free [a, b] ⊆ [lo, hi] with
         # home ∈ [a, b].  We search each side independently: expand a
         # downward from home and b upward from home as long as the swept
@@ -499,11 +539,11 @@ def _clamp_joint_ranges_to_collision_free(
         # search than full range N-body) but matches the e2e joint-sweep.
         a = _expand_collision_free(
             parts, joints, default_angles, child, home, lo, step=-15.0,
-            check_fn=_any_collision_count,
+            check_fn=check_fn,
         )
         b = _expand_collision_free(
             parts, joints, default_angles, child, home, hi, step=+15.0,
-            check_fn=_any_collision_count,
+            check_fn=check_fn,
         )
         # ENDPOINT VALIDATION: the expand-from-home search checks angles at
         # 15° intervals from home, but the motion-collision sweep samples
@@ -514,7 +554,6 @@ def _clamp_joint_ranges_to_collision_free(
         # sweep then caught it (the most common motion_collision_sweep
         # failure). Verify the endpoints a and b are themselves collision-
         # free; if not, walk them inward until they are.
-        check_fn = _any_collision_count
         while a < home:
             trial = dict(default_angles); trial[child] = a
             if check_fn(parts, joints, trial) == 0:

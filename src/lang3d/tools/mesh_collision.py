@@ -145,12 +145,48 @@ class MeshCollisionChecker:
                 "python-fcl (and trimesh) are required for MeshCollisionChecker. "
                 "Install with: pip install python-fcl trimesh"
             )
+        # Per-part BVH cache, keyed by (part_name, shrink_mm). A part's BVH
+        # depends only on its dimensions and the collision margin — NOT on its
+        # placement — so within one assembly (fixed parts) the BVH is reused
+        # across every angle trial of a joint-range search. Without this cache
+        # _check_pair rebuilt ~7600 redundant BVHModels during a dual-arm
+        # collision-aware range clamp (>6 min; CI timeout). The BVHModel is
+        # immutable after endModel() (FCL semantics), so sharing one reference
+        # across many CollisionObject wrappers is a read-only, race-free reuse.
+        self._bvh_cache: dict[tuple[str, float], Any] = {}
 
     # -- public API ----------------------------------------------------------
 
     def create_bounding_mesh(self, part: Part) -> Any:
         """Return a trimesh.Trimesh bounding box for a part."""
         return _part_to_box_mesh(part)
+
+    def _get_bvh(self, part: Any, name: str, shrink_mm: float) -> Any:
+        """Return the FCL BVHModel for *part*, building it once and caching.
+
+        The BVH is a function of the part's collision mesh only (dimensions +
+        ``shrink_mm``), never of placement. Caching it per ``(name, shrink_mm)``
+        eliminates the repeated ``beginModel/addSubModel/endModel`` work that
+        dominated collision-aware joint-range search (each O(N²) pair rebuilt
+        both BVHs every trial, but only the transforms change between trials).
+        """
+        key = (name, shrink_mm)
+        bvh = self._bvh_cache.get(key)
+        if bvh is not None:
+            return bvh
+        mesh = _part_to_box_mesh(part, shrink_mm=shrink_mm)
+        import numpy as np
+        bvh = fcl_mod.BVHModel()
+        bvh.beginModel(
+            num_tris_=len(mesh.faces), num_vertices_=len(mesh.vertices)
+        )
+        bvh.addSubModel(
+            np.ascontiguousarray(mesh.vertices, dtype=np.float64),
+            np.ascontiguousarray(mesh.faces, dtype=np.int32),
+        )
+        bvh.endModel()
+        self._bvh_cache[key] = bvh
+        return bvh
 
     @staticmethod
     def _build_adjacent_pairs(assembly: Assembly) -> set[tuple[str, str]]:
@@ -454,22 +490,11 @@ class MeshCollisionChecker:
                 notes="Missing part definition",
             )
 
-        mesh_a = _part_to_box_mesh(part_a, shrink_mm=collision_margin_mm)
-        mesh_b = _part_to_box_mesh(part_b, shrink_mm=collision_margin_mm)
-
-        import numpy as np
-
-        bvh_a = fcl_mod.BVHModel()
-        bvh_a.beginModel(num_tris_=len(mesh_a.faces), num_vertices_=len(mesh_a.vertices))
-        bvh_a.addSubModel(np.ascontiguousarray(mesh_a.vertices, dtype=np.float64),
-                          np.ascontiguousarray(mesh_a.faces, dtype=np.int32))
-        bvh_a.endModel()
-
-        bvh_b = fcl_mod.BVHModel()
-        bvh_b.beginModel(num_tris_=len(mesh_b.faces), num_vertices_=len(mesh_b.vertices))
-        bvh_b.addSubModel(np.ascontiguousarray(mesh_b.vertices, dtype=np.float64),
-                          np.ascontiguousarray(mesh_b.faces, dtype=np.int32))
-        bvh_b.endModel()
+        # BVHs are cached per (part_name, shrink_mm) — see _get_bvh. Only the
+        # transforms (below) vary across placements, so the expensive mesh +
+        # BVH build happens once per part per checker lifetime, not per pair.
+        bvh_a = self._get_bvh(part_a, name_a, collision_margin_mm)
+        bvh_b = self._get_bvh(part_b, name_b, collision_margin_mm)
 
         # Wrap BVHModels in CollisionObject with transforms
         t_a = self._make_fcl_transform(place_a)
