@@ -80,6 +80,21 @@ _E2E_KEYWORDS = (
     "generate_assembly_from_nl",
     "run_e2e_case",
 )
+# Files that reference e2e keywords but only to MOCK them (monkeypatch /
+# patch the NL→assembly function with fake data) are NOT real e2e — they
+# are integration tests of routing logic.  The mock-indicator patterns below
+# downgrade such files from 'e2e' to 'integration' so `pytest -m e2e`
+# collects only true end-to-end tests (audit 2026-07-10: the keyword
+# classifier inflated the e2e bucket ~13×, weakening §3.4's "改了 src 必跑
+# e2e" rule because 92% of -m e2e was mock unit tests).
+_E2E_MOCK_INDICATORS = (
+    "monkeypatch",
+    "patch(",
+    "MagicMock",
+    "mock_generate",
+    "fake_assembly",
+    "stub",
+)
 _API_KEYWORDS = (
     "GLM_API_KEY",
     "GLMBackend",
@@ -141,7 +156,15 @@ def _classify_test_file(path: Path) -> set[str]:
 
     # Source-based detection
     if any(k in text for k in _E2E_KEYWORDS):
-        markers.add("e2e")
+        # A file references the NL→assembly path.  But if it ALSO uses mock
+        # indicators (monkeypatch/MagicMock/patch), it is testing routing
+        # logic with fake data, NOT driving the real NL→assembly→export
+        # pipeline.  Downgrade those to 'integration' so `pytest -m e2e`
+        # stays true end-to-end (audit 2026-07-10).
+        if any(k in text for k in _E2E_MOCK_INDICATORS):
+            markers.add("integration")
+        else:
+            markers.add("e2e")
     if any(k in text for k in _API_KEYWORDS):
         markers.add("api")
     if any(k in text for k in _GUI_KEYWORDS):

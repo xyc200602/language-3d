@@ -110,7 +110,11 @@ class TestBuildAssemblyScript:
             output_path=str(tmp_path / "test_assembly"),
         )
         assert "saveAs" in script
-        assert "Mesh.export" in script
+        # Assembly STL export uses MeshPart.meshFromShape + _mesh.write
+        # (uniform-tessellation path, freecad.py:641 / freecad_script_builder),
+        # NOT the legacy bare Mesh.export which used adaptive tessellation.
+        assert "_mesh.write" in script
+        assert "MeshPart" in script
 
     def test_exploded_view(self, simple_assembly, solved_positions):
         parts_info = [

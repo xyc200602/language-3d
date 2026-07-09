@@ -79,8 +79,9 @@ class TestCreateSketch:
         assert "LineSegment" in script
         assert "20" in script
         assert "10" in script
-        # Rectangle = 4 line segments
-        assert script.count("LineSegment") == 4
+        # Rectangle = 4 line segment edges. Count addGeometry calls
+        # (not bare "LineSegment" which also appears in a safety comment).
+        assert script.count("addGeometry(Part.LineSegment") == 4
 
     def test_polygon_element(self):
         ops = [{"type": "new_doc"}, {"type": "create_sketch",
