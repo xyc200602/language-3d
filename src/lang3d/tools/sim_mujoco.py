@@ -1252,6 +1252,123 @@ def record_joint_motion(
     }
 
 
+def render_simulation_video(
+    urdf_path: str,
+    output_path: str,
+    duration_sec: float = 3.0,
+    fps: int = 15,
+    width: int = 640,
+    height: int = 480,
+    camera: str | None = None,
+) -> dict[str, Any]:
+    """Render a MuJoCo physics rollout to an MP4 video file.
+
+    Runs the same joint-sweep rollout as :func:`record_joint_motion`, but
+    instead of returning numerical joint-angle frames, it captures offscreen
+    RGB frames from MuJoCo's renderer at each timestep and encodes them into a
+    video.  This produces a **non-forgeable visual record** of the robot
+    moving — far stronger evidence of "能动" (it moves) than a JSON of angles,
+    because a reviewer can watch the actual physics.
+
+    Requires the ``ffmpeg`` binary on PATH (used to encode PNG frames → MP4,
+    avoiding a Python video-library dependency).  Falls back to saving raw
+    PNG frames if ffmpeg is absent.
+
+    Args:
+        urdf_path: path to the generated URDF (with meshes).
+        output_path: destination ``.mp4`` path (or directory for PNG fallback).
+        duration_sec: rollout length.
+        fps: output video framerate (also the render sampling rate).
+        width/height: video resolution.
+        camera: MuJoCo camera name for a fixed viewpoint; None = auto-track.
+
+    Returns::
+
+        {"ok": bool, "video_path": str, "n_frames": int, "fps": int,
+         "error": str (if failed)}
+    """
+    import shutil
+    import subprocess
+
+    import mujoco  # type: ignore[import-not-found]
+    import numpy as np  # noqa: F401  (used by _MotionController)
+
+    load = _load_model(urdf_path, floating_base=True)
+    if not load.get("ok"):
+        return {"ok": False, "error": load.get("error", "model load failed"),
+                "video_path": "", "n_frames": 0, "fps": fps}
+
+    model = load["model"]
+    _stabilize_model(model, armature=0.5, damping=5.0)
+    if model.opt.timestep > 0.0005:
+        model.opt.timestep = 0.0005
+
+    data = mujoco.MjData(model)
+    z_drop = _setup_wheel_contacts(model, data)
+    if z_drop != 0.0:
+        data.qpos[2] = z_drop
+    mujoco.mj_forward(model, data)
+
+    controller = _MotionController(model, data, np=np)
+
+    # Offscreen renderer — MuJoCo 3.x Renderer API (update_scene → render).
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    cam = camera or -1  # -1 = auto/free camera
+
+    frames_dir = Path(output_path).with_suffix("")
+    frames_dir = frames_dir.parent / (frames_dir.name + "_frames")
+    frames_dir.mkdir(parents=True, exist_ok=True)
+
+    n_steps = max(1, int(duration_sec / model.opt.timestep))
+    frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
+    n_frames = 0
+
+    for step in range(n_steps):
+        t = step * model.opt.timestep
+        controller.apply(t)
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break
+
+        if step % frame_every == 0:
+            renderer.update_scene(data, camera=cam)
+            pixels = renderer.render()
+            from PIL import Image
+            Image.fromarray(pixels).save(str(frames_dir / f"frame_{n_frames:05d}.png"))
+            n_frames += 1
+
+    renderer.close()
+
+    if n_frames == 0:
+        return {"ok": False, "error": "no frames rendered (physics diverged?)",
+                "video_path": "", "n_frames": 0, "fps": fps}
+
+    # Encode PNG sequence → MP4 via ffmpeg (avoids Python video deps).
+    ffmpeg = shutil.which("ffmpeg")
+    out_mp4 = str(output_path)
+    if ffmpeg:
+        cmd = [
+            ffmpeg, "-y", "-framerate", str(fps),
+            "-i", str(frames_dir / "frame_%05d.png"),
+            "-c:v", "libx264", "-pix_fmt", "yuv420p",
+            "-crf", "20",
+            out_mp4,
+        ]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0:
+            return {"ok": False,
+                    "error": f"ffmpeg failed: {proc.stderr[-300:]}",
+                    "video_path": "", "n_frames": n_frames, "fps": fps}
+        # Clean up intermediate frames on success.
+        shutil.rmtree(frames_dir, ignore_errors=True)
+    else:
+        # No ffmpeg — leave PNG frames, point output there.
+        out_mp4 = str(frames_dir)
+
+    return {"ok": True, "video_path": out_mp4, "n_frames": n_frames,
+            "fps": fps, "duration_sec": duration_sec}
+
+
 def _run_physics_hold(
     model: Any,
     duration_sec: float = 1.0,
