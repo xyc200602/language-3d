@@ -485,3 +485,60 @@ class TestFunctionalPartScalingGuard:
         diff = modifications_diff(arm_assembly, new)
         assert diff["parts_changed"] == []
         assert diff["joints_changed"] == []
+
+
+# ---------------------------------------------------------------------------
+# Dynamic VLM fixes (GLM-4.6V motion/grasp hints)
+# ---------------------------------------------------------------------------
+
+class TestDynamicVLMFixes:
+    """Tests for apply_dynamic_vlm_fixes — the motion/grasp fix channel.
+
+    These hints come from GLM-4.6V watching the simulation video, NOT from
+    static appearance inspection. They target joint ranges (motion) and
+    gripper geometry (grasp), not part dimensions.
+    """
+
+    def test_clamp_joint_range_narrows_range(self, arm_assembly):
+        """'clamp shoulder range' should tighten the revolute joint's range_deg."""
+        from lang3d.agent.modifier import apply_dynamic_vlm_fixes
+        # Give the elbow joint a wide range to clamp.
+        for j in arm_assembly.joints:
+            if j.child == "elbow_link":
+                j.range_deg = (-180.0, 180.0)
+        new_asm, applied = apply_dynamic_vlm_fixes(
+            arm_assembly, ["clamp elbow range to avoid collision"],
+        )
+        assert applied is True
+        # Find the elbow joint in the new assembly.
+        new_elbow = next(j for j in new_asm.joints if j.child == "elbow_link")
+        lo, hi = new_elbow.range_deg
+        # Should be narrower than the original ±180° (tightened by 25%).
+        assert (hi - lo) < 360.0
+        assert (hi - lo) > 0  # still has some range
+
+    def test_gripper_force_hint_narrows_fingers(self, arm_assembly):
+        """'increase grasp force' should narrow the gripper finger width."""
+        from lang3d.agent.modifier import apply_dynamic_vlm_fixes
+        new_asm, applied = apply_dynamic_vlm_fixes(
+            arm_assembly, ["Increase finger contact friction or grasp force"],
+        )
+        assert applied is True
+        # Finger width should be reduced.
+        orig_left = next(p for p in arm_assembly.parts if "finger_left" in p.name)
+        new_left = next(p for p in new_asm.parts if "finger_left" in p.name)
+        assert new_left.dimensions["width"] < orig_left.dimensions["width"]
+
+    def test_empty_hints_returns_false(self, arm_assembly):
+        """No hints → no fix applied."""
+        from lang3d.agent.modifier import apply_dynamic_vlm_fixes
+        _, applied = apply_dynamic_vlm_fixes(arm_assembly, [])
+        assert applied is False
+
+    def test_unrelated_hint_returns_false(self, arm_assembly):
+        """A hint that doesn't match any known fix pattern → no-op."""
+        from lang3d.agent.modifier import apply_dynamic_vlm_fixes
+        _, applied = apply_dynamic_vlm_fixes(
+            arm_assembly, ["The color should be more red"],
+        )
+        assert applied is False

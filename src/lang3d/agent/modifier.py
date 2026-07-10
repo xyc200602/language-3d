@@ -432,6 +432,95 @@ def apply_modification(
     )
 
 
+def apply_dynamic_vlm_fixes(
+    assembly: Assembly,
+    fix_hints: list[str],
+) -> tuple[Assembly, bool]:
+    """Apply motion/grasp fixes from the dynamic VLM (GLM-4.6V video).
+
+    Unlike :func:`apply_targeted_fix_from_vlm` which handles geometric/
+    appearance problems (part too big, wrong orientation), this handles
+    **motion-behaviour** problems identified by watching the simulation:
+
+    - "clamp <joint> range" / "limit <joint>" / "narrow range"
+      → tighten the joint's ``range_deg`` to avoid the colliding extreme.
+    - "increase friction" / "increase grasp force" / "close gap"
+      → narrow the gripper finger gap (reduce finger separation so the
+        cube is clamped tighter).
+
+    Returns ``(new_assembly, applied_any)``.  When no hint matches a known
+    fix pattern, returns ``(assembly, False)`` so the caller can fall back
+    to LLM regeneration or accept the assembly as-is.
+    """
+    if not fix_hints:
+        return assembly, False
+
+    import copy
+    import re
+
+    joints = [copy.deepcopy(j) for j in assembly.joints]
+    parts = [copy.deepcopy(p) for p in assembly.parts]
+    applied = False
+
+    # --- Pattern 1: clamp/narrow joint range ---
+    # Matches "clamp shoulder range", "limit elbow to ±45",
+    # "narrow wrist range", "restrict joint X".
+    range_keywords = ("clamp", "limit", "narrow", "restrict", "reduce.*range",
+                      "tighten.*range")
+    range_pat = re.compile(
+        r"(?:clamp|limit|narrow|restrict|reduce|tighten)\s+"
+        r"(?:the\s+)?(\w+)?\s*(?:joint\s+)?(\w+)?\s*"
+        r"(?:range|angle|limit)",
+        re.IGNORECASE,
+    )
+
+    for hint in fix_hints:
+        h_lower = hint.lower()
+        if not any(k in h_lower for k in range_keywords):
+            continue
+        # Try to find which joint is mentioned.
+        for j in joints:
+            if j.type != "revolute":
+                continue
+            child = j.child.lower()
+            # Match joint name keywords (shoulder, elbow, wrist, pitch, yaw, roll).
+            joint_kw = child.replace("_", " ")
+            if any(kw in h_lower for kw in (child, joint_kw, "shoulder", "elbow",
+                                             "wrist", "pitch", "yaw", "roll")):
+                lo, hi = j.range_deg
+                # Tighten by 25% toward center (conservative).
+                center = (lo + hi) / 2.0
+                span = (hi - lo) * 0.75  # keep 75% of original range
+                j.range_deg = (center - span / 2, center + span / 2)
+                logger.info("Dynamic VLM fix: clamped %s range %s→%s",
+                            j.child, (lo, hi), j.range_deg)
+                applied = True
+                break
+
+    # --- Pattern 2: gripper friction/force/gap ---
+    # Matches "increase friction", "increase grasp force", "close gap",
+    # "narrow gripper", "increase clamping".
+    grip_keywords = ("friction", "grasp force", "clamping force", "close gap",
+                     "narrow gripper", "increase.*force", "tighten.*grip",
+                     "finger.*gap", "gripper.*force")
+    if any(any(gk in h_lower for gk in grip_keywords) for h_lower in
+           [h.lower() for h in fix_hints]):
+        # Narrow the finger gap by moving fingers closer (reduce width).
+        for p in parts:
+            if "finger" in p.name.lower():
+                w = p.dimensions.get("width", 0)
+                if w > 2:  # only narrow if there's material to remove
+                    p.dimensions["width"] = max(w * 0.8, 2.0)
+                    logger.info("Dynamic VLM fix: narrowed %s width %.1f→%.1f",
+                                p.name, w, p.dimensions["width"])
+                    applied = True
+
+    if not applied:
+        return assembly, False
+
+    return _rebuild_assembly(assembly, parts, joints), True
+
+
 def apply_targeted_fix_from_vlm(
     assembly: Assembly,
     problem_texts: list[str],

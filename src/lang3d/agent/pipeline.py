@@ -1292,7 +1292,76 @@ class AssemblyPipeline:
         for p in result.get("problems", []):
             logger.warning("  dynamic VLM problem: %s", p)
 
-        # Persist the dynamic VLM verdict for the e2e report.
+        # --- Iterative fix loop: apply dynamic VLM fix_hints and re-verify ---
+        # This is the "生成再调优" closed loop: agent watches sim → finds
+        # motion/grasp problem → suggests fix → fix applied → re-export →
+        # re-watch → repeat until pass or max iterations. Bounded at 2
+        # iterations to avoid infinite loops (each costs a GLM-4.6V video call).
+        fix_hints = result.get("fix_hints", [])
+        if not result.get("passed") and fix_hints:
+            from .modifier import apply_dynamic_vlm_fixes
+
+            for fix_round in range(2):  # max 2 fix iterations
+                logger.info("Stage 7: applying dynamic VLM fix hints (round %d/2)...",
+                            fix_round + 1)
+                try:
+                    ctx.assembly, applied = apply_dynamic_vlm_fixes(
+                        ctx.assembly, fix_hints,
+                    )
+                except Exception as e:
+                    logger.warning("dynamic fix failed: %s", e)
+                    applied = False
+
+                if not applied:
+                    logger.info("Stage 7: no applicable fix — accepting current assembly")
+                    break
+
+                # Re-solve (new joint ranges → new positions) + re-export + re-verify.
+                logger.info("Stage 7: re-solving with fixed assembly...")
+                try:
+                    self.run_solver()
+                except Exception as e:
+                    logger.warning("re-solve failed: %s", e)
+                    break
+
+                logger.info("Stage 7: re-exporting URDF for re-verification...")
+                self.run_export()
+
+                urdf_path = os.path.join(ctx.export_dir or "", "urdf.xml")
+                if not os.path.exists(urdf_path):
+                    break
+
+                # Re-render video + re-verify.
+                video_path = os.path.join(ctx.output_dir, f"sim_motion_fix{fix_round+1}.mp4")
+                try:
+                    vr = render_simulation_video(urdf_path, video_path,
+                                                 duration_sec=3.0, fps=10,
+                                                 width=480, height=360)
+                except Exception:
+                    vr = {"ok": False}
+
+                if vr.get("ok"):
+                    try:
+                        result = verify_motion_video(vr["video_path"], api_key=api_key)
+                    except Exception as e:
+                        logger.warning("re-verify failed: %s", e)
+                        break
+                else:
+                    break
+
+                status = "PASS" if result.get("passed") else "STILL_FAILING"
+                logger.info("Stage 7: re-verify round %d: %s (problems: %d)",
+                            fix_round + 1, status, len(result.get("problems", [])))
+
+                if result.get("passed"):
+                    logger.info("Stage 7: dynamic VLM PASSED after %d fix round(s)!",
+                                fix_round + 1)
+                    break
+                fix_hints = result.get("fix_hints", [])
+                if not fix_hints:
+                    break
+
+        # Persist the final dynamic VLM verdict for the e2e report.
         try:
             import json as _json
             summary_path = os.path.join(ctx.output_dir, "dynamic_vlm_result.json")
