@@ -1369,6 +1369,94 @@ def render_simulation_video(
             "fps": fps, "duration_sec": duration_sec}
 
 
+def extract_motion_key_frames(
+    urdf_path: str,
+    width: int = 480,
+    height: int = 360,
+) -> list[dict[str, str]]:
+    """Extract key motion frames for VLM inspection (dynamic verification).
+
+    Runs a short MuJoCo joint-sweep rollout and captures offscreen renders at
+    three kinematically-significant moments, returning them as base64-encoded
+    PNG data URIs ready for GLM-4.6V ``image_url`` multi-image input. This is
+    the "eyes" of the dynamic VLM verification loop: unlike the static VLM
+    (which sees only the initial appearance), these frames let the agent judge
+    **motion behaviour** — does the arm move through its range without
+    self-collision, does the joint sweep look mechanically plausible, does the
+    end-effector reach a sensible workspace.
+
+    The three frames are:
+
+    - ``initial`` — t=0, the rest pose (baseline; lets the VLM see the
+      assembled structure as a sanity check on assembly correctness).
+    - ``mid_sweep`` — midway through the rollout, joints at ~50% of their
+      sweep gesture (reveals trajectory plausibility and mid-range collision).
+    - ``extreme`` — near the end, joints near their swept extremes (stresses
+      the assembly: collisions and binding tend to occur at range limits).
+
+    Returns a list of ``{"label": str, "description": str, "image": data_uri}``
+    dicts (empty list on failure). Each ``image`` value is a
+    ``data:image/png;base64,...`` URI consumable directly by the GLM vision API.
+    """
+    import base64
+    import io
+
+    import mujoco  # type: ignore[import-not-found]
+    import numpy as np  # noqa: F401
+    from PIL import Image
+
+    load = _load_model(urdf_path, floating_base=True)
+    if not load.get("ok"):
+        return []
+
+    model = load["model"]
+    _stabilize_model(model, armature=0.5, damping=5.0)
+    if model.opt.timestep > 0.0005:
+        model.opt.timestep = 0.0005
+
+    data = mujoco.MjData(model)
+    z_drop = _setup_wheel_contacts(model, data)
+    if z_drop != 0.0:
+        data.qpos[2] = z_drop
+    mujoco.mj_forward(model, data)
+
+    controller = _MotionController(model, data, np=np)
+    renderer = mujoco.Renderer(model, height=height, width=width)
+
+    duration_sec = 2.0
+    n_steps = max(1, int(duration_sec / model.opt.timestep))
+    # Capture at 0%, ~50%, ~90% of the rollout.
+    capture_steps = {
+        0: ("initial", "Rest pose — the assembled structure before any motion"),
+        n_steps // 2: ("mid_sweep", "Mid-sweep — joints at ~50%% of their gesture"),
+        int(n_steps * 0.9): ("extreme", "Near-extreme — joints near swept limits"),
+    }
+
+    frames: list[dict[str, str]] = []
+    for step in range(n_steps):
+        t = step * model.opt.timestep
+        controller.apply(t)
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break
+
+        if step in capture_steps:
+            label, desc_tpl = capture_steps[step]
+            renderer.update_scene(data)
+            pixels = renderer.render()
+            buf = io.BytesIO()
+            Image.fromarray(pixels).save(buf, format="PNG")
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            frames.append({
+                "label": label,
+                "description": desc_tpl.replace("%%", "%"),
+                "image": f"data:image/png;base64,{b64}",
+            })
+
+    renderer.close()
+    return frames
+
+
 def _run_physics_hold(
     model: Any,
     duration_sec: float = 1.0,
