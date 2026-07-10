@@ -124,7 +124,16 @@ def _infer_collision_primitive(part: Part) -> tuple[str, tuple[float, ...]] | No
             _mm_to_m(d["height"]),
         ))
 
-    return None
+    # Fallback: infer a bounding box from whatever dimensions are available.
+    # This is more robust than returning None (which causes the collision
+    # element to fall back to the full STL mesh). Mesh-based collision
+    # geometry crashes gazebo_ros2_control on some platforms (WSL 9p fs)
+    # and is slower than a primitive. A rough box is always preferable to
+    # a mesh for collision — standard practice in robotics simulation.
+    l = d.get("length", d.get("diameter", d.get("outer_diameter", 20)))
+    w = d.get("width", d.get("diameter", d.get("outer_diameter", l)))
+    h = d.get("height", d.get("thickness", 20))
+    return ("box", (_mm_to_m(w), _mm_to_m(l), _mm_to_m(h)))
 
 
 def _resolve_axis(joint: Joint) -> list[float]:
@@ -452,10 +461,22 @@ class AssemblyToURDF:
         meshes_dir: str = "meshes",
         package_name: str = "",
         positions: dict[str, dict] | None = None,
+        primitive_visuals: bool = False,
     ) -> None:
+        """Initialize URDF converter.
+
+        Args:
+            primitive_visuals: when True, <visual> uses box/cylinder
+                primitives instead of STL meshes — produces a less detailed
+                but Gazebo-compatible URDF that avoids mesh-loading segfaults
+                on platforms where gazebo_ros2_control cannot load STL files
+                (WSL 9p filesystem). MuJoCo/render URDFs should keep this
+                False (full mesh fidelity).
+        """
         self.assembly = assembly
         self.meshes_dir = meshes_dir
         self.package_name = package_name or _sanitize_name(assembly.name)
+        self.primitive_visuals = primitive_visuals
         self.positions = positions or {}
 
         self._links: list[URDFLink] = []
@@ -773,14 +794,27 @@ class AssemblyToURDF:
             vis_origin.set("xyz", "0 0 0")
             vis_origin.set("rpy", "0 0 0")
             vis_geom = ET.SubElement(visual, "geometry")
-            vis_mesh = ET.SubElement(vis_geom, "mesh")
-            vis_mesh.set("filename", link.visual_mesh)
-            # STL files are exported by FreeCAD in millimetres, but URDF
-            # convention treats mesh units as metres.  Without an explicit
-            # scale, MuJoCo/PyBullet/Gazebo all interpret a 200mm STL as
-            # a 200-metre robot — producing massive mesh interpenetration
-            # and immediate physics blow-up.  Scale 0.001 converts mm→m.
-            vis_mesh.set("scale", "0.001 0.001 0.001")
+            if self.primitive_visuals and link.collision_primitive is not None:
+                # Gazebo-compatible mode: use primitives for visual too,
+                # avoiding STL mesh loading that segfaults gazebo_ros2_control
+                # on WSL 9p filesystem. Less detailed but runs reliably.
+                prim_type, prim_dims = link.collision_primitive
+                if prim_type == "box":
+                    vis_box = ET.SubElement(vis_geom, "box")
+                    vis_box.set("size", f"{prim_dims[0]:.6f} {prim_dims[1]:.6f} {prim_dims[2]:.6f}")
+                elif prim_type == "cylinder":
+                    vis_cyl = ET.SubElement(vis_geom, "cylinder")
+                    vis_cyl.set("radius", f"{prim_dims[0]:.6f}")
+                    vis_cyl.set("length", f"{prim_dims[1]:.6f}")
+            else:
+                vis_mesh = ET.SubElement(vis_geom, "mesh")
+                vis_mesh.set("filename", link.visual_mesh)
+                # STL files are exported by FreeCAD in millimetres, but URDF
+                # convention treats mesh units as metres.  Without an explicit
+                # scale, MuJoCo/PyBullet/Gazebo all interpret a 200mm STL as
+                # a 200-metre robot — producing massive mesh interpenetration
+                # and immediate physics blow-up.  Scale 0.001 converts mm→m.
+                vis_mesh.set("scale", "0.001 0.001 0.001")
             mat_el = ET.SubElement(visual, "material")
             mat_el.set("name", link.material_color)
             color_el = ET.SubElement(mat_el, "color")
@@ -884,15 +918,20 @@ class AssemblyToURDF:
                     st = ET.SubElement(j_el, "state_interface")
                     st.set("name", si)
 
-        # Gazebo ros2_control plugin for simulation actuation
+        # Gazebo ros2_control plugin for simulation actuation.
+        # Uses <robot_param> (not <parameters>) so the plugin reads controller
+        # config from the ROS parameter server instead of loading a file by
+        # path. The <parameters> approach segfaults when the YAML file is not
+        # on the expected filesystem path (e.g., WSL 9p mounts, Docker, or
+        # cross-platform deployment). <robot_param> is portable.
         gazebo_ctrl = ET.SubElement(root, "gazebo")
         ctrl_plugin = ET.SubElement(
             gazebo_ctrl, "plugin",
             name="gazebo_ros2_control",
             filename="libgazebo_ros2_control.so",
         )
-        params_el = ET.SubElement(ctrl_plugin, "parameters")
-        params_el.text = f"{self.package_name}/config/ros2_control.yaml"
+        robot_param_el = ET.SubElement(ctrl_plugin, "robot_param")
+        robot_param_el.text = "robot_description"
 
         # Gazebo plugins
         for plugin in self._gazebo_plugins:
