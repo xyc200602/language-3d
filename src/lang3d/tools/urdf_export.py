@@ -1196,11 +1196,25 @@ Visualization Manager:
 """
 
     def _gazebo_launch_file(self) -> str:
-        """Launch file: start Gazebo, spawn the robot, publish state."""
+        """Launch file: start Gazebo, spawn the robot, publish state, and
+        activate ros2_control so joints are commandable.
+
+        The gazebo_ros2_control plugin (declared in the URDF) runs the
+        controller_manager *inside* the simulator — but the controllers
+        themselves (joint_state_broadcaster, joint_trajectory_controller)
+        must be spawned by separate spawner nodes after the robot exists.
+        Without these spawners the robot appears in Gazebo as a passive
+        prop: it spawns but no joint accepts a trajectory goal, so the
+        "validated in Gazebo" claim is hollow (structure-level only).
+        Adding them closes the loop: after launch you can send a
+        JointTrajectory to /joint_trajectory_controller/joint_trajectory
+        and watch the robot move.
+        """
         return f"""\
 import os
+
 from launch import LaunchDescription
-from launch.actions import ExecuteProcess, IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -1209,6 +1223,7 @@ from ament_index_python.packages import get_package_share_directory
 def generate_launch_description():
     pkg_dir = get_package_share_directory('{self.package_name}')
     urdf_file = os.path.join(pkg_dir, 'urdf', '{self.package_name}.urdf')
+    controllers_file = os.path.join(pkg_dir, 'config', 'ros2_control.yaml')
 
     with open(urdf_file, 'r') as f:
         robot_description = f.read()
@@ -1230,7 +1245,7 @@ def generate_launch_description():
         output='screen',
     )
 
-    # Publish robot state
+    # Publish robot state (TF + /robot_description)
     robot_state_publisher = Node(
         package='robot_state_publisher',
         executable='robot_state_publisher',
@@ -1238,7 +1253,40 @@ def generate_launch_description():
         output='screen',
     )
 
-    return LaunchDescription([gazebo, spawn, robot_state_publisher])
+    # Load ros2_control params onto the controller_manager that the
+    # gazebo_ros2_control plugin exposes inside the simulator.
+    load_params = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['--param-file', controllers_file,
+                   'controller_manager'],
+        output='screen',
+    )
+
+    # Spawn the joint_state_broadcaster so /joint_states reflects the sim.
+    joint_state_broadcaster_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_state_broadcaster', '--controller-manager', '/controller_manager'],
+        output='screen',
+    )
+
+    # Spawn the joint_trajectory_controller so joints accept goals.
+    joint_trajectory_controller_spawner = Node(
+        package='controller_manager',
+        executable='spawner',
+        arguments=['joint_trajectory_controller', '--controller-manager', '/controller_manager'],
+        output='screen',
+    )
+
+    return LaunchDescription([
+        gazebo,
+        spawn,
+        robot_state_publisher,
+        load_params,
+        joint_state_broadcaster_spawner,
+        joint_trajectory_controller_spawner,
+    ])
 """
 
 
