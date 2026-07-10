@@ -108,7 +108,7 @@ Eight connection types generate real CAD features via FreeCAD operation dictiona
 \end{itemize}
 Connection selection is physics-aware: when the LLM omits a connection method, a sanitizer assigns one by part category (e.g., bearings $\to$ press-fit, never bolted; sensors and foot pads $\to$ adhesive bonding; servos $\to$ M2 threaded holes). When the LLM specifies a method explicitly, it is respected. All eight types have functional geometry generators, though in practice bolted and press-fit dominate because most robot joints are structural or bearing-mounted and the LLM tends to default to bolted.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
 \includegraphics[width=0.85\columnwidth]{figures/fig3_connections.pdf}
 \caption{Eight connection types with real CAD features. Each generates geometry-specific boolean operations (clearance holes, interference bores, snap hooks, etc.).}
@@ -152,7 +152,7 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 
 \textbf{Evaluation validity.} We are explicit about three limitations of this protocol. \emph{First}, the composite $Q$ is a relative rank across our seven cases, not an absolute quality grade---no external benchmark exists to anchor what a given $Q$ means in absolute terms. \emph{Second}, there is no external benchmark for the NL$\to$robot-package task; the closest (MUSE~\cite{muse2026}, Text2CAD-Bench) targets a different formulation (structured design-spec$\to$STEP), precluding direct score comparison. \emph{Third}, the physics metrics in Table~\ref{tab:quant} come from a single frozen benchmark run per case (the typical high-scoring outcome); the across-run distribution (\S Reproducibility) shows the mean e2e check-pass rate including API failures is lower ($\sim$86\%, 92.9\% excluding them) due to LLM non-determinism.
 
-\begin{figure}[h]
+\begin{figure}[ht]
 \centering
 \includegraphics[width=0.9\columnwidth]{figures/fig4_package.pdf}
 \caption{Output engineering package structure: STL/STEP meshes, URDF, BOM, assembly guide, firmware templates, and ROS2 package with launch files and ros2\_control config.}
@@ -207,7 +207,7 @@ Physical metrics come from the \emph{median}-scoring run (the typical outcome), 
 
 Table~\ref{tab:composite} reports $Q$ for the seven cases. The composite achieves \textbf{7 distinct values across 7 cases}. The wheeled dual-arm ranks highest ($Q=0.85$), reflecting its wide stance ($s_{\text{robust}}=0.63$) and reliable grasp ($g_{\text{rate}}=0.96$). The lower-DOF arms (2--4 DOF) rank next ($Q$=0.75, 0.73, 0.78) with reliable grasps and full actuation. The higher-DOF arms rank lower: 5dof/6dof at $Q$=0.58/0.57 (grasp succeeds in only half / an eighth of runs), then 7dof at $Q$=0.49 where no run ever grasps ($g_{\text{rate}}$=0.00) with increasing kinematic complexity. Discriminative power comes primarily from $s_{\text{func}}$ (which varies 0.40--1.00, driven by grasp rate; the DOF-completeness term is 1.0 for all seven cases since each meets its requested DOF, so it acts as a constant offset rather than a discriminator) and secondarily from $s_{\text{robust}}$ (0.28--0.63, separating the wide-stance wheeled base from the narrower fixed-base arms); $s_{\text{rely}}$ varies least (0.90--1.00) since all cases produce usable assemblies most of the time.
 
-\begin{table}[h]
+\begin{table}[ht]
 \centering
 \caption{Composite quality score. $Q \in [0,1]$ is a relative rank across the seven cases, not a percentage. 7/7 distinct values.}
 \label{tab:composite}
