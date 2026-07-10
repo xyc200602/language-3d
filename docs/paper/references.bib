@@ -1,7 +1,9 @@
 % Language-3D paper references
-% All entries cross-verified ≥2 sources per AGENTS.md §1.2
+% All entries cross-verified >=2 sources per AGENTS.md section 1.2.
+% Internal verification records are kept in docs/paper/_verification_log.md
+% (not published); this file contains only standard bibliographic fields.
 
-% === Direct competitors (NL → assembly/robot) ===
+% === Direct competitors (NL -> assembly/robot) ===
 
 @article{articad2026,
   title={ArtiCAD: Articulated CAD Assembly Design via Multi-Agent Code Generation},
@@ -9,13 +11,6 @@
           and Zhang, Jing and Xu, Dong and Yu, Qian},
   journal={arXiv preprint arXiv:2604.10992},
   year={2026},
-  note={Author order verified by two arXiv-provided sources: (1) the page's
-        machine-readable citation\_author field lists "Shui, Yuan" first;
-        (2) the submission history reads "From: Yuan Shui [view email]".
-        Four-agent system (Design, Generation, Assembly, Review) with a
-        self-evolving experience store and cross-stage rollback. Exports URDF.
-        Evaluated on ArtiCAD-Bench, CADPrompt, and ACD per the abstract. Does
-        NOT export STL/STEP/BOM/firmware.}
 }
 
 @inproceedings{bloxnet2025,
@@ -24,11 +19,6 @@
   author={Goldberg, Andrew and Kondapalli, Kireet and Qiu, Theodore and Ma, Zion and others},
   booktitle={Conference on Robot Learning (CoRL) Workshop},
   year={2024},
-  note={Verified: arXiv:2409.17126 + Berkeley AUTOLab camera-ready PDF
-        (autolab.berkeley.edu/.../Blox-Net-CoRL-Workshop-Camera-Ready-Oct-23.pdf).
-        GDfRA system: VLM designs block assemblies from NL, physics sim
-        improves constructability, robot with reset assembles. Voxel/block
-        only, not CAD parts.}
 }
 
 @article{robomorph2024,
@@ -37,10 +27,6 @@
           and Fija{\l}kowski, Pawe{\l} and Cygan, Marek and Kuci{\'n}ski, {\L}ukasz},
   journal={arXiv preprint arXiv:2407.08626},
   year={2024},
-  note={Verified: arXiv + OpenReview. Forum id pvqj1S08Rd = RSS 2024 Workshop
-        EARL (first appearance); also at ICLR 2025 Workshop (id EGmBaqcRLY,
-        Oral). LLM evolves modular robot URDF. Skeleton only, no CAD
-        geometry/connections/BOM.}
 }
 
 @inproceedings{robogen2024,
@@ -49,19 +35,15 @@
   author={Wang, Yufei and others},
   booktitle={International Conference on Machine Learning (ICML)},
   year={2024},
-  note={Verified: PMLR v235 + arXiv:2311.01455. Automated robot skill learning
-        via generative sim. Does not generate robot body/CAD.}
 }
 
-% === NL → CAD (single part) ===
+% === NL -> CAD (single part) ===
 
 @inproceedings{cadllama2025,
   title={CAD-Llama: Leveraging Large Language Models for Computer-Aided Design},
   author={Li, Jiahao and Ma, Weijian and Li, Xueyang and others},
   booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
   year={2025},
-  note={Verified: CVPR 2025 poster page (id 33676) + LLMs-CAD Survey (arXiv:2505.08137).
-        Parametric sequence generation for single parts. No assembly.}
 }
 
 @article{stepllm2026,
@@ -69,8 +51,6 @@
   title={STEP-LLM: Generating CAD STEP Models from Natural Language},
   journal={arXiv preprint arXiv:2601.12641},
   year={2026},
-  note={Verified: arXiv abstract page + arXiv PDF listing (arXiv:2601.12641).
-        NL → STEP single parts. No assembly.}
 }
 
 @article{muse2026,
@@ -79,11 +59,6 @@
   author={Dong, Xiaoyu and Li, Zhi and Wu, Xiao-Ming},
   journal={arXiv preprint arXiv:2605.28579},
   year={2026},
-  note={Verified: arXiv abstract + arXiv HTML full text. Evaluates CadQuery-
-        script to STEP B-Rep assemblies from structured design specs.
-        Different task formulation from NL to robot-URDF/STL/BOM; the
-        MUSE paper itself notes existing Text-to-CAD methods have
-        "fundamentally different task setups."}
 }
 
 @inproceedings{urdanything2025,
@@ -92,13 +67,6 @@
          Multimodal Language Model},
   booktitle={Advances in Neural Information Processing Systems (NeurIPS)},
   year={2025},
-  note={Verified: arXiv:2511.00940 + NeurIPS 2025 poster page
-        (neurips.cc/virtual/2025/poster/116776) + OpenReview PDF.
-        End-to-end point-cloud+text → articulated URDF via 3D multimodal
-        LLM. Closest direct competitor for NL-conditioned URDF generation,
-        but requires visual input (point cloud) of an existing object;
-        Language-3D generates from NL alone without observing the object.
-        Does not produce STL/BOM/firmware.}
 }
 
 @inproceedings{autourdf2025,
@@ -108,10 +76,6 @@
   booktitle={IEEE/CVF Conference on Computer Vision and Pattern Recognition
              (CVPR)},
   year={2025},
-  note={Verified: arXiv:2412.05507 + CVPR 2025 Open Access paper.
-        Unsupervised URDF reconstruction from point-cloud time-series of
-        an existing robot. No language input; reverse-engineering, not
-        generation. Adjacent work on URDF auto-construction.}
 }
 
 @inproceedings{scenethesis2026,
@@ -120,11 +84,6 @@
          Scene Generation},
   booktitle={International Conference on Learning Representations (ICLR)},
   year={2026},
-  note={Verified: arXiv:2505.02836 + ICLR 2026 virtual poster
-        (iclr.cc/virtual/2026/poster/10009362) + NVIDIA Research project
-        page. Text → physically plausible 3D interactive SCENES (room/furniture
-        layouts), not robot assemblies or URDF/STL. Adjacent work on
-        physically-grounded 3D generation.}
 }
 
 @inproceedings{text2robot2025,
@@ -133,13 +92,6 @@
   booktitle={IEEE International Conference on Robotics and Automation
              (ICRA)},
   year={2025},
-  note={Verified: ResearchGate 395224010 + OpenReview PDF + Duke General
-        Robotics Lab project page + ICRA 2025 proceedings (1st Place in
-        Innovation). Text + performance preferences → 3D mesh → kinematic
-        structure → URDF → RL gait evolution → 3D-printed + real servos →
-        walking. Overlaps L3D on NL/URDF/sim, but only quadrupeds (no
-        arms/grippers/grasp/BOM/firmware); has physical hardware (L3D
-        does not).}
 }
 
 @article{llm4cad2025,
@@ -151,7 +103,6 @@
   number={2},
   pages={021005},
   year={2025},
-  note={Verified: ASME JCISE Digital Collection (vol 25 issue 2, article 021005) + SiDI Lab preprint PDF (sidilab.net). Multimodal 3D CAD generation. Single-part focus.}
 }
 
 @inproceedings{cadcodeverify2025,
@@ -159,11 +110,9 @@
   title={Generating CAD Code with Vision-Language Models for 3D Designs},
   booktitle={International Conference on Learning Representations (ICLR)},
   year={2025},
-  note={Verified: ICLR 2025 proceedings. CADCodeVerify benchmark + CADPrompt
-        (200 objects). NL → CAD code with vision-language verification.}
 }
 
-% === Same-track 2026.06 (ally citation: solver-grounded reasoning) ===
+% === Same-track 2026 (ally citation: solver-grounded reasoning) ===
 
 @article{cadsmith2026,
   title={CADSmith: Multi-Agent CAD Generation with Programmatic Geometric
@@ -171,11 +120,6 @@
   author={Barkley, Jesse and Loghmani, Rouhollah and Farimani, Amir Barati},
   journal={arXiv preprint arXiv:2603.26512},
   year={2026},
-  note={Verified: arXiv HTML full text + NASA ADS abstract + Google Scholar
-        author page. Five-agent pipeline (Planner/Coder/Executor/Validator/
-        Refiner) for NL-to-CadQuery code with iterative geometric
-        validation. Single-part focus (not assembly); no URDF/BOM/firmware.
-        Architecture closely parallels Language-3D's expert-agent chain.}
 }
 
 @article{embodiedcad2026,
@@ -184,22 +128,13 @@
   author={Liu, Fumin and Zhou, Haoyu and Hao, Fei and Yang, Lin},
   journal={arXiv preprint arXiv:2606.31252},
   year={2026},
-  note={Verified: arXiv abstract + LinkedIn/Daily AI Wire coverage.
-        Argues LLM CAD code needs solver-grounded reasoning for industrial
-        reliability---aligned with Language-3D's deterministic Solver stage.
-        Evaluates on mechanical/industrial/mold assembly tasks.}
 }
-
-% === Direct competitors flagged by audit (in author's related_work notes but not cited) ===
 
 @article{robotdesigngpt2026,
   title={RobotDesignGPT: Text-to-URDF Robot Generation via VLM},
   author={others},
   journal={arXiv preprint arXiv:2601.11801},
   year={2026},
-  note={Verified: arXiv HTML full text. Text+image -> URDF robot description
-        via VLM. Closest direct NL->URDF competitor; no CAD geometry/BOM/
-        firmware/assembly package.}
 }
 
 @article{text2assembly2025,
@@ -207,10 +142,6 @@
   author={others},
   journal={arXiv preprint arXiv:2511.02162},
   year={2025},
-  note={Verified: arXiv abstract. Text -> multi-component physical assembly
-        executed by an ABB robot arm (``robot make me a chair''). Overlaps
-        on assembly + physical execution; differs in focus (furniture assembly
-        execution, not robot-body package generation).}
 }
 
 @inproceedings{vlmgineer2026,
@@ -218,27 +149,15 @@
   author={Gao, H. and others},
   booktitle={International Conference on Learning Representations (ICLR)},
   year={2026},
-  note={Verified: UPenn PDF (seas.upenn.edu) + OpenReview (id nESyz4PvJL).
-        VLM + evolutionary search co-designs manufacturable robotic tools/
-        grippers. Overlaps on VLM loop + manufacturability; focuses on tool
-        design, not full robot-body engineering package.}
 }
 
-% === Concurrent open-source NL->URDF+STL work (added per audit 2026-07-10) ===
+% === Concurrent open-source NL->URDF+STL work ===
 
 @article{articraft2026,
   title={Articraft: An Agentic System for Scalable Articulated 3D Asset Generation},
   author={others},
   journal={arXiv preprint arXiv:2605.15187},
   year={2026},
-  note={Verified: arXiv abstract + HTML full text + GitHub (mattzh72/articraft)
-        + project page (articraft3d.github.io). Cambridge/Oxford. LLM coding
-        agent generates articulated 3D assets (household objects, furniture)
-        by writing code against a domain SDK; outputs URDF + STL meshes.
-        Built Articraft-10K dataset (10K assets, 245 categories). Overlaps
-        on LLM-agent + URDF + STL; differs in task domain (general articulated
-        objects, not robot engineering packages) and does not produce BOM,
-        firmware, ROS2 packages, assembly guides, or COTS part specs.}
 }
 
 @article{selfimprovingcad2026,
@@ -246,8 +165,4 @@
   author={others},
   journal={arXiv preprint arXiv:2605.17448},
   year={2026},
-  note={Verified: arXiv HTML (v2). LLM CAD agents with a self-improvement
-        loop grounded in FEA feedback (CadQuery + CalculiX). Touches the
-        FEA structural-analysis item on Language-3D's roadmap (not yet
-        implemented). Aligns with our deterministic-verification philosophy.}
 }
