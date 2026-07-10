@@ -5,6 +5,7 @@
 \usepackage{amssymb}
 \usepackage{amsmath}
 \usepackage{xcolor}
+\usepackage{url}
 \usepackage[ruled,vlined]{algorithm2e}
 
 % ===================================================================
@@ -58,7 +59,7 @@ Automated robot design from natural language is a long-standing goal at the inte
     \item \textbf{System}: Language-3D, a multi-agent pipeline producing STL/STEP/URDF/BOM/firmware/ROS2 package structures from NL, with 8 real connection types and a 56-part COTS knowledge base.
     \item \textbf{Dual-channel verification}: VLM visual inspection combined with geometric arbitration (FCL collision sweep + assembly sequence validation) that can override VLM false-negatives.
     \item \textbf{Evaluation}: Seven benchmark cases evaluated by a composite quality score (gate + geometric mean of robustness/functionality/reliability; $Q\in[0,1]$ relative rank, mean 0.68, 7/7 distinct values), with all cases passing MuJoCo physics stability. An eighth humanoid topology was also generated to probe generalization beyond fixed-base arms but is reported qualitatively, not in the scored benchmark (see \S\ref{sec:eval-limits}).
-    \item \textbf{Open-source release}: The full pipeline, knowledge base, evaluation harness, and benchmark run archive are released under an MIT license. To our knowledge this is the first open-source system to produce the complete manufacturing-ready package---STL + STEP + URDF + BOM + firmware + ROS2 package + assembly guide---from natural language. Prior open-source NL$\to$robot/assembly systems produce a strict subset of these artifacts: Text2Robot~\cite{text2robot2025} (mesh + URDF + assembly PDF), CADSmith~\cite{cadsmith2026} (single-part STEP/STL), and Articraft~\cite{articraft2026} (URDF + STL for general articulated objects, without BOM/firmware/ROS2/COTS specs). Our differentiation is the \emph{robot engineering package}---combining the COTS knowledge base, eight real CAD connection types, dual-channel verification, and MuJoCo physics validation.
+    \item \textbf{Open-source release}: The full pipeline, knowledge base, evaluation harness, and benchmark run archive are released under an MIT license\footnote{Code and benchmark archive: \url{[anonymized for double-blind review]}; the camera-ready version will include the permanent repository URL.}. To our knowledge this is the first open-source system to produce the complete manufacturing-ready package---STL + STEP + URDF + BOM + firmware + ROS2 package + assembly guide---from natural language. Prior open-source NL$\to$robot/assembly systems produce a strict subset of these artifacts: Text2Robot~\cite{text2robot2025} (mesh + URDF + assembly PDF), CADSmith~\cite{cadsmith2026} (single-part STEP/STL), and Articraft~\cite{articraft2026} (URDF + STL for general articulated objects, without BOM/firmware/ROS2/COTS specs). Our differentiation is the \emph{robot engineering package}---combining the COTS knowledge base, eight real CAD connection types, dual-channel verification, and MuJoCo physics validation.
 \end{enumerate}
 
 % ===================================================================
