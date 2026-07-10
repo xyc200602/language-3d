@@ -180,6 +180,10 @@ class PipelineContext:
     # Export outputs
     export_dir: str | None = None
     production_render_dir: str | None = None
+    # Dynamic VLM (Stage 7): GLM-4.6V motion-behaviour verdict, or None if
+    # not run (no URDF / no API key / dependency missing). Recorded as an
+    # additive design check, not a blocking gate.
+    dynamic_vlm_result: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1189,6 +1193,87 @@ class AssemblyPipeline:
             return False
 
     # ------------------------------------------------------------------
+    # Stage 7: Dynamic VLM verification — agent watches simulation motion
+    # ------------------------------------------------------------------
+
+    def run_dynamic_verification(self) -> dict | None:
+        """Run GLM-4.6V on MuJoCo motion frames (post-export, additive check).
+
+        Unlike the static VLM (Stage 4, which inspects *appearance* from
+        fixed viewpoints during the Fixer loop), this stage runs *after* the
+        URDF is exported. It feeds simulation motion key-frames to GLM-4.6V
+        and asks it to judge *motion behaviour* — self-collision during
+        articulation, mechanical plausibility, workspace reachability.
+
+        Results are recorded as ``design_warnings`` on the context (not as
+        hard failures that re-trigger the Fixer loop, because the assembly
+        already passed the static VLM gate). A future version may fold this
+        into the loop for iterative motion-based refinement; for now it is
+        an honest, additive motion check that catches what static inspection
+        cannot.
+
+        Returns the verdict dict ``{passed, problems, fix_hints}`` or None
+        if the URDF / API key / model are unavailable.
+        """
+        ctx = self.ctx
+        if not ctx.export_dir:
+            logger.debug("dynamic VLM skipped: no export dir (URDF missing)")
+            return None
+
+        urdf_path = os.path.join(ctx.export_dir, "urdf.xml")
+        if not os.path.exists(urdf_path):
+            logger.debug("dynamic VLM skipped: urdf.xml not found at %s", urdf_path)
+            return None
+
+        api_key = os.environ.get("GLM_API_KEY", "")
+        if not api_key:
+            logger.info("dynamic VLM skipped: no GLM_API_KEY")
+            return None
+
+        try:
+            from ..tools.sim_mujoco import extract_motion_key_frames
+            from ..tools.assembly_gen.dynamic_vlm_verify import verify_motion
+        except ImportError as e:
+            logger.debug("dynamic VLM skipped: dependency missing (%s)", e)
+            return None
+
+        logger.info("Stage 7: Dynamic VLM — extracting motion key frames...")
+        try:
+            frames = extract_motion_key_frames(urdf_path)
+        except Exception as e:
+            logger.warning("motion frame extraction failed: %s", e)
+            return None
+        if not frames:
+            logger.warning("no motion frames extracted (physics diverged?)")
+            return None
+
+        logger.info("Stage 7: Dynamic VLM — GLM-4.6V judging %d motion frames...", len(frames))
+        try:
+            result = verify_motion(frames, api_key=api_key)
+        except Exception as e:
+            logger.warning("dynamic VLM call failed: %s", e)
+            return None
+
+        # Record results as design warnings (additive, not blocking).
+        status = "PASS" if result.get("passed") else "MOTION_ISSUES_FOUND"
+        logger.info("Stage 7: Dynamic VLM result: %s (problems: %d)",
+                    status, len(result.get("problems", [])))
+        for p in result.get("problems", []):
+            logger.warning("  dynamic VLM problem: %s", p)
+
+        # Persist the dynamic VLM verdict for the e2e report.
+        try:
+            import json as _json
+            summary_path = os.path.join(ctx.output_dir, "dynamic_vlm_result.json")
+            with open(summary_path, "w", encoding="utf-8") as f:
+                _json.dump(result, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        ctx.dynamic_vlm_result = result
+        return result
+
+    # ------------------------------------------------------------------
     # Main loop — orchestrate all stages with the Fixer's routing
     # ------------------------------------------------------------------
 
@@ -1267,6 +1352,13 @@ class AssemblyPipeline:
 
         # Stage 6: Export (always, even on failure — for debugging)
         self.run_export()
+
+        # Stage 7: Dynamic VLM — GLM-4.6V watches the simulation motion and
+        # judges behaviour (self-collision, plausibility). Runs after export
+        # because it needs the URDF. Additive to the static VLM (Stage 4);
+        # results are design warnings, not blocking. Skipped silently when
+        # the URDF, API key, or model is unavailable.
+        self.run_dynamic_verification()
 
         return {
             "passed": ctx.passed,
