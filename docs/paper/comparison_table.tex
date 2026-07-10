@@ -31,38 +31,11 @@ RoboMorph\cite{robomorph2024} & \checkmark & \checkmark & -- & -- & -- & -- & --
 \bottomrule
 \end{tabular}
 
-\vspace{2mm}
+\vspace{1mm}
 \footnotesize
-$^*$ArtiCAD generates editable FreeCAD code from which STL may be derivable,
-but STL mesh export is not reported in the paper. Sources: arXiv HTML §6 +
-Bytez summary (both confirm URDF export; neither mentions STL/BOM/firmware).
-
-\textbf{Articraft} (arXiv:2605.15187, Cambridge/Oxford, open source) generates
-articulated 3D assets as URDF + STL via an LLM coding agent writing against a
-domain SDK. It targets general articulated objects (furniture, household items;
-Articraft-10K dataset: 10K assets, 245 categories), not robot engineering
-packages---no BOM, firmware, ROS2 structure, assembly guides, or COTS part
-specs. Sources: arXiv abstract + HTML + GitHub (mattzh72/articraft).
-
-$^\dagger$ArtiCAD mentions ``physical prototyping'' in its abstract, but
-does not describe automated physics simulation validation (e.g., contact,
-grasp, stability tests). We mark this as ``--'' to indicate no reported
-physics simulation pipeline; the distinction between ``physical prototyping''
-(manual fabrication) and ``physics simulation validation'' (automated)
-should be clarified in future revisions.
-
-\textbf{Experience store:} ArtiCAD additionally ships a self-evolving
-experience store using FAISS partitioning into Good/Issue buckets
-(arXiv:2604.10992v2, Review Agent section). Language-3D implements an
-analogous retrieve-before/store-after mechanism, but with lexical
-retrieval (keyword/category/DOF scoring) rather than embeddings, and
-stores only verified-good cases. This column is omitted from the table
-because only ArtiCAD and Language-3D have such a mechanism, and the
-retrieval backends are not directly comparable.
-
-\textbf{Key:} NL = natural language input; Assembly = multi-part articulated
-assembly (not single part); Param./STL/STEP = CAD geometry output formats;
-BOM = bill of materials with real part numbers; Firmware = embedded code
-(servo/IK/motor drivers); Physics = simulation-based validation;
-Dual-VLM = dual-channel verification (VLM + geometric arbitration).
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+$^*$ & ArtiCAD generates editable FreeCAD code (parametric B-rep); direct STL/STEP mesh export is not reported.\\
+$^\dagger$ & ArtiCAD mentions ``physical prototyping'' (manual fabrication), not automated physics simulation (contact/grasp/stability).\\
+\textbf{Key} & NL = natural-language input; Assembly = multi-part articulated structure; Param./STL/STEP = CAD geometry formats; BOM = bill of materials; Physics = automated simulation validation (MuJoCo/Gazebo); Dual-VLM = VLM visual verification + geometric arbitration.\\
+\end{tabularx}
 \end{table*}
