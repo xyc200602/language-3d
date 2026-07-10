@@ -2,6 +2,7 @@
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{multirow}
+\usepackage{tabularx}
 \usepackage{amssymb}
 \usepackage{amsmath}
 \usepackage{xcolor}
@@ -192,12 +193,14 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \end{tabular}
 \vspace{1mm}
 \footnotesize
-\textbf{COM\,margin}: signed distance from the ground-projected COM to the nearest support-polygon edge (higher $=$ more stable; negative $=$ tips over). The polygon is built from the kinematic root and its fixed-joint descendants, excluding dangling appendages.\\
-\textbf{Workspace}: bounding-box max edge of the end-effector trajectory.\\
-\textbf{FCL\,pairs}: severe penetrations ($>$\,5\,mm) / total pairs checked.\\
-\textbf{Triangles}: uniform mesh tessellation (0.1\,mm chordal deviation, Relative=False) for cross-case comparability.\\
-\textbf{PD-hold}: worst-joint steady-state droop under PD control \emph{without} gravity-compensation feed-forward (kp=50, kv=5; see \S\ref{sec:sim-limits}).\\
-$^\ddagger$The 6dof benchmark run predates the uniform-tessellation build; its triangle count uses adaptive mesh and is excluded from the mean ($^*$).
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\textbf{COM\,margin} & signed distance from the ground-projected COM to the nearest support-polygon edge (higher $=$ more stable; negative $=$ tips over). Built from the kinematic root and its fixed-joint descendants.\\
+\textbf{Workspace} & bounding-box max edge of the end-effector trajectory.\\
+\textbf{FCL\,pairs} & severe penetrations ($>$\,5\,mm) / total pairs checked.\\
+\textbf{Triangles} & uniform mesh tessellation (0.1\,mm chordal deviation) for cross-case comparability.\\
+\textbf{PD-hold} & worst-joint steady-state droop under PD control \emph{without} gravity-compensation feed-forward (kp=50, kv=5; see \S\ref{sec:sim-limits}).\\
+$^\ddagger$ & The 6dof benchmark run predates the uniform-tessellation build; its triangle count uses adaptive mesh and is excluded from the mean ($^*$).\\
+\end{tabularx}
 \end{table*}
 
 Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units, each drawn from a frozen per-case benchmark run (see \S\ref{sec:reproducibility}). The COM stability margin ranges from 52.8\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---reflecting the wide-stance mobile base versus the narrow fixed-base arms. The workspace extent scales from 252\,mm (2dof) to 848\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio. Triangle counts are comparable across the uniform-tessellation cases (18k--36k for arms) because STL export uses a uniform absolute mesh deviation (0.1\,mm chordal, Relative=False); the 6dof row ($^\ddagger$) uses the older adaptive mesh (see footnote). The raw PD-hold droop ranges 0.7--2.2$^\circ$ (benchmark-run mean 1.5$^\circ$), well within the 5$^\circ$ composite gate.
