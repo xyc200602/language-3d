@@ -101,6 +101,87 @@ def _build_motion_prompt(
     return content
 
 
+def verify_motion_video(
+    video_path: str,
+    api_key: str,
+    base_url: str = "https://open.bigmodel.cn/api/paas/v4",
+    vision_model: str = _DEFAULT_DYNAMIC_MODEL,
+    question: str = "",
+) -> dict[str, Any]:
+    """Run GLM-4.6V on a simulation VIDEO (native video understanding).
+
+    Unlike :func:`verify_motion` which sends 5 extracted key-frames, this
+    sends the **complete** simulation video to GLM-4.6V via its native
+    ``video_url`` input. GLM-4.6V performs true temporal/sequential under-
+    standing of the motion (it was trained on up to 1-hour video), so it can
+    catch transient events that key-frame extraction misses — e.g., a brief
+    collision at a specific moment, or a grasp that holds for 0.5s then slips.
+
+    The video is sent as a ``data:video/mp4;base64,...`` URI, so NO public
+    URL or file hosting is needed — the video goes directly from the local
+    MuJoCo render to the API in a single call.
+
+    Args:
+        video_path: path to the .mp4 produced by
+            :func:`~lang3d.tools.sim_mujoco.render_simulation_video`.
+        api_key: GLM API key.
+        question: optional natural-language question. If empty, a default
+            structured prompt asks for motion/grasp problems + fix hints.
+
+    Returns:
+        Same dict shape as :func:`verify_motion`: ``{passed, problems,
+        fix_hints, raw_response}``.
+    """
+    import base64
+    import os
+
+    if not os.path.exists(video_path):
+        return {"passed": False, "problems": [f"video not found: {video_path}"],
+                "fix_hints": [], "raw_response": ""}
+
+    video_b64 = base64.b64encode(open(video_path, "rb").read()).decode()
+
+    if not question:
+        question = (
+            "This is a MuJoCo physics simulation of a generated robot arm. "
+            "Watch the full motion sequence and judge:\n"
+            "1. Does any part self-collide during articulation?\n"
+            "2. Is the motion mechanically plausible (correct joint axes)?\n"
+            "3. If there is a grasp/lift sequence, does the gripper hold the object?\n\n"
+            "Respond in JSON: "
+            '{"passed": true/false, "problems": ["..."], "fix_hints": ["..."]}'
+        )
+
+    from openai import OpenAI
+    client = OpenAI(api_key=api_key, base_url=base_url)
+
+    content = [
+        {"type": "video_url",
+         "video_url": {"url": f"data:video/mp4;base64,{video_b64}"}},
+        {"type": "text", "text": question},
+    ]
+
+    try:
+        resp = client.chat.completions.create(
+            model=vision_model,
+            messages=[{"role": "user", "content": content}],
+            max_tokens=4000,
+        )
+    except Exception as e:
+        logger.error("GLM-4.6V video verification failed: %s", e)
+        return {"passed": False, "problems": [f"VLM call failed: {e}"],
+                "fix_hints": [], "raw_response": ""}
+
+    raw = resp.choices[0].message.content or ""
+    parsed = _parse_vlm_json(raw)
+    return {
+        "passed": parsed.get("passed", True),
+        "problems": parsed.get("problems", []),
+        "fix_hints": parsed.get("fix_hints", []),
+        "raw_response": raw,
+    }
+
+
 def verify_motion(
     frames: list[dict[str, str]],
     api_key: str,

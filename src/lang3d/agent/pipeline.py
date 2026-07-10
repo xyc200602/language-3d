@@ -1231,37 +1231,59 @@ class AssemblyPipeline:
             return None
 
         try:
-            from ..tools.sim_mujoco import extract_motion_key_frames
-            from ..tools.sim_grasp import extract_grasp_frames
-            from ..tools.assembly_gen.dynamic_vlm_verify import verify_motion
+            from ..tools.sim_mujoco import render_simulation_video
+            from ..tools.assembly_gen.dynamic_vlm_verify import (
+                verify_motion_video, verify_motion,
+            )
         except ImportError as e:
             logger.debug("dynamic VLM skipped: dependency missing (%s)", e)
             return None
 
-        logger.info("Stage 7: Dynamic VLM — extracting motion key frames...")
+        # Primary path: render the full rollout to video and let GLM-4.6V
+        # watch it with native temporal understanding (trained on up to 1h
+        # video). This catches transient events that key-frame extraction
+        # misses (e.g., a brief collision at one specific timestep).
+        logger.info("Stage 7: Dynamic VLM — rendering simulation video...")
+        video_path = os.path.join(ctx.output_dir, "sim_motion.mp4")
         try:
-            frames = extract_motion_key_frames(urdf_path)
+            vr = render_simulation_video(urdf_path, video_path,
+                                         duration_sec=3.0, fps=10,
+                                         width=480, height=360)
         except Exception as e:
-            logger.warning("motion frame extraction failed: %s", e)
-            frames = []
+            logger.warning("video render failed: %s", e)
+            vr = {"ok": False}
 
-        logger.info("Stage 7: Dynamic VLM — extracting grasp key frames...")
-        try:
-            grasp_frames = extract_grasp_frames(urdf_path)
-            frames.extend(grasp_frames)
-        except Exception as e:
-            logger.warning("grasp frame extraction failed: %s", e)
+        if vr.get("ok"):
+            logger.info("Stage 7: Dynamic VLM — GLM-4.6V watching %d-frame video...",
+                        vr.get("n_frames", 0))
+            try:
+                result = verify_motion_video(vr["video_path"], api_key=api_key)
+            except Exception as e:
+                logger.warning("video VLM call failed: %s", e)
+                result = None
+        else:
+            result = None
 
-        if not frames:
-            logger.warning("no frames extracted (physics diverged?)")
-            return None
-
-        logger.info("Stage 7: Dynamic VLM — GLM-4.6V judging %d motion frames...", len(frames))
-        try:
-            result = verify_motion(frames, api_key=api_key)
-        except Exception as e:
-            logger.warning("dynamic VLM call failed: %s", e)
-            return None
+        # Fallback: if video failed, extract key frames (5-image input).
+        if result is None:
+            logger.info("Stage 7: Dynamic VLM — falling back to key-frame extraction...")
+            try:
+                from ..tools.sim_mujoco import extract_motion_key_frames
+                from ..tools.sim_grasp import extract_grasp_frames
+                frames = extract_motion_key_frames(urdf_path)
+                frames.extend(extract_grasp_frames(urdf_path))
+            except Exception as e:
+                logger.warning("frame extraction failed: %s", e)
+                frames = []
+            if not frames:
+                logger.warning("no frames extracted (physics diverged?)")
+                return None
+            logger.info("Stage 7: Dynamic VLM — GLM-4.6V judging %d frames...", len(frames))
+            try:
+                result = verify_motion(frames, api_key=api_key)
+            except Exception as e:
+                logger.warning("dynamic VLM call failed: %s", e)
+                return None
 
         # Record results as design warnings (additive, not blocking).
         status = "PASS" if result.get("passed") else "MOTION_ISSUES_FOUND"
