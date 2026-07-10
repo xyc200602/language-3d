@@ -20,7 +20,10 @@
 \author{
 \IEEEauthorblockN{Youcheng Xiong}
 \IEEEauthorblockA{Future Laboratory, Tsinghua University\\
-Beijing, China
+Beijing, China\\
+University of Macau\\
+Macau SAR, China\\
+\texttt{dc42857@um.edu.mo}
 }
 }
 
@@ -151,7 +154,7 @@ We evaluate on seven robot configurations spanning 2--7 degrees of freedom plus 
 \label{sec:scoring}
 Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assembly (part count, joint count, connected tree, VLM pass), Position Solving (all positioned, 0 NaN), Render Quality ($\geq$4 views), Engineering Package (all files exist), Content Validation (mass, VLM, URDF structure, watertight meshes), Physical Sanity (0 FCL collisions, COM stability, workspace), and MuJoCo Simulation (physics stability, joint actuation, grasp). Score = PASS / (PASS + FAIL + WARN). Critical checks (collision, COM stability, MuJoCo physics, grasp) fail the case outright rather than degrading to a warning.
 
-\textbf{Evaluation validity.} We are explicit about three limitations of this protocol. \emph{First}, the composite $Q$ is a relative rank across our seven cases, not an absolute quality grade---no external benchmark exists to anchor what a given $Q$ means in absolute terms. \emph{Second}, there is no external benchmark for the NL$\to$robot-package task; the closest (MUSE~\cite{muse2026}, Text2CAD-Bench) targets a different formulation (structured design-spec$\to$STEP), precluding direct score comparison. \emph{Third}, the physics metrics in Table~\ref{tab:quant} come from a single frozen benchmark run per case (the typical high-scoring outcome); the across-run distribution (\S Reproducibility) shows the mean e2e check-pass rate including API failures is lower ($\sim$86\%, 92.9\% excluding them) due to LLM non-determinism.
+\textbf{Evaluation validity.} We are explicit about three limitations of this protocol. \emph{First}, the composite $Q$ is a relative rank across our seven cases, not an absolute quality grade---no external benchmark exists to anchor what a given $Q$ means in absolute terms. \emph{Second}, there is no external benchmark for the NL$\to$robot-package task; the closest (MUSE~\cite{muse2026}, Text2CAD-Bench) targets a different formulation (structured design-spec$\to$STEP), precluding direct score comparison. \emph{Third}, the physics metrics in Table~\ref{tab:quant} come from a single frozen benchmark run per case (the typical high-scoring outcome); the across-run distribution (\S\ref{sec:reproducibility}) shows the mean e2e check-pass rate including API failures is lower ($\sim$86\%, 92.9\% excluding them) due to LLM non-determinism.
 
 \begin{figure}[ht]
 \centering
@@ -184,11 +187,16 @@ Each case is evaluated by 41--43 automated checks across 7 phases: NL$\to$Assemb
 \bottomrule
 \end{tabular}
 \vspace{1mm}
-\footnotesize COM\,margin = signed distance from ground-projected COM to nearest support-polygon edge (higher = more stable; negative = tips over); the polygon is built from the kinematic root and its fixed-joint descendants, excluding dangling appendages. Workspace = bounding-box max edge. FCL\,pairs = severe penetrations ($>$5\,mm) / total pairs checked. Triangle count uses a uniform mesh tessellation (absolute 0.1\,mm chordal deviation, Relative=False) so counts are comparable across cases. PD-hold error = worst-joint steady-state droop under PD control \emph{without} gravity-compensation feed-forward (kp=50, kv=5; see \S\ref{sec:sim-limits}).\\
-$^\ddagger$The 6dof benchmark run predates the uniform-tessellation build (selected for DOF completeness — a recurring 6dof failure mode drops a wrist joint); its triangle count uses the older adaptive mesh and is not directly comparable to the other rows. $^*$The triangle mean excludes the 6dof row for this reason (the other six use uniform tessellation).
+\footnotesize
+\textbf{COM\,margin}: signed distance from the ground-projected COM to the nearest support-polygon edge (higher $=$ more stable; negative $=$ tips over). The polygon is built from the kinematic root and its fixed-joint descendants, excluding dangling appendages.\\
+\textbf{Workspace}: bounding-box max edge of the end-effector trajectory.\\
+\textbf{FCL\,pairs}: severe penetrations ($>$\,5\,mm) / total pairs checked.\\
+\textbf{Triangles}: uniform mesh tessellation (0.1\,mm chordal deviation, Relative=False) for cross-case comparability.\\
+\textbf{PD-hold}: worst-joint steady-state droop under PD control \emph{without} gravity-compensation feed-forward (kp=50, kv=5; see \S\ref{sec:sim-limits}).\\
+$^\ddagger$The 6dof benchmark run predates the uniform-tessellation build; its triangle count uses adaptive mesh and is excluded from the mean ($^*$).
 \end{table*}
 
-Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units, each drawn from a frozen per-case benchmark run (see \S Reproducibility). The COM stability margin ranges from 52.8\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---reflecting the wide-stance mobile base versus the narrow fixed-base arms. The workspace extent scales from 252\,mm (2dof) to 848\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio. Triangle counts are comparable across the uniform-tessellation cases (18k--36k for arms) because STL export uses a uniform absolute mesh deviation (0.1\,mm chordal, Relative=False); the 6dof row ($^\ddagger$) uses the older adaptive mesh (see footnote). The raw PD-hold droop ranges 0.7--2.2$^\circ$ (benchmark-run mean 1.5$^\circ$), well within the 5$^\circ$ composite gate.
+Table~\ref{tab:quant} is the primary evaluation: continuous, physics-grounded metrics with physical units, each drawn from a frozen per-case benchmark run (see \S\ref{sec:reproducibility}). The COM stability margin ranges from 52.8\,mm (5dof, marginal) to 145\,mm (wheeled, robust)---reflecting the wide-stance mobile base versus the narrow fixed-base arms. The workspace extent scales from 252\,mm (2dof) to 848\,mm (7dof), reflecting increasing reach. All seven cases achieve 0 severe mesh penetrations across 18--426 checked pairs and 100\% watertight STL ratio. Triangle counts are comparable across the uniform-tessellation cases (18k--36k for arms) because STL export uses a uniform absolute mesh deviation (0.1\,mm chordal, Relative=False); the 6dof row ($^\ddagger$) uses the older adaptive mesh (see footnote). The raw PD-hold droop ranges 0.7--2.2$^\circ$ (benchmark-run mean 1.5$^\circ$), well within the 5$^\circ$ composite gate.
 
 \textbf{Composite quality score.} A single rankable score must satisfy two constraints: (1)~a fatal flaw (tipping, no actuation) should not be averaged away, and (2)~dimensions that do not vary across cases should not dilute the signal. We therefore use a \emph{gate-then-score} design: four binary gates (MuJoCo loads, raw PD-hold droop $<$\,5$^\circ$ \emph{without} gravity-compensation feed-forward---see \S\ref{sec:sim-limits}---which is a genuine stiffness signal rather than the trivially-zero compensated error, 0 severe collisions, COM inside support polygon) must all pass; if any fails, $Q=0$. If all pass, $Q \in [0,1]$ is the geometric mean of three sub-scores:
 \begin{equation}
@@ -233,6 +241,7 @@ Table~\ref{tab:composite} reports $Q$ for the seven cases. The composite achieve
 \end{table}
 
 \subsection{Reproducibility}
+\label{sec:reproducibility}
 Across 76 runs of the 4dof\_arm case (identical prompt) under the current codebase, the score distribution is bimodal: the majority ($\sim$63\%) achieve 95.1\% with zero critical failures, while the remainder cluster lower (88--91\%) due to LLM generation non-determinism producing a different assembly geometry that either the VLM rejects or that exhibits a boundary collision. A small fraction ($\sim$6\%) score 0\% due to API rate-limiting failures (no generation at all); the mean score including the 5 zero-score API failures is 87.5\% (excluding them, 93.4\%), and the median is 95.1\%, reflecting the long tail of API-failed and boundary-collision runs. The motion-collision sweep passes in $\sim$85\% of runs (failures are LLM-generated geometries with a shoulder joint at a colliding extreme, not a systematic solver defect). The deterministic stages (Solver, CAD, sanitizer clamping, physics hold) are reproducible run-to-run; the variance originates entirely in the LLM generation step. To prevent the continuous-physics tables (Table~\ref{tab:quant}, Table~\ref{tab:composite}) from drifting as new runs accumulate, each case's physics metrics are drawn from a single frozen benchmark run (a high-scoring run with structured metrics), recorded in \texttt{data/runs/<case>/BENCHMARK}; the distribution sub-scores ($g_{\text{rate}}$, $s_{\text{rely}}$) still use all runs.
 
 \subsection{Ablation: Geometric Arbitration}
@@ -282,8 +291,8 @@ Beyond the system limitations above, the \emph{evaluation methodology} has scope
     \item \textbf{No human evaluation.} No user study measures whether a human engineer finds the generated packages usable. All quality signals are automated checks; aesthetic and practical-manufacturability judgments are not captured.
     \item \textbf{The gate is unexercised on this benchmark.} All seven cases pass all four binary gates, so no case receives $Q=0$. The gate-then-score design is therefore asserted as a protective mechanism but not demonstrated to reject a tipping or non-actuated robot on these cases.
     \item \textbf{Non-discriminatory DOF-completeness term.} $s_{\text{func}}$ includes a DOF-completeness fraction ($n_{\text{dof}}/n_{\text{exp}}$), but all seven cases meet their requested DOF, so this term is a constant 1.0 and does not contribute to ranking. The discriminative signal in $s_{\text{func}}$ comes entirely from the grasp rate.
-    \item \textbf{Ablation sample size.} The geometric-arbitration ablation (\S Evaluation) collapses to $n=1$ clean no-geo run for the arm case (the remaining runs hit API rate limits), so its ``no score change on clean runs'' finding is suggestive rather than statistically established.
-    \item \textbf{Physics metrics from a single frozen run.} Table~\ref{tab:quant} reports one benchmark run per case; the across-run variance (mean e2e score $\sim$86\%, including API failures; \S Reproducibility) is disclosed separately rather than shown as error bars on the table.
+    \item \textbf{Ablation sample size.} The geometric-arbitration ablation (\S\ref{sec:eval}) collapses to $n=1$ clean no-geo run for the arm case (the remaining runs hit API rate limits), so its ``no score change on clean runs'' finding is suggestive rather than statistically established.
+    \item \textbf{Physics metrics from a single frozen run.} Table~\ref{tab:quant} reports one benchmark run per case; the across-run variance (mean e2e score $\sim$86\%, including API failures; \S\ref{sec:reproducibility}) is disclosed separately rather than shown as error bars on the table.
 \end{itemize}
 We list these explicitly because a composite score on a small, self-authored benchmark with automated-only checking can look more decisive than it is; the scores rank these seven cases against each other and do not predict performance on unseen prompts.
 
