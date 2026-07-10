@@ -19,29 +19,29 @@ from .base import Tool, ToolDefinition
 
 logger = logging.getLogger(__name__)
 
-# Deferred import to avoid circular dependency.
-import lang3d.tools.sim_mujoco as _sm
+# Lazy import helper: sim_mujoco imports from sim_grasp at its module level
+# (re-exports _find_slide_joints etc.), so importing sim_mujoco at the TOP
+# of sim_grasp creates a circular dependency that fails when sim_mujoco has
+# grown large. Instead, we defer the import to first call — by then both
+# modules are fully loaded and the circular reference resolves cleanly.
+_sm = None
+_load_model = None
+_mujoco_available = None
+_rewrite_mesh_paths = None
+_stabilize_model = None
 
-# Attribute guards set None defaults so a missing symbol degrades to a
-# clean NameError-free skip (checked at call sites) rather than an
-# unbound local later. If sim_mujoco genuinely lacks these, the grasp
-# pipeline will report "not available" instead of crashing mid-physics.
-try:
-    _load_model = _sm._load_model
-except AttributeError:
-    _load_model = None
-try:
-    _mujoco_available = _sm._mujoco_available
-except AttributeError:
-    _mujoco_available = None
-try:
-    _rewrite_mesh_paths = _sm._rewrite_mesh_paths
-except AttributeError:
-    _rewrite_mesh_paths = None
-try:
-    _stabilize_model = _sm._stabilize_model
-except AttributeError:
-    _stabilize_model = None
+
+def _ensure_sm():
+    """Lazy-load sim_mujoco symbols on first use (breaks circular import)."""
+    global _sm, _load_model, _mujoco_available, _rewrite_mesh_paths, _stabilize_model
+    if _sm is not None:
+        return
+    import lang3d.tools.sim_mujoco as sm
+    _sm = sm
+    _load_model = getattr(sm, "_load_model", None)
+    _mujoco_available = getattr(sm, "_mujoco_available", None)
+    _rewrite_mesh_paths = getattr(sm, "_rewrite_mesh_paths", None)
+    _stabilize_model = getattr(sm, "_stabilize_model", None)
 
 def _find_slide_joints(model: Any) -> list[dict[str, Any]]:
     """Find all SLIDE joints in the model.
@@ -125,6 +125,7 @@ def _add_cube_to_scene(
     The cube is a free-floating body (no joint to world = floating base)
     so it falls under gravity and can be pushed by finger contacts.
     """
+    _ensure_sm()
     import mujoco  # type: ignore[import-not-found]
 
     temp_files: list[str] = []
@@ -442,6 +443,168 @@ def _rotate_vector_by_quat(
     ])
 
 
+def extract_grasp_frames(
+    urdf_path: str,
+    width: int = 480,
+    height: int = 360,
+) -> list[dict[str, str]]:
+    """Extract 2 key grasp-simulation frames for VLM inspection.
+
+    Runs the three-phase grasp test (zero-G close → gravity hold → lift) and
+    captures offscreen renders at two moments that reveal whether the gripper
+    can actually grasp — the core "能抓东西" (can it grasp) question:
+
+    - ``grasp_close``: end of Phase A (fingers closed on cube under zero
+      gravity). Shows whether the fingers reach the cube and clamp it.
+    - ``grasp_lift``: end of Phase C (after lift attempt under gravity).
+      Shows whether the cube stayed held or dropped.
+
+    These complement the 3 motion frames from
+    :func:`~lang3d.tools.sim_mujoco.extract_motion_key_frames` to give the
+    dynamic VLM a complete 5-frame picture: 3 motion + 2 grasp.
+
+    Returns ``[{"label", "description", "image": data_uri}, ...]`` or empty
+    list if the URDF has no gripper / fails to load.
+    """
+    _ensure_sm()
+    import base64
+    import io
+
+    import mujoco  # type: ignore[import-not-found]
+    import numpy as np
+    from PIL import Image
+
+    load = _load_model(urdf_path)
+    if not load.get("ok"):
+        return []
+
+    model = load["model"]
+    data0 = mujoco.MjData(model)
+    mujoco.mj_forward(model, data0)
+    slide_joints = _find_slide_joints(model)
+    if not slide_joints:
+        return []  # no gripper
+
+    # Group fingers into grippers (returns [(gripper_id, [finger_joints]), ...]).
+    grippers = _group_fingers_into_grippers(slide_joints)
+    grippers = [(gid, fs) for gid, fs in grippers if len(fs) >= 2]
+    if not grippers:
+        return []
+    _gid, fingers = grippers[0]
+
+    # Compute cube position from finger world positions (midpoint).
+    finger_positions = [np.array(data0.xpos[j["body_id"]]) for j in fingers]
+    cube_pos = tuple(sum(finger_positions) / len(finger_positions))
+
+    cube_size_m = 0.012
+    cube_mass_kg = 0.020
+    model, _temp_files = _add_cube_to_scene(
+        urdf_path,
+        cube_pos_m=cube_pos,
+        cube_size_m=cube_size_m,
+        cube_mass_kg=cube_mass_kg,
+    )
+    cube_body_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_BODY, "grasp_cube",
+    )
+    if cube_body_id < 0:
+        return []
+
+    # Find slide joints in the NEW model (cube was spliced in, IDs changed).
+    slide_joints = _find_slide_joints(model)
+    grippers = _group_fingers_into_grippers(slide_joints)
+    grippers = [(gid, fs) for gid, fs in grippers if len(fs) >= 2]
+    if not grippers:
+        return []
+    _gid, fingers = grippers[0]
+
+    _stabilize_model(model, armature=0.2, damping=3.0)
+    model.opt.timestep = 0.0005
+
+    data = mujoco.MjData(model)
+    model.opt.gravity[:] = (0.0, 0.0, 0.0)
+    mujoco.mj_forward(model, data)
+
+    # Setup the same close-direction + arm-hold logic as _run_grasp_scenario.
+    finger_positions = [np.array(data.xpos[j["body_id"]]) for j in fingers]
+    grasp_center = sum(finger_positions) / len(finger_positions)
+
+    finger_close_signs = {}
+    for j in fingers:
+        jid = j["jid"]
+        body_id = j["body_id"]
+        axis_local = np.array(model.jnt_axis[jid])
+        body_quat = np.array(data.xquat[body_id])
+        axis_world = _rotate_vector_by_quat(axis_local, body_quat)
+        to_center = grasp_center - np.array(data.xpos[body_id])
+        projection = float(np.dot(to_center, axis_world))
+        finger_close_signs[jid] = 1.0 if projection > 0 else -1.0
+
+    slide_jids = {j["jid"] for j in fingers}
+    arm_jids = [
+        jid for jid in range(model.njnt)
+        if int(model.jnt_type[jid]) == mujoco.mjtJoint.mjJNT_HINGE
+        and jid not in slide_jids
+    ]
+    initial_arm_qpos = {jid: float(data.qpos[model.jnt_qposadr[jid]]) for jid in arm_jids}
+
+    renderer = mujoco.Renderer(model, height=height, width=width)
+    duration_sec = 4.0
+    n_steps = max(1, int(duration_sec / model.opt.timestep))
+    phase_a_end = max(1, int(n_steps * 0.15))
+    phase_b_end = max(phase_a_end + 1, int(n_steps * 0.30))
+
+    frames: list[dict[str, str]] = []
+
+    def _render_and_capture(label: str, desc: str) -> None:
+        renderer.update_scene(data)
+        pixels = renderer.render()
+        buf = io.BytesIO()
+        Image.fromarray(pixels).save(buf, format="PNG")
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        frames.append({"label": label, "description": desc,
+                       "image": f"data:image/png;base64,{b64}"})
+
+    grasp_force = 5.0
+    for step in range(n_steps):
+        data.qfrc_applied[:] = 0
+
+        if step < phase_a_end:
+            model.opt.gravity[:] = (0.0, 0.0, 0.0)
+        elif step < phase_b_end:
+            model.opt.gravity[:] = (0.0, 0.0, -9.81)
+        else:
+            model.opt.gravity[:] = (0.0, 0.0, -9.81)
+            for ajid in arm_jids[:2]:
+                data.qfrc_applied[model.jnt_dofadr[ajid]] -= 1.5
+
+        # Apply grasp force + arm hold
+        for sjid, sign in finger_close_signs.items():
+            dadr = model.jnt_dofadr[sjid]
+            data.qfrc_applied[dadr] = sign * grasp_force
+            data.qfrc_applied[dadr] -= 2.0 * data.qvel[dadr]
+        for ajid in arm_jids:
+            qadr = model.jnt_qposadr[ajid]
+            dadr = model.jnt_dofadr[ajid]
+            err = initial_arm_qpos[ajid] - data.qpos[qadr]
+            data.qfrc_applied[dadr] = 200.0 * err - 20.0 * data.qvel[dadr]
+
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break
+
+        # Capture at end of Phase A (fingers closed) and near end of Phase C.
+        if step == phase_a_end - 1:
+            _render_and_capture("grasp_close",
+                                "Phase A end: fingers closed on cube (zero gravity)")
+        if step == n_steps - 1:
+            _render_and_capture("grasp_lift",
+                                "Phase C end: after lift attempt (gravity on)")
+
+    renderer.close()
+    return frames
+
+
 class SimGraspTool(Tool):
     """Validate the gripper can grasp and lift a test cube.
 
@@ -507,6 +670,7 @@ class SimGraspTool(Tool):
         duration_sec: float = 4.0,
         **kwargs: Any,
     ) -> str:
+        _ensure_sm()
         if _mujoco_available is None or not _mujoco_available():
             return "Error: mujoco package not installed. Run: pip install mujoco"
         if not urdf_path or not Path(urdf_path).exists():

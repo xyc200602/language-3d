@@ -63,18 +63,20 @@ def _build_motion_prompt(
     """
     text_parts = [
         "You are a robotics engineer inspecting simulation frames of a "
-        "generated robot arm. These frames are captured at different points "
-        "during a joint-sweep motion in MuJoCo physics simulation. "
-        "Your job is to judge the **motion behaviour**, NOT the static "
-        "appearance (that is checked separately).\n\n"
-        "For each frame I will tell you the kinematic context (what the "
-        "joints are doing at that moment). Look for:\n"
+        "generated robot arm. These frames include both **motion** frames "
+        "(joint-sweep in MuJoCo) and **grasp** frames (a cube grasp test: "
+        "fingers closing, then lifting under gravity). "
+        "Your job is to judge the **motion and grasp behaviour**, NOT the "
+        "static appearance (that is checked separately).\n\n"
+        "For each frame I will tell you the context (what is happening at "
+        "that moment). Look for:\n"
         "1. Self-collision: do any parts interpenetrate during motion that "
         "were separate at rest?\n"
         "2. Mechanical implausibility: does the arm bend in a way a real "
         "robot cannot (wrong joint axes, impossible articulation)?\n"
-        "3. Workspace: does the end-effector reach a reasonable region, or "
-        "is it stuck/limited in an implausible way?\n"
+        "3. Workspace: does the end-effector reach a reasonable region?\n"
+        "4. Grasp: in the grasp frames, can the fingers close on the cube? "
+        "Does the cube stay held or drop during the lift phase?\n"
     ]
     if joint_info:
         names = [j["name"] for j in joint_info[:8]]
@@ -141,11 +143,10 @@ def verify_motion(
             model=vision_model,
             messages=[{"role": "user", "content": content}],
             # GLM-4.6V is a reasoning model: it writes a chain-of-thought to
-            # reasoning_content before producing content. The reasoning alone
-            # can consume 400-600 tokens, so max_tokens must be large enough
-            # for both reasoning AND the final JSON verdict (a tight 1000
-            # truncates the content to empty, losing the verdict entirely).
-            max_tokens=2000,
+            # reasoning_content before producing content. With 5 images the
+            # reasoning can consume 800-1500 tokens, so max_tokens must be
+            # large enough for both reasoning AND the final JSON verdict.
+            max_tokens=4000,
         )
     except Exception as e:
         logger.error("GLM-4.6V motion verification failed: %s", e)

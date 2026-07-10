@@ -1232,6 +1232,7 @@ class AssemblyPipeline:
 
         try:
             from ..tools.sim_mujoco import extract_motion_key_frames
+            from ..tools.sim_grasp import extract_grasp_frames
             from ..tools.assembly_gen.dynamic_vlm_verify import verify_motion
         except ImportError as e:
             logger.debug("dynamic VLM skipped: dependency missing (%s)", e)
@@ -1242,9 +1243,17 @@ class AssemblyPipeline:
             frames = extract_motion_key_frames(urdf_path)
         except Exception as e:
             logger.warning("motion frame extraction failed: %s", e)
-            return None
+            frames = []
+
+        logger.info("Stage 7: Dynamic VLM — extracting grasp key frames...")
+        try:
+            grasp_frames = extract_grasp_frames(urdf_path)
+            frames.extend(grasp_frames)
+        except Exception as e:
+            logger.warning("grasp frame extraction failed: %s", e)
+
         if not frames:
-            logger.warning("no motion frames extracted (physics diverged?)")
+            logger.warning("no frames extracted (physics diverged?)")
             return None
 
         logger.info("Stage 7: Dynamic VLM — GLM-4.6V judging %d motion frames...", len(frames))
