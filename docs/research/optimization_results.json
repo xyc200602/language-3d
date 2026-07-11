@@ -1,0 +1,44 @@
+[
+  {
+    "case": "3dof_arm",
+    "ts": "20260708_231302",
+    "before": 2.6566501303166596,
+    "after": 2.0,
+    "improved": false
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260702_225613",
+    "before": 2.8652488070019393,
+    "after": 0.0,
+    "improved": false
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260708_221233",
+    "before": 2.833220666201523,
+    "after": 0.0,
+    "improved": false
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260708_202829",
+    "before": 1.8301751021225272,
+    "after": 0.0,
+    "improved": false
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260708_233227",
+    "before": 1.239208239177846,
+    "after": 2.0,
+    "improved": true
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260701_222014",
+    "before": 2.0,
+    "after": 2.0,
+    "improved": false
+  }
+]

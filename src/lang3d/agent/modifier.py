@@ -25,6 +25,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -463,34 +464,22 @@ def apply_dynamic_vlm_fixes(
     applied = False
 
     # --- Pattern 1: clamp/narrow joint range ---
-    # Matches "clamp shoulder range", "limit elbow to ±45",
-    # "narrow wrist range", "restrict joint X".
     range_keywords = ("clamp", "limit", "narrow", "restrict", "reduce.*range",
                       "tighten.*range")
-    range_pat = re.compile(
-        r"(?:clamp|limit|narrow|restrict|reduce|tighten)\s+"
-        r"(?:the\s+)?(\w+)?\s*(?:joint\s+)?(\w+)?\s*"
-        r"(?:range|angle|limit)",
-        re.IGNORECASE,
-    )
-
     for hint in fix_hints:
         h_lower = hint.lower()
         if not any(k in h_lower for k in range_keywords):
             continue
-        # Try to find which joint is mentioned.
         for j in joints:
             if j.type != "revolute":
                 continue
             child = j.child.lower()
-            # Match joint name keywords (shoulder, elbow, wrist, pitch, yaw, roll).
             joint_kw = child.replace("_", " ")
             if any(kw in h_lower for kw in (child, joint_kw, "shoulder", "elbow",
                                              "wrist", "pitch", "yaw", "roll")):
                 lo, hi = j.range_deg
-                # Tighten by 25% toward center (conservative).
                 center = (lo + hi) / 2.0
-                span = (hi - lo) * 0.75  # keep 75% of original range
+                span = (hi - lo) * 0.75
                 j.range_deg = (center - span / 2, center + span / 2)
                 logger.info("Dynamic VLM fix: clamped %s range %s→%s",
                             j.child, (lo, hi), j.range_deg)
@@ -498,19 +487,17 @@ def apply_dynamic_vlm_fixes(
                 break
 
     # --- Pattern 2: gripper friction/force/gap ---
-    # Matches "increase friction", "increase grasp force", "close gap",
-    # "narrow gripper", "increase clamping".
     grip_keywords = ("friction", "grasp force", "clamping force", "close gap",
                      "narrow gripper", "increase.*force", "tighten.*grip",
-                     "finger.*gap", "gripper.*force")
+                     "finger.*gap", "gripper.*force", "does not hold",
+                     "does not grasp", "hold the object")
     if any(any(gk in h_lower for gk in grip_keywords) for h_lower in
            [h.lower() for h in fix_hints]):
-        # Narrow the finger gap by moving fingers closer (reduce width).
         for p in parts:
             if "finger" in p.name.lower():
                 w = p.dimensions.get("width", 0)
-                if w > 2:  # only narrow if there's material to remove
-                    p.dimensions["width"] = max(w * 0.8, 2.0)
+                if w > 2:
+                    p.dimensions["width"] = max(w * 0.85, 2.0)
                     logger.info("Dynamic VLM fix: narrowed %s width %.1f→%.1f",
                                 p.name, w, p.dimensions["width"])
                     applied = True
@@ -519,6 +506,119 @@ def apply_dynamic_vlm_fixes(
         return assembly, False
 
     return _rebuild_assembly(assembly, parts, joints), True
+
+
+def optimize_grasp_parameters(
+    assembly: Assembly,
+    urdf_path: str,
+) -> tuple[Assembly, dict]:
+    """Simulation-driven grasp parameter optimization.
+
+    Tries multiple finger-width and joint-range scaling factors, runs the
+    actual grasp test (SimGraspTool) for each candidate, and selects the
+    one with the best objective result (grasp_ok=True with max lift).
+
+    This replaces the one-shot 'narrow by 20%' heuristic with a principled
+    parameter search guided by physics feedback — the core of
+    '生成再调优' (generate-then-refine).
+
+    Args:
+        assembly: the current assembly.
+        urdf_path: path to the URDF for grasp testing.
+
+    Returns:
+        (best_assembly, optimization_report) where report has:
+        - ``candidates_tried``: number of parameter sets tested
+        - ``best_score``: the score of the winner (grasp_ok=2, lifted=1, +lift/100)
+        - ``best_params``: the winning parameter dict
+        - ``improvement``: score delta vs original
+    """
+    import copy
+    import tempfile
+
+    # Candidate parameter sets to try.
+    # finger_scale: multiply finger width by this factor (0.7=30% narrower)
+    # range_scale: multiply revolute range by this factor (0.8=20% tighter)
+    candidates = [
+        {"finger_scale": 1.0, "range_scale": 1.0},   # original (baseline)
+        {"finger_scale": 0.85, "range_scale": 1.0},   # narrower fingers
+        {"finger_scale": 0.75, "range_scale": 1.0},   # even narrower
+        {"finger_scale": 0.85, "range_scale": 0.85},  # narrower + tighter range
+        {"finger_scale": 0.75, "range_scale": 0.85},  # max narrowing + tighter
+        {"finger_scale": 1.15, "range_scale": 1.0},   # wider fingers (more contact)
+    ]
+
+    def _apply_params(asm: Assembly, params: dict) -> Assembly:
+        """Apply a parameter set to a copy of the assembly."""
+        parts = [copy.deepcopy(p) for p in asm.parts]
+        joints = [copy.deepcopy(j) for j in asm.joints]
+        fs = params.get("finger_scale", 1.0)
+        rs = params.get("range_scale", 1.0)
+        for p in parts:
+            if "finger" in p.name.lower():
+                w = p.dimensions.get("width", 10)
+                p.dimensions["width"] = max(w * fs, 2.0)
+        if rs < 1.0:
+            for j in joints:
+                if j.type == "revolute":
+                    lo, hi = j.range_deg
+                    center = (lo + hi) / 2.0
+                    span = (hi - lo) * rs
+                    j.range_deg = (center - span / 2, center + span / 2)
+        return _rebuild_assembly(asm, parts, joints)
+
+    def _score_grasp(urdf: str) -> float:
+        """Run grasp test and return a score (higher = better)."""
+        from ..tools.sim_grasp import SimGraspTool
+        result = SimGraspTool().execute(urdf_path=urdf)
+        import re as _re
+        grasp_ok = '"grasp_ok": true' in result
+        lifted = '"lifted": true' in result
+        lift_match = _re.search(r'"lift_c_m":\s*([\d.e+-]+)', result)
+        lift_mm = float(lift_match.group(1)) * 1000 if lift_match else 0
+        score = (2 if grasp_ok else 0) + (1 if lifted else 0) + max(lift_mm, 0) / 100
+        return score, grasp_ok, lift_mm
+
+    from ..tools.urdf_export import AssemblyToURDF
+
+    best_score = -1
+    best_asm = assembly
+    best_params = candidates[0]
+    report_lines = []
+
+    for params in candidates:
+        try:
+            trial_asm = _apply_params(assembly, params)
+            trial_urdf = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".urdf", delete=False, encoding="utf-8")
+            trial_urdf.write(AssemblyToURDF(trial_asm, primitive_visuals=True).convert())
+            trial_urdf.close()
+            score, grasp_ok, lift_mm = _score_grasp(trial_urdf.name)
+            os.unlink(trial_urdf.name)
+        except Exception as e:
+            score, grasp_ok, lift_mm = -1, False, 0
+        report_lines.append(f"  params={params} score={score:.2f} grasp={grasp_ok} lift={lift_mm:.1f}mm")
+        logger.info("Grasp optimization: params=%s score=%.2f grasp=%s lift=%.1fmm",
+                    params, score, grasp_ok, lift_mm)
+        if score > best_score:
+            best_score = score
+            best_asm = trial_asm
+            best_params = params
+
+    # Baseline score (original, no modification)
+    baseline_score, _, _ = _score_grasp(urdf_path)
+
+    report = {
+        "candidates_tried": len(candidates),
+        "baseline_score": round(baseline_score, 2),
+        "best_score": round(best_score, 2),
+        "best_params": best_params,
+        "improvement": round(best_score - baseline_score, 2),
+        "details": report_lines,
+    }
+    logger.info("Grasp optimization: best=%s (baseline=%.2f, best=%.2f, improvement=%.2f)",
+                best_params, baseline_score, best_score, best_score - baseline_score)
+    return best_asm, report
 
 
 def apply_targeted_fix_from_vlm(
