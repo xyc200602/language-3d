@@ -316,10 +316,15 @@ def _run_grasp_scenario(
     # the cube down WITHOUT meaning the grasp failed.  We correct for this
     # by tracking the gripper-base Z and computing slip RELATIVE to the
     # gripper, not relative to the ground.
+    #
+    # Strategy: try to find a named "gripper_base" body first.  If that
+    # fails (some robots mount fingers directly on a wrist servo with no
+    # dedicated gripper_base body), fall back to the PARENT body of the
+    # first finger — that body is the structural mount point and its Z
+    # motion captures the arm sag.
     gripper_base_bid = -1
     for fb in slide_joints:
         bn = fb["body_name"].lower()
-        # Strip trailing "finger_<side>" to get the gripper base name pattern.
         import re as _re
         gm = _re.match(r"^(.*)finger_[a-z0-9]+$", bn)
         base_pat = gm.group(1).rstrip("_") if gm else "gripper_base"
@@ -332,6 +337,10 @@ def _run_grasp_scenario(
                 break
         if gripper_base_bid >= 0:
             break
+
+    # Fallback: use the parent body of the first finger.
+    if gripper_base_bid < 0 and slide_joints:
+        gripper_base_bid = int(model.body_parentid[slide_joints[0]["body_id"]])
 
     # Per-finger close direction sign (geometry-aware, handles mirrored mounts)
     finger_close_signs: dict[int, float] = {}

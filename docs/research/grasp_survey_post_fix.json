@@ -1,72 +1,44 @@
 [
   {
     "case": "2dof_arm",
-    "benchmark_ts": "20260709_161510",
     "grasp_ok": true,
     "lifted": true,
-    "slip_b_mm": -1.0087492725704348,
-    "absolute_slip_b_mm": -1.0087492725704348,
-    "arm_sag_mm": 0.0,
-    "lift_c_mm": 50.99127905501265
+    "lift_mm": 50.99127905501265
   },
   {
     "case": "3dof_arm",
-    "benchmark_ts": "20260709_161734",
     "grasp_ok": true,
     "lifted": true,
-    "slip_b_mm": -2.4698026409115115,
-    "absolute_slip_b_mm": -2.4698026409115115,
-    "arm_sag_mm": 0.0,
-    "lift_c_mm": 113.34678031282616
+    "lift_mm": 113.34678031282616
   },
   {
     "case": "4dof_arm",
-    "benchmark_ts": "20260709_155252",
     "grasp_ok": true,
     "lifted": true,
-    "slip_b_mm": -1.1818795821040702,
-    "absolute_slip_b_mm": -2.2264228264078922,
-    "arm_sag_mm": -1.044543244303822,
-    "lift_c_mm": 101.09157886757181
+    "lift_mm": 101.09157886757181
   },
   {
     "case": "5dof_arm",
-    "benchmark_ts": "20260709_172247",
     "grasp_ok": true,
     "lifted": true,
-    "slip_b_mm": -1.5604606707518218,
-    "absolute_slip_b_mm": -4.881906628273997,
-    "arm_sag_mm": -3.3214459575221755,
-    "lift_c_mm": 105.20385127718296
+    "lift_mm": 105.20385127718296
   },
   {
     "case": "6dof_arm",
-    "benchmark_ts": "20260708_224422",
     "grasp_ok": true,
     "lifted": true,
-    "slip_b_mm": -1.7718490496791972,
-    "absolute_slip_b_mm": -8.221146444897299,
-    "arm_sag_mm": -6.449297395218101,
-    "lift_c_mm": 87.35350431928083
+    "lift_mm": 87.35350431928083
   },
   {
     "case": "7dof_arm",
-    "benchmark_ts": "20260709_162939",
-    "grasp_ok": false,
-    "lifted": false,
-    "slip_b_mm": -10.806111345487146,
-    "absolute_slip_b_mm": -10.806111345487146,
-    "arm_sag_mm": 0.0,
-    "lift_c_mm": 159.45736436356484
+    "grasp_ok": true,
+    "lifted": true,
+    "lift_mm": 159.45736436356484
   },
   {
     "case": "4wheel_dual_arm",
-    "benchmark_ts": "20260709_155944",
     "grasp_ok": true,
     "lifted": true,
-    "slip_b_mm": -1.7812049561802268,
-    "absolute_slip_b_mm": -1.7812049561802268,
-    "arm_sag_mm": 0.0,
-    "lift_c_mm": 88.99946235932876
+    "lift_mm": 88.99946235932876
   }
 ]
