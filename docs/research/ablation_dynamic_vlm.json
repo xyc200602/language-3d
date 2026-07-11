@@ -1,0 +1,122 @@
+[
+  {
+    "case": "2dof_arm",
+    "benchmark_ts": "20260709_161510",
+    "static_vlm_passed": true,
+    "static_severe_collisions": 0,
+    "static_motion_collision": 0,
+    "static_grasp_ok": true,
+    "static_score": 95.1,
+    "passed": false,
+    "problems": [
+      "Gripper does not hold the object during grasp/lift sequence"
+    ],
+    "fix_hints": [
+      "Ensure gripper closes and applies sufficient force to hold the object; adjust control logic for grasp maintenance"
+    ],
+    "raw_response": "\n{\"passed\": false, \"problems\": [\"Gripper does not hold the object during grasp/lift sequence\"], \"fix_hints\": [\"Ensure gripper closes and applies sufficient force to hold the object; adjust control logic for grasp maintenance\"]}",
+    "dynamic_video_frames": 30,
+    "dynamic_time_sec": 57.0,
+    "ablation_gap": "STATIC_PASS_DYNAMIC_FAIL"
+  },
+  {
+    "case": "3dof_arm",
+    "benchmark_ts": "20260709_161734",
+    "static_vlm_passed": true,
+    "static_severe_collisions": 0,
+    "static_motion_collision": 0,
+    "static_grasp_ok": true,
+    "static_score": 95.1,
+    "passed": true,
+    "problems": [],
+    "fix_hints": [],
+    "raw_response": "\n{\"passed\": true, \"problems\": [], \"fix_hints\": []}",
+    "dynamic_video_frames": 30,
+    "dynamic_time_sec": 9.8,
+    "ablation_gap": "AGREE"
+  },
+  {
+    "case": "4dof_arm",
+    "benchmark_ts": "20260709_155252",
+    "static_vlm_passed": true,
+    "static_severe_collisions": 0,
+    "static_motion_collision": 0,
+    "static_grasp_ok": true,
+    "static_score": 95.1,
+    "passed": true,
+    "problems": [],
+    "fix_hints": [],
+    "raw_response": "\n{\"passed\": true, \"problems\": [], \"fix_hints\": []}",
+    "dynamic_video_frames": 30,
+    "dynamic_time_sec": 58.1,
+    "ablation_gap": "AGREE"
+  },
+  {
+    "case": "5dof_arm",
+    "benchmark_ts": "20260709_172247",
+    "static_vlm_passed": true,
+    "static_severe_collisions": 0,
+    "static_motion_collision": 0,
+    "static_grasp_ok": true,
+    "static_score": 95.1,
+    "passed": true,
+    "problems": [],
+    "fix_hints": [],
+    "raw_response": "\n{\"passed\": true, \"problems\": [], \"fix_hints\": []}",
+    "dynamic_video_frames": 30,
+    "dynamic_time_sec": 17.6,
+    "ablation_gap": "AGREE"
+  },
+  {
+    "case": "6dof_arm",
+    "benchmark_ts": "20260708_224422",
+    "static_vlm_passed": true,
+    "static_severe_collisions": 0,
+    "static_motion_collision": 0,
+    "static_grasp_ok": false,
+    "static_score": 92.7,
+    "passed": true,
+    "problems": [],
+    "fix_hints": [],
+    "raw_response": "\n{\"passed\": true, \"problems\": [], \"fix_hints\": []}",
+    "dynamic_video_frames": 30,
+    "dynamic_time_sec": 46.7,
+    "ablation_gap": "AGREE"
+  },
+  {
+    "case": "7dof_arm",
+    "benchmark_ts": "20260709_162939",
+    "static_vlm_passed": true,
+    "static_severe_collisions": 0,
+    "static_motion_collision": 0,
+    "static_grasp_ok": false,
+    "static_score": 92.7,
+    "passed": true,
+    "problems": [],
+    "fix_hints": [],
+    "raw_response": "\n{\"passed\": true, \"problems\": [], \"fix_hints\": []}",
+    "dynamic_video_frames": 30,
+    "dynamic_time_sec": 10.8,
+    "ablation_gap": "AGREE"
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "benchmark_ts": "20260709_155944",
+    "static_vlm_passed": true,
+    "static_severe_collisions": 0,
+    "static_motion_collision": 0,
+    "static_grasp_ok": true,
+    "static_score": 95.3,
+    "passed": false,
+    "problems": [
+      "No motion observed in the sequence; self-collision, mechanical plausibility, and grasp/lift cannot be assessed."
+    ],
+    "fix_hints": [
+      "Include a motion sequence with articulation to evaluate self-collision, joint axes, and grasp/lift actions."
+    ],
+    "raw_response": "\n{\"passed\": false, \"problems\": [\"No motion observed in the sequence; self-collision, mechanical plausibility, and grasp/lift cannot be assessed.\"], \"fix_hints\": [\"Include a motion sequence with articulation to evaluate self-collision, joint axes, and grasp/lift actions.\"]}",
+    "dynamic_video_frames": 30,
+    "dynamic_time_sec": 16.2,
+    "ablation_gap": "STATIC_PASS_DYNAMIC_FAIL"
+  }
+]
