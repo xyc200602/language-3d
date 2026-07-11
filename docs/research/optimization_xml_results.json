@@ -1,0 +1,122 @@
+[
+  {
+    "case": "3dof_arm",
+    "ts": "20260708_231302",
+    "candidates_tried": 6,
+    "baseline_score": 3.66,
+    "best_score": 3.66,
+    "best_params": {
+      "finger_scale": 1.0,
+      "range_scale": 1.0
+    },
+    "improvement": 0.0,
+    "details": [
+      "  params={'finger_scale': 1.0, 'range_scale': 1.0} score=3.66 grasp=True lift=65.7mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 1.0} score=3.65 grasp=True lift=65.4mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 1.0} score=3.65 grasp=True lift=64.7mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 0.85} score=3.63 grasp=True lift=63.1mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 0.85} score=3.61 grasp=True lift=61.3mm",
+      "  params={'finger_scale': 1.15, 'range_scale': 1.0} score=3.66 grasp=True lift=65.7mm"
+    ]
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260702_225613",
+    "candidates_tried": 6,
+    "baseline_score": 3.87,
+    "best_score": 3.87,
+    "best_params": {
+      "finger_scale": 0.85,
+      "range_scale": 0.85
+    },
+    "improvement": 0.0,
+    "details": [
+      "  params={'finger_scale': 1.0, 'range_scale': 1.0} score=3.87 grasp=True lift=86.5mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 1.0} score=3.87 grasp=True lift=86.5mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 1.0} score=3.87 grasp=True lift=86.5mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 0.85} score=3.87 grasp=True lift=86.5mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 0.85} score=3.87 grasp=True lift=86.5mm",
+      "  params={'finger_scale': 1.15, 'range_scale': 1.0} score=3.87 grasp=True lift=86.5mm"
+    ]
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260708_221233",
+    "candidates_tried": 6,
+    "baseline_score": 3.83,
+    "best_score": 3.83,
+    "best_params": {
+      "finger_scale": 1.15,
+      "range_scale": 1.0
+    },
+    "improvement": 0.0,
+    "details": [
+      "  params={'finger_scale': 1.0, 'range_scale': 1.0} score=3.83 grasp=True lift=83.3mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 1.0} score=3.83 grasp=True lift=83.1mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 1.0} score=3.83 grasp=True lift=82.8mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 0.85} score=3.82 grasp=True lift=82.0mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 0.85} score=3.81 grasp=True lift=81.1mm",
+      "  params={'finger_scale': 1.15, 'range_scale': 1.0} score=3.83 grasp=True lift=83.3mm"
+    ]
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260708_202829",
+    "candidates_tried": 6,
+    "baseline_score": 1.83,
+    "best_score": 1.85,
+    "best_params": {
+      "finger_scale": 0.85,
+      "range_scale": 0.85
+    },
+    "improvement": 0.02,
+    "details": [
+      "  params={'finger_scale': 1.0, 'range_scale': 1.0} score=1.83 grasp=False lift=183.0mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 1.0} score=1.83 grasp=False lift=183.0mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 1.0} score=1.83 grasp=False lift=183.1mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 0.85} score=1.85 grasp=False lift=184.9mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 0.85} score=1.84 grasp=False lift=184.3mm",
+      "  params={'finger_scale': 1.15, 'range_scale': 1.0} score=1.83 grasp=False lift=183.0mm"
+    ]
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260708_233227",
+    "candidates_tried": 6,
+    "baseline_score": 1.24,
+    "best_score": 1.24,
+    "best_params": {
+      "finger_scale": 0.85,
+      "range_scale": 0.85
+    },
+    "improvement": 0.01,
+    "details": [
+      "  params={'finger_scale': 1.0, 'range_scale': 1.0} score=1.24 grasp=False lift=123.9mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 1.0} score=1.24 grasp=False lift=123.9mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 1.0} score=1.24 grasp=False lift=123.9mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 0.85} score=1.24 grasp=False lift=124.5mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 0.85} score=1.24 grasp=False lift=124.3mm",
+      "  params={'finger_scale': 1.15, 'range_scale': 1.0} score=1.24 grasp=False lift=123.9mm"
+    ]
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260701_222014",
+    "candidates_tried": 6,
+    "baseline_score": 2.0,
+    "best_score": 2.0,
+    "best_params": {
+      "finger_scale": 1.0,
+      "range_scale": 1.0
+    },
+    "improvement": 0.0,
+    "details": [
+      "  params={'finger_scale': 1.0, 'range_scale': 1.0} score=2.00 grasp=True lift=-4.4mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 1.0} score=2.00 grasp=True lift=-4.6mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 1.0} score=0.00 grasp=False lift=-5.2mm",
+      "  params={'finger_scale': 0.85, 'range_scale': 0.85} score=0.00 grasp=False lift=-6.6mm",
+      "  params={'finger_scale': 0.75, 'range_scale': 0.85} score=0.00 grasp=False lift=-8.4mm",
+      "  params={'finger_scale': 1.15, 'range_scale': 1.0} score=2.00 grasp=True lift=-4.4mm"
+    ]
+  }
+]
