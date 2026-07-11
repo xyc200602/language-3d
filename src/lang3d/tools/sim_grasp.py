@@ -304,11 +304,13 @@ def _run_grasp_scenario(
             data.qfrc_applied[dadr] = sign * grasp_force_n
             data.qfrc_applied[dadr] -= 2.0 * data.qvel[dadr]
 
-    def _hold_arm() -> None:
+    def _hold_arm(target_qpos: dict | None = None) -> None:
+        """PD-hold arm joints at their initial (or lifted) target positions."""
+        tgts = target_qpos if target_qpos is not None else initial_arm_qpos
         for ajid in arm_jids:
             qadr = model.jnt_qposadr[ajid]
             dadr = model.jnt_dofadr[ajid]
-            err = initial_arm_qpos[ajid] - data.qpos[qadr]
+            err = tgts[ajid] - data.qpos[qadr]
             data.qfrc_applied[dadr] = 200.0 * err - 20.0 * data.qvel[dadr]
 
     def _count_cube_contacts() -> int:
@@ -319,6 +321,15 @@ def _run_grasp_scenario(
             if data.contact[cid].geom1 == cube_geom_id
             or data.contact[cid].geom2 == cube_geom_id
         )
+
+    # Phase C lift targets: move shoulder/elbow to raise the gripper.
+    # The targets are computed from the initial pose + a lift offset that
+    # depends on the joint's axis (pitch joints lift by rotating up).
+    lift_offset_rad = 0.35  # ~20 degrees
+    lift_targets: dict[int, float] = dict(initial_arm_qpos)
+    for i, ajid in enumerate(arm_jids[:2]):
+        # Alternate direction so the arm raises (shoulder back, elbow forward).
+        lift_targets[ajid] = initial_arm_qpos[ajid] + (-1) ** i * lift_offset_rad
 
     for step in range(n_steps):
         data.qfrc_applied[:] = 0
@@ -336,14 +347,24 @@ def _run_grasp_scenario(
             _apply_grasp_force()
             _hold_arm()
         else:
-            # Phase C: maintain grasp + lift arm
+            # Phase C: maintain grasp + lift arm along a smooth trajectory.
+            # Interpolate arm targets from home → lift pose using smoothstep,
+            # so the arm follows a controlled position trajectory (not a
+            # constant torque bias). The cube must stay held through the
+            # entire lift for the grasp to count as successful.
             phase = "C"
             model.opt.gravity[:] = (0.0, 0.0, -9.81)
             _apply_grasp_force()
-            _hold_arm()
-            # Lift bias on shoulder/elbow
-            for ajid in arm_jids[:2]:
-                data.qfrc_applied[model.jnt_dofadr[ajid]] -= 1.5
+            # Compute interpolation fraction (0→1 over Phase C).
+            c_frac = (step - phase_b_end) / max(n_steps - phase_b_end, 1)
+            c_frac = min(c_frac / 0.6, 1.0)  # reach target in first 60% of C
+            ss = c_frac * c_frac * (3.0 - 2.0 * c_frac)  # smoothstep
+            interp_targets = {}
+            for ajid in arm_jids:
+                home = initial_arm_qpos[ajid]
+                lifted = lift_targets.get(ajid, home)
+                interp_targets[ajid] = home + (lifted - home) * ss
+            _hold_arm(interp_targets)
 
         mujoco.mj_step(model, data)
 
@@ -377,14 +398,17 @@ def _run_grasp_scenario(
     slip_b = cube_after_b - cube_settle_a
     lift_c = cube_final - cube_after_b
 
-    # Verdict logic — two levels:
-    #   grasp_ok: can hold the object statically (geometry + friction)
-    #   lifted:   can also lift the object (requires arm coordination)
-    # "能抓东西" (project goal) = grasp_ok.  Lifting is harder and depends
-    # on arm trajectory control, which is beyond the URDF validation scope.
+    # Verdict logic:
+    #   grasp_ok: geometry can clamp AND object stays held during lift
+    #             trajectory (Phase C). This requires BOTH static hold
+    #             (Phase B) AND surviving the lift motion (Phase C).
+    #   The lift must raise the cube (lift_c > 0) without dropping it.
     geometry_ok = cube_contacts_phase_a >= 2
     held_against_gravity = slip_b > -0.005
-    grasp_ok = geometry_ok and held_against_gravity and not unstable
+    # Phase C: cube must rise (or at least not fall) during the lift.
+    # A drop > 5mm means the grasp failed under motion.
+    survived_lift = lift_c > -0.005
+    grasp_ok = geometry_ok and held_against_gravity and survived_lift and not unstable
     lifted = lift_c > 0.005 and grasp_ok
 
     if unstable:
@@ -393,10 +417,15 @@ def _run_grasp_scenario(
         note = f"几何不能夹紧 (phase A 只有 {cube_contacts_phase_a} 个接触, 需要 ≥2)"
     elif not held_against_gravity:
         note = f"夹持力不足 (phase B 立方体滑落 {abs(slip_b)*1000:.2f}mm > 5mm 阈值)"
+    elif not survived_lift:
+        note = (
+            f"抬升失败 (phase C 立方体掉落 {abs(lift_c)*1000:.2f}mm) "
+            "— 夹持力在运动中不足以保持物体"
+        )
     elif not lifted:
         note = (
-            f"静态抓取成功, 抬升失败 (phase C 立方体移动 {lift_c*1000:+.2f}mm) "
-            "— 通常因机械臂旋转改变重力方向, 需要轨迹规划而非纯扭矩控制"
+            f"抓取保持成功但未抬升 (phase C 立方体位移 {lift_c*1000:+.2f}mm) "
+            "— 臂轨迹需要优化"
         )
     else:
         note = f"抓取+抬升均成功 (抬升 {lift_c*1000:.2f}mm)"

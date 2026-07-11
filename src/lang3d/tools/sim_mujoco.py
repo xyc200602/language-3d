@@ -340,13 +340,55 @@ class _MotionController:
         else:
             drive_phase = False
 
-        # Arm gesture: slow sweep, cosine ease-in-out, period 8s.
+        # ---- Sequential reach trajectory ----
+        # Instead of all joints sweeping in lockstep (the old cosine), each
+        # joint GROUP moves in its own time window, simulating a real robot
+        # reaching for a target: orient → extend → adjust → hold → retract.
+        # This produces visibly different joint motion (not a synchronized
+        # wave), which is essential for meaningful simulation video.
+        #
+        # Timeline (fraction of one gesture cycle):
+        #   0.00-0.25  yaw joints move to reach pose
+        #   0.25-0.50  pitch joints extend
+        #   0.50-0.65  roll joints adjust end-effector orientation
+        #   0.65-0.75  hold at reached pose
+        #   0.75-1.00  retract back to home (reverse smoothstep)
         if self.drivable and drive_phase:
-            sweep = 0.0  # arms held at home while driving
+            # Arms held at home during wheel-drive phase.
+            pass  # sweep stays 0 for all groups
         else:
-            gt = t - 5.0 if self.drivable else t
-            phase = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
-            sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
+            pass  # per-group sweep computed below
+
+        gt = t - 5.0 if (self.drivable and not drive_phase) else t
+        cycle_frac = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
+
+        def _smoothstep(t01: float) -> float:
+            """0→1 ease-in-out (3t² - 2t³)."""
+            t01 = max(0.0, min(1.0, t01))
+            return t01 * t01 * (3.0 - 2.0 * t01)
+
+        def _group_sweep(start: float, end: float) -> float:
+            """Compute the reach fraction for a joint group whose active
+            window is [start, end] of the cycle, followed by hold [end, 0.75]
+            then retract [0.75, 1.0].
+            Returns 0..1: how far toward the reached pose this group is.
+            """
+            if self.drivable and drive_phase:
+                return 0.0
+            if cycle_frac < start:
+                return 0.0  # hasn't started yet
+            elif cycle_frac < end:
+                # Ramp up: smoothstep from 0→1 over [start, end].
+                return _smoothstep((cycle_frac - start) / max(end - start, 1e-6))
+            elif cycle_frac < 0.75:
+                return 1.0  # hold at reached pose
+            else:
+                # Retract: smoothstep 1→0 over [0.75, 1.0].
+                return 1.0 - _smoothstep((cycle_frac - 0.75) / 0.25)
+
+        yaw_sweep = _group_sweep(0.00, 0.25)
+        pitch_sweep = _group_sweep(0.25, 0.50)
+        roll_sweep = _group_sweep(0.50, 0.65)
 
         # Gravity-compensation feed-forward (inverse dynamics).  The
         # <position> actuator PD (kp=50) alone leaves a steady-state droop
@@ -373,7 +415,16 @@ class _MotionController:
                 lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
                 mid = self.initial_qpos[qadr]
                 half_range = (hi - lo) * 0.35
-                tgt = mid + half_range * (2 * sweep - 1)
+                # Select the sweep for this joint's group.
+                if jid in self.yaw_jids:
+                    sweep = yaw_sweep
+                elif jid in self.roll_jids:
+                    sweep = roll_sweep
+                else:
+                    sweep = pitch_sweep
+                # Move from home toward mid+half_range (one direction), not
+                # oscillating — a reach extends then retracts, not swings.
+                tgt = mid + half_range * sweep
                 tgt = max(lo, min(hi, tgt))  # clamp target to range
             # Find the actuator for this joint.
             aid = self._joint_to_actuator.get(jid)
@@ -408,12 +459,26 @@ class _MotionController:
             drive_phase = t < 5.0
         else:
             drive_phase = False
-        if self.drivable and drive_phase:
-            sweep = 0.0
-        else:
-            gt = t - 5.0 if self.drivable else t
-            phase = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
-            sweep = 0.5 - 0.5 * np.cos(2 * np.pi * phase)
+
+        # Same sequential reach trajectory as apply() (see above).
+        gt = t - 5.0 if (self.drivable and not drive_phase) else t
+        cycle_frac = (gt % self.GESTURE_PERIOD) / self.GESTURE_PERIOD
+
+        def _ss(t01: float) -> float:
+            t01 = max(0.0, min(1.0, t01))
+            return t01 * t01 * (3.0 - 2.0 * t01)
+
+        def _gs(start: float, end: float) -> float:
+            if self.drivable and drive_phase:
+                return 0.0
+            if cycle_frac < start:
+                return 0.0
+            elif cycle_frac < end:
+                return _ss((cycle_frac - start) / max(end - start, 1e-6))
+            elif cycle_frac < 0.75:
+                return 1.0
+            else:
+                return 1.0 - _ss((cycle_frac - 0.75) / 0.25)
 
         target = self.initial_qpos.copy()
         for jid, (amp, _) in self.coordinated.items():
@@ -421,7 +486,13 @@ class _MotionController:
             lo, hi = float(model.jnt_range[jid][0]), float(model.jnt_range[jid][1])
             mid = self.initial_qpos[qadr]
             half_range = (hi - lo) * 0.35
-            target[qadr] = mid + half_range * (2 * sweep - 1)
+            if jid in self.yaw_jids:
+                sweep = _gs(0.00, 0.25)
+            elif jid in self.roll_jids:
+                sweep = _gs(0.50, 0.65)
+            else:
+                sweep = _gs(0.25, 0.50)
+            target[qadr] = mid + half_range * sweep
 
         mujoco.mj_forward(model, data)
         data.qfrc_applied[:] = data.qfrc_bias
