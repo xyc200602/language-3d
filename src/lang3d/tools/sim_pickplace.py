@@ -162,18 +162,38 @@ class PickPlaceTool(Tool):
         pick_error_mm = float(np.linalg.norm(pick_achieved - np.array(pick_m)) * 1000)
         pick_reached = pick_error_mm < 15.0
 
-        # Reset to home for place IK (so it starts from a neutral pose).
+        # Compute place qpos by adjusting pick qpos with a yaw rotation.
+        # The base yaw joint rotates the entire arm around Z; a lateral
+        # displacement dx at distance R from the yaw axis requires a yaw
+        # change of atan(dx / R). This avoids IK branch-jumping (the
+        # Jacobian solver tends to spin yaw to its 90° limit regardless
+        # of how small dx is).
+        # R = horizontal distance from base yaw axis to EE.
+        ee_home_xy = np.array(data.xpos[ee_body_id][:2])  # already at home
+        R = float(np.linalg.norm(ee_home_xy))
+        dx_m = place_m_raw[0] - pick_m_raw[0]  # lateral displacement
+        dy_m = place_m_raw[1] - pick_m_raw[1]
+        # Combined lateral distance (project onto the yaw-rotation plane).
+        lateral = math.sqrt(dx_m ** 2 + dy_m ** 2)
+        yaw_delta = math.atan2(lateral, R) if R > 0.01 else 0.0
+
+        # Find the base yaw joint (first arm joint, typically jid=0).
+        yaw_jid = arm_jids[0]
+        place_qpos = dict(pick_qpos)
+        yaw_lo, yaw_hi = model.jnt_range[yaw_jid]
+        new_yaw = pick_qpos.get(yaw_jid, 0.0) + yaw_delta
+        new_yaw = max(yaw_lo, min(yaw_hi, new_yaw))
+        place_qpos[yaw_jid] = new_yaw
+
+        # Verify place reachability.
         for jid in arm_jids:
             qadr = model.jnt_qposadr[jid]
-            data.qpos[qadr] = home_qpos[jid]
-        mujoco.mj_forward(model, data)
-
-        place_qpos = _mujoco_jacobian_ik(
-            model, data, ee_body_id, arm_jids, place_m, tolerance_m=0.003,
-        )
+            data.qpos[qadr] = place_qpos.get(jid, home_qpos.get(jid, 0.0))
         mujoco.mj_forward(model, data)
         place_achieved = np.array(data.xpos[ee_body_id])
-        place_error_mm = float(np.linalg.norm(place_achieved - np.array(place_m)) * 1000)
+        place_error_mm = float(np.linalg.norm(
+            place_achieved - np.array(place_m)
+        ) * 1000)
         place_reached = place_error_mm < 15.0
 
         # Reset to home for the simulation.

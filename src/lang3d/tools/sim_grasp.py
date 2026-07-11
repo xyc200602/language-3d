@@ -250,6 +250,14 @@ def _mujoco_jacobian_ik(
         JtJ = J @ J.T + damp * damp * np.eye(3)
         delta_q = J.T @ np.linalg.solve(JtJ, error)
 
+        # Limit per-iteration joint change to prevent IK divergence when
+        # starting from a non-home seed (e.g. the pick solution). Without
+        # this, a badly conditioned Jacobian can send joints flying.
+        max_delta = 0.1  # radians (~5.7°) per iteration
+        delta_norm = float(np.linalg.norm(delta_q))
+        if delta_norm > max_delta:
+            delta_q = delta_q * (max_delta / delta_norm)
+
         step = 0.5
         for i, qadr in enumerate(qpos_addrs):
             data.qpos[qadr] += delta_q[i] * step
@@ -710,17 +718,9 @@ def _run_pick_place_scenario(
     except AttributeError:
         pass
 
-    # Restore low damping on FINGER (slide) joints — _stabilize_model sets
-    # all joints to damping=3.0, but fingers need low damping (0.1) so the
-    # grasp force can actually close them and maintain grip.  Without this,
-    # the cube falls out of the over-damped fingers when gravity is enabled.
-    slide_jids_set = {j["jid"] for j in slide_joints}
-    for sjid in slide_jids_set:
-        dadr = int(model.jnt_dofadr[sjid])
-        model.dof_damping[dadr] = 0.1
-
     data = mujoco.MjData(model)
     arm_jids = _find_arm_joints(model, slide_joints)
+    slide_jids_set = {j["jid"] for j in slide_joints}
 
     # Smoothstep helper (3t² - 2t³).
     def _ss(t: float) -> float:
