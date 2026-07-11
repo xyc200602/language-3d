@@ -638,22 +638,52 @@ def optimize_grasp_parameters(
             best_score = score
             best_params = params
 
+    # Baseline score (original, no modification).
+    baseline_score, _, _ = _score_grasp(urdf_path)
+
+    # ---- Net-improvement gate (2026-07-11) ----
+    # The optimization must never make things worse. If no candidate
+    # beats the baseline by a meaningful margin, we keep the original
+    # assembly UNCHANGED. This is what converts the closed loop from
+    # net-negative (4/6 regressions observed in closed_loop_objective.json)
+    # to net-neutral-or-positive: worst case is "no change", never a
+    # regression.
+    #
+    # The epsilon (0.05) prevents applying a "change for the sake of
+    # change" — a 0.01 score delta is within sim grasp noise and doesn't
+    # justify modifying the assembly geometry.
+    improvement = best_score - baseline_score
+    if improvement <= 0.05:
+        logger.info(
+            "Grasp optimization: no candidate beat baseline "
+            "(baseline=%.2f, best=%.2f) — keeping original unchanged.",
+            baseline_score, best_score,
+        )
+        report = {
+            "candidates_tried": len(candidates),
+            "baseline_score": round(baseline_score, 2),
+            "best_score": round(baseline_score, 2),
+            "best_params": candidates[0],  # the no-op baseline
+            "improvement": 0.0,
+            "gate": "no_improvement_kept_original",
+            "details": report_lines,
+        }
+        return assembly, report
+
     # Apply winning params to the Assembly dataclass for the caller.
     best_asm = _apply_params_to_assembly(assembly, best_params)
-
-    # Baseline score (original, no modification)
-    baseline_score, _, _ = _score_grasp(urdf_path)
 
     report = {
         "candidates_tried": len(candidates),
         "baseline_score": round(baseline_score, 2),
         "best_score": round(best_score, 2),
         "best_params": best_params,
-        "improvement": round(best_score - baseline_score, 2),
+        "improvement": round(improvement, 2),
+        "gate": "improved",
         "details": report_lines,
     }
     logger.info("Grasp optimization: best=%s (baseline=%.2f, best=%.2f, improvement=%.2f)",
-                best_params, baseline_score, best_score, best_score - baseline_score)
+                best_params, baseline_score, best_score, improvement)
     return best_asm, report
 
 

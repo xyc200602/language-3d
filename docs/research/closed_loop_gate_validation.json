@@ -1,0 +1,62 @@
+[
+  {
+    "case": "3dof_arm",
+    "ts": "20260708_231302",
+    "baseline_score": 3.66,
+    "best_score": 3.66,
+    "improvement": 0.0,
+    "gate": "no_improvement_kept_original",
+    "changed": false,
+    "status": "no_change"
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260702_225613",
+    "baseline_score": 3.87,
+    "best_score": 3.87,
+    "improvement": 0.0,
+    "gate": "no_improvement_kept_original",
+    "changed": false,
+    "status": "no_change"
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260708_221233",
+    "baseline_score": 3.83,
+    "best_score": 3.83,
+    "improvement": 0.0,
+    "gate": "no_improvement_kept_original",
+    "changed": false,
+    "status": "no_change"
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260708_202829",
+    "baseline_score": 1.83,
+    "best_score": 1.83,
+    "improvement": 0.0,
+    "gate": "no_improvement_kept_original",
+    "changed": false,
+    "status": "no_change"
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260708_233227",
+    "baseline_score": 1.24,
+    "best_score": 1.24,
+    "improvement": 0.0,
+    "gate": "no_improvement_kept_original",
+    "changed": false,
+    "status": "no_change"
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260701_222014",
+    "baseline_score": 2.0,
+    "best_score": 2.0,
+    "improvement": 0.0,
+    "gate": "no_improvement_kept_original",
+    "changed": false,
+    "status": "no_change"
+  }
+]

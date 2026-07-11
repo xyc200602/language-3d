@@ -1297,13 +1297,28 @@ class AssemblyPipeline:
         # motion/grasp problem → suggests fix → fix applied → re-export →
         # re-watch → repeat until pass or max iterations. Bounded at 2
         # iterations to avoid infinite loops (each costs a GLM-4.6V video call).
+        #
+        # Net-improvement gate (2026-07-11): if a fix round does NOT produce
+        # a passing re-verify, we REVERT to the pre-fix assembly. This is the
+        # critical safety guard that prevents the closed loop from being
+        # net-negative. Without it, apply_dynamic_vlm_fixes blindly narrows
+        # joint ranges / finger widths and the change persists even when the
+        # re-verify still fails — observed as 4/6 cases regressing in
+        # closed_loop_objective.json. With the gate, worst case = "no change".
         fix_hints = result.get("fix_hints", [])
         if not result.get("passed") and fix_hints:
             from .modifier import apply_dynamic_vlm_fixes
+            import copy as _copy
 
             for fix_round in range(2):  # max 2 fix iterations
                 logger.info("Stage 7: applying dynamic VLM fix hints (round %d/2)...",
                             fix_round + 1)
+
+                # Save snapshot BEFORE applying the fix, so we can revert if
+                # the fix does not produce a passing re-verify.
+                assembly_before_fix = _copy.deepcopy(ctx.assembly)
+                export_dir_before = ctx.export_dir
+
                 try:
                     ctx.assembly, applied = apply_dynamic_vlm_fixes(
                         ctx.assembly, fix_hints,
@@ -1321,7 +1336,9 @@ class AssemblyPipeline:
                 try:
                     self.run_solver()
                 except Exception as e:
-                    logger.warning("re-solve failed: %s", e)
+                    logger.warning("re-solve failed: %s — reverting", e)
+                    ctx.assembly = assembly_before_fix
+                    ctx.export_dir = export_dir_before
                     break
 
                 logger.info("Stage 7: re-exporting URDF for re-verification...")
@@ -1329,6 +1346,9 @@ class AssemblyPipeline:
 
                 urdf_path = os.path.join(ctx.export_dir or "", "urdf.xml")
                 if not os.path.exists(urdf_path):
+                    logger.warning("Stage 7: re-export produced no urdf — reverting")
+                    ctx.assembly = assembly_before_fix
+                    ctx.export_dir = export_dir_before
                     break
 
                 # Re-render video + re-verify.
@@ -1340,13 +1360,19 @@ class AssemblyPipeline:
                 except Exception:
                     vr = {"ok": False}
 
+                re_verify_ok = False
                 if vr.get("ok"):
                     try:
                         result = verify_motion_video(vr["video_path"], api_key=api_key)
+                        re_verify_ok = True
                     except Exception as e:
                         logger.warning("re-verify failed: %s", e)
-                        break
-                else:
+
+                if not re_verify_ok:
+                    logger.warning(
+                        "Stage 7: re-verify could not complete — reverting to pre-fix assembly")
+                    ctx.assembly = assembly_before_fix
+                    ctx.export_dir = export_dir_before
                     break
 
                 status = "PASS" if result.get("passed") else "STILL_FAILING"
@@ -1357,9 +1383,32 @@ class AssemblyPipeline:
                     logger.info("Stage 7: dynamic VLM PASSED after %d fix round(s)!",
                                 fix_round + 1)
                     break
+
+                # Net-improvement gate: if the fix did NOT produce a passing
+                # result, REVERT to the pre-fix assembly. The fix was a
+                # hypothesis; the re-verify disproved it. Keeping a failed
+                # fix (which blindly narrows ranges/fingers) makes things
+                # worse, not better.
+                logger.info(
+                    "Stage 7: fix did not produce PASS — reverting to pre-fix "
+                    "assembly (net-improvement gate).")
+                ctx.assembly = assembly_before_fix
+                ctx.export_dir = export_dir_before
+
                 fix_hints = result.get("fix_hints", [])
                 if not fix_hints:
                     break
+
+            # Final consistency: if we reverted any fix (ctx.assembly was
+            # restored to a pre-fix snapshot but the on-disk URDF still
+            # reflects the last fix attempt), re-solve + re-export once so
+            # downstream consumers operate on the reverted assembly.
+            try:
+                logger.info("Stage 7: final re-solve + re-export after fix-loop...")
+                self.run_solver()
+                self.run_export()
+            except Exception as e:
+                logger.warning("Stage 7: final re-export failed: %s", e)
 
         # Persist the final dynamic VLM verdict for the e2e report.
         try:

@@ -542,3 +542,91 @@ class TestDynamicVLMFixes:
             arm_assembly, ["The color should be more red"],
         )
         assert applied is False
+
+
+# ---------------------------------------------------------------------------
+# Net-improvement gate for optimize_grasp_parameters (2026-07-11)
+# ---------------------------------------------------------------------------
+
+class TestGraspOptimizationGate:
+    """Tests that optimize_grasp_parameters NEVER regresses.
+
+    The net-improvement gate is the safety mechanism that converts the
+    closed-loop fixer from net-negative (observed 4/6 regressions in
+    closed_loop_objective.json) to net-neutral-or-positive:
+
+    - If *any* candidate beats the baseline grasp score → apply the winner.
+    - If *no* candidate beats the baseline → return the ORIGINAL assembly
+      unchanged (improvement=0, gate="no_improvement_kept_original").
+
+    Worst case is "no change", never a regression.
+    """
+
+    def test_no_improvement_returns_original_unchanged(
+        self, arm_assembly, monkeypatch, tmp_path,
+    ):
+        """When all candidates score <= baseline, assembly is returned UNCHANGED."""
+        from lang3d.agent import modifier as mod
+        import lang3d.tools.sim_grasp as sg
+
+        class FakeTool:
+            def execute(self, *, urdf_path, **kw):
+                return '{"grasp_ok": false, "lifted": false, "lift_c_m": 0.0}'
+
+        monkeypatch.setattr(sg, "SimGraspTool", FakeTool)
+
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text('<robot name="t"><link name="base"/></robot>')
+
+        result_asm, report = mod.optimize_grasp_parameters(
+            arm_assembly, str(urdf),
+        )
+
+        # The assembly MUST be the same object (not a modified copy).
+        assert result_asm is arm_assembly
+        # Report MUST show improvement=0 and the gate label.
+        assert report["improvement"] == 0.0
+        assert report["gate"] == "no_improvement_kept_original"
+        assert report["best_params"] == {"finger_scale": 1.0, "range_scale": 1.0}
+
+    def test_improvement_applies_best_candidate(
+        self, arm_assembly, monkeypatch, tmp_path,
+    ):
+        """When a candidate beats baseline, the winning params are applied."""
+        from lang3d.agent import modifier as mod
+        import lang3d.tools.sim_grasp as sg
+
+        # Candidates in order; the 2nd (idx=1, finger_scale=0.85) will
+        # return grasp_ok=true → score 2, beating baseline score 0.
+        results = [
+            '{"grasp_ok": false, "lifted": false, "lift_c_m": 0.0}',   # c[0]
+            '{"grasp_ok": true, "lifted": false, "lift_c_m": 0.0}',    # c[1] win
+            '{"grasp_ok": false, "lifted": false, "lift_c_m": 0.0}',   # c[2]
+            '{"grasp_ok": false, "lifted": false, "lift_c_m": 0.0}',   # c[3]
+            '{"grasp_ok": false, "lifted": false, "lift_c_m": 0.0}',   # c[4]
+            '{"grasp_ok": false, "lifted": false, "lift_c_m": 0.0}',   # c[5]
+            '{"grasp_ok": false, "lifted": false, "lift_c_m": 0.0}',   # baseline
+        ]
+        call_idx = [0]
+
+        class FakeTool:
+            def execute(self, *, urdf_path, **kw):
+                idx = min(call_idx[0], len(results) - 1)
+                call_idx[0] += 1
+                return results[idx]
+
+        monkeypatch.setattr(sg, "SimGraspTool", FakeTool)
+
+        urdf = tmp_path / "test.urdf"
+        urdf.write_text('<robot name="t"><link name="base"/></robot>')
+
+        result_asm, report = mod.optimize_grasp_parameters(
+            arm_assembly, str(urdf),
+        )
+
+        assert report["improvement"] > 0
+        assert report["gate"] == "improved"
+        assert report["best_params"]["finger_scale"] == 0.85
+        # The result should be a NEW assembly (not the same object).
+        assert result_asm is not arm_assembly
+
