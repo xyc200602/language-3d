@@ -132,3 +132,4 @@ data/dual_arm_wheeled_robot_report.json
 src/*.egg-info/
 .pytest_cache/
 docs/paper/
+language3d_paper_v1_preprint.zip
