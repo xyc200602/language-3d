@@ -605,6 +605,169 @@ def extract_grasp_frames(
     return frames
 
 
+def render_grasp_video(
+    urdf_path: str,
+    output_path: str,
+    width: int = 480,
+    height: int = 360,
+    fps: int = 15,
+) -> dict[str, Any]:
+    """Render the full three-phase grasp test to an MP4 video.
+
+    Records the complete grasp sequence (zero-G close → gravity hold → lift)
+    as a video file, showing the cube being clamped, held against gravity,
+    and lifted (or dropped). This is the definitive visual evidence for the
+    project's core requirement: '能抓东西' (can it grasp).
+
+    The video shows a green test cube between the gripper fingers. Phase
+    boundaries (A/B/C) are visible as the gravity behaviour changes.
+
+    Returns ``{"ok", "video_path", "grasp_ok", "n_frames"}``.
+    """
+    import shutil
+    import subprocess
+
+    import mujoco  # type: ignore[import-not-found]
+    import numpy as np
+    from PIL import Image
+
+    _ensure_sm()
+    load = _load_model(urdf_path)
+    if not load.get("ok"):
+        return {"ok": False, "error": "model load failed"}
+
+    model = load["model"]
+    data0 = mujoco.MjData(model)
+    mujoco.mj_forward(model, data0)
+    slide_joints = _find_slide_joints(model)
+    if not slide_joints:
+        return {"ok": False, "error": "no gripper (no slide joints)"}
+
+    grippers = _group_fingers_into_grippers(slide_joints)
+    grippers = [(gid, fs) for gid, fs in grippers if len(fs) >= 2]
+    if not grippers:
+        return {"ok": False, "error": "no valid gripper"}
+    _gid, fingers = grippers[0]
+
+    finger_positions = [np.array(data0.xpos[j["body_id"]]) for j in fingers]
+    cube_pos = tuple(sum(finger_positions) / len(finger_positions))
+
+    model, _temp = _add_cube_to_scene(urdf_path, cube_pos_m=cube_pos,
+                                       cube_size_m=0.012, cube_mass_kg=0.020)
+    cube_body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "grasp_cube")
+    if cube_body_id < 0:
+        return {"ok": False, "error": "cube body not found"}
+
+    slide_joints = _find_slide_joints(model)
+    grippers = _group_fingers_into_grippers(slide_joints)
+    grippers = [(gid, fs) for gid, fs in grippers if len(fs) >= 2]
+    _gid, fingers = grippers[0]
+
+    _stabilize_model(model, armature=0.2, damping=3.0)
+    model.opt.timestep = 0.0005
+
+    data = mujoco.MjData(model)
+    model.opt.gravity[:] = (0.0, 0.0, 0.0)
+    mujoco.mj_forward(model, data)
+
+    finger_positions = [np.array(data.xpos[j["body_id"]]) for j in fingers]
+    grasp_center = sum(finger_positions) / len(finger_positions)
+    finger_close_signs = {}
+    for j in fingers:
+        jid = j["jid"]
+        body_id = j["body_id"]
+        axis_local = np.array(model.jnt_axis[jid])
+        body_quat = np.array(data.xquat[body_id])
+        axis_world = _rotate_vector_by_quat(axis_local, body_quat)
+        to_center = grasp_center - np.array(data.xpos[body_id])
+        finger_close_signs[jid] = 1.0 if float(np.dot(to_center, axis_world)) > 0 else -1.0
+
+    slide_jids = {j["jid"] for j in fingers}
+    arm_jids = [jid for jid in range(model.njnt)
+                if int(model.jnt_type[jid]) == mujoco.mjtJoint.mjJNT_HINGE
+                and jid not in slide_jids]
+    initial_arm_qpos = {jid: float(data.qpos[model.jnt_qposadr[jid]]) for jid in arm_jids}
+
+    renderer = mujoco.Renderer(model, height=height, width=width)
+
+    duration_sec = 4.0
+    n_steps = max(1, int(duration_sec / model.opt.timestep))
+    phase_a_end = max(1, int(n_steps * 0.15))
+    phase_b_end = max(phase_a_end + 1, int(n_steps * 0.30))
+    frame_every = max(1, int(round(1.0 / (fps * model.opt.timestep))))
+
+    frames_dir = Path(output_path).with_suffix("")
+    frames_dir = frames_dir.parent / (frames_dir.name + "_grasp_frames")
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    n_frames = 0
+    cube_initial_z = float(data.xpos[cube_body_id][2])
+    cube_final_z = cube_initial_z
+    cube_after_b_z = cube_initial_z  # captured at end of Phase B
+
+    grasp_force = 5.0
+    for step in range(n_steps):
+        data.qfrc_applied[:] = 0
+
+        if step < phase_a_end:
+            model.opt.gravity[:] = (0.0, 0.0, 0.0)
+        elif step < phase_b_end:
+            model.opt.gravity[:] = (0.0, 0.0, -9.81)
+        else:
+            model.opt.gravity[:] = (0.0, 0.0, -9.81)
+            for ajid in arm_jids[:2]:
+                data.qfrc_applied[model.jnt_dofadr[ajid]] -= 1.5
+
+        for sjid, sign in finger_close_signs.items():
+            dadr = model.jnt_dofadr[sjid]
+            data.qfrc_applied[dadr] = sign * grasp_force
+            data.qfrc_applied[dadr] -= 2.0 * data.qvel[dadr]
+        for ajid in arm_jids:
+            qadr = model.jnt_qposadr[ajid]
+            dadr = model.jnt_dofadr[ajid]
+            err = initial_arm_qpos[ajid] - data.qpos[qadr]
+            data.qfrc_applied[dadr] = 200.0 * err - 20.0 * data.qvel[dadr]
+
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            break
+
+        cube_final_z = float(data.xpos[cube_body_id][2])
+        # Capture cube height at the end of Phase B (gravity hold check).
+        if step == phase_b_end - 1:
+            cube_after_b_z = cube_final_z
+
+        if step % frame_every == 0:
+            renderer.update_scene(data)
+            pixels = renderer.render()
+            Image.fromarray(pixels).save(str(frames_dir / f"frame_{n_frames:05d}.png"))
+            n_frames += 1
+
+    renderer.close()
+
+    # Grasp verdict: matches SimGraspTool — static grasp (Phase B hold) counts
+    # as success. Lift failure (Phase C) is expected (needs trajectory planning).
+    slip_b = cube_after_b_z - cube_initial_z  # negative = fell during gravity
+    grasp_ok = slip_b > -0.005  # held against gravity (within 5mm slip)
+
+    # Encode to mp4
+    ffmpeg = shutil.which("ffmpeg")
+    out_mp4 = str(output_path)
+    if ffmpeg and n_frames > 0:
+        cmd = [ffmpeg, "-y", "-framerate", str(fps),
+               "-i", str(frames_dir / "frame_%05d.png"),
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", out_mp4]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode == 0:
+            shutil.rmtree(frames_dir, ignore_errors=True)
+        else:
+            out_mp4 = str(frames_dir)
+    else:
+        out_mp4 = str(frames_dir)
+
+    return {"ok": True, "video_path": out_mp4, "grasp_ok": grasp_ok,
+            "n_frames": n_frames, "cube_lift_mm": round((cube_final_z - cube_initial_z) * 1000, 1)}
+
+
 class SimGraspTool(Tool):
     """Validate the gripper can grasp and lift a test cube.
 
