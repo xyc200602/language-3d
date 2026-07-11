@@ -239,7 +239,7 @@ class TestCCDSolver:
 
 class TestSolveIK:
     def test_auto_mode_falls_back_to_ccd(self):
-        """Auto mode should fall back to CCD when analytic fails."""
+        """Auto mode should fall back to Jacobian/CCD when analytic fails."""
         result = solve_ik(
             ROBOTIC_ARM_ASSEMBLY,
             target=(50, 50, 100),
@@ -247,7 +247,8 @@ class TestSolveIK:
             tolerance_mm=2.0,
             max_iterations=500,
         )
-        assert result.method in ("analytic", "ccd")
+        # Jacobian was added between analytic and CCD in the dispatch chain
+        assert result.method in ("analytic", "jacobian", "ccd")
         assert result.error_mm < 5.0
 
     def test_home_position_auto(self):

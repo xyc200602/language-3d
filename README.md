@@ -377,7 +377,7 @@ python tests/test_e2e_production.py --case 4wheel_dual_arm    # 轮式双臂 e2e
 - [x] Dual-arm collision avoidance (static collision-aware pose configurator + workspace-safe joint limits; NOT real-time motion planning)
 
 ### Phase 5 — Production System / 生产系统
-- [x] Web dashboard (FastAPI + Three.js viewer at `/simulate`, WebSocket real-time agent monitoring, 34 endpoints)
+- [x] Web dashboard (FastAPI + Three.js viewer at `/simulate`, WebSocket real-time agent monitoring, 47 endpoints)
 - [ ] Part library expansion (94 → 200+ types)
 - [ ] Manufacturing process planning (G-code)
 - [ ] Quality control (statistical verification)

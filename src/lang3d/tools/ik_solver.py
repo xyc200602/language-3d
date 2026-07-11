@@ -565,6 +565,29 @@ def solve_ik(
             analytic.reachable = actual_error < tolerance_mm
             result = analytic
 
+    if (result is None or not result.reachable) and approach in ("jacobian", "auto"):
+        # Jacobian-based IK: damped least squares (pseudo-inverse).
+        # Falls back from analytic when the chain is >3 DOF or the analytic
+        # solver couldn't reach. Uses the existing _compute_jacobian +
+        # _damped_least_squares helpers (lines 709-770).
+        jac_seed = None
+        if result is not None and result.error_mm < 50:
+            jac_seed = result.joint_angles
+        elif initial_angles:
+            jac_seed = initial_angles
+
+        jac_result = _jacobian_solve(
+            target=target,
+            assembly=assembly,
+            links=links,
+            initial_angles=jac_seed,
+            max_iterations=max_iterations,
+            tolerance_mm=tolerance_mm,
+            joint_limits=joint_limits,
+        )
+        if result is None or jac_result.error_mm < result.error_mm:
+            result = jac_result
+
     if (result is None or not result.reachable) and approach in ("ccd", "auto"):
         # Only use analytic result as CCD seed if it was reasonably close
         ccd_seed = None
@@ -803,6 +826,32 @@ def _nullspace_projector(jacobian: list[list[float]]) -> list[list[float]]:
     result = [[(1.0 if r == c else 0.0) - jpj[r][c] for c in range(n)]
               for r in range(n)]
     return result
+
+
+def _jacobian_solve(
+    target: tuple[float, float, float],
+    assembly: Assembly,
+    links: list[LinkSegment],
+    initial_angles: dict[str, float] | None = None,
+    max_iterations: int = 200,
+    tolerance_mm: float = 0.5,
+    joint_limits: dict[str, tuple[float, float]] | None = None,
+) -> IKResult:
+    """Wrapper that connects JacobianIKSolver into the solve_ik dispatch.
+
+    The class existed (test_dual_arm_ik.py validates it independently) but
+    solve_ik never dispatched to it — the approach='jacobian' path was
+    missing. This thin wrapper lets solve_ik use the Jacobian solver as a
+    fallback between analytic and CCD.
+    """
+    solver = JacobianIKSolver(
+        assembly=assembly,
+        links=links,
+        max_iterations=max_iterations,
+        tolerance_mm=tolerance_mm,
+        joint_limits=joint_limits or {},
+    )
+    return solver.solve(target=target, initial_angles=initial_angles)
 
 
 class JacobianIKSolver:
