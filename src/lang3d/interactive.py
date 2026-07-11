@@ -196,10 +196,14 @@ class IterativeSession:
         )
 
     def save(self, folder: str | Path | None = None) -> Path:
-        """Save assembly.json (and trigger STL regen for changed parts).
+        """Save assembly.json (and regenerate changed STLs).
 
         When *folder* is None (default), saves in-place.  Otherwise saves
         to the given folder (used by ``/save-as``).
+
+        After writing assembly.json, regenerates STLs for parts whose
+        dimensions changed (so the 3D viewer reflects edits immediately).
+        Uses FreeCAD when available; falls back to trimesh box previews.
         """
         target = Path(folder).resolve() if folder else self.folder
         target.mkdir(parents=True, exist_ok=True)
@@ -209,6 +213,10 @@ class IterativeSession:
                        ensure_ascii=False),
             encoding="utf-8",
         )
+
+        # Regenerate STLs for changed parts so the 3D viewer updates.
+        self._regen_changed_stls(target)
+
         if folder:
             # /save-as: copy the rest of the engineering_package
             src_pkg = self.folder / "engineering_package"
@@ -220,6 +228,56 @@ class IterativeSession:
             self.folder = target
             self.assembly_path = out
         return out
+
+    def _regen_changed_stls(self, target: Path) -> None:
+        """Regenerate STLs for parts whose dimensions changed.
+
+        Compares the current assembly against the last saved version (from
+        history). For each changed part, regenerates its STL using FreeCAD
+        (if available) or a trimesh box preview (fallback). This makes the
+        3D viewer reflect edits immediately — previously only assembly.json
+        was updated and the viewer showed stale geometry.
+        """
+        if not self.history:
+            return  # no edits — nothing changed
+
+        last = self.history[-1]
+        before_dims: dict[str, dict] = {}
+        for p in last.assembly_before.parts:
+            before_dims[p.name] = dict(p.dimensions)
+
+        changed = [
+            p for p in self.assembly.parts
+            if p.name in before_dims and before_dims[p.name] != dict(p.dimensions)
+        ]
+        if not changed:
+            return  # no dimension changes
+
+        stl_dir = target / "engineering_package" / "stl_parts"
+        if not stl_dir.is_dir():
+            stl_dir = target / "stl_parts"
+        stl_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            from ..tools.export_package import generate_part_stls
+            from ..knowledge.mechanics import Assembly as Asm
+            # Build a mini-assembly with just the changed parts.
+            mini = Asm(name="regen", parts=changed, joints=[],
+                        description="partial regen")
+            generate_part_stls(mini, str(stl_dir), timeout=30)
+        except Exception:
+            # FreeCAD not available — fall back to trimesh box previews.
+            try:
+                import trimesh
+                for p in changed:
+                    d = p.dimensions
+                    l = d.get("length", d.get("diameter", 20))
+                    w = d.get("width", d.get("diameter", l))
+                    h = d.get("height", d.get("thickness", 20))
+                    mesh = trimesh.creation.box(extents=[l, w, h])
+                    mesh.export(str(stl_dir / f"{p.name}.stl"))
+            except ImportError:
+                pass  # no trimesh either — skip STL regen silently
 
     # ------------------------------------------------------------------
     # Edit
