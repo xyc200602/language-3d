@@ -1,0 +1,303 @@
+[
+  {
+    "case": "2dof_arm",
+    "ts": "20260624_235553",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "2dof_arm",
+    "ts": "20260702_225207",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "2dof_arm",
+    "ts": "20260708_201620",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "2dof_arm",
+    "ts": "20260708_231116",
+    "static_grasp": true,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "2dof_arm",
+    "ts": "20260709_161510",
+    "static_grasp": true,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "3dof_arm",
+    "ts": "20260625_000745",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [
+      "The video does not contain a grasp/lift sequence, so the third condition cannot be evaluated."
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "3dof_arm",
+    "ts": "20260702_225412",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "3dof_arm",
+    "ts": "20260708_201841",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "3dof_arm",
+    "ts": "20260708_231302",
+    "static_grasp": true,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "Gripper does not hold the object during grasp/lift sequence"
+    ],
+    "gap": "GAP"
+  },
+  {
+    "case": "3dof_arm",
+    "ts": "20260709_161734",
+    "static_grasp": true,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4dof_arm",
+    "ts": "20260624_234101",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4dof_arm",
+    "ts": "20260629_011535",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4dof_arm",
+    "ts": "20260702_200641",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4dof_arm",
+    "ts": "20260704_150926",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4dof_arm",
+    "ts": "20260708_215535",
+    "static_grasp": true,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260624_235608",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260625_001730",
+    "static_grasp": null,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "Motion is not mechanically plausible (incorrect joint axes)"
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260702_225613",
+    "static_grasp": null,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "The gripper makes contact with the object but does not grasp or hold it. The object remains suspended, seemingly unaffected by the interaction."
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260708_221233",
+    "static_grasp": true,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "Gripper does not hold the object during grasp/lift sequence"
+    ],
+    "gap": "GAP"
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260709_160942",
+    "static_grasp": false,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260624_235042",
+    "static_grasp": null,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "Mechanically implausible motion (incorrect joint axes)",
+      "No grasp/lift sequence or gripper does not hold object"
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260702_230256",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260708_202829",
+    "static_grasp": null,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "gripper does not hold the object during grasp/lift sequence"
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260708_224422",
+    "static_grasp": false,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260709_161335",
+    "static_grasp": false,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260624_235619",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260625_003050",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260702_232016",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260708_233227",
+    "static_grasp": false,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "Gripper does not hold the object during grasp/lift sequence"
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260709_162939",
+    "static_grasp": false,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260625_231911",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260626_160053",
+    "static_grasp": null,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "The provided frames show a static object with no visible motion, articulation, or interaction. Therefore, it is impossible to judge self-collision, mechanical plausibility, or gripper performance."
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260628_204136",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260701_222014",
+    "static_grasp": null,
+    "dynamic_passed": false,
+    "dynamic_problems": [
+      "No motion is visible in the provided frames. Self-collision, joint plausibility, and grasp success cannot be evaluated without movement."
+    ],
+    "gap": "ok"
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260708_152443",
+    "static_grasp": null,
+    "dynamic_passed": true,
+    "dynamic_problems": [],
+    "gap": "ok"
+  }
+]
