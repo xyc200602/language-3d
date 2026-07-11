@@ -108,6 +108,57 @@ def _group_fingers_into_grippers(
 
 
 
+def _find_arm_joints(
+    model: Any,
+    slide_joints: list[dict[str, Any]],
+) -> list[int]:
+    """Find arm hinge joints that belong to the same arm as the tested gripper.
+
+    Excludes:
+    - Slide joints (fingers)
+    - Wheel joints (body name contains "wheel")
+    - Joints from a DIFFERENT arm on multi-arm robots
+
+    For multi-arm robots (e.g. 4wheel_dual_arm), the arm prefix is inferred
+    from the finger body names (``arm_l_gripper_finger_left`` → ``arm_l``),
+    so only the arm owning the tested gripper is actuated during the Phase C
+    lift trajectory.  Without this filtering, ``arm_jids[:2]`` would pick
+    wheel joints (which sort first) and the lift would spin wheels instead
+    of raising the arm.
+    """
+    import mujoco  # type: ignore[import-not-found]
+    import re
+
+    slide_jids = {j["jid"] for j in slide_joints}
+    finger_bodies = [j["body_name"] for j in slide_joints]
+
+    # Extract the common arm prefix from finger body names.
+    arm_prefix = ""
+    for bn in finger_bodies:
+        bn_lower = bn.lower()
+        m = re.match(r"^((?:arm|left_arm|right_arm)[_a-z]*)gripper", bn_lower)
+        if m:
+            arm_prefix = m.group(1)
+            break
+
+    arm_jids = []
+    for jid in range(model.njnt):
+        if int(model.jnt_type[jid]) != mujoco.mjtJoint.mjJNT_HINGE:
+            continue
+        if jid in slide_jids:
+            continue
+        body_id = int(model.jnt_bodyid[jid])
+        body_name = mujoco.mj_id2name(
+            model, mujoco.mjtObj.mjOBJ_BODY, body_id,
+        ).lower()
+        if "wheel" in body_name:
+            continue
+        if arm_prefix and not body_name.startswith(arm_prefix):
+            continue
+        arm_jids.append(jid)
+    return arm_jids
+
+
 def _add_cube_to_scene(
     urdf_path: str,
     cube_pos_m: tuple[float, float, float],
@@ -259,6 +310,29 @@ def _run_grasp_scenario(
     grasp_center = sum(finger_positions) / len(finger_positions)
     cube_initial_z = float(data.xpos[cube_body_id][2])
 
+    # Identify the gripper-base body so we can measure ARM SAG separately
+    # from cube slip.  Phase B measures whether the cube stays held — but a
+    # long arm sags under gravity even with a PD hold, and that sag moves
+    # the cube down WITHOUT meaning the grasp failed.  We correct for this
+    # by tracking the gripper-base Z and computing slip RELATIVE to the
+    # gripper, not relative to the ground.
+    gripper_base_bid = -1
+    for fb in slide_joints:
+        bn = fb["body_name"].lower()
+        # Strip trailing "finger_<side>" to get the gripper base name pattern.
+        import re as _re
+        gm = _re.match(r"^(.*)finger_[a-z0-9]+$", bn)
+        base_pat = gm.group(1).rstrip("_") if gm else "gripper_base"
+        for bid in range(model.nbody):
+            bname = mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_BODY, bid,
+            )
+            if bname and base_pat in bname.lower() and "finger" not in bname.lower():
+                gripper_base_bid = bid
+                break
+        if gripper_base_bid >= 0:
+            break
+
     # Per-finger close direction sign (geometry-aware, handles mirrored mounts)
     finger_close_signs: dict[int, float] = {}
     for j in slide_joints:
@@ -271,13 +345,9 @@ def _run_grasp_scenario(
         projection = float(np.dot(to_center, axis_world))
         finger_close_signs[jid] = 1.0 if projection > 0 else -1.0
 
-    # Arm hinge joints (everything except slide joints)
-    slide_jids = {j["jid"] for j in slide_joints}
-    arm_jids = [
-        jid for jid in range(model.njnt)
-        if int(model.jnt_type[jid]) == mujoco.mjtJoint.mjJNT_HINGE
-        and jid not in slide_jids
-    ]
+    # Arm hinge joints — only those belonging to the tested gripper's arm.
+    # See _find_arm_joints for the wheel-exclusion + arm-prefix logic.
+    arm_jids = _find_arm_joints(model, slide_joints)
     # Map joint ids → qpos/qvel/DOF indices (correct for floating-base too).
     initial_arm_qpos = {jid: float(data.qpos[model.jnt_qposadr[jid]]) for jid in arm_jids}
 
@@ -288,6 +358,8 @@ def _run_grasp_scenario(
     phase_a_cube_zs: list[float] = []
     phase_b_cube_zs: list[float] = []
     phase_c_cube_zs: list[float] = []
+    phase_a_base_zs: list[float] = []
+    phase_b_base_zs: list[float] = []
     cube_contacts_phase_a = 0
     cube_contacts_phase_b = 0
     unstable = False
@@ -373,11 +445,14 @@ def _run_grasp_scenario(
             break
 
         cube_z = float(data.xpos[cube_body_id][2])
+        base_z = float(data.xpos[gripper_base_bid][2]) if gripper_base_bid >= 0 else 0.0
         if phase == "A":
             phase_a_cube_zs.append(cube_z)
+            phase_a_base_zs.append(base_z)
             cube_contacts_phase_a = max(cube_contacts_phase_a, _count_cube_contacts())
         elif phase == "B":
             phase_b_cube_zs.append(cube_z)
+            phase_b_base_zs.append(base_z)
             cube_contacts_phase_b = max(cube_contacts_phase_b, _count_cube_contacts())
         else:
             phase_c_cube_zs.append(cube_z)
@@ -395,7 +470,26 @@ def _run_grasp_scenario(
         sum(phase_c_cube_zs[-10:]) / max(1, len(phase_c_cube_zs[-10:]))
         if phase_c_cube_zs else cube_after_b
     )
-    slip_b = cube_after_b - cube_settle_a
+
+    # Gripper-base position analysis (for arm-sag compensation).
+    # A long arm sags under gravity even with a PD hold, and that sag
+    # moves the cube down without meaning the grasp failed.  We compute
+    # slip relative to the gripper base, not relative to the ground.
+    base_settle_a = (
+        sum(phase_a_base_zs[-10:]) / max(1, len(phase_a_base_zs[-10:]))
+        if phase_a_base_zs else 0.0
+    )
+    base_after_b = (
+        sum(phase_b_base_zs[-10:]) / max(1, len(phase_b_base_zs[-10:]))
+        if phase_b_base_zs else base_settle_a
+    )
+    arm_sag_m = base_after_b - base_settle_a  # negative = arm dropped
+
+    # slip_b: how much the cube moved RELATIVE to the gripper (not ground).
+    # A cube that drops exactly with the arm (arm_sag) is still held —
+    # only relative motion means the cube slipped out of the fingers.
+    absolute_slip_b = cube_after_b - cube_settle_a
+    slip_b = absolute_slip_b - arm_sag_m
     lift_c = cube_final - cube_after_b
 
     # Verdict logic:
@@ -416,7 +510,10 @@ def _run_grasp_scenario(
     elif not geometry_ok:
         note = f"几何不能夹紧 (phase A 只有 {cube_contacts_phase_a} 个接触, 需要 ≥2)"
     elif not held_against_gravity:
-        note = f"夹持力不足 (phase B 立方体滑落 {abs(slip_b)*1000:.2f}mm > 5mm 阈值)"
+        note = (
+            f"夹持力不足 (phase B 相对滑落 {abs(slip_b)*1000:.2f}mm > 5mm 阈值"
+            f", 臂下沉 {arm_sag_m*1000:.1f}mm)"
+        )
     elif not survived_lift:
         note = (
             f"抬升失败 (phase C 立方体掉落 {abs(lift_c)*1000:.2f}mm) "
@@ -436,6 +533,8 @@ def _run_grasp_scenario(
         "cube_after_b_m": cube_after_b,
         "cube_final_z_m": cube_final,
         "slip_b_m": slip_b,
+        "absolute_slip_b_m": absolute_slip_b,
+        "arm_sag_m": arm_sag_m,
         "lift_c_m": lift_c,
         "lift_target_m": lift_height_m,
         "grasp_ok": bool(grasp_ok),
@@ -570,11 +669,7 @@ def extract_grasp_frames(
         finger_close_signs[jid] = 1.0 if projection > 0 else -1.0
 
     slide_jids = {j["jid"] for j in fingers}
-    arm_jids = [
-        jid for jid in range(model.njnt)
-        if int(model.jnt_type[jid]) == mujoco.mjtJoint.mjJNT_HINGE
-        and jid not in slide_jids
-    ]
+    arm_jids = _find_arm_joints(model, fingers)
     initial_arm_qpos = {jid: float(data.qpos[model.jnt_qposadr[jid]]) for jid in arm_jids}
 
     renderer = mujoco.Renderer(model, height=height, width=width)
