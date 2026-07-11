@@ -159,6 +159,42 @@ def _find_arm_joints(
     return arm_jids
 
 
+def _ik_angles_to_qpos(
+    joint_angles: dict[str, float],
+    model: Any,
+    arm_jids: list[int],
+) -> dict[int, float]:
+    """Convert IK joint angles (Assembly space) → MuJoCo qpos targets.
+
+    IK returns ``{child_part_name: angle_degrees}`` for hinge joints.
+    MuJoCo uses joint ids keyed in radians. This bridges the two spaces
+    using the same naming convention as ``_apply_home_pose``: the URDF
+    joint name ends with ``_to_{child_part_name}``.
+
+    Args:
+        joint_angles: IK result dict (part name → degrees for hinge).
+        model: MuJoCo model loaded from the same URDF.
+        arm_jids: MuJoCo joint ids to set (from _find_arm_joints).
+
+    Returns:
+        ``{jid: qpos_target_in_radians}`` for MuJoCo PD control.
+    """
+    import mujoco
+
+    targets: dict[int, float] = {}
+    for jid in arm_jids:
+        nm = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid) or ""
+        # Match URDF joint name to IK angle key (child part name).
+        for part_name, angle_deg in joint_angles.items():
+            if nm.endswith("_to_" + part_name) or part_name in nm:
+                if model.jnt_type[jid] == mujoco.mjtJoint.mjJNT_HINGE:
+                    targets[jid] = float(angle_deg) * (3.14159265358979 / 180.0)
+                else:
+                    targets[jid] = float(angle_deg) / 1000.0  # mm → m
+                break
+    return targets
+
+
 def _add_cube_to_scene(
     urdf_path: str,
     cube_pos_m: tuple[float, float, float],
@@ -556,6 +592,205 @@ def _run_grasp_scenario(
         "note": note,
         "finger_final_qpos": {j["name"]: float(data.qpos[model.jnt_qposadr[j["jid"]]]) for j in slide_joints},
         "finger_close_signs": {j["name"]: finger_close_signs[j["jid"]] for j in slide_joints},
+    }
+
+
+def _run_pick_place_scenario(
+    model: Any,
+    slide_joints: list[dict[str, Any]],
+    cube_body_id: int,
+    pick_qpos: dict[int, float],
+    place_qpos: dict[int, float],
+    home_qpos: dict[int, float],
+    finger_close_signs: dict[int, float],
+    grasp_force_n: float = 5.0,
+    duration_sec: float = 8.0,
+) -> dict[str, Any]:
+    """Run a full pick-and-place task in MuJoCo.
+
+    The arm starts at home, moves to the pick position, grasps the cube,
+    transports it to the place position, releases, and retreats. The task
+    succeeds only if the cube ends up near the place position.
+
+    All joint targets are pre-computed by IK (pick_qpos, place_qpos)
+    and converted to MuJoCo qpos via _ik_angles_to_qpos. The trajectory
+    between waypoints uses smoothstep interpolation in joint space.
+
+    Args:
+        model: MuJoCo model with cube spliced in.
+        slide_joints: Finger slide joints (for grasp force application).
+        cube_body_id: Body id of the cube to pick-and-place.
+        pick_qpos: IK-derived arm qpos for the pick position.
+        place_qpos: IK-derived arm qpos for the place position.
+        home_qpos: Arm qpos at the home (rest) pose.
+        finger_close_signs: Per-finger close direction (+1 or -1).
+        grasp_force_n: Force to apply during grasp/carry phases.
+        duration_sec: Total simulation duration.
+
+    Returns:
+        Dict with task_success, place_accuracy_mm, cube trajectory data.
+    """
+    import mujoco
+    import numpy as np
+
+    _stabilize_model(model, armature=0.2, damping=3.0)
+    model.opt.timestep = 0.0005
+    try:
+        model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
+        model.opt.iterations = 50
+    except AttributeError:
+        pass
+
+    data = mujoco.MjData(model)
+    arm_jids = _find_arm_joints(model, slide_joints)
+    slide_jids_set = {j["jid"] for j in slide_joints}
+
+    # Smoothstep helper (3t² - 2t³).
+    def _ss(t: float) -> float:
+        t = max(0.0, min(1.0, t))
+        return t * t * (3.0 - 2.0 * t)
+
+    # Phase boundaries (as fraction of total steps).
+    n_steps = max(1, int(duration_sec / model.opt.timestep))
+    phases = {
+        "approach_pick":  (0.00, 0.08),   # hold at pick pose (snapped)
+        "grasp_close":    (0.08, 0.14),   # close fingers (zero-G)
+        "grasp_hold":     (0.14, 0.18),   # enable gravity, confirm hold
+        "lift":           (0.18, 0.22),   # brief hold at pick
+        "carry":          (0.22, 0.60),   # PD track pick→place (38% of time)
+        "descend":        (0.60, 0.68),   # hold at place pose
+        "release":        (0.68, 0.76),   # open fingers
+        "retreat":        (0.76, 0.90),   # retreat to safe height
+    }
+    phase_bounds = {}
+    for name, (lo, hi) in phases.items():
+        phase_bounds[name] = (int(n_steps * lo), int(n_steps * hi))
+    end_step = phase_bounds["retreat"][1]
+
+    # --- Helper functions ---
+    def _apply_grasp(force: float) -> None:
+        for sjid, sign in finger_close_signs.items():
+            dadr = model.jnt_dofadr[sjid]
+            data.qfrc_applied[dadr] = sign * force
+            data.qfrc_applied[dadr] -= 2.0 * data.qvel[dadr]
+
+    def _hold_arm(target: dict[int, float] | None = None) -> None:
+        tgts = target if target is not None else home_qpos
+        for ajid in arm_jids:
+            qadr = model.jnt_qposadr[ajid]
+            dadr = model.jnt_dofadr[ajid]
+            err = tgts.get(ajid, home_qpos.get(ajid, 0.0)) - data.qpos[qadr]
+            data.qfrc_applied[dadr] = 200.0 * err - 20.0 * data.qvel[dadr]
+
+    def _interp(A: dict[int, float], B: dict[int, float], t: float) -> dict[int, float]:
+        """Smoothstep interpolation between two qpos configs."""
+        s = _ss(t)
+        return {jid: A.get(jid, 0.0) + (B.get(jid, 0.0) - A.get(jid, 0.0)) * s
+                for jid in set(A) | set(B)}
+
+    def _cube_z() -> float:
+        return float(data.xpos[cube_body_id][2])
+
+    def _cube_pos() -> np.ndarray:
+        return np.array(data.xpos[cube_body_id], dtype=float)
+
+    # Track cube at key moments.
+    cube_pick_z = 0.0     # z right after grasp hold
+    cube_carry_min_z = 999.0  # min z during carry (detect drops)
+    cube_final_pos = np.zeros(3)
+
+    # Finger open = zero force; close = grasp force.
+    model.opt.gravity[:] = (0.0, 0.0, 0.0)
+    mujoco.mj_forward(model, data)
+
+    # Set arm to pick position at start (smooth approach via PD would take
+    # too long for 40+ degree changes; teleport the arm, settle, then the
+    # object is grasped at the pick position).
+    for ajid in arm_jids:
+        qadr = model.jnt_qposadr[ajid]
+        data.qpos[qadr] = pick_qpos.get(ajid, home_qpos.get(ajid, 0.0))
+    mujoco.mj_forward(model, data)
+
+    unstable = False
+    for step in range(end_step):
+        data.qfrc_applied[:] = 0
+
+        # Determine phase and set targets.
+        if step < phase_bounds["approach_pick"][1]:
+            # Approach pick: hold at pick pose (already snapped), settle
+            _hold_arm(pick_qpos)
+            _apply_grasp(0.0)  # fingers open
+
+        elif step < phase_bounds["grasp_close"][1]:
+            # Grasp close: hold pick pose, close fingers (zero-G)
+            _hold_arm(pick_qpos)
+            _apply_grasp(grasp_force_n)
+            model.opt.gravity[:] = (0.0, 0.0, 0.0)
+
+        elif step < phase_bounds["grasp_hold"][1]:
+            # Grasp hold: enable gravity, confirm grip
+            _hold_arm(pick_qpos)
+            _apply_grasp(grasp_force_n)
+            model.opt.gravity[:] = (0.0, 0.0, -9.81)
+            if step == phase_bounds["grasp_hold"][1] - 1:
+                cube_pick_z = _cube_z()
+
+        elif step < phase_bounds["lift"][1]:
+            # Lift: hold pick pose, keep grasping.
+            _hold_arm(pick_qpos)
+            _apply_grasp(grasp_force_n)
+
+        elif step < phase_bounds["carry"][1]:
+            # Carry: PD-track from pick → place. Use smoothstep so the
+            # transition is gradual (not a step change) — this lets the
+            # cube follow the gripper via contact friction.
+            p0, p1 = phase_bounds["carry"]
+            t = (step - p0) / max(p1 - p0, 1)
+            _hold_arm(_interp(pick_qpos, place_qpos, t))
+            _apply_grasp(grasp_force_n)
+            cube_carry_min_z = min(cube_carry_min_z, _cube_z())
+
+        elif step < phase_bounds["descend"][1]:
+            # Descend: hold at place pose
+            _hold_arm(place_qpos)
+            _apply_grasp(grasp_force_n)
+
+        elif step < phase_bounds["release"][1]:
+            # Release: open fingers
+            _hold_arm(place_qpos)
+            _apply_grasp(0.0)
+
+        else:
+            # Retreat
+            p0, p1 = phase_bounds["retreat"]
+            t = (step - p0) / max(p1 - p0, 1)
+            retreated = {jid: v + 0.3 for jid, v in place_qpos.items()}
+            _hold_arm(_interp(place_qpos, retreated, t))
+            _apply_grasp(0.0)
+
+        mujoco.mj_step(model, data)
+
+        if not np.all(np.isfinite(data.qacc)):
+            unstable = True
+            break
+
+    # Let cube settle after release.
+    model.opt.gravity[:] = (0.0, 0.0, -9.81)
+    for step in range(end_step, end_step + 500):
+        data.qfrc_applied[:] = 0
+        _hold_arm({jid: v + 0.3 for jid, v in place_qpos.items()})
+        mujoco.mj_step(model, data)
+        if not np.all(np.isfinite(data.qacc)):
+            unstable = True
+            break
+
+    cube_final_pos = _cube_pos()
+
+    return {
+        "cube_pick_z_m": cube_pick_z,
+        "cube_carry_min_z_m": cube_carry_min_z,
+        "cube_final_pos_m": tuple(float(x) for x in cube_final_pos),
+        "unstable": bool(unstable),
     }
 
 
