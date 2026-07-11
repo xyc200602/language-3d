@@ -195,6 +195,75 @@ def _ik_angles_to_qpos(
     return targets
 
 
+def _mujoco_jacobian_ik(
+    model: Any,
+    data: Any,
+    ee_body_id: int,
+    arm_jids: list[int],
+    target_m: tuple[float, float, float],
+    max_iterations: int = 200,
+    tolerance_m: float = 0.002,
+) -> dict[int, float]:
+    """Solve IK entirely in MuJoCo's coordinate system.
+
+    Uses damped-least-squares Jacobian IK to find joint angles that move
+    the end-effector body to the target position. This avoids the
+    Assembly↔MuJoCo coordinate mismatch that occurs when using the
+    Assembly-space IK solver (AssemblySolver FK ≠ MuJoCo FK due to
+    base offsets and rotation-center differences).
+
+    Args:
+        model: MuJoCo model.
+        data: MuJoCo data (will be modified in-place).
+        ee_body_id: Body id of the end-effector (e.g. gripper_base).
+        arm_jids: Arm joint ids to solve for.
+        target_m: Target [x, y, z] in METERS (MuJoCo convention).
+        max_iterations: Max IK iterations.
+        tolerance_m: Convergence tolerance in meters.
+
+    Returns:
+        ``{jid: qpos_target}`` dict in MuJoCo joint space (radians).
+    """
+    import mujoco
+    import numpy as np
+
+    target = np.array(target_m, dtype=float)
+    dof_addrs = [int(model.jnt_dofadr[jid]) for jid in arm_jids]
+    qpos_addrs = [int(model.jnt_qposadr[jid]) for jid in arm_jids]
+
+    for iteration in range(max_iterations):
+        mujoco.mj_forward(model, data)
+        current = np.array(data.xpos[ee_body_id], dtype=float)
+        error = target - current
+        err_norm = float(np.linalg.norm(error))
+
+        if err_norm < tolerance_m:
+            break
+
+        # Position Jacobian for EE body.
+        jacp = np.zeros((3, model.nv))
+        mujoco.mj_jacBody(model, data, jacp, None, ee_body_id)
+        J = jacp[:, dof_addrs]
+
+        # Damped pseudoinverse: delta_q = J^T (J J^T + λ²I)^{-1} error
+        damp = 0.01
+        JtJ = J @ J.T + damp * damp * np.eye(3)
+        delta_q = J.T @ np.linalg.solve(JtJ, error)
+
+        step = 0.5
+        for i, qadr in enumerate(qpos_addrs):
+            data.qpos[qadr] += delta_q[i] * step
+            # Clamp to joint range.
+            jid = arm_jids[i]
+            lo, hi = model.jnt_range[jid]
+            data.qpos[qadr] = max(lo, min(hi, data.qpos[qadr]))
+
+    # Read final solution (data.qpos is LEFT at the IK solution — caller
+    # can verify via mj_forward and optionally reset).
+    return {jid: float(data.qpos[qpos_addrs[i]])
+            for i, jid in enumerate(arm_jids)}
+
+
 def _add_cube_to_scene(
     urdf_path: str,
     cube_pos_m: tuple[float, float, float],
@@ -641,9 +710,17 @@ def _run_pick_place_scenario(
     except AttributeError:
         pass
 
+    # Restore low damping on FINGER (slide) joints — _stabilize_model sets
+    # all joints to damping=3.0, but fingers need low damping (0.1) so the
+    # grasp force can actually close them and maintain grip.  Without this,
+    # the cube falls out of the over-damped fingers when gravity is enabled.
+    slide_jids_set = {j["jid"] for j in slide_joints}
+    for sjid in slide_jids_set:
+        dadr = int(model.jnt_dofadr[sjid])
+        model.dof_damping[dadr] = 0.1
+
     data = mujoco.MjData(model)
     arm_jids = _find_arm_joints(model, slide_joints)
-    slide_jids_set = {j["jid"] for j in slide_joints}
 
     # Smoothstep helper (3t² - 2t³).
     def _ss(t: float) -> float:
@@ -653,14 +730,14 @@ def _run_pick_place_scenario(
     # Phase boundaries (as fraction of total steps).
     n_steps = max(1, int(duration_sec / model.opt.timestep))
     phases = {
-        "approach_pick":  (0.00, 0.08),   # hold at pick pose (snapped)
-        "grasp_close":    (0.08, 0.14),   # close fingers (zero-G)
-        "grasp_hold":     (0.14, 0.18),   # enable gravity, confirm hold
-        "lift":           (0.18, 0.22),   # brief hold at pick
-        "carry":          (0.22, 0.60),   # PD track pick→place (38% of time)
-        "descend":        (0.60, 0.68),   # hold at place pose
-        "release":        (0.68, 0.76),   # open fingers
-        "retreat":        (0.76, 0.90),   # retreat to safe height
+        "approach_pick":  (0.00, 0.06),   # hold at pick pose
+        "grasp_close":    (0.06, 0.20),   # close fingers (zero-G, 14% = ~1.1s)
+        "grasp_hold":     (0.20, 0.26),   # enable gravity, confirm hold
+        "lift":           (0.26, 0.30),   # brief hold at pick
+        "carry":          (0.30, 0.65),   # PD track pick→place (35% of time)
+        "descend":        (0.65, 0.72),   # hold at place pose
+        "release":        (0.72, 0.80),   # open fingers
+        "retreat":        (0.80, 0.92),   # retreat to safe height
     }
     phase_bounds = {}
     for name, (lo, hi) in phases.items():
@@ -703,9 +780,8 @@ def _run_pick_place_scenario(
     model.opt.gravity[:] = (0.0, 0.0, 0.0)
     mujoco.mj_forward(model, data)
 
-    # Set arm to pick position at start (smooth approach via PD would take
-    # too long for 40+ degree changes; teleport the arm, settle, then the
-    # object is grasped at the pick position).
+    # Set arm to pick position at start (do NOT teleport fingers — let
+    # them close naturally during grasp_close, same as SimGraspTool).
     for ajid in arm_jids:
         qadr = model.jnt_qposadr[ajid]
         data.qpos[qadr] = pick_qpos.get(ajid, home_qpos.get(ajid, 0.0))

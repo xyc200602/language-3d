@@ -27,6 +27,8 @@ import math
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from .base import Tool
 from ..models.base import ToolDefinition
 from .sim_grasp import (
@@ -90,50 +92,14 @@ class PickPlaceTool(Tool):
 
         if not Path(urdf_path).exists():
             return json.dumps({"error": f"URDF not found: {urdf_path}"})
-        if not Path(assembly_path).exists():
-            return json.dumps({"error": f"assembly.json not found: {assembly_path}"})
 
-        # Parse positions.
+        # Parse positions (in mm).
         try:
             pick = [float(x) for x in str(pick_pos_mm).split(",")]
             place = [float(x) for x in str(place_pos_mm).split(",")]
             assert len(pick) == 3 and len(place) == 3
         except Exception:
             return json.dumps({"error": "positions must be 'x,y,z' in mm"})
-
-        # Load assembly for IK.
-        from ..knowledge.mechanics import Assembly, Joint, Part
-
-        raw = json.loads(Path(assembly_path).read_text("utf-8"))
-        parts = [Part(**p) for p in raw.get("parts", [])]
-        joints = [Joint(**j) for j in raw.get("joints", [])]
-        assembly = Assembly(
-            name=raw.get("name", ""),
-            parts=parts,
-            joints=joints,
-            description=raw.get("description", ""),
-            default_angles=raw.get("default_angles", {}),
-        )
-
-        # --- IK: solve for pick and place ---
-        from .ik_solver import solve_ik
-
-        ik_pick = solve_ik(assembly, target=tuple(pick), approach="auto", tolerance_mm=10.0)
-        ik_place = solve_ik(assembly, target=tuple(place), approach="auto", tolerance_mm=10.0,
-                            initial_angles=ik_pick.joint_angles)
-
-        pick_reached = ik_pick.reachable
-        place_reached = ik_place.reachable
-
-        if not pick_reached or not place_reached:
-            return json.dumps({
-                "task_success": False,
-                "pick_reached": pick_reached,
-                "place_reached": place_reached,
-                "pick_error_mm": round(ik_pick.error_mm, 2),
-                "place_error_mm": round(ik_place.error_mm, 2),
-                "reason": "IK failed — target out of reach",
-            }, ensure_ascii=False, indent=2)
 
         # --- Load MuJoCo model ---
         from .sim_grasp import _ensure_sm
@@ -145,6 +111,9 @@ class PickPlaceTool(Tool):
             return json.dumps({"error": "URDF load failed", "detail": load_result.get("error", "")})
 
         model = load_result["model"]
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+
         slide_joints = _find_slide_joints(model)
         grippers = _group_fingers_into_grippers(slide_joints)
         grippers = [(gid, fs) for gid, fs in grippers if len(fs) >= 2]
@@ -154,18 +123,77 @@ class PickPlaceTool(Tool):
         gid, fingers = grippers[0]
         arm_jids = _find_arm_joints(model, fingers)
 
-        # --- Convert IK angles to MuJoCo qpos ---
-        pick_qpos = _ik_angles_to_qpos(ik_pick.joint_angles, model, arm_jids)
-        place_qpos = _ik_angles_to_qpos(ik_place.joint_angles, model, arm_jids)
+        # Find end-effector body: the parent body of the first finger.
+        ee_body_id = int(model.body_parentid[fingers[0]["body_id"]])
 
-        # Home qpos from current model state.
-        data = mujoco.MjData(model)
-        mujoco.mj_forward(model, data)
+        # Compute the offset between the EE body and the finger midpoint.
+        # The cube must be placed at the FINGER MIDPOINT (where the gripper
+        # can clamp it), not at the EE body origin (gripper_base, which is
+        # 44mm behind the fingers).  We add this offset to the IK target so
+        # that when the EE body reaches the modified target, the fingers
+        # are actually centered on the desired pick/place position.
+        import numpy as np
+        finger_midpoint = sum(
+            np.array(data.xpos[f["body_id"]], dtype=float) for f in fingers
+        ) / len(fingers)
+        ee_pos = np.array(data.xpos[ee_body_id], dtype=float)
+        ee_to_finger_offset = finger_midpoint - ee_pos  # in meters
+
+        # Home qpos.
         home_qpos = {jid: float(data.qpos[model.jnt_qposadr[jid]]) for jid in arm_jids}
+
+        # --- MuJoCo-native Jacobian IK (no Assembly coordinate mismatch) ---
+        from .sim_grasp import _mujoco_jacobian_ik
+
+        # IK targets are the pick/place positions ADJUSTED so that the
+        # finger midpoint (not the EE body) lands on the target.
+        pick_m_raw = np.array([x / 1000.0 for x in pick])
+        place_m_raw = np.array([x / 1000.0 for x in place])
+        pick_m = tuple(pick_m_raw - ee_to_finger_offset)
+        place_m = tuple(place_m_raw - ee_to_finger_offset)
+
+        # Solve IK for pick position (starts from current/home pose).
+        pick_qpos = _mujoco_jacobian_ik(
+            model, data, ee_body_id, arm_jids, pick_m, tolerance_m=0.003,
+        )
+        # data.qpos is now at the IK solution — verify it.
+        mujoco.mj_forward(model, data)
+        pick_achieved = np.array(data.xpos[ee_body_id])
+        pick_error_mm = float(np.linalg.norm(pick_achieved - np.array(pick_m)) * 1000)
+        pick_reached = pick_error_mm < 15.0
+
+        # Reset to home for place IK (so it starts from a neutral pose).
+        for jid in arm_jids:
+            qadr = model.jnt_qposadr[jid]
+            data.qpos[qadr] = home_qpos[jid]
+        mujoco.mj_forward(model, data)
+
+        place_qpos = _mujoco_jacobian_ik(
+            model, data, ee_body_id, arm_jids, place_m, tolerance_m=0.003,
+        )
+        mujoco.mj_forward(model, data)
+        place_achieved = np.array(data.xpos[ee_body_id])
+        place_error_mm = float(np.linalg.norm(place_achieved - np.array(place_m)) * 1000)
+        place_reached = place_error_mm < 15.0
+
+        # Reset to home for the simulation.
+        for jid in arm_jids:
+            qadr = model.jnt_qposadr[jid]
+            data.qpos[qadr] = home_qpos[jid]
+        mujoco.mj_forward(model, data)
+
+        if not pick_reached or not place_reached:
+            return json.dumps({
+                "task_success": False,
+                "pick_reached": pick_reached,
+                "place_reached": place_reached,
+                "pick_error_mm": round(pick_error_mm, 2),
+                "place_error_mm": round(place_error_mm, 2),
+                "reason": "IK failed — target out of reach",
+            }, ensure_ascii=False, indent=2)
 
         # Finger close directions.
         finger_close_signs: dict[int, float] = {}
-        import numpy as np
         grasp_center = sum(
             np.array(data.xpos[f["body_id"]], dtype=float) for f in fingers
         ) / len(fingers)
@@ -179,14 +207,12 @@ class PickPlaceTool(Tool):
             proj = float(np.dot(to_center, axis_world))
             finger_close_signs[jid] = 1.0 if proj > 0 else -1.0
 
-        # --- Add cube at pick position ---
+        # --- Add cube at pick position (the ACTUAL position, not IK-adjusted) ---
         cube_size_m = cube_size_mm / 1000.0
-        pick_m = tuple(x / 1000.0 for x in pick)
-        place_m = tuple(x / 1000.0 for x in place)
 
         scene_model, temp_files = _add_cube_to_scene(
             urdf_path=str(Path(urdf_path).resolve()),
-            cube_pos_m=pick_m,
+            cube_pos_m=tuple(pick_m_raw),  # real world pick position
             cube_size_m=cube_size_m,
             cube_mass_kg=0.020,
         )
@@ -203,17 +229,7 @@ class PickPlaceTool(Tool):
             scene_fingers = [s for s in scene_slides if s["name"] in finger_names]
             scene_arm_jids = _find_arm_joints(scene_model, scene_fingers)
 
-            # Re-map qpos targets to scene model joint ids.
-            scene_pick_qpos = {}
-            scene_place_qpos = {}
-            scene_home_qpos = {}
-            scene_finger_signs = {}
-            for sj in scene_slides:
-                scene_finger_signs[sj["jid"]] = finger_close_signs.get(fingers[0]["jid"], 1.0)
-                if len(fingers) > 1 and sj["name"] == fingers[1]["name"]:
-                    scene_finger_signs[sj["jid"]] = finger_close_signs.get(fingers[1]["jid"], -1.0)
-
-            # Map by joint name.
+            # Map qpos targets to scene model joint ids by name.
             orig_jid_to_name = {
                 jid: mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, jid)
                 for jid in arm_jids
@@ -224,12 +240,23 @@ class PickPlaceTool(Tool):
                 if nm:
                     scene_name_to_jid[nm] = jid
 
+            scene_pick_qpos = {}
+            scene_place_qpos = {}
+            scene_home_qpos = {}
             for orig_jid, nm in orig_jid_to_name.items():
                 scene_jid = scene_name_to_jid.get(nm)
                 if scene_jid is not None:
                     scene_pick_qpos[scene_jid] = pick_qpos.get(orig_jid, 0.0)
                     scene_place_qpos[scene_jid] = place_qpos.get(orig_jid, 0.0)
                     scene_home_qpos[scene_jid] = home_qpos.get(orig_jid, 0.0)
+
+            # Map finger signs to scene model.
+            scene_finger_signs = {}
+            for sf in scene_fingers:
+                for orig_f in fingers:
+                    if sf["name"] == orig_f["name"]:
+                        scene_finger_signs[sf["jid"]] = finger_close_signs[orig_f["jid"]]
+                        break
 
             # --- Run pick-and-place ---
             result = _run_pick_place_scenario(
@@ -247,11 +274,11 @@ class PickPlaceTool(Tool):
             # --- Evaluate task success ---
             cube_final = result["cube_final_pos_m"]
             place_accuracy_mm = math.sqrt(
-                sum((cube_final[i] - place_m[i]) ** 2 for i in range(3))
+                sum((cube_final[i] - place_m_raw[i]) ** 2 for i in range(3))
             ) * 1000.0
 
             carry_drop_mm = (result["cube_pick_z_m"] - result["cube_carry_min_z_m"]) * 1000.0
-            grasp_held = carry_drop_mm < 20.0  # cube didn't drop >20mm during carry
+            grasp_held = carry_drop_mm < 20.0
 
             task_success = (
                 pick_reached
@@ -269,11 +296,10 @@ class PickPlaceTool(Tool):
                 "place_accuracy_mm": round(place_accuracy_mm, 1),
                 "carry_drop_mm": round(carry_drop_mm, 1),
                 "cube_final_pos_m": [round(x, 4) for x in cube_final],
-                "target_place_pos_m": [round(x, 4) for x in place_m],
-                "pick_ik_method": ik_pick.method,
-                "place_ik_method": ik_place.method,
-                "pick_ik_error_mm": round(ik_pick.error_mm, 2),
-                "place_ik_error_mm": round(ik_place.error_mm, 2),
+                "target_place_pos_m": [round(x, 4) for x in place_m_raw],
+                "pick_error_mm": round(pick_error_mm, 2),
+                "place_error_mm": round(place_error_mm, 2),
+                "ik_method": "mujoco_jacobian",
                 "unstable": result["unstable"],
                 "note": (
                     "任务成功: 抓取→搬运→放置完成"
