@@ -1,0 +1,98 @@
+[
+  {
+    "case": "3dof_arm",
+    "ts": "20260708_231302",
+    "before": {
+      "grasp_ok": true,
+      "lifted": true,
+      "lift_mm": 65.7
+    },
+    "after": {
+      "grasp_ok": true,
+      "lifted": false,
+      "lift_mm": 0.0
+    },
+    "fix_applied": true,
+    "improved": false
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260702_225613",
+    "before": {
+      "grasp_ok": true,
+      "lifted": true,
+      "lift_mm": 86.5
+    },
+    "after": {
+      "grasp_ok": false,
+      "lifted": false,
+      "lift_mm": -7.0
+    },
+    "fix_applied": true,
+    "improved": false
+  },
+  {
+    "case": "5dof_arm",
+    "ts": "20260708_221233",
+    "before": {
+      "grasp_ok": true,
+      "lifted": true,
+      "lift_mm": 83.3
+    },
+    "after": {
+      "grasp_ok": false,
+      "lifted": false,
+      "lift_mm": -7.0
+    },
+    "fix_applied": true,
+    "improved": false
+  },
+  {
+    "case": "6dof_arm",
+    "ts": "20260708_202829",
+    "before": {
+      "grasp_ok": false,
+      "lifted": false,
+      "lift_mm": 183.0
+    },
+    "after": {
+      "grasp_ok": false,
+      "lifted": false,
+      "lift_mm": -51.5
+    },
+    "fix_applied": true,
+    "improved": false
+  },
+  {
+    "case": "7dof_arm",
+    "ts": "20260708_233227",
+    "before": {
+      "grasp_ok": false,
+      "lifted": false,
+      "lift_mm": 123.9
+    },
+    "after": {
+      "grasp_ok": true,
+      "lifted": false,
+      "lift_mm": 0.4
+    },
+    "fix_applied": true,
+    "improved": true
+  },
+  {
+    "case": "4wheel_dual_arm",
+    "ts": "20260701_222014",
+    "before": {
+      "grasp_ok": true,
+      "lifted": false,
+      "lift_mm": -4.4
+    },
+    "after": {
+      "grasp_ok": true,
+      "lifted": false,
+      "lift_mm": -0.7
+    },
+    "fix_applied": true,
+    "improved": true
+  }
+]
