@@ -840,8 +840,8 @@ def _run_pick_place_scenario(
             # Retreat
             p0, p1 = phase_bounds["retreat"]
             t = (step - p0) / max(p1 - p0, 1)
-            retreated = {jid: v + 0.3 for jid, v in place_qpos.items()}
-            _hold_arm(_interp(place_qpos, retreated, t))
+            # Retreat: smoothly return to home, not a粗暴 +0.3 kick.
+            _hold_arm(_interp(place_qpos, home_qpos, t))
             _apply_grasp(0.0)
 
         mujoco.mj_step(model, data)
@@ -854,7 +854,7 @@ def _run_pick_place_scenario(
     model.opt.gravity[:] = (0.0, 0.0, -9.81)
     for step in range(end_step, end_step + 500):
         data.qfrc_applied[:] = 0
-        _hold_arm({jid: v + 0.3 for jid, v in place_qpos.items()})
+        _hold_arm(home_qpos)
         mujoco.mj_step(model, data)
         if not np.all(np.isfinite(data.qacc)):
             unstable = True
