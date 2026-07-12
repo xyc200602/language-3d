@@ -243,6 +243,16 @@ class PickPlaceTool(Tool):
             if cube_body_id < 0:
                 return json.dumps({"error": "cube body not found in scene"})
 
+            # Copy qpos0 from the original model to the scene model.
+            # _add_cube_to_scene recompiles the MJCF, which RESETS qpos0 to
+            # zero (straight arm) — losing the bent home pose. Without this,
+            # teleporting the arm to the IK solution causes a violent jump
+            # from straight→bent that launches the cube across the scene.
+            # Only copy the first model.nq entries (the scene has extra qpos
+            # for the cube's freejoint which must not be overwritten).
+            n = min(model.nq, scene_model.nq)
+            scene_model.qpos0[:n] = model.qpos0[:n]
+
             # Re-map arm_jids and fingers to scene model.
             scene_slides = _find_slide_joints(scene_model)
             finger_names = {f["name"] for f in fingers}
@@ -292,8 +302,17 @@ class PickPlaceTool(Tool):
             )
 
             # --- Evaluate task success ---
+            # Place accuracy is measured in XY only — Z is excluded because
+            # the cube falls to the ground after release (the place target
+            # is at gripper height, but after fingers open the cube naturally
+            # drops). The meaningful metric is "did the cube land at the
+            # right XY position".
             cube_final = result["cube_final_pos_m"]
-            place_accuracy_mm = math.sqrt(
+            place_accuracy_xy_mm = math.sqrt(
+                (cube_final[0] - place_m_raw[0]) ** 2
+                + (cube_final[1] - place_m_raw[1]) ** 2
+            ) * 1000.0
+            place_accuracy_3d_mm = math.sqrt(
                 sum((cube_final[i] - place_m_raw[i]) ** 2 for i in range(3))
             ) * 1000.0
 
@@ -304,7 +323,7 @@ class PickPlaceTool(Tool):
                 pick_reached
                 and place_reached
                 and grasp_held
-                and place_accuracy_mm < 30.0
+                and place_accuracy_xy_mm < 30.0
                 and not result["unstable"]
             )
 
@@ -313,7 +332,8 @@ class PickPlaceTool(Tool):
                 "pick_reached": pick_reached,
                 "place_reached": place_reached,
                 "grasp_held": grasp_held,
-                "place_accuracy_mm": round(place_accuracy_mm, 1),
+                "place_accuracy_mm": round(place_accuracy_xy_mm, 1),
+                "place_accuracy_3d_mm": round(place_accuracy_3d_mm, 1),
                 "carry_drop_mm": round(carry_drop_mm, 1),
                 "cube_final_pos_m": [round(x, 4) for x in cube_final],
                 "target_place_pos_m": [round(x, 4) for x in place_m_raw],
@@ -324,7 +344,7 @@ class PickPlaceTool(Tool):
                 "note": (
                     "任务成功: 抓取→搬运→放置完成"
                     if task_success
-                    else f"任务失败: place_accuracy={place_accuracy_mm:.1f}mm, "
+                    else f"任务失败: place_xy={place_accuracy_xy_mm:.1f}mm, "
                          f"carry_drop={carry_drop_mm:.1f}mm"
                 ),
             }
